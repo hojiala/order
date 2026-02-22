@@ -6,69 +6,172 @@
     <title>晨光 AI 早餐店</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
-    
     <style>
         .no-scrollbar::-webkit-scrollbar { display: none; }
         .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
         [v-cloak] { display: none; }
+        /* 截圖中的紅色角標樣式 */
+        .cart-badge {
+            position: absolute; top: 0; right: 0;
+            background: #ef4444; color: white;
+            font-size: 0.75rem; font-weight: bold;
+            padding: 2px 10px;
+            border-bottom-left-radius: 10px;
+        }
     </style>
 </head>
 <body class="bg-gray-100 font-sans text-gray-800">
 
-    <div id="app" v-cloak class="pb-24 max-w-5xl mx-auto min-h-screen bg-gray-50 shadow-2xl relative">
+    <div id="app" v-cloak class="max-w-md mx-auto min-h-screen bg-gray-50 relative pb-24 shadow-xl">
         
-        <header class="bg-yellow-500 text-white p-4 sticky top-0 z-50 shadow-md flex justify-between items-center">
-            <div>
-                <h1 class="text-xl font-bold">晨光 AI 早餐店</h1>
-                <p class="text-xs opacity-90">歡迎線上點餐</p>
-            </div>
-            <div class="bg-white rounded-full p-1 flex">
-                <button @click="orderType='takeout'" :class="{'bg-yellow-500 text-white': orderType==='takeout', 'text-gray-500': orderType!=='takeout'}" class="px-3 py-1 text-xs rounded-full transition">外帶</button>
-                <button @click="orderType='dinein'" :class="{'bg-yellow-500 text-white': orderType==='dinein', 'text-gray-500': orderType!=='dinein'}" class="px-3 py-1 text-xs rounded-full transition">內用</button>
-            </div>
-        </header>
-
-        <main class="p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            <div v-for="item in menu" :key="item.id" class="bg-white rounded-xl shadow-md overflow-hidden flex flex-col relative">
+        <div v-show="currentView === 'menu'">
+            <header class="bg-white p-4 sticky top-0 z-40 shadow-sm border-b">
+                <div class="flex justify-center space-x-2 mb-3">
+                    <button @click="orderType='takeout'" :class="orderType==='takeout' ? 'bg-yellow-500 text-white' : 'border border-gray-300 text-gray-600'" class="px-6 py-1 rounded text-sm font-medium">自取</button>
+                    <button @click="orderType='dinein'" :class="orderType==='dinein' ? 'bg-yellow-500 text-white' : 'border border-gray-300 text-gray-600'" class="px-6 py-1 rounded text-sm font-medium">內用</button>
+                </div>
                 
-                <div v-if="item.sold_out" class="absolute inset-0 bg-gray-900 bg-opacity-60 flex items-center justify-center z-10">
-                    <span class="text-white text-2xl font-bold border-2 border-white px-4 py-1 transform -rotate-12">售完</span>
-                </div>
-
-                <div class="p-4 flex-1 flex flex-col justify-between">
-                    <div>
-                        <span class="text-xs bg-yellow-100 text-yellow-800 px-2 py-1 rounded-full mb-2 inline-block">{{ item.category }}</span>
-                        <h3 class="font-bold text-lg mb-1">{{ item.name }}</h3>
-                        <p class="text-gray-500 text-xs mb-2">{{ item.desc }}</p>
+                <div class="flex space-x-4 text-sm">
+                    <div class="flex-1 border-b pb-1">
+                        <p class="text-gray-500 text-xs mb-1">用餐日期</p>
+                        <select v-model="pickupDate" class="w-full bg-transparent outline-none">
+                            <option value="today">今天</option>
+                            <option value="tomorrow">明天</option>
+                        </select>
                     </div>
+                    <div class="flex-1 border-b pb-1">
+                        <p class="text-gray-500 text-xs mb-1">用餐時間</p>
+                        <select v-model="pickupTime" class="w-full bg-transparent outline-none">
+                            <option value="ASAP">儘快完成</option>
+                            <option value="06:00">06:00</option>
+                            <option value="06:30">06:30</option>
+                            <option value="07:00">07:00</option>
+                        </select>
+                    </div>
+                </div>
+            </header>
+
+            <div class="bg-teal-600 text-white sticky top-[108px] z-30 overflow-x-auto no-scrollbar whitespace-nowrap">
+                <button v-for="cat in categories" :key="cat" @click="currentCategory = cat"
+                    :class="currentCategory === cat ? 'bg-teal-700 font-bold border-b-4 border-white' : 'opacity-80'"
+                    class="px-4 py-3 text-sm transition-all inline-block">
+                    {{ cat }}
+                </button>
+            </div>
+
+            <main class="p-4 space-y-4">
+                <div v-for="item in filteredMenu" :key="item.id" @click="openItemDetail(item)" class="bg-white rounded-lg shadow-sm overflow-hidden flex cursor-pointer relative border border-gray-100">
                     
-                    <div class="flex justify-between items-end mt-2">
-                        <span class="text-red-500 font-bold text-lg">${{ item.price }}</span>
-                        <button 
-                            v-if="!item.sold_out"
-                            @click="addToCart(item)" 
-                            class="bg-yellow-500 hover:bg-yellow-600 text-white rounded-full w-8 h-8 flex items-center justify-center font-bold shadow-md transition">
-                            +
-                        </button>
+                    <div v-if="getItemQty(item.id) > 0" class="cart-badge">{{ getItemQty(item.id) }}</div>
+                    
+                    <div class="p-3 flex-1 flex flex-col justify-between">
+                        <div>
+                            <h3 class="font-medium text-gray-800">{{ item.name }}</h3>
+                            <p class="text-gray-400 text-xs mt-1 line-clamp-1">{{ item.desc }}</p>
+                        </div>
+                        <span class="text-gray-800 mt-2 font-medium">${{ item.price }}</span>
+                    </div>
+                    <div class="w-28 h-28 bg-gray-200">
+                        <img v-if="item.img" :src="item.img" class="w-full h-full object-cover">
                     </div>
                 </div>
-            </div>
-        </main>
+            </main>
 
-        <div v-if="cart.length > 0" class="fixed bottom-0 left-0 right-0 bg-white shadow-[0_-5px_15px_rgba(0,0,0,0.1)] p-4 z-50 rounded-t-2xl max-w-5xl mx-auto">
-            <div class="flex justify-between items-center mb-4">
-                <div class="text-sm text-gray-600">已選 <span class="bg-red-500 text-white rounded-full px-2 py-0.5 text-xs">{{ cartCount }}</span> 項</div>
-                <div class="text-xl font-bold text-gray-800">總計：<span class="text-red-500">${{ cartTotal }}</span></div>
+            <div v-if="cart.length > 0" class="fixed bottom-0 left-0 right-0 max-w-md mx-auto bg-pink-500 text-white p-3 flex justify-between items-center z-50">
+                <div class="bg-white text-pink-500 rounded px-3 py-1 font-bold">{{ cartCount }}</div>
+                <button @click="currentView = 'cart'" class="font-bold tracking-wider text-lg flex-1 text-center">檢視購物車</button>
+                <div class="font-bold text-lg">${{ cartTotal }}</div>
+            </div>
+        </div>
+
+        <div v-if="currentView === 'detail' && activeItem" class="bg-white min-h-screen">
+            <div class="fixed top-0 left-0 right-0 max-w-md mx-auto p-4 z-50 flex items-center shadow-sm" style="background: rgba(255,255,255,0.9);">
+                <button @click="closeItemDetail" class="text-gray-600 font-bold text-xl mr-4">←</button>
+                <span class="font-bold text-lg">返回晨光 AI 早餐店</span>
+            </div>
+            
+            <img v-if="activeItem.img" :src="activeItem.img" class="w-full aspect-video object-cover mt-14">
+            
+            <div class="p-4 border-b text-xl font-bold flex justify-between">
+                <span>{{ activeItem.name }}</span>
+                <span>${{ activeItem.price }}</span>
+            </div>
+            <div class="p-4 text-gray-500 text-sm border-b">{{ activeItem.desc }}</div>
+
+            <div v-if="activeItem.options && activeItem.options.length > 0" class="p-4 border-b">
+                <label v-for="(opt, index) in activeItem.options" :key="index" class="flex items-center justify-between py-2 border-b last:border-0">
+                    <div class="flex items-center">
+                        <input type="checkbox" v-model="tempSelections" :value="opt" class="w-5 h-5 text-yellow-500 mr-3">
+                        <span class="text-gray-700">{{ opt.name }}</span>
+                    </div>
+                    <span class="text-gray-500">+${{ opt.price }}</span>
+                </label>
             </div>
 
-            <div class="mb-3">
-                <input v-model="inputName" type="text" placeholder="請輸入您的稱呼 (例: 陳先生)" class="w-full border-2 border-yellow-300 rounded-lg p-2 focus:outline-none focus:border-yellow-500">
+            <div class="p-4">
+                <p class="text-gray-600 text-sm mb-2">備註</p>
+                <textarea v-model="tempNote" placeholder="請輸入您的特殊需求 (請勿輸入#字)" class="w-full border rounded-lg p-3 text-sm focus:outline-none focus:border-yellow-500" rows="3"></textarea>
             </div>
 
-            <button @click="submitToFirebase" :disabled="isSubmitting" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 rounded-xl shadow-lg transition">
-                <span v-if="isSubmitting">傳送中...</span>
-                <span v-else>確認下單</span>
-            </button>
+            <div class="fixed bottom-0 left-0 right-0 max-w-md mx-auto bg-white border-t p-4 flex items-center justify-between z-50">
+                <div class="flex items-center bg-gray-100 rounded-full overflow-hidden">
+                    <button @click="if(tempQty>1) tempQty--" class="w-10 h-10 flex items-center justify-center bg-gray-200 text-gray-600 text-xl font-bold">-</button>
+                    <span class="w-10 text-center font-bold">{{ tempQty }}</span>
+                    <button @click="tempQty++" class="w-10 h-10 flex items-center justify-center bg-yellow-500 text-white text-xl font-bold">+</button>
+                </div>
+                <button @click="confirmAddToCart" class="bg-pink-500 text-white flex-1 ml-4 py-3 rounded text-lg font-bold flex justify-between px-4">
+                    <span>加入購物車</span>
+                    <span>${{ tempTotalPrice }}</span>
+                </button>
+            </div>
+        </div>
+
+        <div v-if="currentView === 'cart'" class="bg-gray-100 min-h-screen">
+            <header class="bg-white p-4 sticky top-0 z-40 shadow-sm flex items-center border-b">
+                <button @click="currentView = 'menu'" class="text-gray-600 font-bold text-xl mr-4">←</button>
+                <h2 class="text-lg font-bold flex-1">訂單確認</h2>
+            </header>
+
+            <main class="p-4 space-y-4">
+                <div class="bg-white p-4 rounded-lg shadow-sm">
+                    <h3 class="text-gray-500 text-sm font-bold mb-3 border-b pb-2">點餐內容</h3>
+                    <div v-for="(item, index) in cart" :key="index" @click="editCartItem(item, index)" class="flex justify-between items-start mb-4 cursor-pointer border-b pb-2 last:border-0">
+                        <div class="flex items-start">
+                            <span class="bg-gray-500 text-white text-xs px-1.5 py-0.5 rounded mr-2 mt-0.5">{{ item.qty }}</span>
+                            <div>
+                                <p class="font-medium text-gray-800">{{ item.name }}</p>
+                                <p v-for="opt in item.options" class="text-xs text-gray-500">+ {{ opt.name }}</p>
+                                <p v-if="item.note" class="text-xs text-blue-500 mt-1">備註: {{ item.note }}</p>
+                            </div>
+                        </div>
+                        <div class="text-right">
+                            <p class="text-gray-800 font-medium">${{ item.itemTotal }}</p>
+                            <button @click.stop="removeFromCart(index)" class="text-gray-300 hover:text-red-500 text-lg mt-1">🗑️</button>
+                        </div>
+                    </div>
+                    <button @click="currentView = 'menu'" class="bg-yellow-400 text-white text-sm px-4 py-1 rounded mt-2 font-bold shadow-sm">繼續點餐</button>
+                </div>
+
+                <div class="bg-white p-4 rounded-lg shadow-sm">
+                    <h3 class="text-gray-500 text-sm font-bold mb-3 border-b pb-2">聯絡資訊</h3>
+                    <input v-model="inputName" type="text" placeholder="請輸入姓名" class="w-full border-b py-2 focus:outline-none mb-2">
+                    <input v-model="inputPhone" type="tel" placeholder="請輸入電話 (選填)" class="w-full border-b py-2 focus:outline-none">
+                </div>
+            </main>
+
+            <div class="fixed bottom-0 left-0 right-0 max-w-md mx-auto bg-white border-t flex flex-col z-50">
+                <div class="p-3 flex justify-between items-center text-lg font-bold border-b bg-gray-50">
+                    <span>總價</span>
+                    <span class="text-red-500 text-2xl">${{ cartTotal }}</span>
+                </div>
+                <div class="flex p-3 bg-white">
+                    <div class="bg-pink-500 text-white rounded px-4 py-3 font-bold mr-3 flex items-center justify-center">{{ cartCount }}</div>
+                    <button @click="submitToFirebase" :disabled="isSubmitting" class="bg-pink-500 text-white flex-1 py-3 rounded text-lg font-bold">
+                        <span v-if="isSubmitting">送出中...</span>
+                        <span v-else>送出訂單</span>
+                    </button>
+                </div>
+            </div>
         </div>
 
     </div>
@@ -79,55 +182,133 @@
 
         // ★★★ 請替換成您的 Firebase 配置 ★★★
         const firebaseConfig = {
-            apiKey: "AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
-            authDomain: "breakfast-ai-system.firebaseapp.com",
-            databaseURL: "https://breakfast-ai-system-default-rtdb.asia-southeast1.firebasedatabase.app",
-            projectId: "breakfast-ai-system",
-            storageBucket: "breakfast-ai-system.firebasestorage.app",
-            messagingSenderId: "662477350736",
-            appId: "1:662477350736:web:7e3dd6128a6f66a52aae55"
+            apiKey: "YOUR_API_KEY",
+            authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+            databaseURL: "YOUR_DATABASE_URL",
+            projectId: "YOUR_PROJECT_ID",
+            storageBucket: "YOUR_PROJECT_ID.appspot.com",
+            messagingSenderId: "...",
+            appId: "..."
         };
 
         const app = initializeApp(firebaseConfig);
         const db = getDatabase(app);
-
         const { createApp } = Vue;
 
         createApp({
             data() {
                 return {
+                    currentView: 'menu', // 'menu', 'detail', 'cart'
+                    categories: ['套餐', '單點', '蛋餅、燒餅', '漢堡、蝸牛堡', '吐司、厚片', '其它、飲品'],
+                    currentCategory: '蛋餅、燒餅',
                     orderType: 'takeout',
+                    pickupDate: 'today',
+                    pickupTime: '06:00',
                     inputName: '',
+                    inputPhone: '',
                     isSubmitting: false,
+                    
+                    // 詳情頁暫存資料
+                    activeItem: null,
+                    editIndex: -1, // -1 表示新增，>=0 表示編輯購物車內的項目
+                    tempQty: 1,
+                    tempNote: '',
+                    tempSelections: [],
+
+                    // 模擬菜單 (加入客製化選項)
                     menu: [
-                        { id: 1, name: "濃厚豚骨烏龍麵套餐", price: 134, category: "熱門套餐", desc: "豬肉原產地：台灣", sold_out: false },
-                        { id: 2, name: "培根蛋餅", price: 45, category: "蛋餅", desc: "酥皮口感", sold_out: false },
-                        { id: 3, name: "日式炒烏龍麵套餐", price: 114, category: "熱門套餐", desc: "限量發售", sold_out: true }
+                        { id: 1, name: "薯餅起司蛋餅", price: 60, category: "蛋餅、燒餅", desc: "內含薯餅和起司", img: "https://images.unsplash.com/photo-1626645738196-c2a7c87a8f58?w=400", options: [{name: '加培根', price: 20}, {name: '加火腿', price: 15}] },
+                        { id: 2, name: "塔香辣豬蛋餅", price: 65, category: "蛋餅、燒餅", desc: "豬肉原產地：台灣", img: "https://images.unsplash.com/photo-1550547660-d9450f859349?w=400", options: [{name: '加起司', price: 15}] },
+                        { id: 3, name: "濃厚豚骨烏龍麵", price: 134, category: "套餐", desc: "濃郁湯頭", img: "https://images.unsplash.com/photo-1612929633738-8fe44f7ec841?w=400", options: [] },
                     ],
                     cart: []
                 }
             },
             computed: {
-                cartCount() { return this.cart.reduce((sum, item) => sum + item.qty, 0); },
-                cartTotal() { return this.cart.reduce((sum, item) => sum + (item.price * item.qty), 0); }
+                filteredMenu() {
+                    return this.menu.filter(item => item.category === this.currentCategory);
+                },
+                cartCount() {
+                    return this.cart.reduce((sum, item) => sum + item.qty, 0);
+                },
+                cartTotal() {
+                    return this.cart.reduce((sum, item) => sum + item.itemTotal, 0);
+                },
+                tempTotalPrice() {
+                    if (!this.activeItem) return 0;
+                    const basePrice = this.activeItem.price;
+                    const optionsPrice = this.tempSelections.reduce((sum, opt) => sum + opt.price, 0);
+                    return (basePrice + optionsPrice) * this.tempQty;
+                }
             },
             methods: {
-                addToCart(item) {
-                    const existingItem = this.cart.find(c => c.id === item.id);
-                    if (existingItem) existingItem.qty++;
-                    else this.cart.push({ ...item, qty: 1 });
+                // 開啟餐點詳情
+                openItemDetail(item) {
+                    this.activeItem = item;
+                    this.tempQty = 1;
+                    this.tempNote = '';
+                    this.tempSelections = [];
+                    this.editIndex = -1; // 標記為全新加入
+                    this.currentView = 'detail';
                 },
+                closeItemDetail() {
+                    this.currentView = 'menu';
+                    this.activeItem = null;
+                },
+                // 編輯購物車內的項目
+                editCartItem(cartItem, index) {
+                    this.activeItem = this.menu.find(m => m.id === cartItem.id);
+                    this.tempQty = cartItem.qty;
+                    this.tempNote = cartItem.note;
+                    this.tempSelections = [...cartItem.options];
+                    this.editIndex = index; // 標記為編輯模式
+                    this.currentView = 'detail';
+                },
+                // 確認加入購物車/儲存編輯
+                confirmAddToCart() {
+                    const finalItem = {
+                        id: this.activeItem.id,
+                        name: this.activeItem.name,
+                        price: this.activeItem.price,
+                        qty: this.tempQty,
+                        note: this.tempNote,
+                        options: [...this.tempSelections],
+                        itemTotal: this.tempTotalPrice
+                    };
+
+                    if (this.editIndex > -1) {
+                        // 覆蓋舊的
+                        this.cart[this.editIndex] = finalItem;
+                    } else {
+                        // 新增
+                        this.cart.push(finalItem);
+                    }
+                    
+                    this.closeItemDetail();
+                },
+                removeFromCart(index) {
+                    this.cart.splice(index, 1);
+                    if(this.cart.length === 0) this.currentView = 'menu';
+                },
+                // 計算首頁角標顯示的數量
+                getItemQty(id) {
+                    return this.cart.filter(c => c.id === id).reduce((sum, c) => sum + c.qty, 0);
+                },
+                // 傳送訂單到 Firebase
                 async submitToFirebase() {
                     if (!this.inputName) {
-                        alert("請輸入您的稱呼！");
+                        alert("請輸入姓名！");
                         return;
                     }
                     this.isSubmitting = true;
 
                     const orderData = {
                         customer: this.inputName,
+                        phone: this.inputPhone,
+                        pickupDate: this.pickupDate,
+                        pickupTime: this.pickupTime,
                         type: this.orderType,
-                        items: this.cart.map(i => ({ name: i.name, qty: i.qty, price: i.price })),
+                        items: this.cart,
                         total: this.cartTotal,
                         status: "new",
                         timestamp: Date.now()
@@ -135,15 +316,15 @@
 
                     try {
                         const ordersRef = ref(db, 'orders');
-                        const newOrderRef = push(ordersRef);
-                        await set(newOrderRef, orderData);
+                        await set(push(ordersRef), orderData);
                         
-                        alert("訂單已傳送！印表機即將出單。");
+                        alert("訂單已送出！店內已開始為您準備。");
                         this.cart = [];
                         this.inputName = '';
+                        this.currentView = 'menu';
                     } catch (error) {
                         console.error(error);
-                        alert("傳送失敗，請檢查網路設定");
+                        alert("傳送失敗，請檢查網路");
                     } finally {
                         this.isSubmitting = false;
                     }
