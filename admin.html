@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>店長出餐後台 - 晨光 AI 早餐店</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <style>[v-cloak] { display: none; }</style>
+</head>
+<body class="bg-gray-100 font-sans">
+
+    <div id="app" v-cloak>
+        <div v-if="!isLoggedIn" class="min-h-screen flex items-center justify-center bg-gray-800 p-4">
+            <div class="bg-white p-8 rounded-xl shadow-2xl w-full max-w-sm">
+                <h1 class="text-2xl font-bold text-center mb-6 text-gray-800">店長系統登入</h1>
+                <input v-model="email" type="email" placeholder="信箱" class="w-full border p-3 rounded mb-4 focus:outline-none focus:border-yellow-500" @keyup.enter="login">
+                <input v-model="password" type="password" placeholder="密碼" class="w-full border p-3 rounded mb-6 focus:outline-none focus:border-yellow-500" @keyup.enter="login">
+                <button @click="login" class="w-full bg-yellow-500 text-white font-bold py-3 rounded hover:bg-yellow-600 transition">登入</button>
+            </div>
+        </div>
+
+        <div v-else class="min-h-screen">
+            <header class="bg-gray-900 text-white p-4 sticky top-0 z-50 shadow-md flex justify-between items-center">
+                <div>
+                    <h1 class="text-xl font-bold">訂單管理中樞</h1>
+                    <p class="text-xs text-gray-400">目前待處理：{{ activeOrdersCount }} 筆</p>
+                </div>
+                <button @click="logout" class="bg-gray-700 hover:bg-red-600 text-white px-4 py-2 rounded text-sm transition">登出</button>
+            </header>
+
+            <main class="p-4 max-w-7xl mx-auto">
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                    
+                    <div v-for="order in sortedOrders" :key="order.id" 
+                         class="bg-white rounded-xl shadow-md border-l-8 flex flex-col"
+                         :class="{'border-red-500': order.status === 'new', 'border-yellow-400': order.status === 'making', 'opacity-60 border-gray-300': order.status === 'done'}">
+                        
+                        <div class="p-4 border-b bg-gray-50 rounded-t-lg flex justify-between items-start">
+                            <div>
+                                <h2 class="text-xl font-bold text-gray-800">{{ order.customer }}</h2>
+                                <p class="text-sm text-gray-500 mt-1">取餐：<span class="font-bold text-black">{{ order.pickupTime }}</span> ({{ order.type === 'takeout' ? '外帶' : '內用' }})</p>
+                                <p v-if="order.phone" class="text-xs text-gray-400 mt-1">電話：{{ order.phone }}</p>
+                            </div>
+                            <div class="text-right">
+                                <span v-if="order.status === 'new'" class="bg-red-100 text-red-600 px-2 py-1 rounded text-xs font-bold animate-pulse">新訂單</span>
+                                <span v-if="order.status === 'making'" class="bg-yellow-100 text-yellow-700 px-2 py-1 rounded text-xs font-bold">製作中</span>
+                                <span v-if="order.status === 'done'" class="bg-gray-200 text-gray-600 px-2 py-1 rounded text-xs font-bold">已完成</span>
+                                <p class="text-lg font-bold text-red-500 mt-2">${{ order.total }}</p>
+                            </div>
+                        </div>
+
+                        <div class="p-4 flex-1">
+                            <ul class="space-y-3">
+                                <li v-for="(item, idx) in order.items" :key="idx" class="border-b border-dashed pb-2 last:border-0 last:pb-0">
+                                    <div class="flex justify-between items-start">
+                                        <div class="font-bold text-lg">
+                                            <span class="text-red-600 mr-2">{{ item.qty }}x</span>{{ item.name }}
+                                        </div>
+                                    </div>
+                                    <div v-if="item.options && item.options.length" class="text-sm text-gray-500 mt-1">
+                                        + <span v-for="opt in item.options" :key="opt.name" class="mr-2">{{ opt.name }}</span>
+                                    </div>
+                                    <div v-if="item.note" class="text-sm text-blue-600 font-bold mt-1 bg-blue-50 p-1 rounded">
+                                        備註：{{ item.note }}
+                                    </div>
+                                </li>
+                            </ul>
+                        </div>
+
+                        <div class="p-4 bg-gray-50 rounded-b-lg flex gap-2">
+                            <button v-if="order.status === 'new'" @click="updateStatus(order.id, 'making')" class="flex-1 bg-yellow-400 hover:bg-yellow-500 text-black font-bold py-3 rounded shadow">接單製作</button>
+                            <button v-if="order.status === 'making'" @click="updateStatus(order.id, 'done')" class="flex-1 bg-green-500 hover:bg-green-600 text-white font-bold py-3 rounded shadow">完成出餐</button>
+                            <button v-if="order.status === 'done'" @click="updateStatus(order.id, 'new')" class="w-1/3 bg-gray-300 hover:bg-gray-400 text-gray-700 font-bold py-3 rounded text-sm">還原</button>
+                        </div>
+                    </div>
+
+                </div>
+                
+                <div v-if="sortedOrders.length === 0" class="text-center text-gray-500 mt-20 text-xl font-bold">
+                    目前沒有待處理的訂單 ☕
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
+        import { getDatabase, ref, onValue, update } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
+        import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
+
+        // ★★★ 請貼入您相同的 Firebase 配置 ★★★
+        const firebaseConfig = {
+            apiKey: "您的API_KEY請貼在這裡",
+            authDomain: "breakfast-ai-system.firebaseapp.com",
+            databaseURL: "https://breakfast-ai-system-default-rtdb.asia-southeast1.firebasedatabase.app",
+            projectId: "breakfast-ai-system",
+            storageBucket: "breakfast-ai-system.appspot.com",
+            messagingSenderId: "您的MESSAGING_SENDER_ID",
+            appId: "您的APP_ID"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const db = getDatabase(app);
+        const auth = getAuth(app);
+        const { createApp } = Vue;
+
+        createApp({
+            data() {
+                return {
+                    isLoggedIn: false,
+                    email: '',
+                    password: '',
+                    orders: [],
+                    previousNewCount: 0,
+                    // 新訂單提醒音效 (瀏覽器內建音效網址)
+                    alertSound: new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg')
+                }
+            },
+            computed: {
+                sortedOrders() {
+                    // 將訂單排序：先顯示新訂單，再顯示製作中，已完成放最後；時間早的排前面
+                    const statusWeight = { 'new': 1, 'making': 2, 'done': 3 };
+                    return [...this.orders].sort((a, b) => {
+                        if (statusWeight[a.status] !== statusWeight[b.status]) {
+                            return statusWeight[a.status] - statusWeight[b.status];
+                        }
+                        return a.timestamp - b.timestamp;
+                    });
+                },
+                activeOrdersCount() {
+                    return this.orders.filter(o => o.status === 'new' || o.status === 'making').length;
+                }
+            },
+            created() {
+                // 監聽登入狀態
+                onAuthStateChanged(auth, (user) => {
+                    if (user) {
+                        this.isLoggedIn = true;
+                        this.listenToOrders();
+                    } else {
+                        this.isLoggedIn = false;
+                        this.orders = [];
+                    }
+                });
+            },
+            methods: {
+                async login() {
+                    try {
+                        await signInWithEmailAndPassword(auth, this.email, this.password);
+                    } catch (error) {
+                        alert("登入失敗，請檢查信箱與密碼。");
+                    }
+                },
+                async logout() {
+                    try {
+                        await signOut(auth);
+                    } catch (error) {
+                        console.error("登出失敗", error);
+                    }
+                },
+                listenToOrders() {
+                    const ordersRef = ref(db, 'orders');
+                    onValue(ordersRef, (snapshot) => {
+                        const data = snapshot.val();
+                        const parsedOrders = [];
+                        let currentNewCount = 0;
+
+                        if (data) {
+                            for (let key in data) {
+                                // 預防資料格式錯誤
+                                if(data[key] && data[key].status) {
+                                    parsedOrders.push({ id: key, ...data[key] });
+                                    if (data[key].status === 'new') currentNewCount++;
+                                }
+                            }
+                        }
+                        this.orders = parsedOrders;
+
+                        // 若新訂單數量增加，且非首次載入，播放音效
+                        if (currentNewCount > this.previousNewCount && this.previousNewCount !== 0) {
+                            this.playAlert();
+                        }
+                        this.previousNewCount = currentNewCount;
+                    });
+                },
+                updateStatus(orderId, newStatus) {
+                    const updates = {};
+                    updates[`orders/${orderId}/status`] = newStatus;
+                    update(ref(db), updates).catch(err => alert("更新狀態失敗"));
+                },
+                playAlert() {
+                    // 確保音效重置並播放
+                    this.alertSound.currentTime = 0;
+                    this.alertSound.play().catch(err => console.log("瀏覽器阻擋自動播放音效"));
+                }
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>
