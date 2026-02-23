@@ -21,12 +21,20 @@
         </div>
 
         <div v-else class="min-h-screen">
+            
+            <div v-if="activeMenu" @click="activeMenu = null" class="fixed inset-0 z-10"></div>
+
             <header class="bg-gray-900 text-white p-4 sticky top-0 z-50 shadow-md flex justify-between items-center">
                 <div>
                     <h1 class="text-xl font-bold">訂單管理中樞</h1>
                     <p class="text-xs text-gray-400">目前待處理：{{ activeOrdersCount }} 筆</p>
                 </div>
-                <button @click="logout" class="bg-gray-700 hover:bg-red-600 text-white px-4 py-2 rounded text-sm transition">登出</button>
+                <div class="flex gap-3">
+                    <button @click="dailyClose" class="bg-yellow-500 hover:bg-yellow-600 text-gray-900 font-bold px-4 py-2 rounded text-sm transition shadow-lg">
+                        🌙 打烊結單
+                    </button>
+                    <button @click="logout" class="bg-gray-700 hover:bg-red-600 text-white px-4 py-2 rounded text-sm transition">登出</button>
+                </div>
             </header>
 
             <main class="p-4 max-w-7xl mx-auto">
@@ -79,20 +87,21 @@
                             </ul>
                         </div>
 
-                        <div class="p-3 bg-gray-50 rounded-b-lg flex gap-2 flex-wrap">
-                            <button v-if="order.status === 'new'" @click="updateStatus(order.id, 'making')" class="flex-1 bg-yellow-400 hover:bg-yellow-500 text-black font-bold py-2.5 rounded shadow">接單製作</button>
-                            <button v-if="order.status === 'making'" @click="updateStatus(order.id, 'done')" class="flex-1 bg-green-500 hover:bg-green-600 text-white font-bold py-2.5 rounded shadow">完成出餐</button>
-                            <button v-if="order.status === 'done'" @click="updateStatus(order.id, 'new')" class="w-1/3 bg-gray-300 hover:bg-gray-400 text-gray-700 font-bold py-2.5 rounded text-sm">還原</button>
-                            
-                            <button v-if="order.status !== 'done'" @click="cancelOrder(order)" class="flex-1 bg-red-500 hover:bg-red-600 text-white font-bold py-2.5 rounded shadow text-sm">取消訂單</button>
-                            
-                            <div class="w-full flex gap-2 mt-2">
-                                <button @click="printOrder(order)" class="flex-1 border-2 border-gray-300 text-gray-700 hover:bg-gray-200 font-bold py-2 rounded text-sm flex justify-center items-center">
-                                    🖨️ 廚房工單
+                        <div class="p-3 bg-gray-50 rounded-b-lg flex justify-between items-center border-t">
+                            <button v-if="order.status === 'new'" @click="updateStatus(order.id, 'making')" class="bg-yellow-400 hover:bg-yellow-500 text-black font-bold py-2 px-6 rounded-full shadow text-sm">接單製作</button>
+                            <button v-if="order.status === 'making'" @click="updateStatus(order.id, 'done')" class="bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-6 rounded-full shadow text-sm">完成出餐</button>
+                            <button v-if="order.status === 'done'" @click="updateStatus(order.id, 'new')" class="bg-gray-300 hover:bg-gray-400 text-gray-700 font-bold py-2 px-6 rounded-full text-sm">還原狀態</button>
+
+                            <div class="relative">
+                                <button @click="toggleMenu(order.id)" class="w-10 h-10 bg-white border-2 border-gray-300 text-gray-600 rounded-full text-xl font-bold flex items-center justify-center hover:bg-gray-100 hover:border-gray-400 transition shadow-sm z-20 relative">
+                                    +
                                 </button>
-                                <button @click="printReceipt(order)" class="flex-1 border-2 border-gray-300 text-gray-700 hover:bg-gray-200 font-bold py-2 rounded text-sm flex justify-center items-center">
-                                    🧾 客戶收據
-                                </button>
+                                
+                                <div v-if="activeMenu === order.id" class="absolute bottom-12 right-0 bg-white rounded-lg shadow-2xl border border-gray-200 w-36 overflow-hidden z-30">
+                                    <button @click="printOrder(order); activeMenu = null" class="w-full text-left px-4 py-3 hover:bg-gray-100 text-gray-700 border-b text-sm font-bold">🖨️ 補印工單</button>
+                                    <button @click="printReceipt(order); activeMenu = null" class="w-full text-left px-4 py-3 hover:bg-gray-100 text-gray-700 border-b text-sm font-bold">🧾 印收據</button>
+                                    <button v-if="order.status !== 'done'" @click="cancelOrder(order); activeMenu = null" class="w-full text-left px-4 py-3 hover:bg-red-50 text-red-600 text-sm font-bold">❌ 取消訂單</button>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -135,6 +144,7 @@
                     password: '',
                     orders: [],
                     previousNewCount: 0,
+                    activeMenu: null, // ★ 控制 +號選單的變數
                     alertSound: new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg')
                 }
             },
@@ -142,14 +152,15 @@
                 sortedOrders() {
                     const statusWeight = { 'new': 1, 'making': 2, 'done': 3 };
                     return this.orders
-                        .filter(o => o.status !== 'cancelled') // ★ 過濾掉已取消的訂單，讓它從畫面消失
+                        // ★ 過濾掉已取消與「已封存(archived)」的訂單
+                        .filter(o => o.status !== 'cancelled' && o.status !== 'archived') 
                         .sort((a, b) => {
                             if (statusWeight[a.status] !== statusWeight[b.status]) return statusWeight[a.status] - statusWeight[b.status];
                             return a.timestamp - b.timestamp;
                         });
                 },
                 activeOrdersCount() {
-                    return this.orders.filter(o => (o.status === 'new' || o.status === 'making') && o.status !== 'cancelled').length;
+                    return this.orders.filter(o => (o.status === 'new' || o.status === 'making') && o.status !== 'cancelled' && o.status !== 'archived').length;
                 }
             },
             created() {
@@ -190,30 +201,53 @@
                         this.previousNewCount = currentNewCount;
                     });
                 },
+                toggleMenu(orderId) {
+                    this.activeMenu = this.activeMenu === orderId ? null : orderId;
+                },
                 updateStatus(orderId, newStatus) {
                     const updates = {};
                     updates[`orders/${orderId}/status`] = newStatus;
                     update(ref(db), updates).catch(err => alert("更新狀態失敗"));
                 },
-                // ★ 獨立：列印廚房工單
                 printOrder(order) {
                     const updates = {};
                     updates[`orders/${order.id}/print_task`] = 'kitchen';
-                    update(ref(db), updates).then(() => alert("廚房工單列印中..."));
+                    update(ref(db), updates).then(() => console.log("廚房工單補印指令發送"));
                 },
-                // ★ 獨立：列印客戶收據
                 printReceipt(order) {
                     const updates = {};
                     updates[`orders/${order.id}/print_task`] = 'receipt';
-                    update(ref(db), updates).then(() => alert("客戶收據列印中..."));
+                    update(ref(db), updates).then(() => console.log("客戶收據列印指令發送"));
                 },
-                // ★ 獨立：取消訂單
                 cancelOrder(order) {
-                    if (confirm("確定要取消這筆訂單嗎？（將自動列印取消單）")) {
+                    if (confirm("確定要取消這筆訂單嗎？（將自動列印取消單至廚房）")) {
                         const updates = {};
-                        updates[`orders/${order.id}/status`] = 'cancelled';
-                        updates[`orders/${order.id}/print_task`] = 'cancel';
+                        updates[`orders/${order.id}/status`] = 'cancelled'; 
+                        updates[`orders/${order.id}/print_task`] = 'cancel'; 
                         update(ref(db), updates).then(() => alert("訂單已取消！"));
+                    }
+                },
+                // ★ 問題 4：打烊結單功能 ★
+                dailyClose() {
+                    // 檢查是否還有未出餐的訂單
+                    const pending = this.orders.filter(o => o.status === 'new' || o.status === 'making');
+                    if (pending.length > 0) {
+                        alert("⚠️ 還有未完成的訂單！請先完成出餐或取消，才能進行結單。");
+                        return;
+                    }
+                    
+                    if (confirm("確定要進行「打烊結單」嗎？\n這會將畫面上所有的訂單封存至歷史紀錄，並清空畫面。")) {
+                        const updates = {};
+                        this.orders.forEach(o => {
+                            // 將所有非封存狀態的訂單，全部設為 archived
+                            if (o.status !== 'archived') {
+                                updates[`orders/${o.id}/status`] = 'archived';
+                            }
+                        });
+                        
+                        update(ref(db), updates).then(() => {
+                            alert("✅ 結單完成！畫面已清空，辛苦了！");
+                        }).catch(err => alert("結單失敗：" + err));
                     }
                 },
                 playAlert() {
@@ -225,5 +259,3 @@
     </script>
 </body>
 </html>
-
-
