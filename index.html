@@ -354,6 +354,8 @@
                     }
                     this.isSubmitting = true;
 
+                    // ★ 關鍵 1：這裡「絕對不要」放 print_task！
+                    // 讓它保持乾淨，等一下加進去時，Firebase 才會覺得有「變更」，進而喚醒 Node-RED
                     const orderData = {
                         customer: this.inputName,
                         phone: this.inputPhone,
@@ -363,33 +365,33 @@
                         items: this.cart,
                         total: this.cartTotal,
                         status: "new",
-                        timestamp: Date.now(),
-                        print_task: 'kitchen'
+                        timestamp: Date.now()
                     };
 
                     try {
                         const ordersRef = ref(db, 'orders');
                         
-                        // 1. 先向 Firebase 取得一個全新的訂單專屬 ID
+                        // 1. 取得新單號
                         const newOrderRef = push(ordersRef); 
                         
-                        // 2. 把整筆訂單存進這個新 ID
+                        // 2. 存入基礎訂單資料 (此時 Node-RED 忽略)
                         await set(newOrderRef, orderData);
                         
-                        // 3. ★★★ 修正寫法：改用 set 來觸發，不需要 update，絕對不會報錯！ ★★★
-                        const printTaskRef = ref(db, `orders/${newOrderRef.key}/print_task`);
-                        await set(printTaskRef, 'kitchen');
-                        // ★★★ 喚醒結束 ★★★
+                        // 3. ★ 關鍵 2：補發列印任務！這會製造一個「狀態變更」，瞬間觸發 Node-RED
+                        const printTaskPath = 'orders/' + newOrderRef.key + '/print_task';
+                        await set(ref(db, printTaskPath), 'kitchen');
                         
+                        // 4. 顯示成功視窗
                         const now = new Date();
                         const correctTime = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
                         alert(`訂單已送出！取餐時間：${correctTime}`);
+                        
                         this.cart = [];
                         this.inputName = '';
                         this.currentView = 'menu';
                     } catch (error) {
-                        console.error(error);
-                        alert("傳送失敗，請檢查網路");
+                        console.error("錯誤詳情：", error);
+                        alert("傳送失敗，請檢查網路或系統設定！");
                     } finally {
                         this.isSubmitting = false;
                     }
@@ -400,6 +402,7 @@
 </body>
 
 </html>
+
 
 
 
