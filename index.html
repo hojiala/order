@@ -3,500 +3,451 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>元氣 AI 早餐店</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <title>元氣早餐店</title>
+    <script src="https://cdn.tailwindcss.com"><\/script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"><\/script>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&display=swap" rel="stylesheet">
     <style>
+        * { font-family: 'Noto Sans TC', sans-serif; }
+        [v-cloak] { display: none; }
         .no-scrollbar::-webkit-scrollbar { display: none; }
         .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
-        [v-cloak] { display: none; }
-        .cart-badge {
-            position: absolute; top: 0; right: 0;
-            background: #ef4444; color: white;
-            font-size: 0.75rem; font-weight: bold;
-            padding: 2px 10px;
-            border-bottom-left-radius: 10px;
-            z-index: 20;
+        .qty-badge {
+            position: absolute; top: 8px; right: 8px;
+            background: #f97316; color: white;
+            font-size: 0.7rem; font-weight: 900;
+            width: 22px; height: 22px; border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            box-shadow: 0 2px 8px rgba(249,115,22,0.5);
+            z-index: 10;
         }
+        .cat-btn { position: relative; transition: color 0.2s; white-space: nowrap; }
+        .cat-btn::after {
+            content: ''; position: absolute; bottom: 0; left: 50%; right: 50%;
+            height: 3px; background: #f97316; border-radius: 2px 2px 0 0;
+            transition: left 0.25s, right 0.25s;
+        }
+        .cat-btn.active { color: #f97316 !important; font-weight: 700; }
+        .cat-btn.active::after { left: 0; right: 0; }
+        .menu-card { transition: box-shadow 0.2s, transform 0.15s; }
+        .menu-card:active { transform: scale(0.97); }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .spin { animation: spin 0.9s linear infinite; }
+        input[type="checkbox"] { accent-color: #f97316; }
+        input[type="radio"] { accent-color: #f97316; }
     </style>
 </head>
-<body class="bg-gray-100 font-sans text-gray-800">
+<body class="bg-gray-100">
 
-    <div id="app" v-cloak class="max-w-5xl mx-auto min-h-screen bg-gray-50 relative pb-24 shadow-xl">
+<div id="app" v-cloak class="max-w-lg mx-auto min-h-screen bg-white shadow-xl relative">
 
-        <!-- 載入中畫面 -->
-        <div v-if="isLoading" class="min-h-screen flex flex-col items-center justify-center bg-gray-50">
-            <div class="text-5xl mb-4">🍳</div>
-            <p class="text-gray-500 text-lg font-medium">菜單載入中...</p>
+    <!-- 載入中 -->
+    <div v-if="isLoading" class="min-h-screen flex flex-col items-center justify-center bg-white">
+        <div class="w-14 h-14 border-4 border-orange-200 border-t-orange-500 rounded-full spin mb-5"></div>
+        <p class="text-gray-400 text-sm font-medium">菜單載入中...</p>
+    </div>
+
+    <!-- 暫停接單 -->
+    <div v-else-if="!settings.isOpen" class="min-h-screen flex flex-col items-center justify-center bg-white p-10 text-center">
+        <div class="w-24 h-24 bg-red-50 rounded-full flex items-center justify-center text-5xl mb-6">🚫</div>
+        <h2 class="text-2xl font-black text-gray-800 mb-2">暫停接單中</h2>
+        <p class="text-gray-400 text-sm leading-relaxed">訂單滿載，感謝您的支持！<br>請稍後再試或親臨門市。</p>
+        <div class="mt-6 bg-orange-50 border border-orange-100 rounded-2xl px-6 py-3 text-sm text-orange-600 font-medium">
+            🕐 營業時間 {{ settings.openTime }} ～ {{ settings.closeTime }}
         </div>
+    </div>
 
-        <!-- 暫停接單畫面 -->
-        <div v-else-if="!storeOpen" class="min-h-screen flex flex-col items-center justify-center bg-gray-50 p-8 text-center">
-            <div class="text-6xl mb-6">🚫</div>
-            <h2 class="text-2xl font-bold text-gray-800 mb-3">訂單滿載，暫停接單</h2>
-            <p class="text-gray-500 text-base">感謝您的支持！目前訂單已滿，請稍後再試或親臨門市。</p>
-            <p class="text-gray-400 text-sm mt-4">營業時間：{{ settings.openTime }} ～ {{ settings.closeTime }}</p>
-        </div>
+    <!-- 正常點餐 -->
+    <template v-else>
 
-        <div v-else>
+        <!-- ===== 菜單頁 ===== -->
         <div v-show="currentView === 'menu'">
-            
-            <header class="bg-white p-4 sticky top-0 z-40 shadow-sm border-b">
-                <div class="flex justify-center space-x-2 mb-4">
-                    <button @click="orderType='takeout'" :class="orderType==='takeout' ? 'bg-yellow-500 text-white shadow' : 'border border-gray-300 text-gray-600'" class="px-8 py-1.5 rounded text-sm font-bold transition">自取</button>
-                    <button @click="orderType='dinein'" :class="orderType==='dinein' ? 'bg-yellow-500 text-white shadow' : 'border border-gray-300 text-gray-600'" class="px-8 py-1.5 rounded text-sm font-bold transition">內用</button>
+
+            <header class="bg-white sticky top-0 z-40 border-b border-gray-100">
+                <!-- 店名 + 內用/自取 -->
+                <div class="flex items-center justify-between px-4 pt-4 pb-3">
+                    <div>
+                        <h1 class="text-xl font-black text-gray-900 leading-tight">元氣早餐店</h1>
+                        <p class="text-xs text-gray-400 mt-0.5">元氣善化中山店</p>
+                    </div>
+                    <div class="flex bg-gray-100 rounded-xl p-1 gap-1">
+                        <button @click="orderType='takeout'"
+                            :class="orderType==='takeout' ? 'bg-white text-orange-500 shadow-sm font-bold' : 'text-gray-400'"
+                            class="px-4 py-1.5 rounded-lg text-sm transition-all">自取</button>
+                        <button @click="orderType='dinein'"
+                            :class="orderType==='dinein' ? 'bg-white text-orange-500 shadow-sm font-bold' : 'text-gray-400'"
+                            class="px-4 py-1.5 rounded-lg text-sm transition-all">內用</button>
+                    </div>
                 </div>
-                
-                <div class="flex space-x-4 text-sm max-w-md mx-auto">
-                    <div class="flex-1 border-b pb-1">
-                        <p class="text-gray-500 text-xs mb-1">預計可取餐日期</p>
-                        <select v-model="pickupDate" @change="updateAvailableTimes" class="w-full bg-transparent outline-none text-gray-800 font-medium">
+
+                <!-- 取餐時間 -->
+                <div class="flex gap-3 px-4 pb-3">
+                    <div class="flex-1 bg-gray-50 rounded-xl px-3 py-2 border border-gray-100">
+                        <p class="text-gray-400 text-xs mb-0.5">取餐日期</p>
+                        <select v-model="pickupDate" @change="updateAvailableTimes"
+                            class="w-full bg-transparent outline-none text-gray-800 text-sm font-semibold">
                             <option v-for="date in availableDates" :key="date.value" :value="date.value">{{ date.label }}</option>
                         </select>
                     </div>
-                    <div class="flex-1 border-b pb-1 relative">
-                        <p class="text-gray-500 text-xs mb-1">預計可取餐時間</p>
-                        <select v-model="pickupTime" class="w-full bg-transparent outline-none text-gray-800 font-medium">
+                    <div class="flex-1 bg-gray-50 rounded-xl px-3 py-2 border border-gray-100">
+                        <p class="text-gray-400 text-xs mb-0.5">取餐時間</p>
+                        <select v-model="pickupTime"
+                            class="w-full bg-transparent outline-none text-gray-800 text-sm font-semibold">
                             <option v-for="time in availableTimes" :key="time" :value="time">{{ time }}</option>
                         </select>
                     </div>
                 </div>
-                <div class="max-w-md mx-auto mt-2 text-xs text-teal-600">可選擇時段：{{ settings.openTime }} ~ {{ settings.closeTime }}</div>
-            </header>
 
-            <div class="bg-[#148F77] text-white sticky top-[138px] z-30 overflow-x-auto no-scrollbar whitespace-nowrap shadow-md">
-                <button v-for="cat in categories" :key="cat" @click="currentCategory = cat"
-                    :class="currentCategory === cat ? 'bg-[#0E6655] font-bold border-b-4 border-yellow-400' : 'opacity-90 hover:bg-[#117A65]'"
-                    class="px-5 py-3 text-sm transition-all inline-block">
-                    {{ cat }}
-                </button>
-            </div>
-
-            <main class="p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                <div v-for="item in filteredMenu" :key="item.id" @click="openItemDetail(item)" class="bg-white rounded-lg shadow-sm hover:shadow-md transition-shadow overflow-hidden flex cursor-pointer relative border border-gray-100 h-32">
-                    
-                    <div v-if="getItemQty(item.id) > 0" class="cart-badge">{{ getItemQty(item.id) }}</div>
-                    
-                    <div class="p-3 flex-1 flex flex-col justify-between">
-                        <div>
-                            <h3 class="font-bold text-gray-800 text-md">{{ item.name }}</h3>
-                            <p class="text-gray-400 text-xs mt-1 line-clamp-2">{{ item.desc }}</p>
-                        </div>
-                        <span class="text-red-500 mt-2 font-bold">${{ item.price }}</span>
-                    </div>
-                    <div class="w-32 h-full bg-gray-200 shrink-0 relative">
-                        <img v-if="item.img" :src="item.img" class="w-full h-full object-cover">
+                <!-- 分類 Tab -->
+                <div class="overflow-x-auto no-scrollbar border-t border-gray-100">
+                    <div class="flex whitespace-nowrap px-2">
+                        <button v-for="cat in categories" :key="cat"
+                            @click="currentCategory = cat"
+                            :class="['cat-btn px-4 py-3 text-sm inline-block', currentCategory === cat ? 'active text-orange-500' : 'text-gray-400']">
+                            {{ cat }}
+                        </button>
                     </div>
                 </div>
-            </main>
-
-            <div v-if="cart.length > 0" class="fixed bottom-0 left-0 right-0 max-w-5xl mx-auto bg-[#F472B6] text-white p-3 flex justify-between items-center z-50 rounded-t-xl shadow-[0_-5px_15px_rgba(0,0,0,0.15)]">
-                <div class="border border-white text-white rounded px-3 py-1 font-bold">{{ cartCount }}</div>
-                <button @click="currentView = 'cart'" class="font-bold tracking-wider text-lg flex-1 text-center">檢視購物車</button>
-                <div class="font-bold text-lg">${{ cartTotal }}</div>
-            </div>
-        </div>
-
-        <div v-if="currentView === 'detail' && activeItem" class="bg-white min-h-screen">
-            <div class="fixed top-0 left-0 right-0 max-w-5xl mx-auto p-4 z-50 flex items-center shadow-sm bg-white/95 backdrop-blur-sm border-b">
-                <button @click="closeItemDetail" class="text-gray-600 font-bold text-xl mr-4 px-2">←</button>
-                <span class="font-bold text-lg">返回元氣 AI 早餐店</span>
-            </div>
-            
-            <div class="max-w-md mx-auto pt-14">
-                <img v-if="activeItem.img" :src="activeItem.img" class="w-full aspect-video object-cover">
-                
-                <div class="p-4 border-b text-xl font-bold flex justify-between items-center">
-                    <span>{{ activeItem.name }}</span>
-                    <span class="text-red-500">${{ activeItem.price }}</span>
-                </div>
-                <div class="p-4 text-gray-500 text-sm border-b">{{ activeItem.desc }}</div>
-
-                <div v-if="activeItem.options && activeItem.options.length > 0" class="p-4 border-b bg-gray-50">
-                    <label v-for="(opt, index) in activeItem.options" :key="index" class="flex items-center justify-between py-2 border-b border-gray-200 last:border-0">
-                        <div class="flex items-center">
-                            <input type="checkbox" v-model="tempSelections" :value="opt" class="w-5 h-5 text-yellow-500 mr-3 rounded">
-                            <span class="text-gray-700">{{ opt.name }}</span>
-                        </div>
-                        <span class="text-gray-500">+${{ opt.price }}</span>
-                    </label>
-                </div>
-
-                <div class="p-4">
-                    <p class="text-gray-600 text-sm mb-2 font-bold">備註</p>
-                    <textarea v-model="tempNote" placeholder="請輸入您的特殊需求 (請勿輸入#字)" class="w-full border rounded-lg p-3 text-sm focus:outline-none focus:border-yellow-500 bg-gray-50" rows="3"></textarea>
-                </div>
-            </div>
-
-            <div class="fixed bottom-0 left-0 right-0 max-w-5xl mx-auto bg-white border-t p-4 flex items-center justify-between z-50">
-                <div class="flex items-center bg-gray-100 rounded-full overflow-hidden border">
-                    <button @click="tempQty > 1 ? tempQty-- : null" class="w-12 h-12 flex items-center justify-center bg-gray-200 text-gray-600 text-2xl font-bold active:bg-gray-300">-</button>
-                    <span class="w-12 text-center font-bold text-lg">{{ tempQty }}</span>
-                    <button @click="tempQty++" class="w-12 h-12 flex items-center justify-center bg-yellow-500 text-white text-2xl font-bold active:bg-yellow-600">+</button>
-                </div>
-                <button @click="confirmAddToCart" class="bg-[#F472B6] text-white flex-1 ml-3 py-3 rounded-lg text-base sm:text-lg font-bold flex justify-between items-center px-4 shadow-md active:scale-95 transition whitespace-nowrap">
-                    <span>加入購物車</span>
-                    <span>${{ tempTotalPrice }}</span>
-                </button>
-            </div>
-        </div>
-
-        <div v-if="currentView === 'cart'" class="bg-gray-100 min-h-screen">
-            <header class="bg-white p-4 sticky top-0 z-40 shadow-sm flex items-center border-b max-w-5xl mx-auto">
-                <button @click="currentView = 'menu'" class="text-gray-600 font-bold text-xl mr-4 px-2">←</button>
-                <h2 class="text-lg font-bold flex-1 text-center pr-8">訂單確認</h2>
             </header>
 
-            <main class="p-4 space-y-4 max-w-md mx-auto pb-32">
-                <div class="bg-white p-4 rounded-lg shadow-sm border border-gray-100">
-                    <h3 class="text-[#148F77] text-sm font-bold mb-3 border-b pb-2">點餐內容</h3>
-                    <div v-for="(item, index) in cart" :key="index" @click="editCartItem(item, index)" class="flex justify-between items-start mb-4 cursor-pointer border-b border-dashed pb-3 last:border-0 last:pb-0">
-                        <div class="flex items-start flex-1">
-                            <span class="bg-gray-600 text-white text-xs px-2 py-0.5 rounded mr-3 mt-0.5">{{ item.qty }}</span>
-                            <div>
-                                <p class="font-bold text-gray-800">{{ item.name }}</p>
-                                <p v-for="opt in item.options" class="text-xs text-gray-500">+ {{ opt.name }}</p>
-                                <p v-if="item.note" class="text-xs text-yellow-600 mt-1">備註: {{ item.note }}</p>
+            <main class="p-4 pb-32">
+                <div v-if="filteredMenu.length === 0" class="text-center py-20 text-gray-300">
+                    <div class="text-5xl mb-3">🍽️</div>
+                    <p class="text-sm">此分類暫無餐點</p>
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                    <div v-for="item in filteredMenu" :key="item.id"
+                         @click="openItemDetail(item)"
+                         class="menu-card bg-white rounded-2xl overflow-hidden cursor-pointer border border-gray-100 shadow-sm relative">
+                        <div v-if="getItemQty(item.id) > 0" class="qty-badge">{{ getItemQty(item.id) }}</div>
+                        <div class="aspect-[4/3] bg-gray-100 overflow-hidden">
+                            <img v-if="item.img" :src="item.img" class="w-full h-full object-cover">
+                            <div v-else class="w-full h-full flex items-center justify-center text-3xl text-gray-200">🍽️</div>
+                        </div>
+                        <div class="p-3">
+                            <h3 class="font-bold text-gray-800 text-sm leading-snug line-clamp-2 mb-1">{{ item.name }}</h3>
+                            <p class="text-gray-400 text-xs line-clamp-1 mb-2">{{ item.desc }}</p>
+                            <div class="flex items-center justify-between">
+                                <span class="text-orange-500 font-black text-base">${{ item.price }}</span>
+                                <div class="w-7 h-7 bg-orange-500 rounded-full flex items-center justify-center text-white text-lg font-light">+</div>
                             </div>
                         </div>
-                        <div class="text-right flex flex-col items-end ml-2">
-                            <p class="text-gray-800 font-bold">${{ item.itemTotal }}</p>
-                            <button @click.stop="removeFromCart(index)" class="text-gray-400 hover:text-red-500 text-xl mt-2 px-2">🗑️</button>
-                        </div>
                     </div>
-                    <button @click="currentView = 'menu'" class="w-full bg-yellow-400 text-white py-2 rounded mt-4 font-bold shadow-sm">繼續點餐</button>
-                </div>
-
-                <div class="bg-white p-4 rounded-lg shadow-sm border border-gray-100">
-                    <h3 class="text-[#148F77] text-sm font-bold mb-3 border-b pb-2">聯絡資訊</h3>
-                    <input v-model="inputName" type="text" placeholder="請輸入姓名 (必填)" class="w-full border border-gray-200 rounded p-3 mb-3 focus:outline-none focus:border-yellow-500">
-                    <input v-model="inputPhone" type="tel" placeholder="請輸入電話 (選填)" class="w-full border border-gray-200 rounded p-3 focus:outline-none focus:border-yellow-500">
                 </div>
             </main>
 
-            <div class="fixed bottom-0 left-0 right-0 max-w-5xl mx-auto bg-white border-t flex flex-col z-50">
-                <div class="p-3 flex justify-between items-center text-lg font-bold border-b bg-gray-50">
-                    <span class="text-gray-600">總計金額</span>
-                    <span class="text-red-500 text-2xl">${{ cartTotal }}</span>
-                </div>
-                <div class="flex p-3 bg-white">
-                    <div class="border border-gray-300 text-gray-600 rounded-lg px-4 py-3 font-bold mr-3 flex items-center justify-center">{{ cartCount }} 項</div>
-                    <button @click="submitToFirebase" :disabled="isSubmitting" class="bg-[#F472B6] text-white flex-1 py-3 rounded-lg text-lg font-bold shadow-md active:scale-95 transition">
-                        <span v-if="isSubmitting">傳送中...</span>
-                        <span v-else>送出訂單</span>
-                    </button>
+            <!-- 購物車浮動列 -->
+            <div v-if="cart.length > 0"
+                 @click="currentView = 'cart'"
+                 class="fixed bottom-5 left-1/2 -translate-x-1/2 z-50 w-[calc(100%-2.5rem)] max-w-sm cursor-pointer">
+                <div class="bg-orange-500 text-white rounded-2xl px-5 py-4 flex items-center justify-between shadow-2xl shadow-orange-200 active:scale-95 transition-transform">
+                    <div class="bg-orange-400 rounded-xl px-3 py-1 text-sm font-bold min-w-[2.2rem] text-center">{{ cartCount }}</div>
+                    <span class="font-bold tracking-wider">查看購物車</span>
+                    <span class="font-black text-lg">${{ cartTotal }}</span>
                 </div>
             </div>
         </div>
+        <!-- ===== 菜單頁 end ===== -->
 
-        </div><!-- end v-else -->
 
-    </div>
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
-        import { getDatabase, ref, push, set, get, onValue } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
+        <!-- ===== 餐點詳細頁 ===== -->
+        <div v-if="currentView === 'detail' && activeItem" class="min-h-screen bg-white">
+            <div class="fixed top-0 left-1/2 -translate-x-1/2 w-full max-w-lg z-50 bg-white/90 backdrop-blur-md border-b border-gray-100 flex items-center px-4 py-3">
+                <button @click="closeItemDetail" class="w-9 h-9 rounded-full bg-gray-100 flex items-center justify-center text-gray-600 mr-3">←</button>
+                <span class="font-bold text-gray-800 text-sm truncate">{{ activeItem.name }}</span>
+            </div>
+            <div class="pt-14 pb-36">
+                <div class="aspect-video bg-gray-100 overflow-hidden">
+                    <img v-if="activeItem.img" :src="activeItem.img" class="w-full h-full object-cover">
+                    <div v-else class="w-full h-full flex items-center justify-center text-5xl text-gray-200">🍽️</div>
+                </div>
+                <div class="px-5 pt-5 pb-4 border-b border-gray-100">
+                    <div class="flex justify-between items-start">
+                        <h2 class="text-xl font-black text-gray-900 flex-1 mr-4">{{ activeItem.name }}</h2>
+                        <span class="text-orange-500 font-black text-xl whitespace-nowrap">${{ activeItem.price }}</span>
+                    </div>
+                    <p v-if="activeItem.desc" class="text-gray-400 text-sm mt-2 leading-relaxed">{{ activeItem.desc }}</p>
+                </div>
+                <!-- 加料 -->
+                <div v-if="activeItem.options && activeItem.options.length > 0" class="px-5 py-4 border-b border-gray-100">
+                    <p class="text-gray-700 font-bold text-sm mb-3">加料選項</p>
+                    <label v-for="(opt, idx) in activeItem.options" :key="idx"
+                        class="flex items-center justify-between py-3 border-b border-gray-50 last:border-0 cursor-pointer">
+                        <div class="flex items-center gap-3">
+                            <input type="checkbox" v-model="tempSelections" :value="opt" class="w-5 h-5">
+                            <span class="text-gray-700 text-sm">{{ opt.name }}</span>
+                        </div>
+                        <span class="text-orange-400 text-sm font-bold">+${{ opt.price }}</span>
+                    </label>
+                </div>
+                <!-- 套餐飲料 -->
+                <div v-if="activeItem.mealOptions && activeItem.mealOptions.length > 0" class="px-5 py-4 border-b border-gray-100">
+                    <p class="text-gray-700 font-bold text-sm mb-3">套餐飲料 <span class="text-orange-400 font-normal text-xs">（必選一）</span></p>
+                    <label v-for="(opt, idx) in activeItem.mealOptions" :key="idx"
+                        class="flex items-center gap-3 py-3 border-b border-gray-50 last:border-0 cursor-pointer">
+                        <input type="radio" v-model="tempMealDrink" :value="opt.name" class="w-5 h-5">
+                        <span class="text-gray-700 text-sm">{{ opt.name }}</span>
+                    </label>
+                </div>
+                <!-- 備註 -->
+                <div class="px-5 py-4">
+                    <p class="text-gray-700 font-bold text-sm mb-2">備註 <span class="text-gray-300 font-normal text-xs">（選填）</span></p>
+                    <textarea v-model="tempNote" placeholder="特殊需求請在此填寫"
+                        class="w-full border border-gray-200 rounded-xl p-3 text-sm text-gray-700 focus:outline-none focus:border-orange-400 bg-gray-50 resize-none" rows="3"></textarea>
+                </div>
+            </div>
+            <div class="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-lg bg-white border-t border-gray-100 px-5 py-4 flex items-center gap-3 z-50">
+                <div class="flex items-center border border-gray-200 rounded-xl overflow-hidden">
+                    <button @click="tempQty > 1 ? tempQty-- : null" class="w-11 h-11 flex items-center justify-center text-gray-500 text-xl hover:bg-gray-50 transition">−</button>
+                    <span class="w-10 text-center font-bold text-gray-800">{{ tempQty }}</span>
+                    <button @click="tempQty++" class="w-11 h-11 flex items-center justify-center text-orange-500 text-xl hover:bg-orange-50 transition">＋</button>
+                </div>
+                <button @click="confirmAddToCart"
+                    class="flex-1 bg-orange-500 text-white py-3 rounded-xl font-bold flex justify-between items-center px-5 active:scale-95 transition-transform shadow-lg shadow-orange-200">
+                    <span>加入購物車</span>
+                    <span class="font-black">${{ tempTotalPrice }}</span>
+                </button>
+            </div>
+        </div>
+        <!-- ===== 餐點詳細頁 end ===== -->
 
-        // ★★★ 請替換成您的 Firebase 配置 ★★★
-        const firebaseConfig = {
-            apiKey: "AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
-            authDomain: "breakfast-ai-system.firebaseapp.com",
-            databaseURL: "https://breakfast-ai-system-default-rtdb.asia-southeast1.firebasedatabase.app",
-            projectId: "breakfast-ai-system",
-            storageBucket: "breakfast-ai-system.firebasestorage.app",
-            messagingSenderId: "662477350736",
-            appId: "1:662477350736:web:7e3dd6128a6f66a52aae55"
-        };
 
-        const app = initializeApp(firebaseConfig);
-        const db = getDatabase(app);
-        const { createApp } = Vue;
+        <!-- ===== 購物車頁 ===== -->
+        <div v-if="currentView === 'cart'" class="min-h-screen bg-gray-50">
+            <div class="bg-white border-b border-gray-100 flex items-center px-4 py-3 sticky top-0 z-40">
+                <button @click="currentView = 'menu'" class="w-9 h-9 rounded-full bg-gray-100 flex items-center justify-center text-gray-600 mr-3">←</button>
+                <h2 class="font-bold text-gray-800">訂單確認</h2>
+            </div>
 
-        createApp({
-            data() {
-                return {
-                    // App state
-                    isLoading: true,
-                    storeOpen: true,
+            <div class="p-4 space-y-3 pb-44">
+                <!-- 點餐清單 -->
+                <div class="bg-white rounded-2xl overflow-hidden border border-gray-100">
+                    <div class="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
+                        <h3 class="font-bold text-gray-800 text-sm">點餐內容</h3>
+                        <span class="text-xs text-gray-400">共 {{ cartCount }} 項</span>
+                    </div>
+                    <div v-for="(item, index) in cart" :key="index"
+                         @click="editCartItem(item, index)"
+                         class="flex items-start px-4 py-3 border-b border-gray-50 last:border-0 cursor-pointer hover:bg-gray-50 transition">
+                        <div class="w-7 h-7 bg-orange-100 text-orange-600 rounded-lg flex items-center justify-center font-bold text-sm mr-3 mt-0.5 shrink-0">{{ item.qty }}</div>
+                        <div class="flex-1 min-w-0">
+                            <p class="font-semibold text-gray-800 text-sm">{{ item.name }}</p>
+                            <p v-for="opt in item.options" :key="opt.name" class="text-xs text-gray-400 mt-0.5">＋ {{ opt.name }}</p>
+                            <p v-if="item.mealDrink" class="text-xs text-orange-400 mt-0.5">🥤 {{ item.mealDrink }}</p>
+                            <p v-if="item.note" class="text-xs text-blue-400 mt-0.5">📝 {{ item.note }}</p>
+                        </div>
+                        <div class="ml-3 flex flex-col items-end shrink-0">
+                            <span class="font-bold text-gray-800 text-sm">${{ item.itemTotal }}</span>
+                            <button @click.stop="removeFromCart(index)" class="text-gray-300 hover:text-red-400 transition text-lg mt-1">🗑</button>
+                        </div>
+                    </div>
+                    <div class="px-4 py-3">
+                        <button @click="currentView = 'menu'"
+                            class="w-full border-2 border-dashed border-gray-200 text-gray-400 rounded-xl py-2.5 text-sm hover:border-orange-300 hover:text-orange-400 transition">
+                            ＋ 繼續點餐
+                        </button>
+                    </div>
+                </div>
 
-                    currentView: 'menu', 
-                    categories: [],
-                    currentCategory: '',
-                    orderType: 'takeout',
-                    pickupDate: '',
-                    pickupTime: '',
-                    availableDates: [],
-                    availableTimes: [],
-                    inputName: '',
-                    inputPhone: '',
-                    isSubmitting: false,
-                    
-                    activeItem: null,
-                    editIndex: -1, 
-                    tempQty: 1,
-                    tempNote: '',
-                    tempSelections: [],
+                <!-- 聯絡資訊 -->
+                <div class="bg-white rounded-2xl border border-gray-100 overflow-hidden">
+                    <div class="px-4 py-3 border-b border-gray-100">
+                        <h3 class="font-bold text-gray-800 text-sm">聯絡資訊</h3>
+                    </div>
+                    <div class="p-4 space-y-3">
+                        <div class="relative">
+                            <span class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">👤</span>
+                            <input v-model="inputName" type="text" placeholder="姓名（必填）"
+                                class="w-full border border-gray-200 rounded-xl pl-9 pr-4 py-3 text-sm focus:outline-none focus:border-orange-400 transition">
+                        </div>
+                        <div class="relative">
+                            <span class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">📞</span>
+                            <input v-model="inputPhone" type="tel" placeholder="電話（選填）"
+                                class="w-full border border-gray-200 rounded-xl pl-9 pr-4 py-3 text-sm focus:outline-none focus:border-orange-400 transition">
+                        </div>
+                    </div>
+                </div>
 
-                    // 菜單：從 Firebase 動態載入（不再硬碼）
-                    menu: [],
+                <!-- 取餐摘要 -->
+                <div class="bg-orange-50 border border-orange-100 rounded-2xl px-4 py-3 flex items-center gap-2 text-sm text-orange-700">
+                    <span>🕐</span>
+                    <span class="font-medium">{{ pickupDate }} {{ pickupTime }}</span>
+                    <span class="text-orange-300">|</span>
+                    <span>{{ orderType === 'dinein' ? '內用' : '自取' }}</span>
+                </div>
+            </div>
 
-                    // 設定：從 Firebase 動態載入
-                    settings: {
-                        isOpen: true,
-                        openTime: '06:00',
-                        closeTime: '13:15',
-                        pickupDays: 3,
-                        pickupInterval: 30,
-                        holidays: []
-                    },
+            <!-- 底部送出 -->
+            <div class="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-lg bg-white border-t border-gray-100 px-4 py-4 z-50">
+                <div class="flex justify-between items-center mb-3 px-1">
+                    <span class="text-gray-500 text-sm">合計金額</span>
+                    <span class="text-orange-500 font-black text-2xl">${{ cartTotal }}</span>
+                </div>
+                <button @click="submitToFirebase" :disabled="isSubmitting"
+                    class="w-full bg-orange-500 disabled:opacity-60 text-white py-4 rounded-2xl font-bold text-base active:scale-95 transition-transform shadow-lg shadow-orange-200">
+                    <span v-if="isSubmitting">⏳ 傳送中...</span>
+                    <span v-else>送出訂單</span>
+                </button>
+            </div>
+        </div>
+        <!-- ===== 購物車頁 end ===== -->
 
-                    cart: []
-                }
-            },
-            computed: {
-                filteredMenu() {
-                    return this.menu.filter(item => item.category === this.currentCategory);
-                },
-                cartCount() {
-                    return this.cart.reduce((sum, item) => sum + item.qty, 0);
-                },
-                cartTotal() {
-                    return this.cart.reduce((sum, item) => sum + item.itemTotal, 0);
-                },
-                tempTotalPrice() {
-                    if (!this.activeItem) return 0;
-                    const basePrice = this.activeItem.price;
-                    const optionsPrice = this.tempSelections.reduce((sum, opt) => sum + opt.price, 0);
-                    return (basePrice + optionsPrice) * this.tempQty;
-                }
-            },
-            async created() {
-                await this.loadSettings();
-                await this.loadMenu();
-                this.isLoading = false;
-                this.storeOpen = this.settings.isOpen;
-                if (this.storeOpen) this.initDateTime();
+    </template>
+</div>
 
-                // 即時監聽設定變更（例如店家按下一鍵關閉）
-                onValue(ref(db, 'settings'), (snapshot) => {
-                    if (snapshot.exists()) {
-                        const s = snapshot.val();
-                        this.settings = {
-                            isOpen: s.isOpen !== false,
-                            openTime: s.openTime || '06:00',
-                            closeTime: s.closeTime || '13:15',
-                            pickupDays: s.pickupDays || 3,
-                            pickupInterval: s.pickupInterval || 30,
-                            holidays: s.holidays || []
-                        };
-                        this.storeOpen = this.settings.isOpen;
-                        if (this.storeOpen) this.initDateTime();
-                    }
-                });
-            },
-            methods: {
-                // === 從 Firebase 載入設定 ===
-                async loadSettings() {
-                    try {
-                        const snap = await get(ref(db, 'settings'));
-                        if (snap.exists()) {
-                            const s = snap.val();
-                            this.settings = {
-                                isOpen: s.isOpen !== false,
-                                openTime: s.openTime || '06:00',
-                                closeTime: s.closeTime || '13:15',
-                                pickupDays: s.pickupDays || 3,
-                                pickupInterval: s.pickupInterval || 30,
-                                holidays: s.holidays || []
-                            };
-                        }
-                    } catch (e) {
-                        console.error('讀取店面設定失敗:', e);
-                    }
-                },
+<script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
+    import { getDatabase, ref, push, set, get, onValue } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
 
-                // === 從 Firebase 載入菜單 ===
-                async loadMenu() {
-                    try {
-                        const snap = await get(ref(db, 'menu'));
-                        if (snap.exists()) {
-                            const data = snap.val();
-                            this.menu = Object.entries(data)
-                                .filter(([_, item]) => item.active !== false) // 只顯示上架餐點
-                                .map(([id, item]) => ({ id, ...item }))
-                                .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+    const firebaseConfig = {
+        apiKey: "AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
+        authDomain: "breakfast-ai-system.firebaseapp.com",
+        databaseURL: "https://breakfast-ai-system-default-rtdb.asia-southeast1.firebasedatabase.app",
+        projectId: "breakfast-ai-system",
+        storageBucket: "breakfast-ai-system.firebasestorage.app",
+        messagingSenderId: "662477350736",
+        appId: "1:662477350736:web:7e3dd6128a6f66a52aae55"
+    };
 
-                            // 動態產生分類（依菜單管理順序）
-                            const catOrder = ['套餐', '單點', '蛋餅、燒餅', '漢堡、蝸牛堡', '吐司、厚片', '其它、飲品'];
-                            const found = [...new Set(this.menu.map(i => i.category))];
-                            this.categories = catOrder.filter(c => found.includes(c));
-                            found.forEach(c => { if (!this.categories.includes(c)) this.categories.push(c); });
+    const app = initializeApp(firebaseConfig);
+    const db = getDatabase(app);
+    const { createApp } = Vue;
 
-                            if (this.categories.length > 0 && !this.currentCategory) {
-                                this.currentCategory = this.categories[0];
-                            }
-                        }
-                    } catch (e) {
-                        console.error('讀取菜單失敗:', e);
-                    }
-                },
-
-                // === 智慧時間初始化（使用 Firebase 設定）===
-                initDateTime() {
-                    const now = new Date();
-
-                    // 解析關店時間（來自 Firebase settings）
-                    const [closeH, closeM] = (this.settings.closeTime || '13:15').split(':').map(Number);
-                    const isClosed = (now.getHours() > closeH) || (now.getHours() === closeH && now.getMinutes() >= closeM);
-                    
-                    const dates = [];
-                    let startOffset = isClosed ? 1 : 0;
-                    const pickupDays = this.settings.pickupDays || 3;
-                    
-                    for (let i = 0; i < pickupDays; i++) {
-                        const d = new Date();
-                        d.setDate(now.getDate() + startOffset + i);
-                        const yyyy = d.getFullYear();
-                        const mm = String(d.getMonth() + 1).padStart(2, '0');
-                        const dd = String(d.getDate()).padStart(2, '0');
-                        const dateVal = `${yyyy}-${mm}-${dd}`;
-                        
-                        // 跳過公休日
-                        const holidays = this.settings.holidays || [];
-                        if (holidays.includes(dateVal)) continue;
-                        
-                        let label = '';
-                        if (startOffset === 0 && i === 0) label = `今天 (${mm}/${dd})`;
-                        else if ((startOffset === 0 && i === 1) || (startOffset === 1 && i === 0)) label = `明天 (${mm}/${dd})`;
-                        else label = `${mm}月${dd}日`;
-                        
-                        dates.push({ value: dateVal, label: label });
-                    }
-                    this.availableDates = dates;
-                    if (dates.length > 0) this.pickupDate = dates[0].value;
-                    this.updateAvailableTimes();
-                },
-                // 根據選擇的日期更新可用時間（使用 Firebase 設定的間隔）
-                updateAvailableTimes() {
-                    const times = [];
-                    const now = new Date();
-                    const selectedIsToday = this.availableDates.length > 0 &&
-                        this.pickupDate === this.availableDates[0].value &&
-                        this.availableDates[0].label.includes('今天');
-                    
-                    const [openH, openM] = (this.settings.openTime || '06:00').split(':').map(Number);
-                    const [closeH, closeM] = (this.settings.closeTime || '13:15').split(':').map(Number);
-                    const interval = this.settings.pickupInterval || 30; // 分鐘間隔
-
-                    const closeTotal = closeH * 60 + closeM;
-                    for (let total = openH * 60 + openM; total <= closeTotal; total += 15) {
-                        const h = Math.floor(total / 60);
-                        const m = total % 60;
-                        
-                        if (selectedIsToday) {
-                            const currentTotalMins = now.getHours() * 60 + now.getMinutes() + interval;
-                            if (total <= currentTotalMins) continue;
-                        }
-                        times.push(`${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`);
-                    }
-                    this.availableTimes = times.length > 0 ? times : ['已過點餐時間'];
-                    this.pickupTime = this.availableTimes[0];
-                },
-                openItemDetail(item) {
-                    this.activeItem = item;
-                    this.tempQty = 1;
-                    this.tempNote = '';
-                    this.tempSelections = [];
-                    this.editIndex = -1; 
-                    this.currentView = 'detail';
-                },
-                closeItemDetail() {
-                    this.currentView = 'menu';
-                    this.activeItem = null;
-                },
-                editCartItem(cartItem, index) {
-                    this.activeItem = this.menu.find(m => m.id === cartItem.id);
-                    this.tempQty = cartItem.qty;
-                    this.tempNote = cartItem.note;
-                    this.tempSelections = [...cartItem.options];
-                    this.editIndex = index; 
-                    this.currentView = 'detail';
-                },
-                confirmAddToCart() {
-                    const finalItem = {
-                        id: this.activeItem.id,
-                        name: this.activeItem.name,
-                        price: this.activeItem.price,
-                        qty: this.tempQty,
-                        note: this.tempNote,
-                        options: [...this.tempSelections],
-                        itemTotal: this.tempTotalPrice
-                    };
-
-                    if (this.editIndex > -1) {
-                        this.cart[this.editIndex] = finalItem;
-                    } else {
-                        this.cart.push(finalItem);
-                    }
-                    this.closeItemDetail();
-                },
-                removeFromCart(index) {
-                    this.cart.splice(index, 1);
-                    if(this.cart.length === 0) this.currentView = 'menu';
-                },
-                getItemQty(id) {
-                    return this.cart.filter(c => c.id === id).reduce((sum, c) => sum + c.qty, 0);
-                },
-                async submitToFirebase() {
-                    if (!this.inputName) {
-                        alert("請輸入姓名！");
-                        return;
-                    }
-                    this.isSubmitting = true;
-
-                    // ★ 關鍵 1：這裡「絕對不要」放 print_task！
-                    // 讓它保持乾淨，等一下加進去時，Firebase 才會覺得有「變更」，進而喚醒 Node-RED
-                    const orderData = {
-                        customer: this.inputName,
-                        phone: this.inputPhone,
-                        pickupDate: this.pickupDate,
-                        pickupTime: this.pickupTime,
-                        type: this.orderType,
-                        items: this.cart,
-                        total: this.cartTotal,
-                        status: "new",
-                        timestamp: Date.now()
-                    };
-
-                    try {
-                        const ordersRef = ref(db, 'orders');
-                        
-                        // 1. 取得新單號
-                        const newOrderRef = push(ordersRef); 
-                        
-                        // 2. 存入基礎訂單資料 (此時 Node-RED 忽略)
-                        await set(newOrderRef, orderData);
-                        
-                        // 3. ★ 關鍵 2：補發列印任務！這會製造一個「狀態變更」，瞬間觸發 Node-RED
-                        const printTaskPath = 'orders/' + newOrderRef.key + '/print_task';
-                        await set(ref(db, printTaskPath), 'kitchen');
-                        
-                        // 4. 顯示成功視窗
-                        const now = new Date();
-                        const correctTime = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
-                        alert(`訂單已送出！取餐時間：${correctTime}`);
-                        
-                        this.cart = [];
-                        this.inputName = '';
-                        this.currentView = 'menu';
-                    } catch (error) {
-                        console.error("錯誤詳情：", error);
-                        alert("傳送失敗，請檢查網路或系統設定！");
-                    } finally {
-                        this.isSubmitting = false;
-                    }
-                }
+    createApp({
+        data() {
+            return {
+                isLoading: true,
+                settings: { isOpen: true, openTime: '06:00', closeTime: '13:15', pickupDays: 3, pickupInterval: 30, holidays: [] },
+                currentView: 'menu',
+                categories: [], currentCategory: '', menu: [],
+                orderType: 'takeout',
+                pickupDate: '', pickupTime: '', availableDates: [], availableTimes: [],
+                inputName: '', inputPhone: '', isSubmitting: false,
+                activeItem: null, editIndex: -1,
+                tempQty: 1, tempNote: '', tempSelections: [], tempMealDrink: '',
+                cart: []
+            };
+        },
+        computed: {
+            filteredMenu() { return this.menu.filter(i => i.category === this.currentCategory); },
+            cartCount() { return this.cart.reduce((s, i) => s + i.qty, 0); },
+            cartTotal() { return this.cart.reduce((s, i) => s + i.itemTotal, 0); },
+            tempTotalPrice() {
+                if (!this.activeItem) return 0;
+                return (this.activeItem.price + this.tempSelections.reduce((s, o) => s + o.price, 0)) * this.tempQty;
             }
-        }).mount('#app');
-    </script>
+        },
+        async created() {
+            await Promise.all([this.loadSettings(), this.loadMenu()]);
+            this.isLoading = false;
+            if (this.settings.isOpen) this.initDateTime();
+            onValue(ref(db, 'settings'), snap => {
+                if (!snap.exists()) return;
+                const s = snap.val();
+                const wasOpen = this.settings.isOpen;
+                this.settings = { isOpen: s.isOpen !== false, openTime: s.openTime || '06:00', closeTime: s.closeTime || '13:15', pickupDays: s.pickupDays || 3, pickupInterval: s.pickupInterval || 30, holidays: s.holidays || [] };
+                if (!wasOpen && this.settings.isOpen) this.initDateTime();
+            });
+        },
+        methods: {
+            async loadSettings() {
+                try {
+                    const snap = await get(ref(db, 'settings'));
+                    if (snap.exists()) {
+                        const s = snap.val();
+                        this.settings = { isOpen: s.isOpen !== false, openTime: s.openTime || '06:00', closeTime: s.closeTime || '13:15', pickupDays: s.pickupDays || 3, pickupInterval: s.pickupInterval || 30, holidays: s.holidays || [] };
+                    }
+                } catch(e) { console.warn('設定讀取失敗，使用預設值'); }
+            },
+            async loadMenu() {
+                try {
+                    const snap = await get(ref(db, 'menu'));
+                    if (snap.exists()) {
+                        const data = snap.val();
+                        this.menu = Object.entries(data)
+                            .filter(([, v]) => v && v.active !== false)
+                            .map(([id, v]) => ({ id, ...v }))
+                            .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+                        const ORDER = ['套餐','單點','蛋餅、燒餅','漢堡、蝸牛堡','吐司、厚片','其它、飲品'];
+                        const found = [...new Set(this.menu.map(i => i.category).filter(Boolean))];
+                        this.categories = ORDER.filter(c => found.includes(c));
+                        found.forEach(c => { if (!this.categories.includes(c)) this.categories.push(c); });
+                        if (this.categories.length) this.currentCategory = this.categories[0];
+                    }
+                } catch(e) { console.warn('菜單讀取失敗'); }
+            },
+            initDateTime() {
+                const now = new Date();
+                const [cH, cM] = (this.settings.closeTime || '13:15').split(':').map(Number);
+                const isClosed = now.getHours() > cH || (now.getHours() === cH && now.getMinutes() >= cM);
+                const offset = isClosed ? 1 : 0;
+                const holidays = this.settings.holidays || [];
+                const dates = [];
+                for (let i = 0; dates.length < (this.settings.pickupDays || 3) && i < 60; i++) {
+                    const d = new Date(); d.setDate(now.getDate() + offset + i);
+                    const yyyy = d.getFullYear(), mm = String(d.getMonth()+1).padStart(2,'0'), dd = String(d.getDate()).padStart(2,'0');
+                    const val = `${yyyy}-${mm}-${dd}`;
+                    if (holidays.includes(val)) continue;
+                    const n = dates.length;
+                    const label = (offset===0 && i===0) ? `今天 (${mm}/${dd})` : n===0 ? `明天 (${mm}/${dd})` : n===1 ? `後天 (${mm}/${dd})` : `${mm}月${dd}日`;
+                    dates.push({ value: val, label });
+                }
+                this.availableDates = dates;
+                this.pickupDate = dates.length ? dates[0].value : '';
+                this.updateAvailableTimes();
+            },
+            updateAvailableTimes() {
+                const now = new Date();
+                const isToday = this.availableDates.length > 0 && this.pickupDate === this.availableDates[0].value && this.availableDates[0].label.includes('今天');
+                const [oH, oM] = (this.settings.openTime || '06:00').split(':').map(Number);
+                const [cH, cM] = (this.settings.closeTime || '13:15').split(':').map(Number);
+                const interval = this.settings.pickupInterval || 30;
+                const closeTotal = cH * 60 + cM;
+                const times = [];
+                for (let t = oH*60+oM; t <= closeTotal; t += 15) {
+                    if (isToday && t <= now.getHours()*60 + now.getMinutes() + interval) continue;
+                    times.push(`${String(Math.floor(t/60)).padStart(2,'0')}:${String(t%60).padStart(2,'0')}`);
+                }
+                this.availableTimes = times.length ? times : ['已過點餐時間'];
+                this.pickupTime = this.availableTimes[0];
+            },
+            openItemDetail(item) {
+                this.activeItem = item;
+                this.tempQty = 1; this.tempNote = ''; this.tempSelections = [];
+                this.tempMealDrink = item.mealOptions?.length ? item.mealOptions[0].name : '';
+                this.editIndex = -1; this.currentView = 'detail';
+            },
+            closeItemDetail() { this.currentView = 'menu'; this.activeItem = null; },
+            editCartItem(cartItem, index) {
+                this.activeItem = this.menu.find(m => m.id === cartItem.id);
+                if (!this.activeItem) return;
+                this.tempQty = cartItem.qty; this.tempNote = cartItem.note;
+                this.tempSelections = [...cartItem.options]; this.tempMealDrink = cartItem.mealDrink || '';
+                this.editIndex = index; this.currentView = 'detail';
+            },
+            confirmAddToCart() {
+                const item = { id: this.activeItem.id, name: this.activeItem.name, price: this.activeItem.price, qty: this.tempQty, note: this.tempNote, options: [...this.tempSelections], mealDrink: this.tempMealDrink, itemTotal: this.tempTotalPrice };
+                if (this.editIndex > -1) this.cart[this.editIndex] = item; else this.cart.push(item);
+                this.closeItemDetail();
+            },
+            removeFromCart(index) { this.cart.splice(index, 1); if (!this.cart.length) this.currentView = 'menu'; },
+            getItemQty(id) { return this.cart.filter(c => c.id === id).reduce((s, c) => s + c.qty, 0); },
+            async submitToFirebase() {
+                if (!this.inputName.trim()) { alert('請輸入姓名！'); return; }
+                this.isSubmitting = true;
+                const orderData = { customer: this.inputName.trim(), phone: this.inputPhone, pickupDate: this.pickupDate, pickupTime: this.pickupTime, type: this.orderType, items: this.cart, total: this.cartTotal, status: 'new', timestamp: Date.now() };
+                try {
+                    const newRef = push(ref(db, 'orders'));
+                    await set(newRef, orderData);
+                    await set(ref(db, `orders/${newRef.key}/print_task`), `kitchen_${Date.now()}`);
+                    const now = new Date();
+                    alert(`✅ 訂單已送出！\n取餐時間：${this.pickupTime}\n下單時間：${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`);
+                    this.cart = []; this.inputName = ''; this.inputPhone = ''; this.currentView = 'menu';
+                } catch(e) { console.error(e); alert('傳送失敗，請檢查網路或系統設定！'); }
+                finally { this.isSubmitting = false; }
+            }
+        }
+    }).mount('#app');
+<\/script>
 </body>
-
 </html>
