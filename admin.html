@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>店長出餐後台 - 晨光 AI 早餐店</title>
+    <title>出餐後台 - 元氣 AI 早餐店</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
     <style>[v-cloak] { display: none; }</style>
@@ -13,7 +13,7 @@
     <div id="app" v-cloak>
         <div v-if="!isLoggedIn" class="min-h-screen flex items-center justify-center bg-gray-800 p-4">
             <div class="bg-white p-8 rounded-xl shadow-2xl w-full max-w-sm">
-                <h1 class="text-2xl font-bold text-center mb-6 text-gray-800">店長系統登入</h1>
+                <h1 class="text-2xl font-bold text-center mb-6 text-gray-800">系統登入</h1>
                 <input v-model="email" type="email" placeholder="信箱" class="w-full border p-3 rounded mb-4 focus:outline-none focus:border-yellow-500" @keyup.enter="login">
                 <input v-model="password" type="password" placeholder="密碼" class="w-full border p-3 rounded mb-6 focus:outline-none focus:border-yellow-500" @keyup.enter="login">
                 <button @click="login" class="w-full bg-yellow-500 text-white font-bold py-3 rounded hover:bg-yellow-600 transition">登入</button>
@@ -117,7 +117,7 @@
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
-        import { getDatabase, ref, onValue, update } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
+        import { getDatabase, ref, onValue, update, set, remove } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
         import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
 
         // ★★★ 請貼入您相同的 Firebase 配置 ★★★
@@ -209,22 +209,43 @@
                     updates[`orders/${orderId}/status`] = newStatus;
                     update(ref(db), updates).catch(err => alert("更新狀態失敗"));
                 },
-                printOrder(order) {
-                    const updates = {};
-                    updates[`orders/${order.id}/print_task`] = 'kitchen';
-                    update(ref(db), updates).then(() => console.log("廚房工單補印指令發送"));
+                async printOrder(order) {
+                    // ★ 修復問題 2 & 3：先清空 print_task，再寫入新值（含時間戳記）
+                    // 即使上次已是 'kitchen'，Firebase 也會看到「null → kitchen_xxx」的變化，必然觸發事件
+                    const taskRef = ref(db, `orders/${order.id}/print_task`);
+                    try {
+                        await remove(taskRef);
+                        await set(taskRef, `kitchen_${Date.now()}`);
+                        console.log("廚房工單補印指令發送成功");
+                    } catch (err) {
+                        alert("補印工單失敗：" + err);
+                    }
                 },
-                printReceipt(order) {
-                    const updates = {};
-                    updates[`orders/${order.id}/print_task`] = 'receipt';
-                    update(ref(db), updates).then(() => console.log("客戶收據列印指令發送"));
+                async printReceipt(order) {
+                    // ★ 同上，確保值必然改變
+                    const taskRef = ref(db, `orders/${order.id}/print_task`);
+                    try {
+                        await remove(taskRef);
+                        await set(taskRef, `receipt_${Date.now()}`);
+                        console.log("客戶收據列印指令發送成功");
+                    } catch (err) {
+                        alert("印收據失敗：" + err);
+                    }
                 },
-                cancelOrder(order) {
+                async cancelOrder(order) {
                     if (confirm("確定要取消這筆訂單嗎？（將自動列印取消單至廚房）")) {
-                        const updates = {};
-                        updates[`orders/${order.id}/status`] = 'cancelled'; 
-                        updates[`orders/${order.id}/print_task`] = 'cancel'; 
-                        update(ref(db), updates).then(() => alert("訂單已取消！"));
+                        // ★ 同上，取消單也用時間戳記確保觸發
+                        const taskRef = ref(db, `orders/${order.id}/print_task`);
+                        try {
+                            await remove(taskRef);
+                            const updates = {};
+                            updates[`orders/${order.id}/status`] = 'cancelled';
+                            await update(ref(db), updates);
+                            await set(taskRef, `cancel_${Date.now()}`);
+                            alert("訂單已取消！");
+                        } catch (err) {
+                            alert("取消訂單失敗：" + err);
+                        }
                     }
                 },
                 // ★ 問題 4：打烊結單功能 ★
