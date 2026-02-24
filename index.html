@@ -23,7 +23,22 @@
 <body class="bg-gray-100 font-sans text-gray-800">
 
     <div id="app" v-cloak class="max-w-5xl mx-auto min-h-screen bg-gray-50 relative pb-24 shadow-xl">
-        
+
+        <!-- 載入中畫面 -->
+        <div v-if="isLoading" class="min-h-screen flex flex-col items-center justify-center bg-gray-50">
+            <div class="text-5xl mb-4">🍳</div>
+            <p class="text-gray-500 text-lg font-medium">菜單載入中...</p>
+        </div>
+
+        <!-- 暫停接單畫面 -->
+        <div v-else-if="!storeOpen" class="min-h-screen flex flex-col items-center justify-center bg-gray-50 p-8 text-center">
+            <div class="text-6xl mb-6">🚫</div>
+            <h2 class="text-2xl font-bold text-gray-800 mb-3">訂單滿載，暫停接單</h2>
+            <p class="text-gray-500 text-base">感謝您的支持！目前訂單已滿，請稍後再試或親臨門市。</p>
+            <p class="text-gray-400 text-sm mt-4">營業時間：{{ settings.openTime }} ～ {{ settings.closeTime }}</p>
+        </div>
+
+        <div v-else>
         <div v-show="currentView === 'menu'">
             
             <header class="bg-white p-4 sticky top-0 z-40 shadow-sm border-b">
@@ -46,7 +61,7 @@
                         </select>
                     </div>
                 </div>
-                <div class="max-w-md mx-auto mt-2 text-xs text-teal-600">可選擇時段：06:00 ~ 13:15</div>
+                <div class="max-w-md mx-auto mt-2 text-xs text-teal-600">可選擇時段：{{ settings.openTime }} ~ {{ settings.closeTime }}</div>
             </header>
 
             <div class="bg-[#148F77] text-white sticky top-[138px] z-30 overflow-x-auto no-scrollbar whitespace-nowrap shadow-md">
@@ -174,11 +189,11 @@
             </div>
         </div>
 
-    </div>
+        </div><!-- end v-else -->
 
-    <script type="module">
+    </div>
         import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
-        import { getDatabase, ref, push, set } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
+        import { getDatabase, ref, push, set, get, onValue } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
 
         // ★★★ 請替換成您的 Firebase 配置 ★★★
         const firebaseConfig = {
@@ -198,9 +213,13 @@
         createApp({
             data() {
                 return {
+                    // App state
+                    isLoading: true,
+                    storeOpen: true,
+
                     currentView: 'menu', 
-                    categories: ['套餐', '單點', '蛋餅、燒餅', '漢堡、蝸牛堡', '吐司、厚片', '其它、飲品'],
-                    currentCategory: '蛋餅、燒餅',
+                    categories: [],
+                    currentCategory: '',
                     orderType: 'takeout',
                     pickupDate: '',
                     pickupTime: '',
@@ -216,12 +235,19 @@
                     tempNote: '',
                     tempSelections: [],
 
-                    menu: [
-                        { id: 1, name: "薯餅起司蛋餅", price: 60, category: "蛋餅、燒餅", desc: "內含薯餅和起司", img: "https://images.unsplash.com/photo-1626645738196-c2a7c87a8f58?w=400", options: [{name: '加培根', price: 20}, {name: '加火腿', price: 15}] },
-                        { id: 2, name: "塔香辣豬蛋餅", price: 65, category: "蛋餅、燒餅", desc: "豬肉原產地：台灣", img: "https://images.unsplash.com/photo-1550547660-d9450f859349?w=400", options: [{name: '加起司', price: 15}] },
-                        { id: 3, name: "濃厚豚骨烏龍麵", price: 134, category: "套餐", desc: "濃郁湯頭", img: "https://images.unsplash.com/photo-1612929633738-8fe44f7ec841?w=400", options: [] },
-                        { id: 4, name: "卡啦雞腿堡", price: 75, category: "漢堡、蝸牛堡", desc: "微辣", img: "https://images.unsplash.com/photo-1568901346375-23c9450c58cd?w=400", options: [{name: '加蛋', price: 15}] }
-                    ],
+                    // 菜單：從 Firebase 動態載入（不再硬碼）
+                    menu: [],
+
+                    // 設定：從 Firebase 動態載入
+                    settings: {
+                        isOpen: true,
+                        openTime: '06:00',
+                        closeTime: '13:15',
+                        pickupDays: 3,
+                        pickupInterval: 30,
+                        holidays: []
+                    },
+
                     cart: []
                 }
             },
@@ -242,23 +268,90 @@
                     return (basePrice + optionsPrice) * this.tempQty;
                 }
             },
-            created() {
-                this.initDateTime();
+            async created() {
+                await this.loadSettings();
+                await this.loadMenu();
+                this.isLoading = false;
+                this.storeOpen = this.settings.isOpen;
+                if (this.storeOpen) this.initDateTime();
+
+                // 即時監聽設定變更（例如店家按下一鍵關閉）
+                onValue(ref(db, 'settings'), (snapshot) => {
+                    if (snapshot.exists()) {
+                        const s = snapshot.val();
+                        this.settings = {
+                            isOpen: s.isOpen !== false,
+                            openTime: s.openTime || '06:00',
+                            closeTime: s.closeTime || '13:15',
+                            pickupDays: s.pickupDays || 3,
+                            pickupInterval: s.pickupInterval || 30,
+                            holidays: s.holidays || []
+                        };
+                        this.storeOpen = this.settings.isOpen;
+                        if (this.storeOpen) this.initDateTime();
+                    }
+                });
             },
             methods: {
-                // 初始化智慧時間邏輯
+                // === 從 Firebase 載入設定 ===
+                async loadSettings() {
+                    try {
+                        const snap = await get(ref(db, 'settings'));
+                        if (snap.exists()) {
+                            const s = snap.val();
+                            this.settings = {
+                                isOpen: s.isOpen !== false,
+                                openTime: s.openTime || '06:00',
+                                closeTime: s.closeTime || '13:15',
+                                pickupDays: s.pickupDays || 3,
+                                pickupInterval: s.pickupInterval || 30,
+                                holidays: s.holidays || []
+                            };
+                        }
+                    } catch (e) {
+                        console.error('讀取店面設定失敗:', e);
+                    }
+                },
+
+                // === 從 Firebase 載入菜單 ===
+                async loadMenu() {
+                    try {
+                        const snap = await get(ref(db, 'menu'));
+                        if (snap.exists()) {
+                            const data = snap.val();
+                            this.menu = Object.entries(data)
+                                .filter(([_, item]) => item.active !== false) // 只顯示上架餐點
+                                .map(([id, item]) => ({ id, ...item }))
+                                .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+
+                            // 動態產生分類（依菜單管理順序）
+                            const catOrder = ['套餐', '單點', '蛋餅、燒餅', '漢堡、蝸牛堡', '吐司、厚片', '其它、飲品'];
+                            const found = [...new Set(this.menu.map(i => i.category))];
+                            this.categories = catOrder.filter(c => found.includes(c));
+                            found.forEach(c => { if (!this.categories.includes(c)) this.categories.push(c); });
+
+                            if (this.categories.length > 0 && !this.currentCategory) {
+                                this.currentCategory = this.categories[0];
+                            }
+                        }
+                    } catch (e) {
+                        console.error('讀取菜單失敗:', e);
+                    }
+                },
+
+                // === 智慧時間初始化（使用 Firebase 設定）===
                 initDateTime() {
                     const now = new Date();
-                    const currentHour = now.getHours();
-                    const currentMin = now.getMinutes();
-                    // 判斷是否已打烊 (超過 13:15)
-                    const isClosed = (currentHour > 13) || (currentHour === 13 && currentMin >= 15);
+
+                    // 解析關店時間（來自 Firebase settings）
+                    const [closeH, closeM] = (this.settings.closeTime || '13:15').split(':').map(Number);
+                    const isClosed = (now.getHours() > closeH) || (now.getHours() === closeH && now.getMinutes() >= closeM);
                     
                     const dates = [];
-                    // 如果打烊，從明天開始算 (startOffset=1)，否則從今天算 (startOffset=0)
                     let startOffset = isClosed ? 1 : 0;
+                    const pickupDays = this.settings.pickupDays || 3;
                     
-                    for (let i = 0; i < 3; i++) {
+                    for (let i = 0; i < pickupDays; i++) {
                         const d = new Date();
                         d.setDate(now.getDate() + startOffset + i);
                         const yyyy = d.getFullYear();
@@ -266,38 +359,43 @@
                         const dd = String(d.getDate()).padStart(2, '0');
                         const dateVal = `${yyyy}-${mm}-${dd}`;
                         
+                        // 跳過公休日
+                        const holidays = this.settings.holidays || [];
+                        if (holidays.includes(dateVal)) continue;
+                        
                         let label = '';
                         if (startOffset === 0 && i === 0) label = `今天 (${mm}/${dd})`;
                         else if ((startOffset === 0 && i === 1) || (startOffset === 1 && i === 0)) label = `明天 (${mm}/${dd})`;
-                        else if ((startOffset === 0 && i === 2) || (startOffset === 1 && i === 1)) label = `後天 (${mm}/${dd})`;
                         else label = `${mm}月${dd}日`;
                         
                         dates.push({ value: dateVal, label: label });
                     }
                     this.availableDates = dates;
-                    this.pickupDate = dates[0].value;
+                    if (dates.length > 0) this.pickupDate = dates[0].value;
                     this.updateAvailableTimes();
                 },
-                // 根據選擇的日期更新可用時間
+                // 根據選擇的日期更新可用時間（使用 Firebase 設定的間隔）
                 updateAvailableTimes() {
                     const times = [];
                     const now = new Date();
-                    // 檢查使用者選的是不是「今天」
-                    const selectedIsToday = this.pickupDate === this.availableDates[0].value && this.availableDates[0].label.includes('今天');
+                    const selectedIsToday = this.availableDates.length > 0 &&
+                        this.pickupDate === this.availableDates[0].value &&
+                        this.availableDates[0].label.includes('今天');
                     
-                    for (let h = 6; h <= 13; h++) {
-                        for (let m = 0; m < 60; m += 15) {
-                            if (h === 13 && m > 15) continue; // 營業到 13:15
-                            
-                            // 如果選的是今天，必須過濾掉過去的時間 (加30分鐘備餐緩衝)
-                            if (selectedIsToday) {
-                                const currentTotalMins = now.getHours() * 60 + now.getMinutes() + 30;
-                                const optionTotalMins = h * 60 + m;
-                                if (optionTotalMins <= currentTotalMins) continue;
-                            }
-                            
-                            times.push(`${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`);
+                    const [openH, openM] = (this.settings.openTime || '06:00').split(':').map(Number);
+                    const [closeH, closeM] = (this.settings.closeTime || '13:15').split(':').map(Number);
+                    const interval = this.settings.pickupInterval || 30; // 分鐘間隔
+
+                    const closeTotal = closeH * 60 + closeM;
+                    for (let total = openH * 60 + openM; total <= closeTotal; total += 15) {
+                        const h = Math.floor(total / 60);
+                        const m = total % 60;
+                        
+                        if (selectedIsToday) {
+                            const currentTotalMins = now.getHours() * 60 + now.getMinutes() + interval;
+                            if (total <= currentTotalMins) continue;
                         }
+                        times.push(`${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`);
                     }
                     this.availableTimes = times.length > 0 ? times : ['已過點餐時間'];
                     this.pickupTime = this.availableTimes[0];
@@ -354,7 +452,8 @@
                     }
                     this.isSubmitting = true;
 
-                    // ★ 關鍵 1：基礎訂單資料不含 print_task，讓後續寫入 print_task 時必然產生「變更」事件
+                    // ★ 關鍵 1：這裡「絕對不要」放 print_task！
+                    // 讓它保持乾淨，等一下加進去時，Firebase 才會覺得有「變更」，進而喚醒 Node-RED
                     const orderData = {
                         customer: this.inputName,
                         phone: this.inputPhone,
@@ -370,18 +469,17 @@
                     try {
                         const ordersRef = ref(db, 'orders');
                         
-                        // 步驟 1：建立新訂單（觸發 child_added，Node-RED 會忽略）
+                        // 1. 取得新單號
                         const newOrderRef = push(ordersRef); 
+                        
+                        // 2. 存入基礎訂單資料 (此時 Node-RED 忽略)
                         await set(newOrderRef, orderData);
                         
-                        // ★ 步驟 2：寫入列印任務。
-                        // 格式改為「任務名稱_時間戳記」(例: kitchen_1740000000000)，
-                        // 確保每次值都不同 → Firebase 必然觸發 child_changed → Node-RED 必然喚醒。
-                        // 這是修復「有時自動列印失敗」與「手動補印無效」的核心解法。
+                        // 3. ★ 關鍵 2：補發列印任務！這會製造一個「狀態變更」，瞬間觸發 Node-RED
                         const printTaskPath = 'orders/' + newOrderRef.key + '/print_task';
-                        await set(ref(db, printTaskPath), `kitchen_${Date.now()}`);
+                        await set(ref(db, printTaskPath), 'kitchen');
                         
-                        // 步驟 3：訂單寫入成功 → 立刻顯示成功畫面（不被列印任務阻擋）
+                        // 4. 顯示成功視窗
                         const now = new Date();
                         const correctTime = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
                         alert(`訂單已送出！取餐時間：${correctTime}`);
@@ -389,12 +487,8 @@
                         this.cart = [];
                         this.inputName = '';
                         this.currentView = 'menu';
-
-                    } catch (orderError) {
-                        // ★ 修復問題 4：拆分錯誤處理
-                        // 如果訂單本身寫入失敗，才顯示「傳送失敗」
-                        // 列印任務失敗不應讓顧客看到錯誤（可在 admin 手動補印）
-                        console.error("訂單寫入錯誤：", orderError);
+                    } catch (error) {
+                        console.error("錯誤詳情：", error);
                         alert("傳送失敗，請檢查網路或系統設定！");
                     } finally {
                         this.isSubmitting = false;
