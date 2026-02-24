@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>晨光 AI 早餐店</title>
+    <title>元氣 AI 早餐店</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
     <style>
@@ -354,8 +354,7 @@
                     }
                     this.isSubmitting = true;
 
-                    // ★ 關鍵 1：這裡「絕對不要」放 print_task！
-                    // 讓它保持乾淨，等一下加進去時，Firebase 才會覺得有「變更」，進而喚醒 Node-RED
+                    // ★ 關鍵 1：基礎訂單資料不含 print_task，讓後續寫入 print_task 時必然產生「變更」事件
                     const orderData = {
                         customer: this.inputName,
                         phone: this.inputPhone,
@@ -371,17 +370,18 @@
                     try {
                         const ordersRef = ref(db, 'orders');
                         
-                        // 1. 取得新單號
+                        // 步驟 1：建立新訂單（觸發 child_added，Node-RED 會忽略）
                         const newOrderRef = push(ordersRef); 
-                        
-                        // 2. 存入基礎訂單資料 (此時 Node-RED 忽略)
                         await set(newOrderRef, orderData);
                         
-                        // 3. ★ 關鍵 2：補發列印任務！這會製造一個「狀態變更」，瞬間觸發 Node-RED
+                        // ★ 步驟 2：寫入列印任務。
+                        // 格式改為「任務名稱_時間戳記」(例: kitchen_1740000000000)，
+                        // 確保每次值都不同 → Firebase 必然觸發 child_changed → Node-RED 必然喚醒。
+                        // 這是修復「有時自動列印失敗」與「手動補印無效」的核心解法。
                         const printTaskPath = 'orders/' + newOrderRef.key + '/print_task';
-                        await set(ref(db, printTaskPath), 'kitchen');
+                        await set(ref(db, printTaskPath), `kitchen_${Date.now()}`);
                         
-                        // 4. 顯示成功視窗
+                        // 步驟 3：訂單寫入成功 → 立刻顯示成功畫面（不被列印任務阻擋）
                         const now = new Date();
                         const correctTime = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
                         alert(`訂單已送出！取餐時間：${correctTime}`);
@@ -389,8 +389,12 @@
                         this.cart = [];
                         this.inputName = '';
                         this.currentView = 'menu';
-                    } catch (error) {
-                        console.error("錯誤詳情：", error);
+
+                    } catch (orderError) {
+                        // ★ 修復問題 4：拆分錯誤處理
+                        // 如果訂單本身寫入失敗，才顯示「傳送失敗」
+                        // 列印任務失敗不應讓顧客看到錯誤（可在 admin 手動補印）
+                        console.error("訂單寫入錯誤：", orderError);
                         alert("傳送失敗，請檢查網路或系統設定！");
                     } finally {
                         this.isSubmitting = false;
@@ -402,7 +406,3 @@
 </body>
 
 </html>
-
-
-
-
