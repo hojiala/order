@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1.0">
     
-    <title>🍳 元氣早午餐善化中山店</title>
+    <title>元氣早午餐善化中山店</title>
     
     <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🍳</text></svg>">
     
@@ -49,6 +49,8 @@
         .spin { animation: spin 0.9s linear infinite; }
         input[type="checkbox"] { accent-color: #f97316; }
         input[type="radio"] { accent-color: #f97316; }
+        @keyframes fadeInUp { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
+        .time-chip-active { background:#f97316; color:white; font-weight:700; }
     </style>
 </head>
 <body class="bg-gray-100">
@@ -99,12 +101,20 @@
                             <option v-for="date in availableDates" :key="date.value" :value="date.value">{{ date.label }}</option>
                         </select>
                     </div>
-                    <div class="flex-1 bg-gray-50 rounded-xl px-3 py-2 border border-gray-100">
-                        <p class="text-gray-400 text-xs mb-0.5">取餐時間</p>
-                        <select v-model="pickupTime"
-                            class="w-full bg-transparent outline-none text-gray-800 text-sm font-semibold">
-                            <option v-for="time in availableTimes" :key="time" :value="time">{{ time }}</option>
-                        </select>
+                    <div class="flex-1 bg-gray-50 rounded-xl px-3 py-2 border border-gray-100" style="min-width:0;">
+                        <p class="text-gray-400 text-xs mb-1.5">取餐時間</p>
+                        <div class="overflow-x-auto no-scrollbar" style="margin:0 -0.25rem;">
+                            <div class="flex gap-1.5 pb-0.5" style="padding:0 0.25rem;">
+                                <button v-for="time in availableTimes" :key="time"
+                                    @click="pickupTime = time"
+                                    :class="pickupTime === time
+                                        ? 'bg-orange-500 text-white font-bold shadow-sm'
+                                        : 'bg-white text-gray-600 border border-gray-200'"
+                                    class="flex-shrink-0 rounded-lg text-xs px-2.5 py-1.5 transition-all whitespace-nowrap">
+                                    {{ time }}
+                                </button>
+                            </div>
+                        </div>
                     </div>
                 </div>
                 <div class="overflow-x-auto no-scrollbar border-t border-gray-100">
@@ -137,7 +147,11 @@
                             <p class="text-gray-400 text-xs mb-2" style="overflow:hidden;display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;">{{ item.desc }}</p>
                             <div class="flex items-center justify-between">
                                 <span class="text-orange-500 font-black text-base">${{ item.price }}</span>
-                                <div class="w-7 h-7 bg-orange-500 rounded-full flex items-center justify-center text-white font-light" style="font-size:1.25rem;line-height:1;">+</div>
+                                <!-- ★ Fix6: 簡單餐點直接加入購物車，複雜餐點才進詳細頁 -->
+                                <button
+                                    @click.stop="quickAddOrDetail(item)"
+                                    class="w-8 h-8 bg-orange-500 hover:bg-orange-400 active:scale-90 rounded-full flex items-center justify-center text-white transition-all shadow-md"
+                                    style="font-size:1.4rem;line-height:1;flex-shrink:0;">+</button>
                             </div>
                         </div>
                     </div>
@@ -301,6 +315,39 @@
     </div>
     <!-- 正常點餐 end -->
 
+    <!-- ★ Fix6: 快速加入購物車 Toast 提示 -->
+    <div v-if="toastItem"
+         class="fixed z-[998] pointer-events-none"
+         style="bottom:6rem;left:50%;transform:translateX(-50%);width:calc(100% - 2.5rem);max-width:22rem;">
+        <div class="bg-gray-900 text-white text-sm font-medium px-4 py-3 rounded-xl shadow-xl flex items-center gap-2"
+             style="animation:fadeInUp 0.2s ease;">
+            <span style="font-size:1.1rem;">🛒</span>
+            <span>已加入：{{ toastItem }}</span>
+        </div>
+    </div>
+
+    <!-- ★ 自訂訂單成功 Modal (取代 alert，標題可自訂) -->
+    <div v-if="showSuccessModal"
+         class="fixed inset-0 z-[999] flex items-center justify-center"
+         style="background:rgba(0,0,0,0.45);">
+        <div class="bg-white rounded-2xl shadow-2xl mx-5 overflow-hidden" style="max-width:22rem;width:100%;">
+            <div class="bg-orange-500 px-5 py-3 flex items-center gap-2">
+                <span style="font-size:1.25rem;">🍳</span>
+                <span class="text-white font-black text-base">元氣早午餐</span>
+            </div>
+            <div class="px-6 py-5">
+                <p class="text-gray-800 font-bold text-base mb-1">✅ 訂單已送出！</p>
+                <p class="text-gray-500 text-sm mt-2">取餐時間：<span class="text-orange-500 font-bold">{{ successPickupTime }}</span></p>
+                <p class="text-gray-500 text-sm mt-1">下單時間：<span class="font-medium">{{ successOrderTime }}</span></p>
+            </div>
+            <div class="px-5 pb-4 flex justify-end">
+                <button @click="showSuccessModal = false"
+                    class="bg-orange-500 text-white font-bold px-6 py-2 rounded-xl text-sm"
+                    style="box-shadow:0 4px 12px rgba(249,115,22,0.3);">確定</button>
+            </div>
+        </div>
+    </div>
+
 </div>
 
 <script type="module">
@@ -353,7 +400,11 @@
                 tempNote: '',
                 tempSelections: [],
                 tempMealDrink: '',
-                cart: []
+                cart: [],
+                toastItem: '',
+                showSuccessModal: false,
+                successPickupTime: '',
+                successOrderTime: ''
             };
         },
         computed: {
@@ -372,7 +423,21 @@
                 return (this.activeItem.price + opts) * this.tempQty;
             }
         },
+        watch: {
+            // ★ Fix5: 購物車變更時儲存到 localStorage，重新整理不消失
+            cart: {
+                deep: true,
+                handler: function(val) {
+                    try { localStorage.setItem('cart_items', JSON.stringify(val)); } catch(e) {}
+                }
+            }
+        },
         created: function() {
+            // ★ Fix5: 從 localStorage 恢復購物車
+            try {
+                var saved = localStorage.getItem('cart_items');
+                if (saved) this.cart = JSON.parse(saved);
+            } catch(e) { this.cart = []; }
             this.init();
         },
         methods: {
@@ -488,8 +553,10 @@
                 var cTotal = parseInt(cParts[0]) * 60 + parseInt(cParts[1]);
                 var interval = this.settings.pickupInterval || 30;
                 var times = [];
+                // ★ Fix2: 取15分地板值，讓 09:31+15min 顯示 09:45 而非 10:00
+                var nowFloor = Math.floor((now.getHours() * 60 + now.getMinutes()) / 15) * 15;
                 for (var t = oTotal; t <= cTotal; t += 15) {
-                    if (isToday && t <= now.getHours() * 60 + now.getMinutes() + interval) continue;
+                    if (isToday && t < nowFloor + interval) continue;
                     var h = Math.floor(t / 60);
                     var m = t % 60;
                     times.push(('0'+h).slice(-2) + ':' + ('0'+m).slice(-2));
@@ -546,6 +613,38 @@
             getItemQty: function(id) {
                 return this.cart.filter(function(c) { return c.id === id; }).reduce(function(s, c) { return s + c.qty; }, 0);
             },
+            // ★ Fix6: 判斷是否有選項，決定直接加入或開詳細頁
+            quickAddOrDetail: function(item) {
+                var hasOptions = item.options && item.options.length > 0;
+                var hasMeal = item.mealOptions && item.mealOptions.length > 0;
+                if (hasOptions || hasMeal) {
+                    // 有選項 → 進詳細頁讓顧客選
+                    this.openItemDetail(item);
+                } else {
+                    // 無選項 → 直接+1加入購物車，顯示動畫提示
+                    var existing = null;
+                    for (var i = 0; i < this.cart.length; i++) {
+                        if (this.cart[i].id === item.id && !this.cart[i].note) {
+                            existing = this.cart[i]; break;
+                        }
+                    }
+                    if (existing) {
+                        existing.qty += 1;
+                        existing.itemTotal = existing.price * existing.qty;
+                    } else {
+                        this.cart.push({
+                            id: item.id, name: item.name, price: item.price,
+                            qty: 1, note: '', options: [], mealDrink: '',
+                            itemTotal: item.price
+                        });
+                    }
+                    // 短暫顯示加入提示
+                    this.toastItem = item.name;
+                    var self = this;
+                    clearTimeout(self._toastTimer);
+                    self._toastTimer = setTimeout(function() { self.toastItem = ''; }, 1800);
+                }
+            },
             submitToFirebase: function() {
                 // 檢查冷卻時間，防止惡意下單
                 var lastOrder = localStorage.getItem('lastOrderTime');
@@ -583,8 +682,12 @@
                     var now = new Date();
                     var hh = ('0'+now.getHours()).slice(-2);
                     var mm = ('0'+now.getMinutes()).slice(-2);
-                    alert('訂單已送出！\n取餐時間：' + self.pickupTime + '\n下單時間：' + hh + ':' + mm);
+                    // ★ Fix4: 用自訂 modal 取代 alert
+                    self.successPickupTime = self.pickupTime;
+                    self.successOrderTime = hh + ':' + mm;
+                    self.showSuccessModal = true;
                     self.cart = [];
+                    try { localStorage.removeItem('cart_items'); } catch(e) {}
                     self.inputName = '';
                     self.inputPhone = '';
                     self.currentView = 'menu';
