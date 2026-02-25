@@ -205,6 +205,47 @@
                         <span class="text-gray-700 text-sm">{{ opt.name }}</span>
                     </label>
                 </div>
+                <!-- ★ 選項群組：容量/溫度/套餐飲料升級等 -->
+                <template v-for="(grp, gi) in (activeItem.optionGroups || [])" :key="gi">
+                    <div class="border-b border-gray-100">
+                        <div class="px-5 py-2" style="background:#f0f9ff;">
+                            <p class="text-gray-700 font-bold text-sm">{{ grp.groupName }}
+                                <span class="text-orange-400 font-normal text-xs ml-1">（必選）</span>
+                            </p>
+                        </div>
+                        <!-- 單選 -->
+                        <template v-if="grp.type === 'radio'">
+                            <label v-for="(ch, ci) in (grp.choices || [])" :key="ci"
+                                class="flex items-center justify-between px-5 py-3 border-b border-gray-50 cursor-pointer">
+                                <div class="flex items-center gap-3">
+                                    <input type="radio" v-model="tempOptionGroups[gi]" :value="ci" class="w-5 h-5">
+                                    <span class="text-gray-700 text-sm">{{ ch.name }}</span>
+                                </div>
+                                <!-- 各自定價：顯示完整售價 -->
+                                <span v-if="grp.pricing === 'setPrice'" class="text-gray-600 text-sm font-bold">${{ ch.price }}</span>
+                                <!-- 加價：顯示差價 -->
+                                <span v-else-if="grp.pricing === 'addDelta' && ch.price > 0" class="text-orange-400 text-sm font-bold">+${{ ch.price }}</span>
+                                <!-- 套餐升級：顯示完整售價+是否含在套餐內 -->
+                                <span v-else-if="grp.pricing === 'mealUpgrade'" class="text-sm font-bold">
+                                    <span v-if="ch.price > (grp.baseValue || 0)" class="text-orange-500">補 ${{ ch.price - (grp.baseValue || 0) }}</span>
+                                    <span v-else class="text-green-500">已含</span>
+                                </span>
+                            </label>
+                        </template>
+                        <!-- 多選 -->
+                        <template v-if="grp.type === 'checkbox'">
+                            <label v-for="(ch, ci) in (grp.choices || [])" :key="ci"
+                                class="flex items-center justify-between px-5 py-3 border-b border-gray-50 cursor-pointer">
+                                <div class="flex items-center gap-3">
+                                    <input type="checkbox" v-model="tempOptionGroups[gi]" :value="ci" class="w-5 h-5">
+                                    <span class="text-gray-700 text-sm">{{ ch.name }}</span>
+                                </div>
+                                <span v-if="ch.price > 0" class="text-orange-400 text-sm font-bold">+${{ ch.price }}</span>
+                            </label>
+                        </template>
+                    </div>
+                </template>
+
                 <div class="px-5 py-4">
                     <p class="text-gray-700 font-bold text-sm mb-2">備註 <span class="text-gray-300 font-normal text-xs">（選填）</span></p>
                     <textarea v-model="tempNote" placeholder="特殊需求請在此填寫"
@@ -247,6 +288,10 @@
                         <div class="bg-orange-100 text-orange-600 rounded-lg flex items-center justify-center font-bold text-sm mr-3 mt-0.5" style="width:1.75rem;height:1.75rem;flex-shrink:0;">{{ item.qty }}</div>
                         <div class="flex-1" style="min-width:0;">
                             <p class="font-semibold text-gray-800 text-sm">{{ item.name }}</p>
+                            <!-- 選項群組選擇摘要 -->
+                            <p v-for="sel in (item.optionGroupSelections || [])" :key="sel.groupName" class="text-xs text-gray-500 mt-0.5">
+                                {{ sel.groupName }}：{{ sel.name }}<span v-if="sel.pricing==='mealUpgrade' && sel.price > sel.baseValue" class="text-orange-400">（補${{ sel.price - sel.baseValue }}）</span>
+                            </p>
                             <p v-for="opt in item.options" :key="opt.name" class="text-xs text-gray-400 mt-0.5">＋ {{ opt.name }}</p>
                             <p v-if="item.mealDrink" class="text-xs text-orange-400 mt-0.5">&#x1F964; {{ item.mealDrink }}</p>
                             <p v-if="item.note" class="text-xs text-blue-400 mt-0.5">&#x1F4DD; {{ item.note }}</p>
@@ -420,6 +465,7 @@
                 tempMealDrink: '',
                 cart: [],
                 toastItem: '',
+                tempOptionGroups: {},
                 showSuccessModal: false,
                 showAlertDialog: false,
                 alertDialogTitle: '',
@@ -440,8 +486,29 @@
             },
             tempTotalPrice: function() {
                 if (!this.activeItem) return 0;
-                var opts = this.tempSelections.reduce(function(s, o) { return s + o.price; }, 0);
-                return (this.activeItem.price + opts) * this.tempQty;
+                var basePrice = this.activeItem.price;
+                var extra = 0;
+                var self = this;
+                // 選項群組定價
+                (this.activeItem.optionGroups || []).forEach(function(grp, gi) {
+                    if (grp.type === 'radio') {
+                        var selIdx = self.tempOptionGroups[gi];
+                        if (selIdx === undefined || selIdx === null) selIdx = grp.defaultIdx || 0;
+                        var ch = (grp.choices || [])[selIdx];
+                        if (!ch) return;
+                        if (grp.pricing === 'setPrice') basePrice = ch.price;
+                        else if (grp.pricing === 'addDelta') extra += ch.price;
+                        else if (grp.pricing === 'mealUpgrade') extra += Math.max(0, ch.price - (grp.baseValue || 0));
+                    } else {
+                        (self.tempOptionGroups[gi] || []).forEach(function(ci) {
+                            var ch = (grp.choices || [])[ci];
+                            if (ch) extra += ch.price;
+                        });
+                    }
+                });
+                // 舊版加料選項（checkbox）
+                extra += this.tempSelections.reduce(function(s, o) { return s + o.price; }, 0);
+                return (basePrice + extra) * this.tempQty;
             }
         },
         watch: {
@@ -612,6 +679,12 @@
                 this.tempSelections = [];
                 this.tempMealDrink = (item.mealOptions && item.mealOptions.length) ? item.mealOptions[0].name : '';
                 this.editIndex = -1;
+                // 初始化選項群組（新系統）
+                var og = {};
+                (item.optionGroups || []).forEach(function(grp, gi) {
+                    og[gi] = grp.type === 'checkbox' ? [] : (grp.defaultIdx || 0);
+                });
+                this.tempOptionGroups = og;
                 this.currentView = 'detail';
             },
             closeItemDetail: function() {
@@ -624,15 +697,46 @@
                     if (this.menu[i].id === cartItem.id) { found = this.menu[i]; break; }
                 }
                 if (!found) return;
+                history.pushState({ view: 'detail' }, '');
                 this.activeItem = found;
                 this.tempQty = cartItem.qty;
                 this.tempNote = cartItem.note;
                 this.tempSelections = cartItem.options.slice();
                 this.tempMealDrink = cartItem.mealDrink || '';
+                // 恢復選項群組
+                var og = {};
+                (found.optionGroups || []).forEach(function(grp, gi) {
+                    og[gi] = grp.type === 'checkbox' ? [] : (grp.defaultIdx || 0);
+                });
+                (cartItem.optionGroupSelections || []).forEach(function(sel) {
+                    (found.optionGroups || []).forEach(function(grp, gi) {
+                        if (grp.groupName === sel.groupName) {
+                            if (grp.type === 'checkbox') { if (!Array.isArray(og[gi])) og[gi]=[]; og[gi].push(sel.idx); }
+                            else { og[gi] = sel.idx; }
+                        }
+                    });
+                });
+                this.tempOptionGroups = og;
                 this.editIndex = index;
                 this.currentView = 'detail';
             },
             confirmAddToCart: function() {
+                // 整理選項群組的選擇結果
+                var self = this;
+                var ogSels = [];
+                (this.activeItem.optionGroups || []).forEach(function(grp, gi) {
+                    if (grp.type === 'radio') {
+                        var selIdx = self.tempOptionGroups[gi];
+                        if (selIdx === undefined || selIdx === null) selIdx = grp.defaultIdx || 0;
+                        var ch = (grp.choices || [])[selIdx];
+                        if (ch) ogSels.push({ groupName: grp.groupName, idx: selIdx, name: ch.name, price: ch.price, pricing: grp.pricing, baseValue: grp.baseValue || 0 });
+                    } else {
+                        (self.tempOptionGroups[gi] || []).forEach(function(ci) {
+                            var ch = (grp.choices || [])[ci];
+                            if (ch) ogSels.push({ groupName: grp.groupName, idx: ci, name: ch.name, price: ch.price, pricing: 'addDelta', baseValue: 0 });
+                        });
+                    }
+                });
                 var item = {
                     id: this.activeItem.id,
                     name: this.activeItem.name,
@@ -641,6 +745,7 @@
                     note: this.tempNote,
                     options: this.tempSelections.slice(),
                     mealDrink: this.tempMealDrink,
+                    optionGroupSelections: ogSels,
                     itemTotal: this.tempTotalPrice
                 };
                 if (this.editIndex > -1) this.cart[this.editIndex] = item;
@@ -663,7 +768,8 @@
             quickAddOrDetail: function(item) {
                 var hasOptions = item.options && item.options.length > 0;
                 var hasMeal = item.mealOptions && item.mealOptions.length > 0;
-                if (hasOptions || hasMeal) {
+                var hasGroups = item.optionGroups && item.optionGroups.length > 0;
+                if (hasOptions || hasMeal || hasGroups) {
                     // 有選項 → 進詳細頁讓顧客選
                     this.openItemDetail(item);
                 } else {
