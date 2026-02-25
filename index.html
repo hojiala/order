@@ -103,14 +103,14 @@
                     </div>
                     <div class="flex-1 bg-gray-50 rounded-xl px-3 py-2 border border-gray-100" style="min-width:0;">
                         <p class="text-gray-400 text-xs mb-1.5">取餐時間</p>
-                        <div class="overflow-x-auto no-scrollbar" style="margin:0 -0.25rem;">
+                        <div class="overflow-x-auto no-scrollbar time-chip-scroll" style="margin:0 -0.25rem;cursor:grab;">
                             <div class="flex gap-1.5 pb-0.5" style="padding:0 0.25rem;">
                                 <button v-for="time in availableTimes" :key="time"
                                     @click="pickupTime = time"
                                     :class="pickupTime === time
                                         ? 'bg-orange-500 text-white font-bold shadow-sm'
                                         : 'bg-white text-gray-600 border border-gray-200'"
-                                    class="flex-shrink-0 rounded-lg text-xs px-2.5 py-1.5 transition-all whitespace-nowrap">
+                                    class="flex-shrink-0 rounded-lg text-xs px-2.5 py-1.5 transition-all whitespace-nowrap select-none">
                                     {{ time }}
                                 </button>
                             </div>
@@ -135,23 +135,25 @@
                 </div>
                 <div class="grid grid-cols-2 gap-3">
                     <div v-for="item in filteredMenu" :key="item.id"
-                         @click="openItemDetail(item)"
-                         class="menu-card bg-white rounded-2xl overflow-hidden cursor-pointer border border-gray-100 shadow-sm relative">
+                         class="menu-card bg-white rounded-2xl overflow-hidden border border-gray-100 shadow-sm relative">
                         <div v-if="getItemQty(item.id) > 0" class="qty-badge">{{ getItemQty(item.id) }}</div>
-                        <div class="bg-gray-100 overflow-hidden" style="aspect-ratio:4/3;">
+                        <!-- 圖片區：點擊進入詳細頁 -->
+                        <div class="bg-gray-100 overflow-hidden cursor-pointer" style="aspect-ratio:4/3;"
+                             @click="openItemDetail(item)">
                             <img v-if="item.img" :src="item.img" class="w-full h-full object-cover" loading="lazy" decoding="async" style="display:block;">
                             <div v-else class="w-full h-full flex items-center justify-center text-gray-200" style="font-size:2rem;">&#x1F37D;</div>
                         </div>
-                        <div class="p-3">
+                        <!-- 文字區：點擊進入詳細頁 -->
+                        <div class="p-3 cursor-pointer" @click="openItemDetail(item)">
                             <h3 class="font-bold text-gray-800 text-sm mb-1" style="line-height:1.4;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;">{{ item.name }}</h3>
                             <p class="text-gray-400 text-xs mb-2" style="overflow:hidden;display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;">{{ item.desc }}</p>
                             <div class="flex items-center justify-between">
                                 <span class="text-orange-500 font-black text-base">${{ item.price }}</span>
-                                <!-- ★ Fix6: 簡單餐點直接加入購物車，複雜餐點才進詳細頁 -->
+                                <!-- ★ + 號：獨立點擊區，不觸發父層 @click -->
                                 <button
-                                    @click.stop="quickAddOrDetail(item)"
+                                    @click.prevent.stop="quickAddOrDetail(item)"
                                     class="w-8 h-8 bg-orange-500 hover:bg-orange-400 active:scale-90 rounded-full flex items-center justify-center text-white transition-all shadow-md"
-                                    style="font-size:1.4rem;line-height:1;flex-shrink:0;">+</button>
+                                    style="font-size:1.4rem;line-height:1;flex-shrink:0;position:relative;z-index:5;">+</button>
                             </div>
                         </div>
                     </div>
@@ -326,6 +328,27 @@
         </div>
     </div>
 
+    <!-- ★ Fix4: 通用提示 Modal (取代所有 alert) -->
+    <div v-if="showAlertDialog"
+         class="fixed inset-0 z-[1000] flex items-center justify-center"
+         style="background:rgba(0,0,0,0.45);">
+        <div class="bg-white rounded-2xl shadow-2xl mx-5 overflow-hidden" style="max-width:22rem;width:100%;">
+            <div class="bg-orange-500 px-5 py-3 flex items-center gap-2">
+                <span style="font-size:1.25rem;">🍳</span>
+                <span class="text-white font-black text-base">元氣早午餐善化中山店</span>
+            </div>
+            <div class="px-6 py-5">
+                <p class="text-gray-800 font-bold text-base mb-2">{{ alertDialogTitle }}</p>
+                <p class="text-gray-600 text-sm" style="white-space:pre-line;line-height:1.7;">{{ alertDialogMsg }}</p>
+            </div>
+            <div class="px-5 pb-4 flex justify-end">
+                <button @click="showAlertDialog = false"
+                    class="bg-orange-500 text-white font-bold px-6 py-2 rounded-xl text-sm"
+                    style="box-shadow:0 4px 12px rgba(249,115,22,0.3);">確定</button>
+            </div>
+        </div>
+    </div>
+
     <!-- ★ 自訂訂單成功 Modal (取代 alert，標題可自訂) -->
     <div v-if="showSuccessModal"
          class="fixed inset-0 z-[999] flex items-center justify-center"
@@ -403,6 +426,9 @@
                 cart: [],
                 toastItem: '',
                 showSuccessModal: false,
+                showAlertDialog: false,
+                alertDialogTitle: '',
+                alertDialogMsg: '',
                 successPickupTime: '',
                 successOrderTime: ''
             };
@@ -553,16 +579,22 @@
                 var cTotal = parseInt(cParts[0]) * 60 + parseInt(cParts[1]);
                 var interval = this.settings.pickupInterval || 30;
                 var times = [];
-                // ★ Fix2: 取15分地板值，讓 09:31+15min 顯示 09:45 而非 10:00
-                var nowFloor = Math.floor((now.getHours() * 60 + now.getMinutes()) / 15) * 15;
-                for (var t = oTotal; t <= cTotal; t += 15) {
-                    if (isToday && t < nowFloor + interval) continue;
+                // ★ 以5分鐘為單位，現在時間無條件進位到最近5分，再加緩衝
+                // 例: 11:24 → ceil到11:25 → +15 = 11:40; 11:25 → ceil到11:25 → +15 = 11:40
+                var nowMin = now.getHours() * 60 + now.getMinutes();
+                var nowCeil5 = Math.ceil(nowMin / 5) * 5; // 無條件進位到5分
+                var earliest = nowCeil5 + interval; // 最早可取餐時間
+                for (var t = oTotal; t <= cTotal; t += 5) {
+                    if (isToday && t < earliest) continue;
                     var h = Math.floor(t / 60);
                     var m = t % 60;
                     times.push(('0'+h).slice(-2) + ':' + ('0'+m).slice(-2));
                 }
                 this.availableTimes = times.length ? times : ['已過點餐時間'];
-                this.pickupTime = this.availableTimes[0];
+                // 保留目前選擇的時間，如果仍有效則不重設
+                if (times.indexOf(this.pickupTime) === -1) {
+                    this.pickupTime = this.availableTimes[0];
+                }
             },
             openItemDetail: function(item) {
                 this.activeItem = item;
@@ -610,6 +642,11 @@
                 this.cart.splice(index, 1);
                 if (!this.cart.length) this.currentView = 'menu';
             },
+            showAlertModal: function(title, msg) {
+                this.alertDialogTitle = title;
+                this.alertDialogMsg = msg;
+                this.showAlertDialog = true;
+            },
             getItemQty: function(id) {
                 return this.cart.filter(function(c) { return c.id === id; }).reduce(function(s, c) { return s + c.qty; }, 0);
             },
@@ -646,20 +683,46 @@
                 }
             },
             submitToFirebase: function() {
+                var self = this;
+                // ★ Fix4: 所有驗證改用自訂 modal，不用 alert()
                 // 檢查冷卻時間，防止惡意下單
                 var lastOrder = localStorage.getItem('lastOrderTime');
-                var cooldown = 5 * 60 * 1000; // 5分鐘
+                var cooldown = 5 * 60 * 1000;
                 if (lastOrder && Date.now() - parseInt(lastOrder) < cooldown) {
                     var remaining = Math.ceil((cooldown - (Date.now() - parseInt(lastOrder))) / 60000);
-                    alert('您剛剛已送出訂單，請等待 ' + remaining + ' 分鐘後再試。');
+                    this.showAlertModal('請稍候', '您剛剛已送出訂單，請等待 ' + remaining + ' 分鐘後再試。');
                     return;
                 }
-                if (!this.inputName.trim()) { alert('請輸入姓名！'); return; }
+                if (!this.inputName.trim()) {
+                    this.showAlertModal('提醒', '請輸入取餐姓名！');
+                    return;
+                }
                 // 驗證台灣手機號碼（09開頭，共10碼）
                 var phoneReg = /^09\d{8}$/;
                 if (!this.inputPhone || !phoneReg.test(this.inputPhone.replace(/[-\s]/g, ''))) {
-                    alert('請輸入有效的手機號碼');
+                    this.showAlertModal('提醒', '請輸入有效的手機號碼
+（09 開頭，共 10 碼）');
                     return;
+                }
+                // ★ Fix3: 重新驗算取餐時間是否仍然有效（防止放太久再送出）
+                var isToday = this.availableDates.length > 0
+                    && this.pickupDate === this.availableDates[0].value
+                    && this.availableDates[0].label.indexOf('今天') !== -1;
+                if (isToday && this.pickupTime !== '已過點餐時間') {
+                    var now = new Date();
+                    var nowMin = now.getHours() * 60 + now.getMinutes();
+                    var nowCeil5 = Math.ceil(nowMin / 5) * 5;
+                    var interval = this.settings.pickupInterval || 30;
+                    var earliest = nowCeil5 + interval;
+                    var pParts = this.pickupTime.split(':');
+                    var pickupMin = parseInt(pParts[0]) * 60 + parseInt(pParts[1]);
+                    if (pickupMin < earliest) {
+                        // 自動更新時間清單並提示顧客重選
+                        this.updateAvailableTimes();
+                        this.showAlertModal('取餐時間已過', '您選擇的取餐時間「' + this.pickupTime + '」已過期。
+已自動更新為最早可取餐時間，請確認後再送出。');
+                        return;
+                    }
                 }
                 if (this.isSubmitting) return;
                 this.isSubmitting = true;
@@ -693,7 +756,7 @@
                     self.currentView = 'menu';
                 }).catch(function(e) {
                     console.error(e);
-                    alert('傳送失敗，請檢查網路或系統設定！');
+                    self.showAlertModal('傳送失敗', '請檢查網路連線或系統設定！');
                 }).finally(function() {
                     self.isSubmitting = false;
                 });
@@ -701,6 +764,35 @@
             }
         }
     }).mount('#app');
+
+    // ★ Fix1: 滑鼠拖曳滾動時間選擇區（電腦版）
+    document.addEventListener('DOMContentLoaded', function() {
+        var initDrag = function() {
+            var el = document.querySelector('.time-chip-scroll');
+            if (!el) { setTimeout(initDrag, 500); return; }
+            var isDown = false, startX, scrollLeft;
+            el.addEventListener('mousedown', function(e) {
+                isDown = true; el.style.cursor = 'grabbing';
+                startX = e.pageX - el.offsetLeft;
+                scrollLeft = el.scrollLeft;
+            });
+            document.addEventListener('mouseup', function() {
+                isDown = false; if(el) el.style.cursor = 'grab';
+            });
+            el.addEventListener('mouseleave', function() { isDown = false; el.style.cursor = 'grab'; });
+            el.addEventListener('mousemove', function(e) {
+                if (!isDown) return;
+                e.preventDefault();
+                var x = e.pageX - el.offsetLeft;
+                el.scrollLeft = scrollLeft - (x - startX) * 1.2;
+            });
+            // 滑鼠滾輪也可橫向滾動
+            el.addEventListener('wheel', function(e) {
+                if (e.deltaY !== 0) { e.preventDefault(); el.scrollLeft += e.deltaY * 0.8; }
+            }, { passive: false });
+        };
+        initDrag();
+    });
 </script>
 </body>
 </html>
