@@ -34,19 +34,45 @@
 <body class="bg-slate-900 text-slate-100 min-h-screen">
 <div id="app" v-cloak>
 
-<!-- ========== LOGIN ========== -->
-<div v-if="!isLoggedIn" class="min-h-screen flex items-center justify-center p-4">
+<!-- ========== LOGIN / 員工快速下架 ========== -->
+<div v-if="!isLoggedIn && quickMode !== 'staffMode'" class="min-h-screen flex items-center justify-center p-4 bg-slate-900">
     <div class="w-full max-w-sm">
         <div class="text-center mb-8">
             <div class="text-4xl mb-3">🍳</div>
-            <h1 class="text-2xl font-bold text-white">元氣早餐店</h1>
-            <p class="text-slate-400 text-sm mt-1">管理後台系統</p>
+            <h1 class="text-2xl font-bold text-white">元氣早午餐善化中山店</h1>
+            <p class="text-slate-400 text-sm mt-1">後台管理系統</p>
         </div>
-        <div class="bg-slate-800 rounded-2xl p-8 shadow-2xl border border-slate-700">
+
+        <!-- 員工快速下架模式 -->
+        <div v-if="!quickMode" class="space-y-3 mb-4">
+            <button @click="quickMode = true"
+                class="w-full bg-orange-600 hover:bg-orange-500 text-white font-bold py-4 rounded-xl transition text-base flex items-center justify-center gap-2 shadow-lg">
+                🔴 員工模式 — 餐點售完下架
+            </button>
+            <button @click="quickMode = 'admin'"
+                class="w-full bg-slate-700 hover:bg-slate-600 text-slate-300 font-bold py-3 rounded-xl transition text-sm flex items-center justify-center gap-2">
+                🔑 老闆登入 — 完整管理後台
+            </button>
+        </div>
+
+        <!-- 員工 PIN 輸入 -->
+        <div v-if="quickMode === true" class="bg-slate-800 rounded-2xl p-6 border border-orange-800 shadow-2xl">
+            <p class="text-orange-400 font-bold text-center mb-4">員工 PIN 碼</p>
+            <div v-if="quickPinError" class="bg-red-900/50 border border-red-700 text-red-300 text-sm px-4 py-2 rounded-lg mb-4">{{ quickPinError }}</div>
+            <input v-model="quickPinInput" type="password" @keyup.enter="checkQuickPin" placeholder="輸入 PIN 碼"
+                class="w-full bg-slate-700 border border-slate-600 rounded-lg px-4 py-3 text-white text-center text-2xl tracking-widest placeholder-slate-500 focus:outline-none focus:border-orange-500 mb-4" maxlength="8">
+            <div class="flex gap-3">
+                <button @click="quickMode = false; quickPinInput=''; quickPinError=''" class="flex-1 bg-slate-700 hover:bg-slate-600 text-white font-bold py-3 rounded-xl transition text-sm">返回</button>
+                <button @click="checkQuickPin" class="flex-1 bg-orange-600 hover:bg-orange-500 text-white font-bold py-3 rounded-xl transition">進入</button>
+            </div>
+        </div>
+
+        <!-- 老闆登入表單 -->
+        <div v-if="quickMode === 'admin'" class="bg-slate-800 rounded-2xl p-8 shadow-2xl border border-slate-700">
             <div v-if="loginError" class="bg-red-900/50 border border-red-700 text-red-300 text-sm px-4 py-3 rounded-lg mb-5">{{ loginError }}</div>
             <div class="mb-4">
                 <label class="block text-slate-400 text-xs font-bold uppercase tracking-wider mb-2">信箱</label>
-                <input v-model="loginEmail" type="email" @keyup.enter="login" placeholder="admin@example.com"
+                <input v-model="loginEmail" type="email" @keyup.enter="login" placeholder="manage@yuanqi.com"
                     class="w-full bg-slate-700 border border-slate-600 rounded-lg px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition">
             </div>
             <div class="mb-6">
@@ -55,9 +81,52 @@
                     class="w-full bg-slate-700 border border-slate-600 rounded-lg px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition">
             </div>
             <button @click="login" :disabled="isLoggingIn"
-                class="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold py-3 rounded-lg transition text-base">
+                class="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold py-3 rounded-lg transition text-base mb-3">
                 {{ isLoggingIn ? '登入中...' : '登入' }}
             </button>
+            <button @click="quickMode = false" class="w-full text-slate-500 hover:text-slate-300 text-sm py-1 transition">← 返回</button>
+        </div>
+    </div>
+</div>
+
+<!-- ========== 員工快速下架介面（不需完整登入）========== -->
+<div v-else-if="!isLoggedIn && quickMode === 'staffMode'" class="min-h-screen bg-slate-900 p-4">
+    <div class="max-w-2xl mx-auto">
+        <div class="flex items-center justify-between mb-6">
+            <div>
+                <h1 class="text-xl font-bold text-white">🔴 員工模式 — 餐點管理</h1>
+                <p class="text-slate-400 text-sm mt-0.5">按餐點切換上架 / 售完下架</p>
+            </div>
+            <button @click="staffLogout" class="text-slate-400 hover:text-white text-sm bg-slate-700 hover:bg-slate-600 px-4 py-2 rounded-lg transition">離開</button>
+        </div>
+        <!-- 分類篩選 -->
+        <div class="flex flex-wrap gap-2 mb-4">
+            <button @click="filterCat = ''" :class="filterCat === '' ? 'bg-orange-600 text-white' : 'bg-slate-700 text-slate-300'" class="px-4 py-1.5 rounded-full text-sm transition">全部</button>
+            <button v-for="cat in allCategories" :key="cat" @click="filterCat = cat"
+                :class="filterCat === cat ? 'bg-orange-600 text-white' : 'bg-slate-700 text-slate-300'"
+                class="px-4 py-1.5 rounded-full text-sm transition">{{ cat }}</button>
+        </div>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div v-for="item in filteredMenu" :key="item.id"
+                 class="bg-slate-800 rounded-xl border flex items-center gap-3 p-3 transition"
+                 :class="item.active ? 'border-slate-700' : 'border-red-800 opacity-60'">
+                <div class="w-14 h-14 rounded-lg overflow-hidden flex-shrink-0 bg-slate-700">
+                    <img v-if="item.img" :src="item.img" class="w-full h-full object-cover" loading="lazy">
+                    <div v-else class="w-full h-full flex items-center justify-center text-2xl">🍽️</div>
+                </div>
+                <div class="flex-1 min-w-0">
+                    <p class="text-white font-bold text-sm truncate">{{ item.name }}</p>
+                    <p class="text-orange-400 font-bold text-sm">${{ item.price }}</p>
+                    <p class="text-xs mt-0.5" :class="item.active ? 'text-emerald-400' : 'text-red-400'">
+                        {{ item.active ? '✅ 供應中' : '❌ 已售完/下架' }}
+                    </p>
+                </div>
+                <button @click="toggleActive(item)"
+                    class="flex-shrink-0 font-bold text-sm px-4 py-2 rounded-xl transition"
+                    :class="item.active ? 'bg-red-700 hover:bg-red-600 text-white' : 'bg-emerald-700 hover:bg-emerald-600 text-white'">
+                    {{ item.active ? '售完下架' : '恢復上架' }}
+                </button>
+            </div>
         </div>
     </div>
 </div>
@@ -796,6 +865,12 @@
                     categories: ['套餐','單點','蛋餅、燒餅','漢堡、蝸牛堡','吐司、厚片','其它、飲品']
                 },
                 newHoliday: '',
+                // 員工快速下架模式
+                quickMode: false,
+                quickPin: '',
+                quickPinInput: '',
+                quickPinError: '',
+                QUICK_PIN: '1234',  // ★ 員工PIN碼，請自行修改
                 newCategoryName: '',
                 settingsSaving: false, settingsSaved: false,
                 // Week day names
@@ -846,9 +921,34 @@
 
         methods: {
             // ── AUTH ──
+            checkQuickPin: function() {
+                if (this.quickPinInput === this.QUICK_PIN) {
+                    this.quickPinError = '';
+                    this.quickPinInput = '';
+                    this.quickMode = 'staffMode';
+                    this.loadMenu(); // 載入菜單供員工操作
+                    this.loadSettings(); // 載入分類
+                } else {
+                    this.quickPinError = 'PIN 碼錯誤，請重試';
+                    this.quickPinInput = '';
+                }
+            },
+            staffLogout: function() {
+                this.quickMode = false;
+                this.quickPinInput = '';
+            },
             login: function() {
                 var self = this;
                 if (!this.loginEmail || !this.loginPassword) { this.loginError = '請輸入信箱與密碼'; return; }
+                // ★ 管理後台專用帳號白名單（可在此新增允許的信箱）
+                var ALLOWED_EMAILS = [
+                    'manage@yuanqi.com',     // 管理後台專用帳號
+                    'admin@yuanqi.com'       // 保留舊帳號也可登入（可刪除此行）
+                ];
+                if (ALLOWED_EMAILS.indexOf(this.loginEmail.trim().toLowerCase()) === -1) {
+                    this.loginError = '此帳號無權限登入管理後台';
+                    return;
+                }
                 this.isLoggingIn = true; this.loginError = '';
                 signInWithEmailAndPassword(auth, this.loginEmail, this.loginPassword)
                     .catch(function() { self.loginError = '登入失敗，請確認信箱與密碼是否正確'; })
@@ -1173,7 +1273,8 @@
             saveSettings: function() {
                 var self = this;
                 self.settingsSaving = true; self.settingsSaved = false;
-                set(ref(db, 'settings'), {
+                // ★ 用 update 而非 set，避免覆蓋掉 optionTemplates 等其他子節點
+                update(ref(db, 'settings'), {
                     isOpen: self.settings.isOpen,
                     openTime: self.settings.openTime,
                     closeTime: self.settings.closeTime,
