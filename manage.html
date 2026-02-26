@@ -572,6 +572,63 @@
                     </div>
                 </div>
 
+                <!-- ★ 員工模式設定 -->
+                <div class="bg-slate-800 rounded-xl border border-amber-800/50 p-5">
+                    <p class="font-bold text-amber-400 mb-1">🔴 員工模式設定</p>
+                    <p class="text-slate-400 text-xs mb-4">員工用 PIN 碼進入下架介面；員工 Firebase 帳號需先至 Firebase Console 建立</p>
+                    <div class="space-y-3">
+                        <div>
+                            <label class="block text-slate-400 text-xs font-bold uppercase tracking-wider mb-1">員工 PIN 碼</label>
+                            <input v-model="staffSettings.pin" type="text" placeholder="例：1234"
+                                class="w-32 bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500 tracking-widest">
+                        </div>
+                        <div>
+                            <label class="block text-slate-400 text-xs font-bold uppercase tracking-wider mb-1">員工 Firebase 信箱（用於寫入DB）</label>
+                            <input v-model="staffSettings.email" type="email" placeholder="staff@yuanqi.com"
+                                class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500">
+                        </div>
+                        <div>
+                            <label class="block text-slate-400 text-xs font-bold uppercase tracking-wider mb-1">員工 Firebase 密碼</label>
+                            <input v-model="staffSettings.password" type="password" placeholder="••••••••"
+                                class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500">
+                        </div>
+                    </div>
+                    <button @click="saveStaffSettings" :disabled="staffSettingsSaving"
+                        class="mt-4 bg-amber-700 hover:bg-amber-600 disabled:opacity-50 text-white font-bold px-6 py-2 rounded-lg text-sm transition">
+                        <span v-if="staffSettingsSaving">儲存中...</span>
+                        <span v-else-if="staffSettingsSaved">✅ 已儲存</span>
+                        <span v-else>儲存員工設定</span>
+                    </button>
+                </div>
+
+                <!-- ★ 標準飲料清單編輯 -->
+                <div class="bg-slate-800 rounded-xl border border-blue-800/50 p-5">
+                    <div class="flex items-center justify-between mb-1">
+                        <p class="font-bold text-blue-400">🧋 標準飲料清單</p>
+                        <button @click="addDrink" class="text-emerald-400 hover:text-emerald-300 text-sm font-bold">＋ 新增</button>
+                    </div>
+                    <p class="text-slate-400 text-xs mb-4">「選項模板」→「⚡ 一鍵填入標準飲料清單」的資料來源，可在此新增/修改/刪除</p>
+                    <div class="max-h-80 overflow-y-auto space-y-2 pr-1">
+                        <div v-for="(drink, i) in standardDrinks" :key="i" class="flex gap-2 items-center">
+                            <input v-model="drink.name" type="text" placeholder="飲料名稱（例：錫蘭紅茶（中杯））"
+                                class="flex-1 bg-slate-700 border border-slate-600 rounded-lg px-3 py-1.5 text-white text-sm placeholder-slate-400 focus:outline-none focus:border-blue-500">
+                            <div class="relative w-24 flex-shrink-0">
+                                <span class="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 text-xs">$</span>
+                                <input v-model.number="drink.price" type="number" min="0"
+                                    class="w-full bg-slate-700 border border-slate-600 rounded-lg pl-5 pr-2 py-1.5 text-white text-sm focus:outline-none focus:border-blue-500">
+                            </div>
+                            <button @click="removeDrink(i)" class="text-slate-500 hover:text-red-400 text-xl w-7 flex-shrink-0 transition">×</button>
+                        </div>
+                        <div v-if="standardDrinks.length === 0" class="text-slate-500 text-sm text-center py-4 border border-dashed border-slate-600 rounded-lg">尚無飲料，點右上角「＋ 新增」</div>
+                    </div>
+                    <button @click="saveStandardDrinks" :disabled="standardDrinksSaving"
+                        class="mt-4 bg-blue-700 hover:bg-blue-600 disabled:opacity-50 text-white font-bold px-6 py-2 rounded-lg text-sm transition">
+                        <span v-if="standardDrinksSaving">儲存中...</span>
+                        <span v-else-if="standardDrinksSaved">✅ 已儲存</span>
+                        <span v-else>儲存飲料清單</span>
+                    </button>
+                </div>
+
                 <button @click="saveSettings" :disabled="settingsSaving"
                     class="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold py-3.5 rounded-xl transition text-base">
                     <span v-if="settingsSaving">儲存中...</span>
@@ -867,10 +924,17 @@
                 newHoliday: '',
                 // 員工快速下架模式
                 quickMode: false,
-                quickPin: '',
                 quickPinInput: '',
                 quickPinError: '',
-                QUICK_PIN: '1234',  // ★ 員工PIN碼，請自行修改
+                // 員工系統設定（從 Firebase 讀取）
+                staffSettings: { pin: '1234', email: '', password: '' },
+                staffSettingsSaving: false,
+                staffSettingsSaved: false,
+                // 標準飲料清單（從 Firebase 讀取）
+                standardDrinks: [],
+                standardDrinksSaving: false,
+                standardDrinksSaved: false,
+                editingDrinkIdx: -1
                 newCategoryName: '',
                 settingsSaving: false, settingsSaved: false,
                 // Week day names
@@ -907,6 +971,8 @@
                     self.loadSettings();
                     self.loadStats();
                     self.loadTemplates();
+                    self.loadStaffSettings();
+                    self.loadStandardDrinks();
                 } else {
                     self.isLoggedIn = false;
                 }
@@ -922,20 +988,47 @@
         methods: {
             // ── AUTH ──
             checkQuickPin: function() {
-                if (this.quickPinInput === this.QUICK_PIN) {
-                    this.quickPinError = '';
-                    this.quickPinInput = '';
-                    this.quickMode = 'staffMode';
-                    this.loadMenu(); // 載入菜單供員工操作
-                    this.loadSettings(); // 載入分類
+                var self = this;
+                var pin = self.staffSettings.pin || '1234';
+                if (self.quickPinInput !== pin) {
+                    self.quickPinError = 'PIN 碼錯誤，請重試';
+                    self.quickPinInput = '';
+                    return;
+                }
+                self.quickPinError = '';
+                self.quickPinInput = '';
+                // 用員工 Firebase 帳號登入，才能寫入 DB
+                var email = self.staffSettings.email;
+                var password = self.staffSettings.password;
+                if (email && password) {
+                    signInWithEmailAndPassword(auth, email, password)
+                        .then(function() {
+                            self.quickMode = 'staffMode';
+                            self.loadMenu();
+                            self.loadSettings();
+                        })
+                        .catch(function(e) {
+                            // 員工帳號登入失敗，仍進入但警告
+                            console.warn('員工帳號登入失敗:', e.message);
+                            self.quickMode = 'staffMode';
+                            self.loadMenu();
+                            self.loadSettings();
+                        });
                 } else {
-                    this.quickPinError = 'PIN 碼錯誤，請重試';
-                    this.quickPinInput = '';
+                    // 尚未設定員工帳號，提示但仍進入（toggleActive 可能失敗）
+                    self.quickMode = 'staffMode';
+                    self.loadMenu();
+                    self.loadSettings();
                 }
             },
             staffLogout: function() {
-                this.quickMode = false;
-                this.quickPinInput = '';
+                var self = this;
+                self.quickMode = false;
+                self.quickPinInput = '';
+                // 若以員工帳號登入，登出 Firebase
+                if (!self.isLoggedIn) {
+                    signOut(auth).catch(function(){});
+                }
             },
             login: function() {
                 var self = this;
@@ -1103,6 +1196,64 @@
             addMealOption: function() { this.form.mealOptions.push({ name: '' }); },
             removeMealOption: function(idx) { this.form.mealOptions.splice(idx, 1); },
 
+            // ── 員工設定 & 標準飲料清單 ──
+            loadStaffSettings: function() {
+                var self = this;
+                get(ref(db, 'settings/staffSettings')).then(function(snap) {
+                    if (snap.exists()) self.staffSettings = Object.assign({ pin:'1234', email:'', password:'' }, snap.val());
+                }).catch(function(){});
+            },
+            saveStaffSettings: function() {
+                var self = this;
+                self.staffSettingsSaving = true;
+                update(ref(db, 'settings/staffSettings'), self.staffSettings)
+                    .then(function() {
+                        self.staffSettingsSaved = true;
+                        setTimeout(function(){ self.staffSettingsSaved = false; }, 3000);
+                    })
+                    .catch(function(e){ alert('儲存失敗：' + e.message); })
+                    .finally(function(){ self.staffSettingsSaving = false; });
+            },
+            loadStandardDrinks: function() {
+                var self = this;
+                get(ref(db, 'settings/standardDrinks')).then(function(snap) {
+                    if (snap.exists()) {
+                        // Firebase 存為 array
+                        var val = snap.val();
+                        self.standardDrinks = Array.isArray(val) ? val : Object.values(val);
+                    } else {
+                        // 首次使用，預填預設清單
+                        self.standardDrinks = [
+                            { name:'錫蘭紅茶（中杯）',   price:20 }, { name:'錫蘭紅茶（大杯）',   price:25 },
+                            { name:'錫蘭奶茶（中杯）',   price:25 }, { name:'錫蘭奶茶（大杯）',   price:30 },
+                            { name:'錫蘭鮮奶茶（中杯）', price:35 }, { name:'錫蘭鮮奶茶（大杯）', price:45 },
+                            { name:'美式咖啡（中杯）',   price:40 }, { name:'美式咖啡（大杯）',   price:50 },
+                            { name:'鮮奶咖啡（中杯）',   price:50 }, { name:'鮮奶咖啡（大杯）',   price:60 },
+                            { name:'三合一咖啡（中杯）', price:25 }, { name:'三合一咖啡（大杯）', price:30 },
+                            { name:'巧克力可可（中杯）', price:25 }, { name:'巧克力可可（大杯）', price:35 },
+                            { name:'柳橙汁（中杯）',     price:25 }, { name:'柳橙汁（大杯）',     price:30 },
+                            { name:'豆漿（中杯）',       price:25 }, { name:'豆漿（大杯）',       price:30 },
+                            { name:'鴛鴦奶茶（中杯）',   price:35 }, { name:'鴛鴦奶茶（大杯）',   price:40 },
+                            { name:'柳橙紅茶（中杯）',   price:25 }, { name:'柳橙紅茶（大杯）',   price:30 },
+                            { name:'紅茶豆漿（中杯）',   price:25 }, { name:'紅茶豆漿（大杯）',   price:30 }
+                        ];
+                    }
+                }).catch(function(){});
+            },
+            saveStandardDrinks: function() {
+                var self = this;
+                self.standardDrinksSaving = true;
+                set(ref(db, 'settings/standardDrinks'), self.standardDrinks)
+                    .then(function() {
+                        self.standardDrinksSaved = true;
+                        setTimeout(function(){ self.standardDrinksSaved = false; }, 3000);
+                    })
+                    .catch(function(e){ alert('儲存失敗：' + e.message); })
+                    .finally(function(){ self.standardDrinksSaving = false; });
+            },
+            addDrink: function() { this.standardDrinks.push({ name:'', price:0 }); },
+            removeDrink: function(i) { this.standardDrinks.splice(i, 1); },
+
             // ── TEMPLATE METHODS ──
             loadTemplates: function() {
                 var self = this;
@@ -1155,6 +1306,8 @@
                     self.showTemplateForm = false;
                     self.editingTemplateId = null;
                     self.loadTemplates();
+                    self.loadStaffSettings();
+                    self.loadStandardDrinks();
                 }).catch(function(e) { alert('儲存失敗：' + e.message); });
             },
             deleteTemplate: function(id) {
@@ -1162,37 +1315,17 @@
                 var self = this;
                 remove(ref(db, 'settings/optionTemplates/' + id)).then(function() {
                     self.loadTemplates();
+                    self.loadStaffSettings();
+                    self.loadStandardDrinks();
                 });
             },
             fillStandardDrinks: function() {
-                // 一鍵填入元氣早午餐標準飲料清單（12種飲料 × 中杯/大杯 = 24筆）
-                var drinks = [
-                    { name:'錫蘭紅茶（中杯）',   price:20 },
-                    { name:'錫蘭紅茶（大杯）',   price:25 },
-                    { name:'錫蘭奶茶（中杯）',   price:25 },
-                    { name:'錫蘭奶茶（大杯）',   price:30 },
-                    { name:'錫蘭鮮奶茶（中杯）', price:35 },
-                    { name:'錫蘭鮮奶茶（大杯）', price:45 },
-                    { name:'美式咖啡（中杯）',   price:40 },
-                    { name:'美式咖啡（大杯）',   price:50 },
-                    { name:'鮮奶咖啡（中杯）',   price:50 },
-                    { name:'鮮奶咖啡（大杯）',   price:60 },
-                    { name:'三合一咖啡（中杯）', price:25 },
-                    { name:'三合一咖啡（大杯）', price:30 },
-                    { name:'巧克力可可（中杯）', price:25 },
-                    { name:'巧克力可可（大杯）', price:35 },
-                    { name:'柳橙汁（中杯）',     price:25 },
-                    { name:'柳橙汁（大杯）',     price:30 },
-                    { name:'豆漿（中杯）',       price:25 },
-                    { name:'豆漿（大杯）',       price:30 },
-                    { name:'鴛鴦奶茶（中杯）',   price:35 },
-                    { name:'鴛鴦奶茶（大杯）',   price:40 },
-                    { name:'柳橙紅茶（中杯）',   price:25 },
-                    { name:'柳橙紅茶（大杯）',   price:30 },
-                    { name:'紅茶豆漿（中杯）',   price:25 },
-                    { name:'紅茶豆漿（大杯）',   price:30 }
-                ];
-                this.templateForm.choices = drinks;
+                // 從 Firebase 標準飲料清單填入（可在「系統設定」→「標準飲料清單」編輯）
+                if (this.standardDrinks && this.standardDrinks.length > 0) {
+                    this.templateForm.choices = JSON.parse(JSON.stringify(this.standardDrinks));
+                } else {
+                    alert('尚未載入標準飲料清單，請稍後再試或前往「系統設定」設定飲料清單');
+                }
             },
             applyTemplate: function(tpl) {
                 // 深複製模板，加入目前餐點的選項群組
