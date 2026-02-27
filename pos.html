@@ -121,6 +121,7 @@
 
       <!-- ORDERS LIST -->
       <div v-else-if="activeView==='orders'" class="flex flex-col h-full">
+        <div v-if="activeMenu" @click="activeMenu=null" class="fixed inset-0 z-20"></div>
         <div class="p-3 pb-2 flex-shrink-0">
           <div class="flex items-center justify-between mb-2">
             <p class="font-bold text-gray-800 text-sm">所有進行中訂單 <span class="text-orange-500 font-black">({{ filteredOrders.length }})</span></p>
@@ -164,9 +165,21 @@
                   <p class="text-xs text-gray-400">&#128336; {{ order.pickupTime }}</p>
                   <p class="text-xs text-gray-500 mt-0.5 truncate">{{ (order.items||[]).map(function(i){return i.qty+"x"+i.name}).join("、") }}</p>
                 </div>
-                <div class="flex-shrink-0 text-right">
+              <div class="flex-shrink-0 text-right">
                   <p class="text-orange-500 font-black text-base">${{ order.total }}</p>
-                  <p class="text-gray-300 text-xs mt-1">點擊編輯</p>
+                  <div class="relative mt-1">
+                    <button @click.stop="activeMenu=activeMenu===order.id?null:order.id"
+                      class="w-8 h-8 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded-full text-gray-600 font-black text-lg flex items-center justify-center transition">+</button>
+                    <div v-if="activeMenu===order.id"
+                      class="absolute bottom-9 right-0 bg-white rounded-xl shadow-2xl border border-gray-200 w-36 overflow-hidden z-30">
+                      <button @click.stop="printOrder(order);activeMenu=null"
+                        class="w-full text-left px-4 py-2.5 hover:bg-orange-50 text-gray-700 border-b border-gray-100 text-sm font-bold">&#128424; 補印工單</button>
+                      <button @click.stop="printReceipt(order);activeMenu=null"
+                        class="w-full text-left px-4 py-2.5 hover:bg-blue-50 text-gray-700 border-b border-gray-100 text-sm font-bold">&#129534; 印收據</button>
+                      <button v-if="order.status!=='done'" @click.stop="cancelOrder(order);activeMenu=null"
+                        class="w-full text-left px-4 py-2.5 hover:bg-red-50 text-red-600 text-sm font-bold">&#10005; 取消訂單</button>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -315,7 +328,7 @@
 
 <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
-    import { getDatabase, ref, onValue, update, push } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
+    import { getDatabase, ref, onValue, update, push, set, remove } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
     const firebaseConfig = {
         apiKey:"AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -339,7 +352,7 @@
                 onlineOrders:[],ordersLoading:false,
                 orderSearch:"",
                 activeItem:null,tempQty:1,tempNote:"",tempSels:[],tempOG:{},
-                toastMsg:"",toastTimer:null,lastOrderId:null
+                toastMsg:"",toastTimer:null,lastOrderId:null,activeMenu:null
             };
         },
         computed:{
@@ -454,8 +467,10 @@
                 push(ref(db,"orders"),o)
                     .then(function(snap){
                         var orderId=snap.key;s.lastOrderId=orderId;
-                        return update(ref(db,"orders/"+orderId),{print_task:"kitchen_"+Date.now()})
-                            .then(function(){s.toast("✅ 已結帳 $"+o.total+"，列印中...");s.clearCart();});
+                        var taskRef=ref(db,"orders/"+orderId+"/print_task");
+                        return remove(taskRef).then(function(){
+                            return set(taskRef,"kitchen_"+Date.now());
+                        }).then(function(){s.toast("✅ 已結帳 $"+o.total+"，列印中...");s.clearCart();});
                     })
                     .catch(function(e){alert("送出失敗："+e.message);})
                     .finally(function(){s.isSubmitting=false;});
@@ -465,6 +480,7 @@
                 this.cart=JSON.parse(JSON.stringify(order.items||[]));
                 this.orderMode="online";
                 this.activeView="menu";
+                this.activeMenu=null;
             },
             exitOnline:function(){this.orderMode="pos";this.editingOrder=null;this.cart=[];},
             saveOrderEdit:function(){
@@ -472,12 +488,14 @@
                 if(!s.editingOrder||!s.cart.length){s.toast("⚠ 訂單內容為空");return;}
                 s.isSubmitting=true;
                 var id=s.editingOrder.id;
-                var newItems=s.cart.map(function(i){return Object.assign({},i);});
-                var newTotal=s.cartTotal;
+                var taskRef=ref(db,"orders/"+id+"/print_task");
                 update(ref(db,"orders/"+id),{
-                    items:newItems,
-                    total:newTotal,
-                    print_task:"kitchen_"+Date.now()
+                    items:s.cart.map(function(i){return Object.assign({},i);}),
+                    total:s.cartTotal
+                }).then(function(){
+                    return remove(taskRef).then(function(){
+                        return set(taskRef,"kitchen_"+Date.now());
+                    });
                 }).then(function(){
                     s.toast("✅ 修改已儲存，重新列印中...");
                     s.exitOnline();
@@ -498,12 +516,44 @@
                 update(ref(db,"menu/"+item.id),{active:!item.active})
                     .catch(function(e){alert("更新失敗："+e.message);});
             },
+            // ── 列印功能（從 admin.html 移植：remove+set 確保必然觸發 Node-RED）──
+            printOrder:function(order){
+                var taskRef=ref(db,"orders/"+order.id+"/print_task");
+                var s=this;
+                remove(taskRef).then(function(){
+                    return set(taskRef,"kitchen_"+Date.now());
+                }).then(function(){s.toast("🖨️ 補印工單中...");})
+                .catch(function(e){alert("補印工單失敗："+e.message);});
+            },
+            printReceipt:function(order){
+                var taskRef=ref(db,"orders/"+order.id+"/print_task");
+                var s=this;
+                remove(taskRef).then(function(){
+                    return set(taskRef,"receipt_"+Date.now());
+                }).then(function(){s.toast("🧾 印收據中...");})
+                .catch(function(e){alert("印收據失敗："+e.message);});
+            },
+            cancelOrder:function(order){
+                if(!confirm("確定要取消這筆訂單嗎？（將自動列印取消單至廚房）"))return;
+                var s=this;
+                var taskRef=ref(db,"orders/"+order.id+"/print_task");
+                remove(taskRef).then(function(){
+                    return update(ref(db,"orders/"+order.id),{status:"cancelled"});
+                }).then(function(){
+                    return set(taskRef,"cancel_"+Date.now());
+                }).then(function(){
+                    s.toast("❌ 訂單已取消，列印取消單...");
+                    if(s.editingOrder&&s.editingOrder.id===order.id)s.exitOnline();
+                }).catch(function(e){alert("取消訂單失敗："+e.message);});
+            },
             doPrint:function(){
                 var s=this;
                 if(!s.lastOrderId){s.toast("⚠ 請先完成結帳再補印");return;}
-                update(ref(db,"orders/"+s.lastOrderId),{print_task:"receipt_"+Date.now()})
-                    .then(function(){s.toast("🖨️ 收據列印中...");})
-                    .catch(function(e){alert("補印失敗："+e.message);});
+                var taskRef=ref(db,"orders/"+s.lastOrderId+"/print_task");
+                remove(taskRef).then(function(){
+                    return set(taskRef,"receipt_"+Date.now());
+                }).then(function(){s.toast("🧾 收據列印中...");})
+                .catch(function(e){alert("補印失敗："+e.message);});
             },
             toast:function(msg){
                 var s=this;s.toastMsg=msg;clearTimeout(s.toastTimer);
