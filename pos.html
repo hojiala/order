@@ -179,8 +179,8 @@
         <span class="text-2xl font-black text-gray-900">${{ cartTotal }}</span></div>
       <div class="px-4 pb-4 grid grid-cols-2 gap-2">
         <template v-if="orderMode==='pos'">
-          <button @click="doPrint" :disabled="cart.length===0"
-            class="py-3 rounded-xl font-bold text-sm border-2 border-gray-200 text-gray-600 hover:bg-gray-100 disabled:opacity-40 transition active:scale-95">&#128424; 出餐單</button>
+          <button @click="doPrint" :disabled="!lastOrderId"
+            class="py-3 rounded-xl font-bold text-sm border-2 border-gray-200 text-gray-600 hover:bg-gray-100 disabled:opacity-40 transition active:scale-95">&#128424; 補印收據</button>
           <button @click="doCheckout" :disabled="cart.length===0||isSubmitting"
             class="py-3 rounded-xl font-black text-white text-sm disabled:opacity-40 transition active:scale-95"
             style="background:linear-gradient(135deg,#f97316,#ef4444)">{{ isSubmitting ? "送出中..." : "✓ 確認結帳" }}</button>
@@ -275,7 +275,7 @@
                 orderMode:"pos",editingOrder:null,
                 onlineOrders:[],ordersLoading:false,
                 activeItem:null,tempQty:1,tempNote:"",tempSels:[],tempOG:{},
-                toastMsg:"",toastTimer:null
+                toastMsg:"",toastTimer:null,lastOrderId:null
             };
         },
         computed:{
@@ -327,9 +327,8 @@
                 s.ordersLoading=true;
                 onValue(ref(db,"orders"),function(snap){
                     if(!snap.exists()){s.onlineOrders=[];s.ordersLoading=false;return;}
-                    var t=new Date();t.setHours(0,0,0,0);
                     s.onlineOrders=Object.entries(snap.val())
-                        .filter(function(e){return e[1]&&(e[1].status==="new"||e[1].status==="making")&&(e[1].timestamp||0)>=t.getTime()&&e[1].source!=="pos";})
+                        .filter(function(e){return e[1]&&(e[1].status==="new"||e[1].status==="making");})
                         .map(function(e){return Object.assign({id:e[0]},e[1]);})
                         .sort(function(a,b){return(b.timestamp||0)-(a.timestamp||0);});
                     s.ordersLoading=false;
@@ -375,7 +374,13 @@
                     items:s.cart.map(function(i){return Object.assign({},i);}),
                     total:s.cartTotal,status:"making",timestamp:Date.now(),source:"pos"};
                 push(ref(db,"orders"),o)
-                    .then(function(){s.toast("✅ 已結帳 $"+o.total);s.clearCart();})
+                    .then(function(snap){
+                        var orderId=snap.key;
+                        s.lastOrderId=orderId;
+                        // 觸發 Node-RED 列印廚房工單
+                        return update(ref(db,"orders/"+orderId),{print_task:"kitchen_"+Date.now()})
+                            .then(function(){s.toast("✅ 已結帳 $"+o.total+"，列印中...");s.clearCart();});
+                    })
                     .catch(function(e){alert("送出失敗："+e.message);})
                     .finally(function(){s.isSubmitting=false;});
             },
@@ -399,22 +404,13 @@
                     .catch(function(e){alert("更新失敗："+e.message);});
             },
             doPrint:function(){
-                var s=this,now=new Date(),pad=function(n){return("0"+n).slice(-2);};
-                var t=now.getFullYear()+"/"+pad(now.getMonth()+1)+"/"+pad(now.getDate())+" "+pad(now.getHours())+":"+pad(now.getMinutes());
-                var h="<div style='text-align:center;font-size:16px;font-weight:900;margin-bottom:4px'>元氣早午餐善化中山店</div>";
-                h+="<div style='text-align:center;font-size:12px;color:#555;margin-bottom:8px'>"+t+"</div>";
-                if(s.custName)h+="<div style='text-align:center;margin-bottom:6px'>顧客："+s.custName+"</div>";
-                h+="<hr style='border:none;border-top:1px dashed #aaa;margin:8px 0'>";
-                s.cart.forEach(function(item){
-                    h+="<div style='display:flex;justify-content:space-between;font-weight:bold;margin-bottom:3px'><span>"+item.qty+"x "+item.name+"</span><span>$"+item.itemTotal+"</span></div>";
-                    (item.optionGroupSelections||[]).forEach(function(sel){h+="<div style='font-size:11px;color:#666;padding-left:14px'>• "+sel.groupName+"："+sel.name+"</div>";});
-                    if(item.note)h+="<div style='font-size:11px;color:#888;padding-left:14px'>📝 "+item.note+"</div>";
-                });
-                h+="<hr style='border:none;border-top:1px dashed #aaa;margin:8px 0'>";
-                h+="<div style='display:flex;justify-content:space-between;font-weight:900;font-size:16px'><span>合　計</span><span>$"+s.cartTotal+"</span></div>";
-                h+="<div style='text-align:center;font-size:11px;color:#888;margin-top:12px'>謝謝光臨 ♥</div>";
-                document.getElementById("pr").innerHTML=h;
-                window.print();
+                var s=this;
+                if(!s.lastOrderId){
+                    s.toast("⚠ 請先完成結帳再補印");return;
+                }
+                update(ref(db,"orders/"+s.lastOrderId),{print_task:"receipt_"+Date.now()})
+                    .then(function(){s.toast("🖨️ 收據列印中...");})
+                    .catch(function(e){alert("補印失敗："+e.message);});
             },
             toast:function(msg){
                 var s=this;s.toastMsg=msg;clearTimeout(s.toastTimer);
