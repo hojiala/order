@@ -609,16 +609,19 @@
                     timestamp:Date.now(),
                     orderNote:s.orderNote||''
                 };
-                // 先取得流水號
-                runTransaction(ref(db,'settings/orderCounter'),function(cur){return(cur||0)+1})
-                .then(function(result){
-                    orderData.orderNo=result.snapshot.val();
-                    return push(ref(db,'orders'),orderData);
-                }).then(function(snap){
+                // ★ 先送出訂單（不需Auth），再嘗試取流水號
+                push(ref(db,'orders'),orderData).then(function(snap){
                     var orderId=snap.key;
-                    return set(ref(db,'orders/'+orderId+'/print_task'),'kitchen_'+Date.now());
-                }).then(function(){
-                    s.lastOrderNo=orderData.orderNo;
+                    // 列印任務
+                    set(ref(db,'orders/'+orderId+'/print_task'),'kitchen_'+Date.now()).catch(function(){});
+                    // 嘗試取流水號（需Auth，失敗不影響訂單）
+                    runTransaction(ref(db,'settings/orderCounter'),function(cur){return(cur||0)+1})
+                    .then(function(result){
+                        var no=result.snapshot.val();
+                        update(ref(db,'orders/'+orderId),{orderNo:no});
+                        s.lastOrderNo=no;
+                    }).catch(function(){s.lastOrderNo=null;});
+                    // 成功畫面
                     s.lastPayment=payMethod;
                     s.showSuccess=true;
                     s.cart=[];s.orderNote='';s.currentView='menu';
