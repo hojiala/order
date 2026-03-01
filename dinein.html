@@ -532,19 +532,58 @@
             },
             listenOrders:function(){
                 var s=this;
+                // ★ 先從 localStorage 載入本桌訂單記錄
+                s.loadLocalOrders();
+                // ★ 嘗試從 Firebase 讀取（可能因權限失敗）
                 onValue(ref(db,'orders'),function(snap){
-                    if(!snap.exists()){s.allOrders=[];s.myOrders=[];s.estimatedWait=0;return}
+                    if(!snap.exists()){s.estimatedWait=0;return}
                     var all=Object.entries(snap.val()).filter(function(e){return e[1]&&e[1].status}).map(function(e){return Object.assign({id:e[0]},e[1])});
                     s.allOrders=all;
-                    // 本桌訂單（今日）
+                    // 本桌訂單（今日）- Firebase 有最新狀態
                     var today=new Date();today.setHours(0,0,0,0);
-                    s.myOrders=all.filter(function(o){
+                    var fbOrders=all.filter(function(o){
                         return o.tableDevice===s.deviceId&&o.timestamp>=today.getTime()&&o.status!=='cancelled'&&o.status!=='archived'
                     }).sort(function(a,b){return b.timestamp-a.timestamp});
-                    // 計算預估等候時間（每筆 making 訂單約 5 分鐘）
+                    if(fbOrders.length>0)s.myOrders=fbOrders;
+                    // 同步更新 localStorage
+                    s.syncLocalOrders(fbOrders);
+                    // 計算預估等候時間
                     var pending=all.filter(function(o){return o.status==='new'||o.status==='making'});
                     s.estimatedWait=Math.max(0,pending.length*5);
+                },function(err){
+                    // Firebase 讀取失敗（權限不足），使用 localStorage
+                    console.warn('Firebase orders read failed:',err.message);
                 });
+            },
+            loadLocalOrders:function(){
+                try{
+                    var saved=localStorage.getItem('dinein_orders_'+this.deviceId);
+                    if(!saved){this.myOrders=[];return}
+                    var all=JSON.parse(saved);
+                    var today=new Date();today.setHours(0,0,0,0);
+                    this.myOrders=all.filter(function(o){return o.timestamp>=today.getTime()})
+                        .sort(function(a,b){return b.timestamp-a.timestamp});
+                }catch(e){this.myOrders=[]}
+            },
+            saveLocalOrder:function(orderId,data){
+                try{
+                    var key='dinein_orders_'+this.deviceId;
+                    var saved=localStorage.getItem(key);
+                    var all=saved?JSON.parse(saved):[];
+                    all.push(Object.assign({id:orderId},data));
+                    // 只保留 3 天內
+                    var cutoff=Date.now()-3*24*3600*1000;
+                    all=all.filter(function(o){return o.timestamp>=cutoff});
+                    localStorage.setItem(key,JSON.stringify(all));
+                    this.loadLocalOrders();
+                }catch(e){}
+            },
+            syncLocalOrders:function(fbOrders){
+                try{
+                    var key='dinein_orders_'+this.deviceId;
+                    if(!fbOrders||!fbOrders.length)return;
+                    localStorage.setItem(key,JSON.stringify(fbOrders));
+                }catch(e){}
             },
             // ── 菜單操作 ──
             getQty:function(id){return this.cart.filter(function(i){return i.id===id}).reduce(function(s,i){return s+i.qty},0)},
@@ -593,9 +632,12 @@
             submitOrder:function(payMethod){
                 if(!this.cart.length||this.isSubmitting)return;
                 var s=this;s.isSubmitting=true;
+                var now=new Date();
+                var todayStr=now.getFullYear()+'-'+('0'+(now.getMonth()+1)).slice(-2)+'-'+('0'+now.getDate()).slice(-2);
                 var orderData={
                     customer:s.deviceLabel,
                     phone:'',
+                    pickupDate:todayStr,
                     pickupTime:'內用',
                     type:'dinein',
                     source:'dinein',
@@ -612,14 +654,24 @@
                 // ★ 先送出訂單（不需Auth），再嘗試取流水號
                 push(ref(db,'orders'),orderData).then(function(snap){
                     var orderId=snap.key;
+                    // ★ 立即儲存到 localStorage（不等流水號）
+                    s.saveLocalOrder(orderId,orderData);
                     // 列印任務
                     set(ref(db,'orders/'+orderId+'/print_task'),'kitchen_'+Date.now()).catch(function(){});
                     // 嘗試取流水號（需Auth，失敗不影響訂單）
                     runTransaction(ref(db,'settings/orderCounter'),function(cur){return(cur||0)+1})
                     .then(function(result){
                         var no=result.snapshot.val();
-                        update(ref(db,'orders/'+orderId),{orderNo:no});
+                        update(ref(db,'orders/'+orderId),{orderNo:no}).catch(function(){});
                         s.lastOrderNo=no;
+                        // 更新 localStorage 裡的流水號
+                        try{
+                            var key='dinein_orders_'+s.deviceId;
+                            var saved=JSON.parse(localStorage.getItem(key)||'[]');
+                            saved.forEach(function(o){if(o.id===orderId)o.orderNo=no;});
+                            localStorage.setItem(key,JSON.stringify(saved));
+                            s.loadLocalOrders();
+                        }catch(e){}
                     }).catch(function(){s.lastOrderNo=null;});
                     // 成功畫面
                     s.lastPayment=payMethod;
