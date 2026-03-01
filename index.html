@@ -227,8 +227,8 @@
                                 <span v-else-if="grp.pricing === 'addDelta' && ch.price > 0" class="text-orange-400 text-sm font-bold">+${{ ch.price }}</span>
                                 <!-- 套餐升級：顯示完整售價+是否含在套餐內 -->
                                 <span v-else-if="grp.pricing === 'mealUpgrade'" class="text-sm font-bold">
-                                    <span v-if="ch.price > (grp.baseValue || 0)" class="text-orange-500">補 ${{ ch.price - (grp.baseValue || 0) }}</span>
-                                    <span v-else class="text-green-500">已含</span>
+                                    <span v-if="ch.price > (grp.baseValue || 0)" class="text-orange-500">+${{ ch.price - (grp.baseValue || 0) }}</span>
+                                    <span v-else class="text-gray-400">$0</span>
                                 </span>
                             </label>
                         </template>
@@ -389,6 +389,28 @@
         </div>
     </div>
 
+    <!-- ★ 公休日 Modal -->
+    <div v-if="showHolidayModal"
+         class="fixed inset-0 z-[9999] flex items-center justify-center"
+         style="background:rgba(0,0,0,0.55);">
+        <div class="bg-white rounded-2xl shadow-2xl mx-5 overflow-hidden" style="max-width:22rem;width:100%;">
+            <div class="bg-orange-500 px-5 py-3 flex items-center gap-2">
+                <span style="font-size:1.25rem;">🍳</span>
+                <span class="text-white font-black text-base">元氣早午餐</span>
+            </div>
+            <div class="px-6 py-5 text-center">
+                <div class="text-4xl mb-3">🏖️</div>
+                <p class="text-gray-800 font-bold text-base mb-2">今日公休</p>
+                <p class="text-gray-500 text-sm leading-relaxed">很抱歉，今日公休，<br>您可透過預約功能向店家預約點餐。</p>
+            </div>
+            <div class="px-5 pb-5 flex justify-center">
+                <button @click="showHolidayModal = false"
+                    class="bg-orange-500 text-white font-bold px-8 py-2.5 rounded-xl text-sm"
+                    style="box-shadow:0 4px 12px rgba(249,115,22,0.3);">預約</button>
+            </div>
+        </div>
+    </div>
+
     <!-- ★ 自訂訂單成功 Modal (取代 alert，標題可自訂) -->
     <div v-if="showSuccessModal"
          class="fixed inset-0 z-[999] flex items-center justify-center"
@@ -471,7 +493,8 @@
                 alertDialogTitle: '',
                 alertDialogMsg: '',
                 successPickupTime: '',
-                successOrderTime: ''
+                successOrderTime: '',
+                showHolidayModal: false
             };
         },
         computed: {
@@ -529,10 +552,23 @@
             this.init();
         },
         methods: {
+            checkHoliday: function() {
+                var today = new Date();
+                var yyyy = today.getFullYear();
+                var mm   = ('0'+(today.getMonth()+1)).slice(-2);
+                var dd   = ('0'+today.getDate()).slice(-2);
+                var todayStr = yyyy+'-'+mm+'-'+dd;
+                var dow = today.getDay();
+                if ((this.settings.holidays||[]).indexOf(todayStr) !== -1 ||
+                    (this.settings.weeklyDaysOff||[]).indexOf(dow) !== -1) {
+                    this.showHolidayModal = true;
+                }
+            },
             init: function() {
                 var self = this;
                 Promise.all([self.loadSettings(), self.loadMenu()]).then(function() {
                     self.isLoading = false;
+                    self.checkHoliday();
                     if (self.settings.isOpen) self.initDateTime();
                     // 即時監聽設定
                     onValue(ref(db, 'settings'), function(snap) {
@@ -867,14 +903,16 @@
                     timestamp: Date.now()
                 };
                 var newRef = push(ref(db, 'orders'));
-                runTransaction(ref(db, 'settings/orderCounter'), function(cur) {
-                    return (cur || 0) + 1;
-                }).then(function(result) {
-                    orderData.orderNo = result.snapshot.val();
-                    return set(newRef, orderData);
-                }).then(function() {
+                // 直接送出訂單（不等待流水號，避免 Firebase 權限問題擋訂單）
+                set(newRef, orderData).then(function() {
                     return set(ref(db, 'orders/' + newRef.key + '/print_task'), 'kitchen_' + Date.now());
                 }).then(function() {
+                    // ★ 非同步補設流水號（不影響主流程）
+                    runTransaction(ref(db, 'settings/orderCounter'), function(cur) {
+                        return (cur || 0) + 1;
+                    }).then(function(result) {
+                        update(ref(db, 'orders/' + newRef.key), { orderNo: result.snapshot.val() });
+                    }).catch(function() { /* 流水號失敗不影響訂單 */ });
                     var now = new Date();
                     var hh = ('0'+now.getHours()).slice(-2);
                     var mm = ('0'+now.getMinutes()).slice(-2);
