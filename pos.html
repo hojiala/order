@@ -19,8 +19,10 @@
     @keyframes tin{from{transform:translateY(16px) translateX(-50%);opacity:0}to{transform:translateY(0) translateX(-50%);opacity:1}}
     @keyframes tout{to{transform:translateY(-8px) translateX(-50%);opacity:0}}
     .tbtn{border-bottom:3px solid transparent;transition:all .15s;white-space:nowrap}.tbtn.active{border-bottom-color:#f97316;color:#f97316}
-    .pos-layout{display:grid;grid-template-columns:1fr 380px;height:100vh;overflow:hidden}
-    @media(max-width:860px){.pos-layout{grid-template-columns:1fr;grid-template-rows:1fr 46vh}.pos-right{border-left:none;border-top:1px solid #e5e7eb}}
+    .pos-layout{display:grid;grid-template-columns:1fr 300px;height:100vh;overflow:hidden}
+    @media(max-width:900px){.pos-layout{grid-template-columns:1fr 260px}}
+    @media(max-width:600px){.pos-layout{grid-template-columns:3fr 2fr}}
+    @media(max-width:420px){.pos-layout{grid-template-columns:55vw 1fr}}
     @media print{body>*{display:none!important}#pr{display:block!important;font-family:monospace;font-size:13px;max-width:300px;margin:0 auto;padding:12px}}
     #pr{display:none}
   </style>
@@ -68,13 +70,17 @@
       <div class="flex items-center gap-2">
         <button @click="editMode=!editMode"
           :class="editMode ? 'bg-red-500 text-white' : 'bg-white/20 hover:bg-white/30 text-white'"
-          class="text-xs px-3 py-1.5 rounded-lg font-bold transition">{{ editMode ? "🔴 上下架中" : "⚡ 上下架" }}</button>
+          class="text-xs px-2 py-1.5 rounded-lg font-bold transition">{{ editMode ? "🔴 上下架" : "⚡ 上下架" }}</button>
+        <button @click="doArchiveAll"
+          class="text-xs px-2 py-1.5 rounded-lg font-bold bg-yellow-400 hover:bg-yellow-300 text-gray-900 transition">🌙 打烊結單</button>
+        <button @click="confirmResetCounter"
+          class="text-xs px-2 py-1.5 rounded-lg font-bold bg-white/20 hover:bg-white/30 text-white transition">🔢 歸零</button>
         <button @click="activeView = activeView==='orders' ? 'menu' : 'orders'"
-          class="relative text-xs px-3 py-1.5 rounded-lg font-bold bg-white/20 hover:bg-white/30 text-white transition">
-          &#128203; 訂單
+          class="relative text-xs px-2 py-1.5 rounded-lg font-bold bg-white/20 hover:bg-white/30 text-white transition">
+          &#128203;
           <span v-if="activeOrderCount>0" class="absolute -top-1.5 -right-1.5 bg-red-500 text-white font-black rounded-full w-5 h-5 flex items-center justify-center text-xs">{{ activeOrderCount }}</span>
         </button>
-        <button @click="doLogout" class="text-xs px-2.5 py-1.5 rounded-lg font-bold bg-white/10 hover:bg-white/20 text-white/70 transition">登出</button>
+        <button @click="doLogout" class="text-xs px-2 py-1.5 rounded-lg font-bold bg-white/10 hover:bg-white/20 text-white/70 transition">登出</button>
       </div>
     </div>
     <div class="flex overflow-x-auto bg-white border-b border-gray-200 flex-shrink-0 px-2">
@@ -84,7 +90,7 @@
     </div>
     <div class="flex-1 overflow-y-auto">
       <!-- MENU GRID -->
-      <div v-if="activeView==='menu'" class="p-3 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+      <div v-if="activeView==='menu'" class="p-2 grid gap-2" style="grid-template-columns:repeat(4,1fr)">
         <div v-if="menuLoading" class="col-span-full text-center text-gray-400 py-16"><div class="text-3xl mb-2">&#9200;</div>載入菜單中...</div>
         <template v-else v-for="item in filteredMenu" :key="item.id">
           <div v-if="editMode"
@@ -121,7 +127,6 @@
 
       <!-- ORDERS LIST -->
       <div v-else-if="activeView==='orders'" class="flex flex-col h-full">
-        <div v-if="activeMenu" @click="activeMenu=null" class="fixed inset-0 z-20"></div>
         <div class="p-3 pb-2 flex-shrink-0">
           <div class="flex items-center justify-between mb-2">
             <p class="font-bold text-gray-800 text-sm">所有進行中訂單 <span class="text-orange-500 font-black">({{ filteredOrders.length }})</span></p>
@@ -168,18 +173,9 @@
                 </div>
               <div class="flex-shrink-0 text-right">
                   <p class="text-orange-500 font-black text-base">${{ order.total }}</p>
-                  <div class="relative mt-1">
-                    <button @click.stop="activeMenu=activeMenu===order.id?null:order.id"
+                  <div class="mt-1">
+                    <button @click.stop="toggleOrderMenu($event,order.id)"
                       class="w-8 h-8 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded-full text-gray-600 font-black text-lg flex items-center justify-center transition">+</button>
-                    <div v-if="activeMenu===order.id"
-                      class="absolute bottom-9 right-0 bg-white rounded-xl shadow-2xl border border-gray-200 w-36 overflow-hidden z-30">
-                      <button @click.stop="printOrder(order);activeMenu=null"
-                        class="w-full text-left px-4 py-2.5 hover:bg-orange-50 text-gray-700 border-b border-gray-100 text-sm font-bold">&#128424; 補印工單</button>
-                      <button @click.stop="printReceipt(order);activeMenu=null"
-                        class="w-full text-left px-4 py-2.5 hover:bg-blue-50 text-gray-700 border-b border-gray-100 text-sm font-bold">&#129534; 印收據</button>
-                      <button v-if="order.status!=='done'" @click.stop="cancelOrder(order);activeMenu=null"
-                        class="w-full text-left px-4 py-2.5 hover:bg-red-50 text-red-600 text-sm font-bold">&#10005; 取消訂單</button>
-                    </div>
                   </div>
                 </div>
               </div>
@@ -189,6 +185,23 @@
       </div>
     </div>
   </div>
+
+  <!-- ── 固定定位的 + 選單 (避免被 overflow-y-auto 剪裁) ── -->
+  <teleport to="body">
+    <div v-if="activeMenu" @click="activeMenu=null" class="fixed inset-0 z-40"></div>
+    <div v-if="activeMenu && menuPos" class="fixed z-50 bg-white rounded-xl shadow-2xl border border-gray-200 w-40 overflow-hidden"
+         :style="{ top: menuPos.top+'px', right: menuPos.right+'px' }">
+      <div class="px-3 py-1.5 bg-gray-50 border-b border-gray-100">
+        <span class="text-xs text-gray-400 font-bold">No.{{ fmtNo(activeMenuOrder && activeMenuOrder.orderNo) }}</span>
+      </div>
+      <button @click.stop="printOrder(activeMenuOrder);activeMenu=null"
+        class="w-full text-left px-4 py-2.5 hover:bg-orange-50 text-gray-700 border-b border-gray-100 text-sm font-bold">&#128424; 補印工單</button>
+      <button @click.stop="printReceipt(activeMenuOrder);activeMenu=null"
+        class="w-full text-left px-4 py-2.5 hover:bg-blue-50 text-gray-700 border-b border-gray-100 text-sm font-bold">&#129534; 印收據</button>
+      <button v-if="activeMenuOrder && activeMenuOrder.status!=='done'" @click.stop="cancelOrder(activeMenuOrder);activeMenu=null"
+        class="w-full text-left px-4 py-2.5 hover:bg-red-50 text-red-600 text-sm font-bold">&#10005; 取消訂單</button>
+    </div>
+  </teleport>
 
   <!-- RIGHT: CART -->
   <div class="pos-right flex flex-col bg-white overflow-hidden border-l border-gray-200">
@@ -250,11 +263,9 @@
       </div>
       <div class="px-4 pb-4 grid grid-cols-2 gap-2">
         <template v-if="orderMode==='pos'">
-          <button @click="doPrint" :disabled="!lastOrderId"
-            class="py-3 rounded-xl font-bold text-sm border-2 border-gray-200 text-gray-600 hover:bg-gray-100 disabled:opacity-40 transition active:scale-95">&#128424; 補印收據</button>
           <button @click="doCheckout" :disabled="cart.length===0||isSubmitting"
-            class="py-3 rounded-xl font-black text-white text-sm disabled:opacity-40 transition active:scale-95"
-            style="background:linear-gradient(135deg,#f97316,#ef4444)">{{ isSubmitting ? "送出中..." : "✓ 確認結帳" }}</button>
+            class="col-span-2 py-3 rounded-xl font-black text-white text-sm disabled:opacity-40 transition active:scale-95"
+            style="background:linear-gradient(135deg,#f97316,#ef4444)">{{ isSubmitting ? "送出中..." : ("✓ 確認結帳 $" + cartTotal) }}</button>
         </template>
         <template v-if="orderMode!=='pos' && editingOrder">
           <button @click="saveOrderEdit()" :disabled="cart.length===0||isSubmitting"
@@ -295,8 +306,8 @@
               <span v-else-if="grp.pricing==='addDelta' && ch.price>0" class="text-orange-500">+${{ ch.price }}</span>
               <span v-else-if="grp.pricing==='addDelta' && ch.price===0" class="text-gray-400">免費</span>
               <span v-else-if="grp.pricing==='mealUpgrade'">
-                <span v-if="ch.price>(grp.baseValue||0)" class="text-orange-500">補 ${{ ch.price-(grp.baseValue||0) }}</span>
-                <span v-else class="text-green-500 text-xs">已含</span></span></span>
+                <span v-if="ch.price>(grp.baseValue||0)" class="text-orange-500">+${{ ch.price-(grp.baseValue||0) }}</span>
+                <span v-else class="text-gray-400 text-sm font-bold">$0</span></span></span>
           </label>
         </div>
       </template>
@@ -353,7 +364,9 @@
                 onlineOrders:[],ordersLoading:false,
                 orderSearch:"",
                 activeItem:null,tempQty:1,tempNote:"",tempSels:[],tempOG:{},
-                toastMsg:"",toastTimer:null,lastOrderId:null,activeMenu:null
+                toastMsg:"",toastTimer:null,lastOrderId:null,
+                activeMenu:null,menuPos:null,activeMenuOrder:null,
+                archiveConfirm:false,resetConfirm:false
             };
         },
         computed:{
@@ -393,6 +406,38 @@
         },
         methods:{
             fmtNo:function(n){return n?String(n).padStart(3,"0"):"???";},
+            toggleOrderMenu:function(event,orderId){
+                if(this.activeMenu===orderId){this.activeMenu=null;this.menuPos=null;this.activeMenuOrder=null;return;}
+                this.activeMenu=orderId;
+                this.activeMenuOrder=this.onlineOrders.find(function(o){return o.id===orderId;})||null;
+                var btn=event.currentTarget;
+                var rect=btn.getBoundingClientRect();
+                var dropH=130; // approx dropdown height
+                var top=rect.top-dropH-4;
+                if(top<8)top=rect.bottom+4;
+                this.menuPos={top:Math.max(8,top),right:Math.round(window.innerWidth-rect.right)};
+            },
+            doArchiveAll:function(){
+                var s=this;
+                if(!confirm("確定要進行「打烊結單」嗎？\n這會將畫面上所有的訂單封存至歷史紀錄，並清空畫面。"))return;
+                var updates={};
+                s.onlineOrders.forEach(function(o){
+                    updates["orders/"+o.id+"/status"]="done";
+                });
+                if(!Object.keys(updates).length){s.toast("✅ 目前沒有待結單訂單");return;}
+                var updateRef=ref(db);
+                update(updateRef,updates).then(function(){
+                    s.toast("✅ 結單完成！畫面已清空，辛苦了！");
+                    s.exitOnline();
+                }).catch(function(e){alert("結單失敗："+e.message);});
+            },
+            confirmResetCounter:function(){
+                var s=this;
+                if(!confirm("確定要將數字流水號歸零嗎？\n（歸零後下一筆訂單將從 No.001 開始重新計算）"))return;
+                set(ref(db,"settings/orderCounter"),0)
+                    .then(function(){s.toast("✅ 流水號已歸零，下一筆從 No.001 開始");})
+                    .catch(function(e){alert("歸零失敗："+e.message);});
+            },
             doLogin:function(){
                 var s=this;
                 if(!s.loginEmail||!s.loginPassword){s.loginError="請輸入信箱與密碼";return;}
@@ -553,15 +598,7 @@
                     if(s.editingOrder&&s.editingOrder.id===order.id)s.exitOnline();
                 }).catch(function(e){alert("取消訂單失敗："+e.message);});
             },
-            doPrint:function(){
-                var s=this;
-                if(!s.lastOrderId){s.toast("⚠ 請先完成結帳再補印");return;}
-                var taskRef=ref(db,"orders/"+s.lastOrderId+"/print_task");
-                remove(taskRef).then(function(){
-                    return set(taskRef,"receipt_"+Date.now());
-                }).then(function(){s.toast("🧾 收據列印中...");})
-                .catch(function(e){alert("補印失敗："+e.message);});
-            },
+
             toast:function(msg){
                 var s=this;s.toastMsg=msg;clearTimeout(s.toastTimer);
                 s.toastTimer=setTimeout(function(){s.toastMsg="";},2200);
