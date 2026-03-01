@@ -392,8 +392,11 @@
                         </div>
                         <div class="px-3 py-2">
                             <div v-for="(item,ii) in (order.items||[])" :key="ii" class="text-sm text-gray-700 py-0.5">
-                                <span class="text-orange-500 font-bold">{{ item.qty }}x</span> {{ item.name }}
-                                <span v-if="item.optionGroupSelections&&item.optionGroupSelections.length" class="text-xs text-gray-400">（{{ item.optionGroupSelections.map(function(s){return s.name}).join('、') }}）</span>
+                                <div>
+                                    <span class="text-orange-500 font-bold">{{ item.qty }}x</span> {{ item.name }}
+                                    <span v-if="item.optionGroupSelections&&item.optionGroupSelections.length" class="text-xs text-gray-400">（{{ item.optionGroupSelections.map(function(s){return s.name}).join('、') }}）</span>
+                                </div>
+                                <div v-if="item.note" class="text-xs text-blue-500 pl-5">📝 {{ item.note }}</div>
                             </div>
                             <div class="flex justify-between items-center mt-1 pt-1 border-t border-gray-100">
                                 <span class="text-xs text-gray-400">取餐：{{ order.pickupTime }}</span>
@@ -1051,9 +1054,17 @@
                     }).then(function(result) {
                         var no = result.snapshot.val();
                         update(ref(db, 'orders/' + orderId), { orderNo: no }).catch(function(){});
-                        // 更新 localStorage 裡的流水號
                         self.updateMyOrderNo(orderId, no);
-                    }).catch(function() { /* 流水號需Auth，由後台 admin/pos 自動補發 */ });
+                    }).catch(function() {
+                        // ★ 前台無Auth → 監聽後台自動補發的流水號
+                        var unsub = onValue(ref(db, 'orders/' + orderId + '/orderNo'), function(noSnap) {
+                            if (noSnap.exists() && noSnap.val()) {
+                                self.updateMyOrderNo(orderId, noSnap.val());
+                                unsub();
+                            }
+                        }, function(){});
+                        setTimeout(function() { try { unsub(); } catch(e) {} }, 30000);
+                    });
                     // 成功畫面
                     var now = new Date();
                     var hh = ('0'+now.getHours()).slice(-2);
