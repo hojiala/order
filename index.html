@@ -84,7 +84,7 @@
                         <h1 class="text-xl font-black text-orange-500" style="line-height:1.3;">元氣早午餐</h1>
                         <p class="text-xs text-orange-300 mt-0.5">善化中山店</p>
                     </div>
-                    <button @click="showStoreInfo=true"
+                    <button @click="showStoreInfo=true;tryRefreshOrderStatus()"
                         class="w-7 h-7 rounded-full border border-orange-400 text-orange-500 font-black text-xs flex items-center justify-center hover:bg-orange-50 transition"
                         style="font-family:serif;font-style:italic">i</button>
                 </div>
@@ -598,27 +598,13 @@
                 if (!did) { did = 'web_' + Date.now() + '_' + Math.random().toString(36).slice(2,8); localStorage.setItem('online_device_id', did); }
                 this.deviceId = did;
             } catch(e) { this.deviceId = 'web_' + Date.now(); }
-            // ★ Fix5: 從 localStorage 恢復購物車
+            // ★ 從 localStorage 恢復購物車
             try {
                 var saved = localStorage.getItem('cart_items');
                 if (saved) this.cart = JSON.parse(saved);
             } catch(e) { this.cart = []; }
-            // ★ 監聽本裝置訂單（點餐記錄）
-            var self = this;
-            onValue(ref(db, 'orders'), function(snap) {
-                if (!snap.exists()) { self.myOrders = []; return; }
-                var data = snap.val();
-                var did = self.deviceId;
-                var today = new Date(); today.setHours(0,0,0,0);
-                var todayTs = today.getTime();
-                var arr = [];
-                for (var id in data) {
-                    var o = data[id]; if (!o || !o.timestamp) continue;
-                    if (o.deviceId === did && o.timestamp >= todayTs) arr.push(Object.assign({id: id}, o));
-                }
-                arr.sort(function(a,b) { return (b.timestamp||0) - (a.timestamp||0); });
-                self.myOrders = arr;
-            });
+            // ★ 從 localStorage 讀取點餐記錄
+            this.loadMyOrders();
             this.init();
         },
         methods: {
@@ -926,6 +912,70 @@
                 var d = new Date(ts);
                 return ('0'+d.getHours()).slice(-2) + ':' + ('0'+d.getMinutes()).slice(-2);
             },
+            loadMyOrders: function() {
+                try {
+                    var saved = localStorage.getItem('my_orders');
+                    if (!saved) { this.myOrders = []; return; }
+                    var all = JSON.parse(saved);
+                    // 只顯示最近 7 天的訂單
+                    var cutoff = Date.now() - 7 * 24 * 3600 * 1000;
+                    this.myOrders = all.filter(function(o) { return o.timestamp >= cutoff; })
+                        .sort(function(a,b) { return (b.timestamp||0) - (a.timestamp||0); });
+                } catch(e) { this.myOrders = []; }
+            },
+            saveMyOrder: function(orderId, orderData) {
+                try {
+                    var saved = localStorage.getItem('my_orders');
+                    var all = saved ? JSON.parse(saved) : [];
+                    all.push(Object.assign({ id: orderId }, orderData));
+                    // 只保留最近 7 天
+                    var cutoff = Date.now() - 7 * 24 * 3600 * 1000;
+                    all = all.filter(function(o) { return o.timestamp >= cutoff; });
+                    localStorage.setItem('my_orders', JSON.stringify(all));
+                    this.loadMyOrders();
+                } catch(e) {}
+            },
+            updateMyOrderNo: function(orderId, orderNo) {
+                try {
+                    var saved = JSON.parse(localStorage.getItem('my_orders') || '[]');
+                    var changed = false;
+                    saved.forEach(function(o) { if (o.id === orderId) { o.orderNo = orderNo; changed = true; } });
+                    if (changed) {
+                        localStorage.setItem('my_orders', JSON.stringify(saved));
+                        this.loadMyOrders();
+                    }
+                } catch(e) {}
+            },
+            // ★ 嘗試從 Firebase 讀取訂單狀態更新（可能因權限失敗）
+            tryRefreshOrderStatus: function() {
+                var self = this;
+                if (!self.myOrders.length) return;
+                self.myOrders.forEach(function(order) {
+                    if (!order.id) return;
+                    get(ref(db, 'orders/' + order.id + '/status')).then(function(snap) {
+                        if (snap.exists()) {
+                            order.status = snap.val();
+                            // 更新 localStorage
+                            try {
+                                var saved = JSON.parse(localStorage.getItem('my_orders') || '[]');
+                                saved.forEach(function(o) { if (o.id === order.id) o.status = snap.val(); });
+                                localStorage.setItem('my_orders', JSON.stringify(saved));
+                            } catch(e) {}
+                        }
+                    }).catch(function() {});
+                    // 也嘗試讀取 orderNo
+                    get(ref(db, 'orders/' + order.id + '/orderNo')).then(function(snap) {
+                        if (snap.exists()) {
+                            order.orderNo = snap.val();
+                            try {
+                                var saved = JSON.parse(localStorage.getItem('my_orders') || '[]');
+                                saved.forEach(function(o) { if (o.id === order.id) o.orderNo = snap.val(); });
+                                localStorage.setItem('my_orders', JSON.stringify(saved));
+                            } catch(e) {}
+                        }
+                    }).catch(function() {});
+                });
+            },
             submitToFirebase: function() {
                 var self = this;
                 // ★ Fix4: 所有驗證改用自訂 modal，不用 alert()
@@ -991,14 +1041,19 @@
                 // ★ 先送出訂單（已驗證可正常寫入），再嘗試取得流水號
                 push(ref(db, 'orders'), orderData).then(function(snap) {
                     var orderId = snap.key;
+                    // ★ 立即儲存到 localStorage（不等流水號）
+                    self.saveMyOrder(orderId, orderData);
                     // 設定列印任務
                     set(ref(db, 'orders/' + orderId + '/print_task'), 'kitchen_' + Date.now()).catch(function(){});
                     // 嘗試取得流水號（需Auth，失敗不影響訂單）
                     runTransaction(ref(db, 'settings/orderCounter'), function(cur) {
                         return (cur || 0) + 1;
                     }).then(function(result) {
-                        update(ref(db, 'orders/' + orderId), { orderNo: result.snapshot.val() });
-                    }).catch(function() { /* 流水號需Auth，前台無法取得 */ });
+                        var no = result.snapshot.val();
+                        update(ref(db, 'orders/' + orderId), { orderNo: no }).catch(function(){});
+                        // 更新 localStorage 裡的流水號
+                        self.updateMyOrderNo(orderId, no);
+                    }).catch(function() { /* 流水號需Auth，由後台 admin/pos 自動補發 */ });
                     // 成功畫面
                     var now = new Date();
                     var hh = ('0'+now.getHours()).slice(-2);
