@@ -85,7 +85,7 @@
                         <p class="text-xs text-orange-300 mt-0.5">善化中山店</p>
                     </div>
                     <button @click="showStoreInfo=true"
-                        class="w-9 h-9 rounded-full border-2 border-orange-400 text-orange-500 font-black text-base flex items-center justify-center hover:bg-orange-50 transition"
+                        class="w-7 h-7 rounded-full border border-orange-400 text-orange-500 font-black text-xs flex items-center justify-center hover:bg-orange-50 transition"
                         style="font-family:serif;font-style:italic">i</button>
                 </div>
                 <div class="flex gap-3 px-4 pb-3">
@@ -363,23 +363,50 @@
         </div>
     </div>
 
-    <!-- ★ 門市資訊 Modal -->
+    <!-- ★ 門市資訊/點餐記錄 Modal -->
     <div v-if="showStoreInfo"
          class="fixed inset-0 z-[1000] flex items-center justify-center"
          style="background:rgba(0,0,0,0.45);" @click.self="showStoreInfo=false">
-        <div class="bg-white rounded-2xl shadow-2xl mx-5 overflow-hidden" style="max-width:22rem;width:100%;">
-            <div class="bg-orange-500 px-5 py-3 flex items-center gap-2">
-                <span style="font-size:1.25rem;">🍳</span>
-                <span class="text-white font-black text-base">門市資訊</span>
+        <div class="bg-white rounded-2xl shadow-2xl mx-4 overflow-hidden" style="max-width:24rem;width:100%;max-height:85vh;display:flex;flex-direction:column;">
+            <div class="bg-orange-500 px-4 py-3 flex items-center justify-between flex-shrink-0">
+                <div class="flex gap-1">
+                    <button @click="storeInfoTab='orders'" :class="storeInfoTab==='orders' ? 'bg-white text-orange-600' : 'bg-orange-400 text-white'" class="px-3 py-1 rounded-lg text-sm font-bold transition">📋 點餐記錄</button>
+                    <button @click="storeInfoTab='info'" :class="storeInfoTab==='info' ? 'bg-white text-orange-600' : 'bg-orange-400 text-white'" class="px-3 py-1 rounded-lg text-sm font-bold transition">ℹ️ 門市資訊</button>
+                </div>
+                <button @click="showStoreInfo=false" class="text-white text-xl font-bold w-7 h-7 flex items-center justify-center rounded-full hover:bg-orange-400 transition">✕</button>
             </div>
-            <div class="px-5 py-4">
+            <!-- 點餐記錄 -->
+            <div v-if="storeInfoTab==='orders'" class="flex-1 overflow-y-auto px-4 py-3" style="min-height:0;">
+                <div v-if="myOrders.length===0" class="text-center py-10 text-gray-300">
+                    <div style="font-size:2.5rem;margin-bottom:0.5rem;">📋</div>
+                    <p class="text-sm">今日尚無點餐記錄</p>
+                </div>
+                <div v-else class="space-y-3">
+                    <div v-for="order in myOrders" :key="order.id" class="border border-gray-200 rounded-xl overflow-hidden">
+                        <div class="bg-gray-50 px-3 py-2 flex items-center justify-between border-b border-gray-200">
+                            <div class="flex items-center gap-2">
+                                <span class="text-xs font-black text-orange-600 bg-orange-50 px-2 py-0.5 rounded">No.{{ order.orderNo ? String(order.orderNo).padStart(3,'0') : '---' }}</span>
+                                <span :class="{'text-red-500': order.status==='new','text-yellow-600': order.status==='making','text-green-600': order.status==='done','text-gray-400': order.status==='cancelled'}" class="text-xs font-bold">{{ {new:'🔴 等待接單',making:'🟡 製作中',done:'🟢 已完成',cancelled:'⚫ 已取消'}[order.status] || order.status }}</span>
+                            </div>
+                            <span class="text-xs text-gray-400">{{ formatOrderTime(order.timestamp) }}</span>
+                        </div>
+                        <div class="px-3 py-2">
+                            <div v-for="(item,ii) in (order.items||[])" :key="ii" class="text-sm text-gray-700 py-0.5">
+                                <span class="text-orange-500 font-bold">{{ item.qty }}x</span> {{ item.name }}
+                                <span v-if="item.optionGroupSelections&&item.optionGroupSelections.length" class="text-xs text-gray-400">（{{ item.optionGroupSelections.map(function(s){return s.name}).join('、') }}）</span>
+                            </div>
+                            <div class="flex justify-between items-center mt-1 pt-1 border-t border-gray-100">
+                                <span class="text-xs text-gray-400">取餐：{{ order.pickupTime }}</span>
+                                <span class="text-orange-500 font-black text-sm">${{ order.total }}</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <!-- 門市資訊 -->
+            <div v-if="storeInfoTab==='info'" class="flex-1 overflow-y-auto px-5 py-4" style="min-height:0;">
                 <div v-if="storeInfo" class="text-gray-700 text-sm" style="white-space:pre-line;line-height:1.9;">{{ storeInfo }}</div>
                 <div v-else class="text-gray-400 text-sm text-center py-4">暫無門市資訊</div>
-            </div>
-            <div class="px-5 pb-4 flex justify-end">
-                <button @click="showStoreInfo=false"
-                    class="bg-orange-500 text-white font-bold px-6 py-2 rounded-xl text-sm"
-                    style="box-shadow:0 4px 12px rgba(249,115,22,0.3);">關閉</button>
             </div>
         </div>
     </div>
@@ -512,7 +539,10 @@
                 successOrderTime: '',
                 showHolidayModal: false,
                 showStoreInfo: false,
-                storeInfo: ''
+                storeInfoTab: 'orders',
+                storeInfo: '',
+                deviceId: '',
+                myOrders: []
             };
         },
         computed: {
@@ -562,11 +592,33 @@
             }
         },
         created: function() {
+            // ★ 裝置識別碼（用於追蹤點餐記錄）
+            try {
+                var did = localStorage.getItem('online_device_id');
+                if (!did) { did = 'web_' + Date.now() + '_' + Math.random().toString(36).slice(2,8); localStorage.setItem('online_device_id', did); }
+                this.deviceId = did;
+            } catch(e) { this.deviceId = 'web_' + Date.now(); }
             // ★ Fix5: 從 localStorage 恢復購物車
             try {
                 var saved = localStorage.getItem('cart_items');
                 if (saved) this.cart = JSON.parse(saved);
             } catch(e) { this.cart = []; }
+            // ★ 監聽本裝置訂單（點餐記錄）
+            var self = this;
+            onValue(ref(db, 'orders'), function(snap) {
+                if (!snap.exists()) { self.myOrders = []; return; }
+                var data = snap.val();
+                var did = self.deviceId;
+                var today = new Date(); today.setHours(0,0,0,0);
+                var todayTs = today.getTime();
+                var arr = [];
+                for (var id in data) {
+                    var o = data[id]; if (!o || !o.timestamp) continue;
+                    if (o.deviceId === did && o.timestamp >= todayTs) arr.push(Object.assign({id: id}, o));
+                }
+                arr.sort(function(a,b) { return (b.timestamp||0) - (a.timestamp||0); });
+                self.myOrders = arr;
+            });
             this.init();
         },
         methods: {
@@ -825,36 +877,54 @@
             },
             // ★ Fix6: 判斷是否有選項，決定直接加入或開詳細頁
             quickAddOrDetail: function(item) {
-                var hasOptions = item.options && item.options.length > 0;
-                var hasMeal = item.mealOptions && item.mealOptions.length > 0;
-                var hasGroups = item.optionGroups && item.optionGroups.length > 0;
-                if (hasOptions || hasMeal || hasGroups) {
-                    // 有選項 → 進詳細頁讓顧客選
-                    this.openItemDetail(item);
-                } else {
-                    // 無選項 → 直接+1加入購物車，顯示動畫提示
-                    var existing = null;
-                    for (var i = 0; i < this.cart.length; i++) {
-                        if (this.cart[i].id === item.id && !this.cart[i].note) {
-                            existing = this.cart[i]; break;
-                        }
+                // ★ 快速加入：永遠直接加入購物車，有選項的使用預設值
+                var basePrice = item.price;
+                var extra = 0;
+                var ogSels = [];
+                // 使用選項群組預設值
+                (item.optionGroups || []).forEach(function(grp, gi) {
+                    var idx = grp.defaultIdx || 0;
+                    var ch = (grp.choices || [])[idx];
+                    if (!ch) return;
+                    if (grp.pricing === 'setPrice') basePrice = ch.price;
+                    else if (grp.pricing === 'addDelta') extra += ch.price;
+                    else if (grp.pricing === 'mealUpgrade') extra += Math.max(0, ch.price - (grp.baseValue || 0));
+                    ogSels.push({groupName: grp.groupName, idx: idx, name: ch.name, price: ch.price, pricing: grp.pricing, baseValue: grp.baseValue || 0});
+                });
+                var mealDrink = (item.mealOptions && item.mealOptions.length) ? item.mealOptions[0].name : '';
+                var unitPrice = basePrice + extra;
+                // 找已有的相同項目（無備註、無加料、相同選項）
+                var ogKey = JSON.stringify(ogSels);
+                var existing = null;
+                for (var i = 0; i < this.cart.length; i++) {
+                    var c = this.cart[i];
+                    if (c.id === item.id && !c.note && (!c.options || !c.options.length) && JSON.stringify(c.optionGroupSelections || []) === ogKey) {
+                        existing = c; break;
                     }
-                    if (existing) {
-                        existing.qty += 1;
-                        existing.itemTotal = existing.price * existing.qty;
-                    } else {
-                        this.cart.push({
-                            id: item.id, name: item.name, price: item.price,
-                            qty: 1, note: '', options: [], mealDrink: '',
-                            itemTotal: item.price
-                        });
-                    }
-                    // 短暫顯示加入提示
-                    this.toastItem = item.name;
-                    var self = this;
-                    clearTimeout(self._toastTimer);
-                    self._toastTimer = setTimeout(function() { self.toastItem = ''; }, 1800);
                 }
+                if (existing) {
+                    existing.qty += 1;
+                    existing.itemTotal = unitPrice * existing.qty;
+                } else {
+                    this.cart.push({
+                        id: item.id, name: item.name, price: item.price,
+                        qty: 1, note: '', options: [], mealDrink: mealDrink,
+                        optionGroupSelections: ogSels,
+                        itemTotal: unitPrice
+                    });
+                }
+                this.showQuickAddToast(item.name);
+            },
+            showQuickAddToast: function(name) {
+                this.toastItem = name;
+                var self = this;
+                clearTimeout(self._toastTimer);
+                self._toastTimer = setTimeout(function() { self.toastItem = ''; }, 1800);
+            },
+            formatOrderTime: function(ts) {
+                if (!ts) return '';
+                var d = new Date(ts);
+                return ('0'+d.getHours()).slice(-2) + ':' + ('0'+d.getMinutes()).slice(-2);
             },
             submitToFirebase: function() {
                 var self = this;
@@ -911,50 +981,41 @@
                     pickupDate: this.pickupDate,
                     pickupTime: this.pickupTime,
                     type: this.orderType,
+                    source: 'online',
+                    deviceId: self.deviceId || '',
                     items: this.cart,
                     total: this.cartTotal,
                     status: 'new',
                     timestamp: Date.now()
                 };
-                // ★ 修正：先嘗試取得流水號，失敗則先送出訂單再補號
-                var gotNo = false;
-                runTransaction(ref(db, 'settings/orderCounter'), function(cur) {
-                    return (cur || 0) + 1;
-                }).then(function(result) {
-                    orderData.orderNo = result.snapshot.val();
-                    gotNo = true;
-                }).catch(function() {
-                    // 流水號取得失敗（權限不足等），繼續送出訂單
+                // ★ 先送出訂單（已驗證可正常寫入），再嘗試取得流水號
+                push(ref(db, 'orders'), orderData).then(function(snap) {
+                    var orderId = snap.key;
+                    // 設定列印任務
+                    set(ref(db, 'orders/' + orderId + '/print_task'), 'kitchen_' + Date.now()).catch(function(){});
+                    // 嘗試取得流水號（需Auth，失敗不影響訂單）
+                    runTransaction(ref(db, 'settings/orderCounter'), function(cur) {
+                        return (cur || 0) + 1;
+                    }).then(function(result) {
+                        update(ref(db, 'orders/' + orderId), { orderNo: result.snapshot.val() });
+                    }).catch(function() { /* 流水號需Auth，前台無法取得 */ });
+                    // 成功畫面
+                    var now = new Date();
+                    var hh = ('0'+now.getHours()).slice(-2);
+                    var mm = ('0'+now.getMinutes()).slice(-2);
+                    self.successPickupTime = self.pickupTime;
+                    self.successOrderTime = hh + ':' + mm;
+                    self.showSuccessModal = true;
+                    self.cart = [];
+                    try { localStorage.removeItem('cart_items'); } catch(e) {}
+                    self.inputName = '';
+                    self.inputPhone = '';
+                    self.currentView = 'menu';
+                }).catch(function(e) {
+                    console.error(e);
+                    self.showAlertModal('傳送失敗', '請檢查網路連線或系統設定！');
                 }).finally(function() {
-                    var newRef = push(ref(db, 'orders'));
-                    set(newRef, orderData).then(function() {
-                        return set(ref(db, 'orders/' + newRef.key + '/print_task'), 'kitchen_' + Date.now());
-                    }).then(function() {
-                        // 如果流水號沒拿到，非同步補設
-                        if (!gotNo) {
-                            runTransaction(ref(db, 'settings/orderCounter'), function(cur) {
-                                return (cur || 0) + 1;
-                            }).then(function(result) {
-                                update(ref(db, 'orders/' + newRef.key), { orderNo: result.snapshot.val() });
-                            }).catch(function() { /* 流水號補設失敗不影響訂單 */ });
-                        }
-                        var now = new Date();
-                        var hh = ('0'+now.getHours()).slice(-2);
-                        var mm = ('0'+now.getMinutes()).slice(-2);
-                        self.successPickupTime = self.pickupTime;
-                        self.successOrderTime = hh + ':' + mm;
-                        self.showSuccessModal = true;
-                        self.cart = [];
-                        try { localStorage.removeItem('cart_items'); } catch(e) {}
-                        self.inputName = '';
-                        self.inputPhone = '';
-                        self.currentView = 'menu';
-                    }).catch(function(e) {
-                        console.error(e);
-                        self.showAlertModal('傳送失敗', '請檢查網路連線或系統設定！');
-                    }).finally(function() {
-                        self.isSubmitting = false;
-                    });
+                    self.isSubmitting = false;
                 });
                 localStorage.setItem('lastOrderTime', Date.now().toString());
             }
