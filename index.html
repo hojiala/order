@@ -902,21 +902,20 @@
                     status: 'new',
                     timestamp: Date.now()
                 };
-                var newRef = push(ref(db, 'orders'));
-                // 直接送出訂單（不等待流水號，避免 Firebase 權限問題擋訂單）
-                set(newRef, orderData).then(function() {
-                    return set(ref(db, 'orders/' + newRef.key + '/print_task'), 'kitchen_' + Date.now());
+                // ★ 修正：先取得流水號，再建立訂單（確保 orderNo 一定寫入）
+                runTransaction(ref(db, 'settings/orderCounter'), function(cur) {
+                    return (cur || 0) + 1;
+                }).then(function(result) {
+                    orderData.orderNo = result.snapshot.val();
+                    return push(ref(db, 'orders'), orderData);
+                }).then(function(snap) {
+                    var orderId = snap.key;
+                    var taskRef = ref(db, 'orders/' + orderId + '/print_task');
+                    return set(taskRef, 'kitchen_' + Date.now());
                 }).then(function() {
-                    // ★ 非同步補設流水號（不影響主流程）
-                    runTransaction(ref(db, 'settings/orderCounter'), function(cur) {
-                        return (cur || 0) + 1;
-                    }).then(function(result) {
-                        update(ref(db, 'orders/' + newRef.key), { orderNo: result.snapshot.val() });
-                    }).catch(function() { /* 流水號失敗不影響訂單 */ });
                     var now = new Date();
                     var hh = ('0'+now.getHours()).slice(-2);
                     var mm = ('0'+now.getMinutes()).slice(-2);
-                    // ★ Fix4: 用自訂 modal 取代 alert
                     self.successPickupTime = self.pickupTime;
                     self.successOrderTime = hh + ':' + mm;
                     self.showSuccessModal = true;
