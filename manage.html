@@ -248,7 +248,10 @@
             <div v-if="menuSubTab==='templates'" class="max-w-3xl">
                 <div class="flex items-center justify-between mb-4">
                     <p class="text-slate-400 text-sm">建立容量、溫度、套餐飲料模板，新增餐點時一鍵套用。<span v-if="optionTemplates.length>1" class="text-xs text-slate-500 ml-2">（拖曳排序）</span></p>
-                    <button @click="openNewTemplateForm" class="bg-amber-600 hover:bg-amber-500 text-white font-bold px-5 py-2.5 rounded-lg transition flex items-center gap-2 text-sm">＋ 新增模板</button>
+                    <div class="flex gap-2">
+                        <button v-if="tplOrderDirty" @click="saveTemplateOrder" class="bg-emerald-700 hover:bg-emerald-600 text-white font-bold px-4 py-2 rounded-lg text-sm transition">💾 保存排序</button>
+                        <button @click="openNewTemplateForm" class="bg-amber-600 hover:bg-amber-500 text-white font-bold px-5 py-2.5 rounded-lg transition flex items-center gap-2 text-sm">＋ 新增模板</button>
+                    </div>
                 </div>
                 <!-- 新增/編輯模板表單 -->
                 <div v-if="showTemplateForm" class="bg-slate-800 border border-amber-600/50 rounded-2xl p-5 mb-6">
@@ -334,16 +337,27 @@
 
                 <!-- ===== TAB: 營業統計 ===== -->
         <div v-if="activeTab === 'stats'" class="p-6">
-            <div class="mb-6">
-                <h2 class="text-xl font-bold text-white">營業統計</h2>
-                <p class="text-slate-400 text-sm mt-0.5">查看歷史訂單與營業額</p>
+            <div class="mb-6 flex items-center justify-between">
+                <div>
+                    <h2 class="text-xl font-bold text-white">營業統計</h2>
+                    <p class="text-slate-400 text-sm mt-0.5">查看歷史訂單與營業額</p>
+                </div>
+                <button @click="refreshStats" class="bg-slate-700 hover:bg-slate-600 text-slate-300 hover:text-white font-bold px-4 py-2.5 rounded-xl transition flex items-center gap-2 text-sm border border-slate-600">
+                    🔄 重新整理
+                </button>
             </div>
             <div class="bg-slate-800 rounded-xl border border-slate-700 p-4 mb-6">
                 <div class="flex flex-wrap gap-3 items-end">
                     <div>
                         <p class="text-slate-400 text-xs mb-2 font-bold uppercase tracking-wider">時間範圍</p>
-                        <div class="flex gap-2">
+                        <div class="flex gap-2 flex-wrap">
                             <button @click="statsMode = 'today'; loadStats()" :class="statsMode === 'today' ? 'bg-emerald-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'" class="px-4 py-2 rounded-lg text-sm transition font-medium">今天</button>
+                            <button @click="setQuickDate('tomorrow')" :class="statsMode === 'tomorrow' ? 'bg-emerald-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'" class="px-4 py-2 rounded-lg text-sm transition font-medium">明天</button>
+                            <button @click="setQuickDate('yesterday')" :class="statsMode === 'yesterday' ? 'bg-emerald-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'" class="px-4 py-2 rounded-lg text-sm transition font-medium">昨天</button>
+                            <button @click="setQuickDate('dayBefore')" :class="statsMode === 'dayBefore' ? 'bg-emerald-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'" class="px-4 py-2 rounded-lg text-sm transition font-medium">前天</button>
+                            <button @click="setQuickDate('last7')" :class="statsMode === 'last7' ? 'bg-emerald-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'" class="px-4 py-2 rounded-lg text-sm transition font-medium">過去7天</button>
+                            <button @click="setQuickDate('thisMonth')" :class="statsMode === 'thisMonth' ? 'bg-emerald-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'" class="px-4 py-2 rounded-lg text-sm transition font-medium">本月</button>
+                            <button @click="setQuickDate('lastMonth')" :class="statsMode === 'lastMonth' ? 'bg-emerald-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'" class="px-4 py-2 rounded-lg text-sm transition font-medium">上月</button>
                             <button @click="statsMode = 'single'" :class="statsMode === 'single' ? 'bg-emerald-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'" class="px-4 py-2 rounded-lg text-sm transition font-medium">單一日期</button>
                             <button @click="statsMode = 'range'" :class="statsMode === 'range' ? 'bg-emerald-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'" class="px-4 py-2 rounded-lg text-sm transition font-medium">日期範圍</button>
                         </div>
@@ -456,18 +470,38 @@
                     </div>
                 </div>
 
-                <!-- 營業時間 -->
+                <!-- 營業時間（每日獨立設定）-->
                 <div class="bg-slate-800 rounded-xl border border-slate-700 p-5">
-                    <p class="font-bold text-white mb-4">門市營業時間</p>
-                    <div class="flex gap-4 items-center flex-wrap">
+                    <p class="font-bold text-white mb-1">門市營業時間</p>
+                    <p class="text-slate-400 text-sm mb-4">每日可獨立設定不同營業時段，方便應對不同排班需求</p>
+                    <!-- 預設時間（適用未個別設定的日子）-->
+                    <div class="flex gap-4 items-center flex-wrap mb-4 bg-slate-700/50 rounded-lg p-3">
+                        <span class="text-slate-300 text-sm font-bold">預設時間</span>
                         <div>
-                            <p class="text-slate-400 text-xs mb-2 font-bold">開始時間</p>
-                            <input v-model="settings.openTime" type="time" class="bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-white text-base focus:outline-none focus:border-emerald-500 w-36">
+                            <input v-model="settings.openTime" type="time" class="bg-slate-700 border border-slate-600 rounded-lg px-3 py-1.5 text-white text-sm focus:outline-none focus:border-emerald-500 w-32">
                         </div>
-                        <span class="text-slate-500 mt-4">～</span>
+                        <span class="text-slate-500">～</span>
                         <div>
-                            <p class="text-slate-400 text-xs mb-2 font-bold">結束時間</p>
-                            <input v-model="settings.closeTime" type="time" class="bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-white text-base focus:outline-none focus:border-emerald-500 w-36">
+                            <input v-model="settings.closeTime" type="time" class="bg-slate-700 border border-slate-600 rounded-lg px-3 py-1.5 text-white text-sm focus:outline-none focus:border-emerald-500 w-32">
+                        </div>
+                        <button @click="applyDefaultHoursToAll" class="text-xs bg-blue-900/50 hover:bg-blue-800 text-blue-400 border border-blue-700 px-3 py-1.5 rounded-lg transition">套用到所有日</button>
+                    </div>
+                    <!-- 每日設定 -->
+                    <div class="space-y-2">
+                        <div v-for="(dayName, idx) in weekDayNames" :key="idx"
+                             class="flex items-center gap-3 bg-slate-700/30 rounded-lg px-3 py-2.5 flex-wrap">
+                            <span class="w-8 text-center font-bold text-sm"
+                                  :class="settings.weeklyDaysOff.indexOf(idx) !== -1 ? 'text-red-400' : 'text-slate-300'">
+                                週{{ dayName }}
+                            </span>
+                            <template v-if="settings.weeklyDaysOff.indexOf(idx) !== -1">
+                                <span class="text-red-400 text-sm font-bold">公休日</span>
+                            </template>
+                            <template v-else>
+                                <input :value="getDayHours(idx, 'open')" @input="setDayHours(idx, 'open', $event.target.value)" type="time" class="bg-slate-700 border border-slate-600 rounded-lg px-3 py-1.5 text-white text-sm focus:outline-none focus:border-emerald-500 w-32">
+                                <span class="text-slate-500">～</span>
+                                <input :value="getDayHours(idx, 'close')" @input="setDayHours(idx, 'close', $event.target.value)" type="time" class="bg-slate-700 border border-slate-600 rounded-lg px-3 py-1.5 text-white text-sm focus:outline-none focus:border-emerald-500 w-32">
+                            </template>
                         </div>
                     </div>
                 </div>
@@ -833,7 +867,7 @@
                     { id: 'stats',     label: '營業統計', icon: '📊' },
                     { id: 'settings',  label: '店面設定', icon: '⚙️' }
                 ],
-                dragIdx: null, dragOverIdx: null, dragType: null, menuOrderDirty: false,
+                dragIdx: null, dragOverIdx: null, dragType: null, menuOrderDirty: false, tplOrderDirty: false,
                 // Menu
                 menuItems: [], menuLoading: true, filterCat: '',
                 // Modal
@@ -857,6 +891,7 @@
                 settings: {
                     isOpen: true,
                     openTime: '06:00', closeTime: '13:15',
+                    dailyHours: {},
                     pickupDays: 3, pickupInterval: 30,
                     holidays: [],
                     weeklyDaysOff: [0],
@@ -1171,16 +1206,29 @@
                 var item = arr.splice(fromIdx, 1)[0];
                 arr.splice(toIdx, 0, item);
                 this.dragIdx = null; this.dragOverIdx = null;
+                this.tplOrderDirty = true;
             },
             tplMoveUp: function(i) {
                 if (i === 0) return;
                 var arr = this.optionTemplates;
                 var tmp = arr[i-1]; arr[i-1] = arr[i]; arr[i] = tmp;
+                this.tplOrderDirty = true;
             },
             tplMoveDown: function(i) {
                 var arr = this.optionTemplates;
                 if (i >= arr.length-1) return;
                 var tmp = arr[i+1]; arr[i+1] = arr[i]; arr[i] = tmp;
+                this.tplOrderDirty = true;
+            },
+            saveTemplateOrder: function() {
+                var self = this;
+                var updates = {};
+                self.optionTemplates.forEach(function(tpl, idx) {
+                    updates['settings/optionTemplates/' + tpl.id + '/sortOrder'] = idx;
+                });
+                update(ref(db), updates)
+                    .then(function() { self.tplOrderDirty = false; alert('✅ 模板排序已儲存'); })
+                    .catch(function(e) { alert('儲存排序失敗：' + e.message); });
             },
             // ── 標準飲料清單 ──
             loadStandardDrinks: function() {
@@ -1237,7 +1285,13 @@
                         var data = snap.val();
                         self.optionTemplates = Object.entries(data).map(function(e) {
                             return Object.assign({ id: e[0] }, e[1]);
-                        }).sort(function(a, b) { return (a.templateName||'').localeCompare(b.templateName||''); });
+                        }).sort(function(a, b) {
+                            // ★ 修正：依 sortOrder 排序（有設定的排前面），沒有的再依名稱
+                            if (a.sortOrder !== undefined && b.sortOrder !== undefined) return a.sortOrder - b.sortOrder;
+                            if (a.sortOrder !== undefined) return -1;
+                            if (b.sortOrder !== undefined) return 1;
+                            return (a.templateName||'').localeCompare(b.templateName||'');
+                        });
                     } else {
                         self.optionTemplates = [];
                     }
@@ -1316,6 +1370,14 @@
             },
 
             // ── STATS ──
+            setQuickDate: function(mode) {
+                this.statsMode = mode;
+                this.loadStats();
+            },
+            refreshStats: function() {
+                this.allOrdersCache = null;
+                this.loadStats();
+            },
             loadStats: function() {
                 var self = this;
                 self.statsLoading = true;
@@ -1324,6 +1386,29 @@
                     if (self.statsMode === 'today') {
                         var tom = new Date(today); tom.setDate(tom.getDate()+1);
                         self.statsOrders = self.allOrdersCache.filter(function(o) { return o.timestamp >= today.getTime() && o.timestamp < tom.getTime(); });
+                    } else if (self.statsMode === 'tomorrow') {
+                        var tmrStart = new Date(today); tmrStart.setDate(tmrStart.getDate()+1);
+                        var tmrEnd = new Date(tmrStart); tmrEnd.setDate(tmrEnd.getDate()+1);
+                        self.statsOrders = self.allOrdersCache.filter(function(o) { return o.timestamp >= tmrStart.getTime() && o.timestamp < tmrEnd.getTime(); });
+                    } else if (self.statsMode === 'yesterday') {
+                        var yestStart = new Date(today); yestStart.setDate(yestStart.getDate()-1);
+                        self.statsOrders = self.allOrdersCache.filter(function(o) { return o.timestamp >= yestStart.getTime() && o.timestamp < today.getTime(); });
+                    } else if (self.statsMode === 'dayBefore') {
+                        var dbStart = new Date(today); dbStart.setDate(dbStart.getDate()-2);
+                        var dbEnd = new Date(today); dbEnd.setDate(dbEnd.getDate()-1);
+                        self.statsOrders = self.allOrdersCache.filter(function(o) { return o.timestamp >= dbStart.getTime() && o.timestamp < dbEnd.getTime(); });
+                    } else if (self.statsMode === 'last7') {
+                        var l7Start = new Date(today); l7Start.setDate(l7Start.getDate()-7);
+                        var l7End = new Date(today); l7End.setDate(l7End.getDate()+1);
+                        self.statsOrders = self.allOrdersCache.filter(function(o) { return o.timestamp >= l7Start.getTime() && o.timestamp < l7End.getTime(); });
+                    } else if (self.statsMode === 'thisMonth') {
+                        var tmStart = new Date(today.getFullYear(), today.getMonth(), 1);
+                        var tmEnd = new Date(today.getFullYear(), today.getMonth()+1, 1);
+                        self.statsOrders = self.allOrdersCache.filter(function(o) { return o.timestamp >= tmStart.getTime() && o.timestamp < tmEnd.getTime(); });
+                    } else if (self.statsMode === 'lastMonth') {
+                        var lmStart = new Date(today.getFullYear(), today.getMonth()-1, 1);
+                        var lmEnd = new Date(today.getFullYear(), today.getMonth(), 1);
+                        self.statsOrders = self.allOrdersCache.filter(function(o) { return o.timestamp >= lmStart.getTime() && o.timestamp < lmEnd.getTime(); });
                     } else if (self.statsMode === 'single' && self.statsDate) {
                         var d = new Date(self.statsDate); d.setHours(0,0,0,0);
                         var de = new Date(d); de.setDate(de.getDate()+1);
@@ -1358,6 +1443,34 @@
             },
 
             // ── SETTINGS ──
+            getDayHours: function(dayIdx, type) {
+                var dh = this.settings.dailyHours || {};
+                var day = dh[dayIdx];
+                if (day && day[type === 'open' ? 'openTime' : 'closeTime']) {
+                    return day[type === 'open' ? 'openTime' : 'closeTime'];
+                }
+                return type === 'open' ? this.settings.openTime : this.settings.closeTime;
+            },
+            setDayHours: function(dayIdx, type, value) {
+                if (!this.settings.dailyHours) this.settings.dailyHours = {};
+                if (!this.settings.dailyHours[dayIdx]) {
+                    this.settings.dailyHours[dayIdx] = {
+                        openTime: this.settings.openTime,
+                        closeTime: this.settings.closeTime
+                    };
+                }
+                this.settings.dailyHours[dayIdx][type === 'open' ? 'openTime' : 'closeTime'] = value;
+            },
+            applyDefaultHoursToAll: function() {
+                var self = this;
+                self.settings.dailyHours = {};
+                self.weekDayNames.forEach(function(name, idx) {
+                    self.settings.dailyHours[idx] = {
+                        openTime: self.settings.openTime,
+                        closeTime: self.settings.closeTime
+                    };
+                });
+            },
             loadSettings: function() {
                 var self = this;
                 get(ref(db, 'settings')).then(function(snap) {
@@ -1367,6 +1480,7 @@
                             isOpen: s.isOpen !== false,
                             openTime: s.openTime || '06:00',
                             closeTime: s.closeTime || '13:15',
+                            dailyHours: s.dailyHours || {},
                             pickupDays: s.pickupDays || 3,
                             pickupInterval: s.pickupInterval || 30,
                             holidays: s.holidays || [],
@@ -1379,11 +1493,11 @@
             saveSettings: function() {
                 var self = this;
                 self.settingsSaving = true; self.settingsSaved = false;
-                // ★ 用 update 而非 set，避免覆蓋掉 optionTemplates 等其他子節點
                 update(ref(db, 'settings'), {
                     isOpen: self.settings.isOpen,
                     openTime: self.settings.openTime,
                     closeTime: self.settings.closeTime,
+                    dailyHours: self.settings.dailyHours || {},
                     pickupDays: self.settings.pickupDays,
                     pickupInterval: self.settings.pickupInterval,
                     holidays: self.settings.holidays || [],
