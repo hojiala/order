@@ -150,7 +150,8 @@
               :class="{
                 'border-red-300 bg-red-50/50': order.status==='new',
                 'border-yellow-300 bg-yellow-50/30': order.status==='making' && order.source==='pos',
-                'border-gray-200': order.status==='making' && order.source!=='pos'
+                'border-gray-200': order.status==='making' && order.source!=='pos',
+                'border-green-200 bg-green-50/30 opacity-60': order.status==='done'
               }"
               class="bg-white rounded-xl border-2 p-3 cursor-pointer hover:border-orange-400 transition-all active:scale-[.99]"
               @click="viewOrder(order)">
@@ -160,7 +161,7 @@
                     <span v-if="order.status==='new'" class="w-2 h-2 bg-red-500 rounded-full flex-shrink-0 animate-pulse"></span>
                     <span class="font-black text-gray-800 text-sm">{{ order.customer && order.customer.name ? order.customer.name : (order.customer||"顧客") }}</span>
                     <span :class="{'bg-red-100 text-red-700':order.status==='new','bg-yellow-100 text-yellow-700':order.status==='making','bg-green-100 text-green-700':order.status==='done'}"
-                      class="text-xs px-2 py-0.5 rounded-full font-bold flex-shrink-0">{{ {new:"新訂單",making:"製作中",done:"已完成"}[order.status] }}</span>
+                      class="text-xs px-2 py-0.5 rounded-full font-bold flex-shrink-0">{{ {new:"新訂單",making:"製作中",done:"已完成"}[order.status]||order.status }}</span>
                     <span class="text-xs px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 font-bold flex-shrink-0">{{ order.source==='pos' ? "POS" : "線上" }}</span>
                   </div>
                   <div class="flex items-center gap-3 mb-1">
@@ -170,6 +171,7 @@
                   </div>
                   <p class="text-xs text-gray-400">&#128336; {{ order.pickupTime }}</p>
                   <p class="text-xs text-gray-500 mt-0.5 truncate">{{ (order.items||[]).map(function(i){return i.qty+"x"+i.name}).join("、") }}</p>
+                  <p v-if="order.orderNote" class="text-xs text-blue-500 mt-0.5 truncate">&#128221; {{ order.orderNote }}</p>
                 </div>
               <div class="flex-shrink-0 text-right">
                   <p class="text-orange-500 font-black text-base">${{ order.total }}</p>
@@ -225,7 +227,7 @@
     <div class="flex-1 overflow-y-auto">
       <div v-if="cart.length===0" class="flex flex-col items-center justify-center h-full text-gray-300 py-8"><div class="text-5xl mb-3">&#128722;</div><p class="text-sm">尚無餐點</p></div>
       <div v-else>
-        <div v-for="(item,idx) in cart" :key="idx" class="flex items-start gap-3 px-4 py-3 border-b border-gray-100 hover:bg-gray-50 transition">
+        <div v-for="(item,idx) in cart" :key="idx" class="flex items-start gap-3 px-4 py-3 border-b border-gray-100 hover:bg-orange-50 transition cursor-pointer" @click="editCartItem(idx)">
           <div class="flex-1 min-w-0">
             <p class="font-bold text-gray-800 text-sm">{{ item.name }}</p>
             <div v-if="item.optionGroupSelections && item.optionGroupSelections.length" class="flex flex-wrap gap-1 mt-1">
@@ -246,15 +248,23 @@
     </div>
     <div class="flex-shrink-0 border-t border-gray-200 bg-white">
       <div v-if="orderMode==='pos'" class="px-4 pt-3 pb-1 flex gap-2">
-        <input v-model="custName" type="text" placeholder="顧客姓名（選填）" class="w-28 bg-gray-100 rounded-xl px-3 py-2 text-sm placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-orange-300">
-        <input v-model="custPhone" type="tel" placeholder="電話" class="flex-1 bg-gray-100 rounded-xl px-3 py-2 text-sm placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-orange-300">
+        <input v-model="custName" type="text" placeholder="顧客姓名（選填）" class="flex-1 bg-gray-100 rounded-xl px-3 py-2 text-sm placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-orange-300" style="min-width:0">
+        <input v-model="custPhone" type="tel" placeholder="電話" class="bg-gray-100 rounded-xl px-3 py-2 text-sm placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-orange-300" style="width:7.5rem;flex-shrink:0">
       </div>
       <div v-if="orderMode!=='pos' && editingOrder" class="px-4 pt-3 pb-1">
-        <div class="bg-blue-50 border border-blue-200 rounded-xl p-3 text-xs text-blue-700 space-y-0.5">
+        <div class="bg-blue-50 border border-blue-200 rounded-xl p-3 text-xs text-blue-700 space-y-1.5">
           <p class="font-bold text-sm">{{ editingOrder.customer && editingOrder.customer.name ? editingOrder.customer.name : (editingOrder.customer||"顧客") }}</p>
           <p>&#128222; {{ editingOrder.phone || (editingOrder.customer && editingOrder.customer.phone) || "未提供" }}</p>
-          <p>&#128336; 取餐：{{ editingOrder.pickupTime }}</p>
-          <p class="text-blue-500 text-xs mt-1">&#128073; 可從左側菜單新增品項，或調整數量</p>
+          <div class="flex items-center gap-2">
+            <span>&#128336; 取餐：</span>
+            <input v-model="editPickupTime" type="time" class="bg-white border border-blue-300 rounded px-2 py-0.5 text-sm text-gray-800 focus:outline-none focus:border-blue-500" style="width:7rem">
+            <span v-if="editPickupTime !== (editingOrder.pickupTime||'')" class="text-orange-500 font-bold text-xs">*已修改</span>
+          </div>
+          <div>
+            <span>&#128221; 備註：</span>
+            <input v-model="editOrderNote" type="text" placeholder="輸入訂單備註…" class="w-full mt-1 bg-white border border-blue-300 rounded px-2 py-1 text-sm text-gray-800 placeholder-gray-400 focus:outline-none focus:border-blue-500">
+          </div>
+          <p class="text-blue-500 text-xs mt-1">&#128073; 可點擊品項修改內容，或從左側菜單新增</p>
         </div>
       </div>
       <div class="px-4 py-2.5 flex justify-between items-center">
@@ -275,9 +285,11 @@
             class="col-span-2 py-3 rounded-xl font-black text-white text-sm bg-yellow-500 hover:bg-yellow-400 transition active:scale-95">&#10003; 接單，開始製作</button>
           <button v-if="editingOrder.status==='making'" @click="setStatus(editingOrder.id,'done')"
             class="col-span-2 py-3 rounded-xl font-black text-white text-sm bg-green-500 hover:bg-green-400 transition active:scale-95">&#10003; 出餐完成</button>
-          <button @click="setStatus(editingOrder.id,'cancelled')"
+          <button v-if="editingOrder.status==='done'" @click="setStatus(editingOrder.id,'new')"
+            class="col-span-2 py-3 rounded-xl font-black text-sm bg-gray-300 hover:bg-gray-400 text-gray-700 transition active:scale-95">&#8634; 還原狀態</button>
+          <button v-if="editingOrder.status!=='cancelled'" @click="setStatus(editingOrder.id,'cancelled')"
             class="py-3 rounded-xl font-bold text-sm text-red-500 border border-red-200 hover:bg-red-50 transition">&#10005; 取消訂單</button>
-          <button v-if="editingOrder.status==='done'||editingOrder.status==='cancelled'" @click="exitOnline"
+          <button @click="exitOnline"
             class="py-3 rounded-xl font-bold text-sm bg-gray-200 hover:bg-gray-300 text-gray-600 transition">關閉</button>
         </template>
       </div>
@@ -286,13 +298,13 @@
 </div>
 
 <!-- ITEM MODAL -->
-<div v-if="activeItem" class="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50" @click.self="activeItem=null">
+<div v-if="activeItem" class="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/50" @click.self="activeItem=null;editingCartIdx=-1">
   <div class="bg-white rounded-t-2xl sm:rounded-2xl w-full sm:max-w-md max-h-[90vh] flex flex-col menter">
     <div class="px-5 pt-5 pb-3 border-b border-gray-100 flex items-start justify-between">
       <div class="flex-1 mr-3"><h2 class="font-black text-gray-800 text-lg">{{ activeItem.name }}</h2>
         <p v-if="activeItem.desc" class="text-gray-400 text-sm mt-0.5">{{ activeItem.desc }}</p></div>
       <div class="text-right flex-shrink-0"><p class="text-orange-500 font-black text-xl">${{ tempTotal }}</p>
-        <button @click="activeItem=null" class="w-7 h-7 rounded-full bg-gray-100 text-gray-400 flex items-center justify-center text-xl mt-1 ml-auto">&#215;</button></div>
+        <button @click="activeItem=null;editingCartIdx=-1" class="w-7 h-7 rounded-full bg-gray-100 text-gray-400 flex items-center justify-center text-xl mt-1 ml-auto">&#215;</button></div>
     </div>
     <div class="overflow-y-auto flex-1">
       <template v-for="(grp,gi) in (activeItem.optionGroups||[])" :key="gi">
@@ -325,7 +337,7 @@
         <span class="w-8 text-center font-black text-gray-800">{{ tempQty }}</span>
         <button @click="tempQty++" class="w-7 h-7 rounded-full bg-orange-500 text-white font-bold flex items-center justify-center text-base active:scale-90 transition">+</button></div>
       <button @click="confirmAdd" class="flex-1 py-3 rounded-xl font-black text-white flex justify-between items-center px-5 active:scale-95 transition" style="background:linear-gradient(135deg,#f97316,#ef4444)">
-        <span>加入訂單</span><span>${{ tempTotal }}</span></button>
+        <span>{{ editingCartIdx >= 0 ? '✅ 確認修改' : '+ 加入購物車' }}</span><span>${{ tempTotal }}</span></button>
     </div>
   </div>
 </div>
@@ -360,6 +372,7 @@
                 menu:[],menuLoading:true,filterCat:"",settings:{categories:[]},
                 activeView:"menu",editMode:false,
                 cart:[],custName:"",custPhone:"",isSubmitting:false,
+                editPickupTime:"",editOrderNote:"",editingCartIdx:-1,
                 orderMode:"pos",editingOrder:null,
                 onlineOrders:[],ordersLoading:false,
                 orderSearch:"",
@@ -374,7 +387,7 @@
             filteredMenu:function(){var s=this;if(!s.filterCat)return s.menu;return s.menu.filter(function(i){return i.category===s.filterCat;});},
             cartTotal:function(){return this.cart.reduce(function(s,i){return s+(Number(i.itemTotal)||0);},0);},
             cartCount:function(){return this.cart.reduce(function(s,i){return s+i.qty;},0);},
-            activeOrderCount:function(){return this.onlineOrders.length;},
+            activeOrderCount:function(){return this.onlineOrders.filter(function(o){return o.status==='new'||o.status==='making';}).length;},
             filteredOrders:function(){
                 var q=this.orderSearch.trim().toLowerCase();
                 if(!q)return this.onlineOrders;
@@ -463,9 +476,13 @@
                 onValue(ref(db,"orders"),function(snap){
                     if(!snap.exists()){s.onlineOrders=[];s.ordersLoading=false;return;}
                     s.onlineOrders=Object.entries(snap.val())
-                        .filter(function(e){return e[1]&&(e[1].status==="new"||e[1].status==="making");})
+                        .filter(function(e){return e[1]&&(e[1].status==="new"||e[1].status==="making"||e[1].status==="done");})
                         .map(function(e){return Object.assign({id:e[0]},e[1]);})
-                        .sort(function(a,b){return(b.timestamp||0)-(a.timestamp||0);});
+                        .sort(function(a,b){
+                            var w={new:1,making:2,done:3};
+                            if(w[a.status]!==w[b.status])return w[a.status]-w[b.status];
+                            return(a.timestamp||0)-(b.timestamp||0);
+                        });
                     s.ordersLoading=false;
                     if(s.editingOrder){
                         var found=s.onlineOrders.find(function(o){return o.id===s.editingOrder.id;});
@@ -475,16 +492,50 @@
             },
             getQty:function(id){return this.cart.filter(function(i){return i.id===id;}).reduce(function(s,i){return s+i.qty;},0);},
             quickAdd:function(item){
-                if((item.optionGroups&&item.optionGroups.length)||(item.options&&item.options.length)){this.openDetail(item);return;}
-                this.cart.push({id:item.id,name:item.name,price:item.price,qty:1,note:"",options:[],optionGroupSelections:[],itemTotal:item.price});
+                // ★ 快速加入：永遠直接加入購物車，有選項的使用預設值
+                var bp=item.price,ex=0,ogSels=[];
+                (item.optionGroups||[]).forEach(function(g,gi){
+                    var idx=g.defaultIdx||0;var ch=(g.choices||[])[idx];if(!ch)return;
+                    if(g.pricing==="setPrice")bp=ch.price;
+                    else if(g.pricing==="addDelta")ex+=ch.price;
+                    else if(g.pricing==="mealUpgrade")ex+=Math.max(0,ch.price-(g.baseValue||0));
+                    ogSels.push({groupName:g.groupName,idx:idx,name:ch.name,price:ch.price,pricing:g.pricing,baseValue:g.baseValue||0});
+                });
+                var up=bp+ex;
+                // 找已有相同品項
+                var key=JSON.stringify(ogSels),found=null;
+                for(var i=0;i<this.cart.length;i++){var c=this.cart[i];if(c.id===item.id&&!c.note&&(!c.options||!c.options.length)&&JSON.stringify(c.optionGroupSelections||[])===key){found=c;break;}}
+                if(found){found.qty+=1;found.itemTotal=up*found.qty;}
+                else{this.cart.push({id:item.id,name:item.name,price:item.price,qty:1,note:"",options:[],optionGroupSelections:ogSels,itemTotal:up});}
                 this.toast("✓ "+item.name);
             },
             addOrDetail:function(item){
                 if((item.optionGroups&&item.optionGroups.length)||(item.options&&item.options.length))this.openDetail(item);else this.quickAdd(item);
             },
             openDetail:function(item){
-                this.activeItem=item;this.tempQty=1;this.tempNote="";this.tempSels=[];
-                var og={};(item.optionGroups||[]).forEach(function(g,gi){og[gi]=g.defaultIdx||0;});this.tempOG=og;
+                this.activeItem=item;this.tempQty=1;this.tempNote="";this.tempSels=[];this.editingCartIdx=-1;
+                var og={};(item.optionGroups||[]).forEach(function(g,gi){og[gi]=g.type==='checkbox'?[]:g.defaultIdx||0;});this.tempOG=og;
+            },
+            editCartItem:function(idx){
+                var cartItem=this.cart[idx];if(!cartItem)return;
+                // 找到原始菜單項目
+                var menuItem=null;
+                for(var i=0;i<this.menu.length;i++){if(this.menu[i].id===cartItem.id){menuItem=this.menu[i];break;}}
+                if(!menuItem){this.toast("⚠ 找不到此餐點");return;}
+                this.activeItem=menuItem;
+                this.tempQty=cartItem.qty;
+                this.tempNote=cartItem.note||"";
+                this.tempSels=(cartItem.options||[]).slice();
+                this.editingCartIdx=idx;
+                // 恢復選項群組選擇
+                var og={};
+                (menuItem.optionGroups||[]).forEach(function(g,gi){og[gi]=g.type==='checkbox'?[]:g.defaultIdx||0;});
+                (cartItem.optionGroupSelections||[]).forEach(function(sel){
+                    (menuItem.optionGroups||[]).forEach(function(g,gi){
+                        if(g.groupName===sel.groupName)og[gi]=sel.idx;
+                    });
+                });
+                this.tempOG=og;
             },
             confirmAdd:function(){
                 var s=this,item=s.activeItem,b=item.price,e=0,sels=[];
@@ -497,8 +548,16 @@
                     sels.push({groupName:g.groupName,idx:si,name:ch.name,price:ch.price,pricing:g.pricing,baseValue:g.baseValue||0});
                 });
                 e+=(s.tempSels||[]).reduce(function(x,o){return x+o.price;},0);
-                s.cart.push({id:item.id,name:item.name,price:item.price,qty:s.tempQty,note:s.tempNote,options:s.tempSels.slice(),optionGroupSelections:sels,itemTotal:(b+e)*s.tempQty});
-                s.activeItem=null;s.toast("✓ "+item.name);
+                var newItem={id:item.id,name:item.name,price:item.price,qty:s.tempQty,note:s.tempNote,options:s.tempSels.slice(),optionGroupSelections:sels,itemTotal:(b+e)*s.tempQty};
+                if(s.editingCartIdx>=0&&s.editingCartIdx<s.cart.length){
+                    // 修改已有品項
+                    s.cart.splice(s.editingCartIdx,1,newItem);
+                    s.toast("✅ 已更新 "+item.name);
+                }else{
+                    s.cart.push(newItem);
+                    s.toast("✓ "+item.name);
+                }
+                s.activeItem=null;s.editingCartIdx=-1;
             },
             chgQty:function(idx,d){
                 var item=Object.assign({},this.cart[idx]),nq=item.qty+d;
@@ -530,21 +589,26 @@
             viewOrder:function(order){
                 this.editingOrder=order;
                 this.cart=JSON.parse(JSON.stringify(order.items||[]));
+                this.editPickupTime=order.pickupTime||'';
+                this.editOrderNote=order.orderNote||order.note||'';
                 this.orderMode="online";
                 this.activeView="menu";
                 this.activeMenu=null;
             },
-            exitOnline:function(){this.orderMode="pos";this.editingOrder=null;this.cart=[];},
+            exitOnline:function(){this.orderMode="pos";this.editingOrder=null;this.cart=[];this.editPickupTime="";this.editOrderNote="";},
             saveOrderEdit:function(){
                 var s=this;
                 if(!s.editingOrder||!s.cart.length){s.toast("⚠ 訂單內容為空");return;}
                 s.isSubmitting=true;
                 var id=s.editingOrder.id;
                 var taskRef=ref(db,"orders/"+id+"/print_task");
-                update(ref(db,"orders/"+id),{
+                var upd={
                     items:s.cart.map(function(i){return Object.assign({},i);}),
                     total:s.cartTotal
-                }).then(function(){
+                };
+                if(s.editPickupTime)upd.pickupTime=s.editPickupTime;
+                if(s.editOrderNote!==undefined)upd.orderNote=s.editOrderNote;
+                update(ref(db,"orders/"+id),upd).then(function(){
                     return remove(taskRef).then(function(){
                         return set(taskRef,"kitchen_"+Date.now());
                     });
@@ -558,9 +622,9 @@
                 var s=this;
                 update(ref(db,"orders/"+id),{status:status})
                     .then(function(){
-                        var m={making:"✅ 已接單，開始製作",done:"✅ 出餐完成",cancelled:"已取消"};
+                        var m={new:"已還原為新訂單",making:"✅ 已接單，開始製作",done:"✅ 出餐完成",cancelled:"已取消"};
                         s.toast(m[status]||"已更新");
-                        if(status==="done"||status==="cancelled")s.exitOnline();
+                        if(status==="cancelled")s.exitOnline();
                         else if(s.editingOrder)s.editingOrder=Object.assign({},s.editingOrder,{status:status});
                     }).catch(function(e){alert("更新失敗："+e.message);});
             },
