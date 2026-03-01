@@ -24,6 +24,9 @@
         ::-webkit-scrollbar-thumb { background: #374151; border-radius: 3px; }
         .modal-overlay { backdrop-filter: blur(4px); }
         input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(1); }
+        .drag-item { cursor: grab; transition: opacity 0.15s; }
+        .drag-item:active { cursor: grabbing; }
+        .drag-over { outline: 2px dashed #10b981; outline-offset: 2px; }
         .day-btn { width:2.75rem; height:2.75rem; border-radius:0.5rem; font-weight:700; font-size:0.9rem; border:2px solid transparent; transition:all 0.15s; cursor:pointer; }
         .day-off { background:#ef4444; color:white; }
         .day-on { background:#1e293b; color:#94a3b8; border-color:#374151; }
@@ -100,188 +103,236 @@
 
         <!-- ===== TAB: 菜單管理 ===== -->
         <div v-if="activeTab === 'menu'" class="p-6">
-            <div class="flex items-center justify-between mb-6">
-                <div>
-                    <h2 class="text-xl font-bold text-white">菜單管理</h2>
-                    <p class="text-slate-400 text-sm mt-0.5">共 {{ menuItems.length }} 項餐點</p>
-                </div>
-                <button @click="openAddModal" class="bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-5 py-2.5 rounded-lg transition flex items-center gap-2 text-sm">
-                    ＋ 新增餐點
-                </button>
-            </div>
-            <div class="flex flex-wrap gap-2 mb-5">
-                <button @click="filterCat = ''" :class="filterCat === '' ? 'bg-emerald-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'" class="px-4 py-1.5 rounded-full text-sm transition">全部</button>
-                <button v-for="cat in allCategories" :key="cat" @click="filterCat = cat"
-                    :class="filterCat === cat ? 'bg-emerald-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'"
-                    class="px-4 py-1.5 rounded-full text-sm transition">{{ cat }}</button>
-            </div>
-            <div v-if="menuLoading" class="text-center text-slate-400 py-20"><div class="text-4xl mb-3">⏳</div>載入中...</div>
-            <div v-else-if="filteredMenu.length === 0" class="text-center text-slate-400 py-20 text-lg">尚無餐點，點右上角「新增餐點」開始建立菜單</div>
-            <div v-else class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-                <div v-for="item in filteredMenu" :key="item.id"
-                     class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden flex flex-col"
-                     :class="{'opacity-50': !item.active}">
-                    <div class="relative aspect-video bg-slate-700">
-                        <img v-if="item.img" :src="item.img" class="w-full h-full object-cover" loading="lazy">
-                        <div v-else class="w-full h-full flex items-center justify-center text-3xl text-slate-500">🍽️</div>
-                        <span class="absolute top-2 left-2 text-xs px-2 py-0.5 rounded-full font-bold"
-                              :class="item.active ? 'bg-emerald-600 text-white' : 'bg-gray-600 text-gray-300'">
-                            {{ item.active ? '上架' : '下架' }}
-                        </span>
-                    </div>
-                    <div class="p-3 flex-1 flex flex-col">
-                        <p class="text-xs text-emerald-400 font-bold mb-1">{{ item.category }}</p>
-                        <h3 class="font-bold text-white text-sm mb-1 flex-1">{{ item.name }}</h3>
-                        <p class="text-red-400 font-bold text-base">${{ item.price }}</p>
-                        <div v-if="item.options && item.options.length" class="mt-1 flex flex-wrap gap-1">
-                            <span v-for="opt in item.options.slice(0,2)" :key="opt.name" class="text-xs bg-slate-700 text-slate-400 px-2 py-0.5 rounded">{{ opt.name }}</span>
-                            <span v-if="item.options.length > 2" class="text-xs text-slate-500">+{{ item.options.length - 2 }}...</span>
-                        </div>
-                    </div>
-                    <div class="border-t border-slate-700 flex">
-                        <button @click="toggleActive(item)" class="flex-1 py-2 text-xs text-slate-400 hover:bg-slate-700 transition">{{ item.active ? '⬇ 下架' : '⬆ 上架' }}</button>
-                        <div class="w-px bg-slate-700"></div>
-                        <button @click="openEditModal(item)" class="flex-1 py-2 text-xs text-slate-400 hover:bg-slate-700 hover:text-blue-400 transition">✏️ 編輯</button>
-                        <div class="w-px bg-slate-700"></div>
-                        <button @click="deleteItem(item)" class="flex-1 py-2 text-xs text-slate-400 hover:bg-red-900/50 hover:text-red-400 transition">🗑 刪除</button>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- ===== TAB: 選項模板 ===== -->
-        <div v-if="activeTab === 'templates'" class="p-6 max-w-3xl">
-            <div class="flex items-center justify-between mb-6">
-                <div>
-                    <h2 class="text-xl font-bold text-white">選項模板庫</h2>
-                    <p class="text-slate-400 text-sm mt-0.5">建立容量、溫度、套餐飲料模板，新增餐點時一鍵套用</p>
-                </div>
-                <button @click="openNewTemplateForm" class="bg-amber-600 hover:bg-amber-500 text-white font-bold px-5 py-2.5 rounded-lg transition flex items-center gap-2 text-sm">
-                    ＋ 新增模板
-                </button>
+            <h2 class="text-xl font-bold text-white mb-4">菜單管理</h2>
+            <!-- Sub-tabs -->
+            <div class="flex gap-1 mb-6 bg-slate-800 rounded-xl p-1 border border-slate-700 w-fit">
+                <button @click="menuSubTab='items'" :class="menuSubTab==='items'?'bg-emerald-600 text-white':'text-slate-400 hover:text-white'" class="px-4 py-2 rounded-lg text-sm font-bold transition">🍽️ 餐點</button>
+                <button @click="menuSubTab='categories'" :class="menuSubTab==='categories'?'bg-blue-600 text-white':'text-slate-400 hover:text-white'" class="px-4 py-2 rounded-lg text-sm font-bold transition">🏷️ 分類管理</button>
+                <button @click="menuSubTab='drinks'" :class="menuSubTab==='drinks'?'bg-blue-600 text-white':'text-slate-400 hover:text-white'" class="px-4 py-2 rounded-lg text-sm font-bold transition">🧋 飲料清單</button>
+                <button @click="menuSubTab='templates'" :class="menuSubTab==='templates'?'bg-amber-600 text-white':'text-slate-400 hover:text-white'" class="px-4 py-2 rounded-lg text-sm font-bold transition">📋 選項模板</button>
             </div>
 
-            <!-- 新增/編輯模板表單 -->
-            <div v-if="showTemplateForm" class="bg-slate-800 border border-amber-600/50 rounded-2xl p-5 mb-6">
-                <h3 class="text-amber-400 font-bold mb-4 text-sm">{{ editingTemplateId ? '✏️ 編輯模板' : '＋ 新增模板' }}</h3>
-                <div class="space-y-3">
-                    <!-- 模板名稱 -->
-                    <div>
-                        <label class="text-slate-400 text-xs font-bold uppercase tracking-wider block mb-1">模板名稱（方便識別，不顯示給顧客）</label>
-                        <input v-model="templateForm.templateName" type="text" placeholder="例：容量（中杯/大杯）、溫度、套餐飲料模板1"
-                            class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2.5 text-white text-sm placeholder-slate-400 focus:outline-none focus:border-amber-500">
-                    </div>
-                    <!-- 顧客看到的群組名稱 -->
-                    <div>
-                        <label class="text-slate-400 text-xs font-bold uppercase tracking-wider block mb-1">群組名稱（顧客看到的標題）</label>
-                        <input v-model="templateForm.groupName" type="text" placeholder="例：容量、溫度、副餐"
-                            class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2.5 text-white text-sm placeholder-slate-400 focus:outline-none focus:border-amber-500">
-                    </div>
-                    <!-- 類型 + 定價 -->
-                    <div class="grid grid-cols-2 gap-3">
-                        <div>
-                            <label class="text-slate-400 text-xs font-bold uppercase tracking-wider block mb-1">選擇方式</label>
-                            <select v-model="templateForm.type" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500">
-                                <option value="radio">單選（必選一）</option>
-                                <option value="checkbox">多選（可複選）</option>
-                            </select>
-                        </div>
-                        <div>
-                            <label class="text-slate-400 text-xs font-bold uppercase tracking-wider block mb-1">定價模式</label>
-                            <select v-model="templateForm.pricing" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500">
-                                <option value="setPrice">各自完整售價（容量用）</option>
-                                <option value="addDelta">差價加購（加料用）</option>
-                                <option value="mealUpgrade">套餐飲料升級</option>
-                            </select>
-                        </div>
-                    </div>
-                    <!-- 基礎值（套餐飲料用）-->
-                    <div v-if="templateForm.pricing === 'mealUpgrade'" class="flex items-center gap-3 bg-slate-700/50 rounded-lg px-3 py-2">
-                        <span class="text-slate-300 text-xs">套餐內含飲料售價（基礎值）$</span>
-                        <input v-model.number="templateForm.baseValue" type="number" min="0" placeholder="30"
-                            class="w-20 bg-slate-700 border border-slate-600 rounded px-2 py-1 text-white text-sm focus:outline-none focus:border-amber-500">
-                        <span class="text-slate-400 text-xs">（比此售價貴的飲料才需補差價）</span>
-                    </div>
-                    <!-- 預設選第幾個 -->
-                    <div v-if="templateForm.type === 'radio'" class="flex items-center gap-3">
-                        <span class="text-slate-400 text-xs">預設選第幾個（從0算起）：</span>
-                        <input v-model.number="templateForm.defaultIdx" type="number" min="0"
-                            class="w-16 bg-slate-700 border border-slate-600 rounded px-2 py-1 text-white text-sm focus:outline-none focus:border-amber-500">
-                    </div>
-                    <!-- 選項清單 -->
-                    <div>
-                        <div class="flex items-center justify-between mb-2">
-                            <label class="text-slate-400 text-xs font-bold uppercase tracking-wider block">選項清單</label>
-                            <!-- 一鍵填入標準飲料清單（僅套餐飲料升級模式顯示）-->
-                            <button v-if="templateForm.pricing === 'mealUpgrade'"
-                                @click="fillStandardDrinks"
-                                class="text-xs bg-emerald-900/60 hover:bg-emerald-800 text-emerald-400 border border-emerald-700 px-3 py-1 rounded-lg transition flex items-center gap-1">
-                                ⚡ 一鍵填入標準飲料清單
-                            </button>
-                        </div>
-                        <div v-for="(ch, ci) in templateForm.choices" :key="ci" class="flex gap-2 mb-2 items-center">
-                            <input v-model="ch.name" type="text"
-                                :placeholder="templateForm.pricing==='mealUpgrade' ? '飲料名稱（例：錫蘭紅茶（中杯））' : '選項名稱（例：中杯、去冰）'"
-                                class="flex-1 bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm placeholder-slate-400 focus:outline-none focus:border-amber-500">
-                            <div class="relative w-28">
-                                <span class="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 text-xs">$</span>
-                                <input v-model.number="ch.price" type="number" min="0"
-                                    :placeholder="templateForm.pricing==='setPrice' ? '完整售價' : (templateForm.pricing==='mealUpgrade' ? '飲料售價' : '差價(0=免費)')"
-                                    class="w-full bg-slate-700 border border-slate-600 rounded-lg pl-5 pr-2 py-2 text-white text-sm placeholder-slate-400 focus:outline-none focus:border-amber-500">
-                            </div>
-                            <button @click="templateForm.choices.splice(ci,1)" class="text-slate-500 hover:text-red-400 text-xl w-7 flex-shrink-0">×</button>
-                        </div>
-                        <div class="flex items-center gap-3 mt-2 flex-wrap">
-                            <button @click="templateForm.choices.push({name:'',price:0})" class="text-emerald-400 hover:text-emerald-300 text-xs font-bold">＋ 新增選項</button>
-                            <!-- 套餐飲料模板：從菜單自動匯入 -->
-                            <button v-if="templateForm.pricing === 'mealUpgrade'"
-                                @click="autoImportDrinks"
-                                class="text-xs bg-blue-900/50 hover:bg-blue-800/70 text-blue-400 border border-blue-700 px-3 py-1.5 rounded-lg transition flex items-center gap-1">
-                                🔄 從菜單飲料自動匯入
-                            </button>
-                            <span v-if="templateForm.pricing === 'mealUpgrade'" class="text-slate-500 text-xs">（掃描菜單中所有有「容量」選項的飲料）</span>
-                        </div>
+            <!-- ▸ 餐點列表 -->
+            <div v-if="menuSubTab==='items'">
+                <div class="flex items-center justify-between mb-4">
+                    <p class="text-slate-400 text-sm">共 {{ menuItems.length }} 項餐點 <span class="text-xs text-slate-500">（拖曳或使用↑↓排序）</span></p>
+                    <div class="flex gap-2">
+                        <button v-if="menuOrderDirty" @click="saveMenuOrder" class="bg-emerald-700 hover:bg-emerald-600 text-white font-bold px-4 py-2 rounded-lg text-sm transition">💾 保存排序</button>
+                        <button @click="openAddModal" class="bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-5 py-2.5 rounded-lg transition flex items-center gap-2 text-sm">＋ 新增餐點</button>
                     </div>
                 </div>
-                <div class="flex gap-3 mt-5">
-                    <button @click="showTemplateForm=false; editingTemplateId=null" class="flex-1 bg-slate-700 hover:bg-slate-600 text-white font-bold py-2.5 rounded-xl text-sm transition">取消</button>
-                    <button @click="saveTemplate" class="flex-2 bg-amber-600 hover:bg-amber-500 text-white font-bold py-2.5 px-8 rounded-xl text-sm transition">{{ editingTemplateId ? '更新模板' : '儲存模板' }}</button>
+                <div class="flex flex-wrap gap-2 mb-5">
+                    <button @click="filterCat = ''" :class="filterCat === '' ? 'bg-emerald-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'" class="px-4 py-1.5 rounded-full text-sm transition">全部</button>
+                    <button v-for="cat in allCategories" :key="cat" @click="filterCat = cat"
+                        :class="filterCat === cat ? 'bg-emerald-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'"
+                        class="px-4 py-1.5 rounded-full text-sm transition">{{ cat }}</button>
                 </div>
-            </div>
-
-            <!-- 模板清單 -->
-            <div v-if="optionTemplates.length === 0 && !showTemplateForm" class="text-center text-slate-500 py-16">
-                <div class="text-5xl mb-3">📋</div>
-                <p>尚無模板，點右上角「新增模板」開始建立</p>
-                <p class="text-xs mt-2 text-slate-600">建議先建立：容量、溫度、套餐飲料模板1</p>
-            </div>
-            <div v-else class="space-y-3">
-                <div v-for="tpl in optionTemplates" :key="tpl.id"
-                     class="bg-slate-800 border border-slate-700 rounded-xl p-4 flex items-start justify-between gap-4">
-                    <div class="flex-1 min-w-0">
-                        <div class="flex items-center gap-2 mb-1 flex-wrap">
-                            <span class="text-white font-bold">{{ tpl.templateName }}</span>
-                            <span class="text-xs bg-amber-900/50 text-amber-400 px-2 py-0.5 rounded-full">{{ tpl.groupName }}</span>
-                            <span class="text-xs bg-slate-700 text-slate-400 px-2 py-0.5 rounded-full">{{ tpl.type === 'radio' ? '單選' : '多選' }}</span>
-                            <span class="text-xs bg-slate-700 text-slate-400 px-2 py-0.5 rounded-full">{{ {setPrice:'完整售價', addDelta:'差價', mealUpgrade:'套餐升級'}[tpl.pricing] }}</span>
-                            <span v-if="tpl.pricing==='mealUpgrade'" class="text-xs text-slate-500">基礎值 ${{ tpl.baseValue }}</span>
-                        </div>
-                        <div class="flex flex-wrap gap-1 mt-2">
-                            <span v-for="ch in (tpl.choices||[])" :key="ch.name"
-                                class="text-xs bg-slate-700 text-slate-300 px-2 py-0.5 rounded">
-                                {{ ch.name }} <span class="text-slate-500">${{ ch.price }}</span>
+                <div v-if="menuLoading" class="text-center text-slate-400 py-20"><div class="text-4xl mb-3">⏳</div>載入中...</div>
+                <div v-else-if="filteredMenu.length === 0" class="text-center text-slate-400 py-20 text-lg">尚無餐點，點右上角「新增餐點」開始建立菜單</div>
+                <div v-else class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                    <div v-for="(item, displayIdx) in filteredMenu" :key="item.id"
+                         class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden flex flex-col drag-item transition-all"
+                         :class="{'opacity-50': !item.active, 'ring-2 ring-emerald-400 opacity-60': dragIdx===displayIdx && dragType==='menu', 'ring-1 ring-slate-500': dragIdx!==null && dragIdx!==displayIdx && dragType==='menu'}"
+                         draggable="true"
+                         @dragstart="menuDragStart($event, displayIdx)"
+                         @dragover.prevent="dragOverIdx=displayIdx; dragType='menu'"
+                         @drop.prevent="menuDrop($event, displayIdx)"
+                         @dragend="dragIdx=null; dragOverIdx=null">
+                        <div class="relative aspect-video bg-slate-700">
+                            <div class="absolute top-1 right-1 z-10 cursor-grab text-slate-400 bg-black/40 rounded px-1 text-xs">⠿</div>
+                            <img v-if="item.img" :src="item.img" class="w-full h-full object-cover" loading="lazy">
+                            <div v-else class="w-full h-full flex items-center justify-center text-3xl text-slate-500">🍽️</div>
+                            <span class="absolute top-2 left-2 text-xs px-2 py-0.5 rounded-full font-bold"
+                                  :class="item.active ? 'bg-emerald-600 text-white' : 'bg-gray-600 text-gray-300'">
+                                {{ item.active ? '上架' : '下架' }}
                             </span>
                         </div>
+                        <div class="p-3 flex-1 flex flex-col">
+                            <p class="text-xs text-emerald-400 font-bold mb-1">{{ item.category }}</p>
+                            <h3 class="font-bold text-white text-sm mb-1 flex-1">{{ item.name }}</h3>
+                            <p class="text-red-400 font-bold text-base">${{ item.price }}</p>
+                        </div>
+                        <div class="border-t border-slate-700 flex">
+                            <button @click="menuMoveUp(displayIdx)" :disabled="displayIdx===0" class="flex-none px-2 py-2 text-slate-500 hover:text-white hover:bg-slate-700 disabled:opacity-20 transition text-xs">▲</button>
+                            <button @click="menuMoveDown(displayIdx)" :disabled="displayIdx===filteredMenu.length-1" class="flex-none px-2 py-2 text-slate-500 hover:text-white hover:bg-slate-700 disabled:opacity-20 transition text-xs">▼</button>
+                            <div class="w-px bg-slate-700"></div>
+                            <button @click="toggleActive(item)" class="flex-1 py-2 text-xs text-slate-400 hover:bg-slate-700 transition">{{ item.active ? '⬇ 下架' : '⬆ 上架' }}</button>
+                            <div class="w-px bg-slate-700"></div>
+                            <button @click="openEditModal(item)" class="flex-1 py-2 text-xs text-slate-400 hover:bg-slate-700 hover:text-blue-400 transition">✏️</button>
+                            <div class="w-px bg-slate-700"></div>
+                            <button @click="deleteItem(item)" class="flex-1 py-2 text-xs text-slate-400 hover:bg-red-900/50 hover:text-red-400 transition">🗑</button>
+                        </div>
                     </div>
-                    <div class="flex gap-2 flex-shrink-0">
-                        <button @click="editTemplate(tpl)" class="text-xs bg-slate-700 hover:bg-blue-900/50 text-slate-400 hover:text-blue-400 px-3 py-1.5 rounded-lg transition">✏️ 編輯</button>
-                        <button @click="deleteTemplate(tpl.id)" class="text-xs bg-slate-700 hover:bg-red-900/50 text-slate-400 hover:text-red-400 px-3 py-1.5 rounded-lg transition">🗑 刪除</button>
+                </div>
+            </div>
+
+            <!-- ▸ 分類管理 (moved from settings) -->
+            <div v-if="menuSubTab==='categories'" class="max-w-xl">
+                <div class="bg-slate-800 rounded-xl border border-slate-700 p-5">
+                    <div class="flex items-center gap-2 mb-1"><span class="text-blue-400 text-lg">🏷️</span><p class="font-bold text-white">菜單分類管理</p></div>
+                    <p class="text-slate-400 text-sm mb-4">新增或刪除分類，拖曳或按↑↓調整順序。</p>
+                    <div class="flex gap-2 mb-4">
+                        <input v-model="newCategoryName" type="text" placeholder="輸入新分類名稱（例：燒肉飯）"
+                            @keyup.enter="addCategory"
+                            class="flex-1 bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-white text-sm placeholder-slate-500 focus:outline-none focus:border-emerald-500">
+                        <button @click="addCategory" class="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg font-bold transition text-sm">新增</button>
+                    </div>
+                    <div class="space-y-2">
+                        <div v-for="(cat, idx) in allCategories" :key="cat"
+                             class="flex items-center justify-between bg-slate-700 rounded-lg px-3 py-2.5 drag-item"
+                             :class="{'ring-2 ring-blue-400 opacity-60': dragIdx===idx && dragType==='cat', 'ring-1 ring-slate-500': dragIdx!==null && dragIdx!==idx && dragType==='cat'}"
+                             draggable="true"
+                             @dragstart="catDragStart($event, idx)"
+                             @dragover.prevent="dragOverIdx=idx; dragType='cat'"
+                             @drop.prevent="catDrop($event, idx)"
+                             @dragend="dragIdx=null; dragOverIdx=null">
+                            <div class="flex items-center gap-2">
+                                <span class="text-slate-500 cursor-grab text-sm">⠿</span>
+                                <div class="flex flex-col gap-0.5">
+                                    <button @click="moveCatUp(idx)" :disabled="idx===0" class="text-slate-500 hover:text-white disabled:opacity-20 text-xs leading-none transition">▲</button>
+                                    <button @click="moveCatDown(idx)" :disabled="idx===allCategories.length-1" class="text-slate-500 hover:text-white disabled:opacity-20 text-xs leading-none transition">▼</button>
+                                </div>
+                                <span class="text-white text-sm font-medium">{{ cat }}</span>
+                                <span class="text-slate-500 text-xs">（{{ menuItems.filter(function(i){return i.category===cat;}).length }} 項）</span>
+                            </div>
+                            <button @click="removeCategory(cat, idx)" class="text-slate-400 hover:text-red-400 transition text-lg leading-none">×</button>
+                        </div>
+                    </div>
+                    <p class="text-slate-500 text-xs mt-3">＊ 分類順序將在點擊「儲存設定」後寫入 Firebase</p>
+                    <button @click="saveSettings" :disabled="settingsSaving" class="mt-3 bg-blue-700 hover:bg-blue-600 disabled:opacity-50 text-white font-bold px-6 py-2 rounded-lg text-sm transition">
+                        <span v-if="settingsSaving">儲存中...</span><span v-else-if="settingsSaved">✅ 已儲存</span><span v-else>儲存分類</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- ▸ 標準飲料清單 (moved from settings) -->
+            <div v-if="menuSubTab==='drinks'" class="max-w-xl">
+                <div class="bg-slate-800 rounded-xl border border-blue-800/50 p-5">
+                    <div class="flex items-center justify-between mb-1">
+                        <p class="font-bold text-blue-400">🧋 標準飲料清單</p>
+                        <button @click="addDrink" class="text-emerald-400 hover:text-emerald-300 text-sm font-bold">＋ 新增</button>
+                    </div>
+                    <p class="text-slate-400 text-xs mb-4">「選項模板」→「⚡ 一鍵填入標準飲料清單」的資料來源。拖曳或按↑↓排序。</p>
+                    <div class="max-h-96 overflow-y-auto space-y-2 pr-1">
+                        <div v-for="(drink, i) in standardDrinks" :key="i"
+                             class="flex gap-2 items-center drag-item"
+                             :class="{'ring-2 ring-blue-400 opacity-60 rounded-lg': dragIdx===i && dragType==='drink', 'ring-1 ring-slate-600 rounded-lg': dragIdx!==null && dragIdx!==i && dragType==='drink'}"
+                             draggable="true"
+                             @dragstart="drinkDragStart($event, i)"
+                             @dragover.prevent="dragOverIdx=i; dragType='drink'"
+                             @drop.prevent="drinkDrop($event, i)"
+                             @dragend="dragIdx=null; dragOverIdx=null">
+                            <span class="text-slate-500 cursor-grab text-sm flex-shrink-0">⠿</span>
+                            <div class="flex flex-col gap-0.5 flex-shrink-0">
+                                <button @click="moveDrink(i, -1)" :disabled="i === 0" class="w-5 h-5 flex items-center justify-center text-slate-500 hover:text-white hover:bg-slate-600 rounded disabled:opacity-20 text-xs leading-none transition">▲</button>
+                                <button @click="moveDrink(i, 1)" :disabled="i === standardDrinks.length - 1" class="w-5 h-5 flex items-center justify-center text-slate-500 hover:text-white hover:bg-slate-600 rounded disabled:opacity-20 text-xs leading-none transition">▼</button>
+                            </div>
+                            <input v-model="drink.name" type="text" placeholder="飲料名稱（例：錫蘭紅茶（中杯））"
+                                class="flex-1 bg-slate-700 border border-slate-600 rounded-lg px-3 py-1.5 text-white text-sm placeholder-slate-400 focus:outline-none focus:border-blue-500">
+                            <div class="relative w-24 flex-shrink-0">
+                                <span class="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 text-xs">$</span>
+                                <input v-model.number="drink.price" type="number" min="0"
+                                    class="w-full bg-slate-700 border border-slate-600 rounded-lg pl-5 pr-2 py-1.5 text-white text-sm focus:outline-none focus:border-blue-500">
+                            </div>
+                            <button @click="removeDrink(i)" class="text-slate-500 hover:text-red-400 text-xl w-7 flex-shrink-0 transition">×</button>
+                        </div>
+                        <div v-if="standardDrinks.length === 0" class="text-slate-500 text-sm text-center py-4 border border-dashed border-slate-600 rounded-lg">尚無飲料，點右上角「＋ 新增」</div>
+                    </div>
+                    <button @click="saveStandardDrinks" :disabled="standardDrinksSaving" class="mt-4 bg-blue-700 hover:bg-blue-600 disabled:opacity-50 text-white font-bold px-6 py-2 rounded-lg text-sm transition">
+                        <span v-if="standardDrinksSaving">儲存中...</span><span v-else-if="standardDrinksSaved">✅ 已儲存</span><span v-else>儲存飲料清單</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- ▸ 選項模板 (moved from standalone tab) -->
+            <div v-if="menuSubTab==='templates'" class="max-w-3xl">
+                <div class="flex items-center justify-between mb-4">
+                    <p class="text-slate-400 text-sm">建立容量、溫度、套餐飲料模板，新增餐點時一鍵套用。<span v-if="optionTemplates.length>1" class="text-xs text-slate-500 ml-2">（拖曳排序）</span></p>
+                    <button @click="openNewTemplateForm" class="bg-amber-600 hover:bg-amber-500 text-white font-bold px-5 py-2.5 rounded-lg transition flex items-center gap-2 text-sm">＋ 新增模板</button>
+                </div>
+                <!-- 新增/編輯模板表單 -->
+                <div v-if="showTemplateForm" class="bg-slate-800 border border-amber-600/50 rounded-2xl p-5 mb-6">
+                    <h3 class="text-amber-400 font-bold mb-4 text-sm">{{ editingTemplateId ? '✏️ 編輯模板' : '＋ 新增模板' }}</h3>
+                    <div class="space-y-3">
+                        <div><label class="text-slate-400 text-xs font-bold uppercase tracking-wider block mb-1">模板名稱</label>
+                            <input v-model="templateForm.templateName" type="text" placeholder="例：容量（中杯/大杯）" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2.5 text-white text-sm placeholder-slate-400 focus:outline-none focus:border-amber-500"></div>
+                        <div><label class="text-slate-400 text-xs font-bold uppercase tracking-wider block mb-1">群組名稱（顧客看到的標題）</label>
+                            <input v-model="templateForm.groupName" type="text" placeholder="例：容量、溫度、副餐" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2.5 text-white text-sm placeholder-slate-400 focus:outline-none focus:border-amber-500"></div>
+                        <div class="grid grid-cols-2 gap-3">
+                            <div><label class="text-slate-400 text-xs font-bold uppercase tracking-wider block mb-1">選擇方式</label>
+                                <select v-model="templateForm.type" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500"><option value="radio">單選（必選一）</option><option value="checkbox">多選（可複選）</option></select></div>
+                            <div><label class="text-slate-400 text-xs font-bold uppercase tracking-wider block mb-1">定價模式</label>
+                                <select v-model="templateForm.pricing" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500"><option value="setPrice">各自完整售價（容量用）</option><option value="addDelta">差價加購（加料用）</option><option value="mealUpgrade">套餐飲料升級</option></select></div>
+                        </div>
+                        <div v-if="templateForm.pricing === 'mealUpgrade'" class="flex items-center gap-3 bg-slate-700/50 rounded-lg px-3 py-2">
+                            <span class="text-slate-300 text-xs">套餐內含飲料售價（基礎值）$</span>
+                            <input v-model.number="templateForm.baseValue" type="number" min="0" placeholder="30" class="w-20 bg-slate-700 border border-slate-600 rounded px-2 py-1 text-white text-sm focus:outline-none focus:border-amber-500">
+                        </div>
+                        <div v-if="templateForm.type === 'radio'" class="flex items-center gap-3">
+                            <span class="text-slate-400 text-xs">預設選第幾個（從0算起）：</span>
+                            <input v-model.number="templateForm.defaultIdx" type="number" min="0" class="w-16 bg-slate-700 border border-slate-600 rounded px-2 py-1 text-white text-sm focus:outline-none focus:border-amber-500">
+                        </div>
+                        <div>
+                            <div class="flex items-center justify-between mb-2">
+                                <label class="text-slate-400 text-xs font-bold uppercase tracking-wider block">選項清單</label>
+                                <button v-if="templateForm.pricing === 'mealUpgrade'" @click="fillStandardDrinks" class="text-xs bg-emerald-900/60 hover:bg-emerald-800 text-emerald-400 border border-emerald-700 px-3 py-1 rounded-lg transition">⚡ 一鍵填入標準飲料清單</button>
+                            </div>
+                            <div v-for="(ch, ci) in templateForm.choices" :key="ci" class="flex gap-2 mb-2 items-center">
+                                <input v-model="ch.name" type="text" :placeholder="templateForm.pricing==='mealUpgrade' ? '飲料名稱' : '選項名稱'" class="flex-1 bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm placeholder-slate-400 focus:outline-none focus:border-amber-500">
+                                <div class="relative w-28"><span class="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 text-xs">$</span>
+                                    <input v-model.number="ch.price" type="number" min="0" :placeholder="templateForm.pricing==='setPrice' ? '完整售價' : (templateForm.pricing==='mealUpgrade' ? '飲料售價' : '差價(0=免費)')" class="w-full bg-slate-700 border border-slate-600 rounded-lg pl-5 pr-2 py-2 text-white text-sm placeholder-slate-400 focus:outline-none focus:border-amber-500"></div>
+                                <button @click="templateForm.choices.splice(ci,1)" class="text-slate-500 hover:text-red-400 text-xl w-7 flex-shrink-0">×</button>
+                            </div>
+                            <div class="flex items-center gap-3 mt-2 flex-wrap">
+                                <button @click="templateForm.choices.push({name:'',price:0})" class="text-emerald-400 hover:text-emerald-300 text-xs font-bold">＋ 新增選項</button>
+                                <button v-if="templateForm.pricing === 'mealUpgrade'" @click="autoImportDrinks" class="text-xs bg-blue-900/50 hover:bg-blue-800/70 text-blue-400 border border-blue-700 px-3 py-1.5 rounded-lg transition">🔄 從菜單飲料自動匯入</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="flex gap-3 mt-5">
+                        <button @click="showTemplateForm=false; editingTemplateId=null" class="flex-1 bg-slate-700 hover:bg-slate-600 text-white font-bold py-2.5 rounded-xl text-sm transition">取消</button>
+                        <button @click="saveTemplate" class="flex-2 bg-amber-600 hover:bg-amber-500 text-white font-bold py-2.5 px-8 rounded-xl text-sm transition">{{ editingTemplateId ? '更新模板' : '儲存模板' }}</button>
+                    </div>
+                </div>
+                <!-- 模板清單 -->
+                <div v-if="optionTemplates.length === 0 && !showTemplateForm" class="text-center text-slate-500 py-16"><div class="text-5xl mb-3">📋</div><p>尚無模板，點右上角「新增模板」開始建立</p></div>
+                <div v-else class="space-y-3">
+                    <div v-for="(tpl, ti) in optionTemplates" :key="tpl.id"
+                         class="bg-slate-800 border border-slate-700 rounded-xl p-4 flex items-start justify-between gap-4 drag-item"
+                         :class="{'ring-2 ring-amber-400 opacity-60': dragIdx===ti && dragType==='tpl', 'ring-1 ring-slate-600': dragIdx!==null && dragIdx!==ti && dragType==='tpl'}"
+                         draggable="true"
+                         @dragstart="tplDragStart($event, ti)"
+                         @dragover.prevent="dragOverIdx=ti; dragType='tpl'"
+                         @drop.prevent="tplDrop($event, ti)"
+                         @dragend="dragIdx=null; dragOverIdx=null">
+                        <div class="flex items-start gap-2 flex-1 min-w-0">
+                            <span class="text-slate-500 cursor-grab text-lg mt-0.5">⠿</span>
+                            <div class="flex-1 min-w-0">
+                                <div class="flex flex-col gap-0.5 mr-2 float-left mt-0.5">
+                                    <button @click="tplMoveUp(ti)" :disabled="ti===0" class="text-slate-500 hover:text-white disabled:opacity-20 text-xs leading-none transition">▲</button>
+                                    <button @click="tplMoveDown(ti)" :disabled="ti===optionTemplates.length-1" class="text-slate-500 hover:text-white disabled:opacity-20 text-xs leading-none transition">▼</button>
+                                </div>
+                                <div class="flex items-center gap-2 mb-1 flex-wrap">
+                                    <span class="text-white font-bold">{{ tpl.templateName }}</span>
+                                    <span class="text-xs bg-amber-900/50 text-amber-400 px-2 py-0.5 rounded-full">{{ tpl.groupName }}</span>
+                                    <span class="text-xs bg-slate-700 text-slate-400 px-2 py-0.5 rounded-full">{{ tpl.type === 'radio' ? '單選' : '多選' }}</span>
+                                    <span class="text-xs bg-slate-700 text-slate-400 px-2 py-0.5 rounded-full">{{ {setPrice:'完整售價', addDelta:'差價', mealUpgrade:'套餐升級'}[tpl.pricing] }}</span>
+                                </div>
+                                <div class="flex flex-wrap gap-1 mt-2">
+                                    <span v-for="ch in (tpl.choices||[])" :key="ch.name" class="text-xs bg-slate-700 text-slate-300 px-2 py-0.5 rounded">{{ ch.name }} <span class="text-slate-500">${{ ch.price }}</span></span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="flex gap-2 flex-shrink-0">
+                            <button @click="editTemplate(tpl)" class="text-xs bg-slate-700 hover:bg-blue-900/50 text-slate-400 hover:text-blue-400 px-3 py-1.5 rounded-lg transition">✏️ 編輯</button>
+                            <button @click="deleteTemplate(tpl.id)" class="text-xs bg-slate-700 hover:bg-red-900/50 text-slate-400 hover:text-red-400 px-3 py-1.5 rounded-lg transition">🗑 刪除</button>
+                        </div>
                     </div>
                 </div>
             </div>
         </div>
 
-        <!-- ===== TAB: 營業統計 ===== -->
+                <!-- ===== TAB: 營業統計 ===== -->
         <div v-if="activeTab === 'stats'" class="p-6">
             <div class="mb-6">
                 <h2 class="text-xl font-bold text-white">營業統計</h2>
@@ -486,69 +537,7 @@
                     <div v-else class="text-slate-500 text-sm text-center py-2">尚未設定特定公休日</div>
                 </div>
 
-                <!-- ★ 分類管理 -->
-                <div class="bg-slate-800 rounded-xl border border-slate-700 p-5">
-                    <div class="flex items-center gap-2 mb-1">
-                        <span class="text-blue-400 text-lg">🏷️</span>
-                        <p class="font-bold text-white">菜單分類管理</p>
-                    </div>
-                    <p class="text-slate-400 text-sm mb-4">新增或刪除分類。刪除分類不影響已有餐點，餐點保留原分類名稱。</p>
-                    <div class="flex gap-2 mb-4">
-                        <input v-model="newCategoryName" type="text" placeholder="輸入新分類名稱（例：燒肉飯）"
-                            @keyup.enter="addCategory"
-                            class="flex-1 bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-white text-sm placeholder-slate-500 focus:outline-none focus:border-emerald-500">
-                        <button @click="addCategory" class="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg font-bold transition text-sm">新增</button>
-                    </div>
-                    <div class="space-y-2">
-                        <div v-for="(cat, idx) in allCategories" :key="cat"
-                             class="flex items-center justify-between bg-slate-700 rounded-lg px-4 py-2.5">
-                            <div class="flex items-center gap-3">
-                                <div class="flex flex-col gap-1">
-                                    <button @click="moveCatUp(idx)" :disabled="idx===0" class="text-slate-500 hover:text-white disabled:opacity-20 text-xs leading-none transition">▲</button>
-                                    <button @click="moveCatDown(idx)" :disabled="idx===allCategories.length-1" class="text-slate-500 hover:text-white disabled:opacity-20 text-xs leading-none transition">▼</button>
-                                </div>
-                                <span class="text-white text-sm font-medium">{{ cat }}</span>
-                                <span class="text-slate-500 text-xs">（{{ menuItems.filter(function(i){return i.category===cat;}).length }} 項餐點）</span>
-                            </div>
-                            <button @click="removeCategory(cat, idx)" class="text-slate-400 hover:text-red-400 transition text-lg leading-none">×</button>
-                        </div>
-                    </div>
-                </div>
 
-                <!-- ★ 標準飲料清單編輯 -->
-                <div class="bg-slate-800 rounded-xl border border-blue-800/50 p-5">
-                    <div class="flex items-center justify-between mb-1">
-                        <p class="font-bold text-blue-400">🧋 標準飲料清單</p>
-                        <button @click="addDrink" class="text-emerald-400 hover:text-emerald-300 text-sm font-bold">＋ 新增</button>
-                    </div>
-                    <p class="text-slate-400 text-xs mb-4">「選項模板」→「⚡ 一鍵填入標準飲料清單」的資料來源，可在此新增/修改/刪除</p>
-                    <div class="max-h-80 overflow-y-auto space-y-2 pr-1">
-                        <div v-for="(drink, i) in standardDrinks" :key="i" class="flex gap-2 items-center">
-                            <!-- 排序按鈕 -->
-                            <div class="flex flex-col gap-0.5 flex-shrink-0">
-                                <button @click="moveDrink(i, -1)" :disabled="i === 0"
-                                    class="w-5 h-5 flex items-center justify-center text-slate-500 hover:text-white hover:bg-slate-600 rounded disabled:opacity-20 text-xs leading-none transition">▲</button>
-                                <button @click="moveDrink(i, 1)" :disabled="i === standardDrinks.length - 1"
-                                    class="w-5 h-5 flex items-center justify-center text-slate-500 hover:text-white hover:bg-slate-600 rounded disabled:opacity-20 text-xs leading-none transition">▼</button>
-                            </div>
-                            <input v-model="drink.name" type="text" placeholder="飲料名稱（例：錫蘭紅茶（中杯））"
-                                class="flex-1 bg-slate-700 border border-slate-600 rounded-lg px-3 py-1.5 text-white text-sm placeholder-slate-400 focus:outline-none focus:border-blue-500">
-                            <div class="relative w-24 flex-shrink-0">
-                                <span class="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 text-xs">$</span>
-                                <input v-model.number="drink.price" type="number" min="0"
-                                    class="w-full bg-slate-700 border border-slate-600 rounded-lg pl-5 pr-2 py-1.5 text-white text-sm focus:outline-none focus:border-blue-500">
-                            </div>
-                            <button @click="removeDrink(i)" class="text-slate-500 hover:text-red-400 text-xl w-7 flex-shrink-0 transition">×</button>
-                        </div>
-                        <div v-if="standardDrinks.length === 0" class="text-slate-500 text-sm text-center py-4 border border-dashed border-slate-600 rounded-lg">尚無飲料，點右上角「＋ 新增」</div>
-                    </div>
-                    <button @click="saveStandardDrinks" :disabled="standardDrinksSaving"
-                        class="mt-4 bg-blue-700 hover:bg-blue-600 disabled:opacity-50 text-white font-bold px-6 py-2 rounded-lg text-sm transition">
-                        <span v-if="standardDrinksSaving">儲存中...</span>
-                        <span v-else-if="standardDrinksSaved">✅ 已儲存</span>
-                        <span v-else>儲存飲料清單</span>
-                    </button>
-                </div>
 
                 <button @click="saveSettings" :disabled="settingsSaving"
                     class="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold py-3.5 rounded-xl transition text-base">
@@ -839,12 +828,12 @@
                 isLoggedIn: false, isLoggingIn: false,
                 loginEmail: '', loginPassword: '', loginError: '',
                 // Navigation
-                activeTab: 'menu',                tabs: [
+                activeTab: 'menu', menuSubTab: 'items', tabs: [
                     { id: 'menu',      label: '菜單管理', icon: '🍽️' },
-                    { id: 'templates', label: '選項模板', icon: '📋' },
                     { id: 'stats',     label: '營業統計', icon: '📊' },
                     { id: 'settings',  label: '店面設定', icon: '⚙️' }
                 ],
+                dragIdx: null, dragOverIdx: null, dragType: null, menuOrderDirty: false,
                 // Menu
                 menuItems: [], menuLoading: true, filterCat: '',
                 // Modal
@@ -926,6 +915,10 @@
         watch: {
             activeTab: function(newTab) {
                 if (newTab === 'stats') this.loadStats();
+            },
+            menuSubTab: function(newSub) {
+                if (newSub === 'templates' && this.optionTemplates.length === 0) this.loadTemplates();
+                if (newSub === 'drinks' && this.standardDrinks.length === 0) this.loadStandardDrinks();
             }
         },
 
@@ -961,7 +954,13 @@
                     if (data) {
                         self.menuItems = Object.entries(data)
                             .map(function(e) { return Object.assign({ id: e[0] }, e[1]); })
-                            .sort(function(a,b) { return (a.category||'').localeCompare(b.category||''); });
+                            .sort(function(a,b) {
+                                // Sort by sortOrder if set, else by category
+                                if (a.sortOrder !== undefined && b.sortOrder !== undefined) return a.sortOrder - b.sortOrder;
+                                if (a.sortOrder !== undefined) return -1;
+                                if (b.sortOrder !== undefined) return 1;
+                                return (a.category||'').localeCompare(b.category||'');
+                            });
                     } else {
                         self.menuItems = [];
                     }
@@ -1092,6 +1091,97 @@
             removeChoice: function(gi, ci) { this.form.optionGroups[gi].choices.splice(ci, 1); },
             addOption: function() { this.form.options.push({ name: '', price: 0 }); },
             removeOption: function(idx) { this.form.options.splice(idx, 1); },
+            // ── DRAG SORT: Menu Items ──
+            menuDragStart: function(e, i) { this.dragIdx = i; this.dragType = 'menu'; e.dataTransfer.effectAllowed = 'move'; },
+            menuDrop: function(e, toIdx) {
+                e.preventDefault();
+                var fromIdx = this.dragIdx;
+                if (fromIdx === null || fromIdx === toIdx) { this.dragIdx = null; return; }
+                // Find actual indices in menuItems array
+                var fromItem = this.filteredMenu[fromIdx];
+                var toItem = this.filteredMenu[toIdx];
+                var fi = this.menuItems.indexOf(fromItem);
+                var ti = this.menuItems.indexOf(toItem);
+                if (fi !== -1 && ti !== -1) {
+                    var item = this.menuItems.splice(fi, 1)[0];
+                    this.menuItems.splice(ti, 0, item);
+                    this.menuOrderDirty = true;
+                }
+                this.dragIdx = null; this.dragOverIdx = null;
+            },
+            menuMoveUp: function(displayIdx) {
+                var fromItem = this.filteredMenu[displayIdx];
+                var toItem = this.filteredMenu[displayIdx - 1];
+                var fi = this.menuItems.indexOf(fromItem);
+                var ti = this.menuItems.indexOf(toItem);
+                if (fi > 0 && ti !== -1) {
+                    var item = this.menuItems.splice(fi, 1)[0];
+                    this.menuItems.splice(ti, 0, item);
+                    this.menuOrderDirty = true;
+                }
+            },
+            menuMoveDown: function(displayIdx) {
+                var fromItem = this.filteredMenu[displayIdx];
+                var toItem = this.filteredMenu[displayIdx + 1];
+                var fi = this.menuItems.indexOf(fromItem);
+                var ti = this.menuItems.indexOf(toItem);
+                if (fi !== -1 && ti !== -1 && ti < this.menuItems.length) {
+                    var item = this.menuItems.splice(fi, 1)[0];
+                    this.menuItems.splice(ti, 0, item);
+                    this.menuOrderDirty = true;
+                }
+            },
+            saveMenuOrder: function() {
+                var self = this;
+                var updates = {};
+                self.menuItems.forEach(function(item, idx) { updates['menu/' + item.id + '/sortOrder'] = idx; });
+                update(ref(db), updates)
+                    .then(function() { self.menuOrderDirty = false; alert('✅ 排序已儲存'); })
+                    .catch(function(e) { alert('儲存排序失敗：' + e.message); });
+            },
+            // ── DRAG SORT: Categories ──
+            catDragStart: function(e, i) { this.dragIdx = i; this.dragType = 'cat'; e.dataTransfer.effectAllowed = 'move'; },
+            catDrop: function(e, toIdx) {
+                e.preventDefault();
+                var fromIdx = this.dragIdx;
+                if (fromIdx === null || fromIdx === toIdx) { this.dragIdx = null; return; }
+                var arr = this.settings.categories;
+                var item = arr.splice(fromIdx, 1)[0];
+                arr.splice(toIdx, 0, item);
+                this.dragIdx = null; this.dragOverIdx = null;
+            },
+            // ── DRAG SORT: Drinks ──
+            drinkDragStart: function(e, i) { this.dragIdx = i; this.dragType = 'drink'; e.dataTransfer.effectAllowed = 'move'; },
+            drinkDrop: function(e, toIdx) {
+                e.preventDefault();
+                var fromIdx = this.dragIdx;
+                if (fromIdx === null || fromIdx === toIdx) { this.dragIdx = null; return; }
+                var arr = this.standardDrinks;
+                var item = arr.splice(fromIdx, 1)[0];
+                arr.splice(toIdx, 0, item);
+                this.dragIdx = null; this.dragOverIdx = null;
+            },
+            // ── DRAG SORT: Templates ──
+            tplDragStart: function(e, i) { this.dragIdx = i; this.dragType = 'tpl'; e.dataTransfer.effectAllowed = 'move'; },
+            tplDrop: function(e, toIdx) {
+                e.preventDefault();
+                var fromIdx = this.dragIdx;
+                if (fromIdx === null || fromIdx === toIdx) { this.dragIdx = null; return; }
+                var arr = this.optionTemplates;
+                var item = arr.splice(fromIdx, 1)[0];
+                arr.splice(toIdx, 0, item);
+                this.dragIdx = null; this.dragOverIdx = null;
+            },
+            tplMoveUp: function(i) {
+                if (i === 0) return;
+                var arr = this.optionTemplates;
+                var tmp = arr[i-1]; arr[i-1] = arr[i]; arr[i] = tmp;
+            },
+            tplMoveDown: function(i) {
+                var arr = this.optionTemplates;
+                if (i >= arr.length-1) return;
+                var tmp = arr[i+1]; arr[i+1] = arr[i]; arr[i] = tmp;
+            },
             // ── 標準飲料清單 ──
             loadStandardDrinks: function() {
                 var self = this;
