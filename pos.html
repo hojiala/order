@@ -169,7 +169,7 @@
                     <span class="text-xs text-gray-400 font-mono bg-gray-50 px-1.5 py-0.5 rounded">&#35;{{ order.id.slice(-4).toUpperCase() }}</span>
                     <span class="text-xs text-gray-500">&#128222; {{ order.phone || (order.customer && order.customer.phone) || "未提供" }}</span>
                   </div>
-                  <p class="text-xs text-gray-400">&#128336; {{ order.pickupTime }}</p>
+                  <p class="text-xs text-gray-400">&#128336; {{ order.pickupDate && order.pickupDate !== todayStr ? order.pickupDate + ' ' : '' }}{{ order.pickupTime }}</p>
                   <p class="text-xs text-gray-500 mt-0.5 truncate">{{ (order.items||[]).map(function(i){return i.qty+"x"+i.name}).join("、") }}</p>
                   <p v-if="order.orderNote" class="text-xs text-blue-500 mt-0.5 truncate">&#128221; {{ order.orderNote }}</p>
                 </div>
@@ -247,18 +247,29 @@
       </div>
     </div>
     <div class="flex-shrink-0 border-t border-gray-200 bg-white">
-      <div v-if="orderMode==='pos'" class="px-4 pt-3 pb-1 flex gap-2">
-        <input v-model="custName" type="text" placeholder="顧客姓名（選填）" class="flex-1 bg-gray-100 rounded-xl px-3 py-2 text-sm placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-orange-300" style="min-width:0">
-        <input v-model="custPhone" type="tel" placeholder="電話" class="bg-gray-100 rounded-xl px-3 py-2 text-sm placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-orange-300" style="width:7.5rem;flex-shrink:0">
+      <div v-if="orderMode==='pos'" class="px-4 pt-3 pb-1 space-y-2">
+        <div class="flex gap-2">
+          <input v-model="custName" type="text" placeholder="顧客姓名（選填）" class="flex-1 bg-gray-100 rounded-xl px-3 py-2 text-sm placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-orange-300" style="min-width:0">
+          <input v-model="custPhone" type="tel" placeholder="電話" class="bg-gray-100 rounded-xl px-3 py-2 text-sm placeholder-gray-400 focus:outline-none focus:ring-1 focus:ring-orange-300" style="width:7.5rem;flex-shrink:0">
+        </div>
+        <div class="flex gap-2 items-center">
+          <span class="text-xs text-gray-500 flex-shrink-0">&#128336; 取餐</span>
+          <input v-model="posPickupDate" type="date" class="bg-gray-100 rounded-lg px-2 py-1.5 text-sm text-gray-700 focus:outline-none focus:ring-1 focus:ring-orange-300" style="width:8.5rem">
+          <input v-model="posPickupTime" type="time" class="bg-gray-100 rounded-lg px-2 py-1.5 text-sm text-gray-700 focus:outline-none focus:ring-1 focus:ring-orange-300" style="width:6rem">
+          <button @click="posPickupDate=todayStr;posPickupTime=''" class="text-xs text-orange-500 hover:text-orange-600 font-bold flex-shrink-0">現場</button>
+        </div>
       </div>
       <div v-if="orderMode!=='pos' && editingOrder" class="px-4 pt-3 pb-1">
         <div class="bg-blue-50 border border-blue-200 rounded-xl p-3 text-xs text-blue-700 space-y-1.5">
           <p class="font-bold text-sm">{{ editingOrder.customer && editingOrder.customer.name ? editingOrder.customer.name : (editingOrder.customer||"顧客") }}</p>
           <p>&#128222; {{ editingOrder.phone || (editingOrder.customer && editingOrder.customer.phone) || "未提供" }}</p>
           <div class="flex items-center gap-2">
+            <span>&#128197; 日期：</span>
+            <input v-model="editPickupDate" type="date" class="bg-white border border-blue-300 rounded px-2 py-0.5 text-sm text-gray-800 focus:outline-none focus:border-blue-500" style="width:8.5rem">
+          </div>
+          <div class="flex items-center gap-2">
             <span>&#128336; 取餐：</span>
             <input v-model="editPickupTime" type="time" class="bg-white border border-blue-300 rounded px-2 py-0.5 text-sm text-gray-800 focus:outline-none focus:border-blue-500" style="width:7rem">
-            <span v-if="editPickupTime !== (editingOrder.pickupTime||'')" class="text-orange-500 font-bold text-xs">*已修改</span>
           </div>
           <div>
             <span>&#128221; 備註：</span>
@@ -352,7 +363,7 @@
 
 <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
-    import { getDatabase, ref, onValue, update, push, set, remove, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
+    import { getDatabase, ref, onValue, update, push, set, get, remove, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
     const firebaseConfig = {
         apiKey:"AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -372,9 +383,10 @@
                 menu:[],menuLoading:true,filterCat:"",settings:{categories:[]},
                 activeView:"menu",editMode:false,
                 cart:[],custName:"",custPhone:"",isSubmitting:false,
-                editPickupTime:"",editOrderNote:"",editingCartIdx:-1,
+                editPickupDate:"",editPickupTime:"",editOrderNote:"",editingCartIdx:-1,
+                posPickupDate:"",posPickupTime:"",
                 orderMode:"pos",editingOrder:null,
-                onlineOrders:[],ordersLoading:false,
+                onlineOrders:[],ordersLoading:false,_assigningNos:{},
                 orderSearch:"",
                 activeItem:null,tempQty:1,tempNote:"",tempSels:[],tempOG:{},
                 toastMsg:"",toastTimer:null,lastOrderId:null,
@@ -383,6 +395,7 @@
             };
         },
         computed:{
+            todayStr:function(){var d=new Date();return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);},
             allCategories:function(){return this.settings.categories||[];},
             filteredMenu:function(){var s=this;if(!s.filterCat)return s.menu;return s.menu.filter(function(i){return i.category===s.filterCat;});},
             cartTotal:function(){return this.cart.reduce(function(s,i){return s+(Number(i.itemTotal)||0);},0);},
@@ -415,6 +428,7 @@
         },
         created:function(){
             var s=this;
+            var d=new Date();s.posPickupDate=d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);
             onAuthStateChanged(auth,function(u){if(u){s.isLoggedIn=true;s.startAll();}else{s.isLoggedIn=false;}});
         },
         methods:{
@@ -432,15 +446,26 @@
             },
             doArchiveAll:function(){
                 var s=this;
-                if(!confirm("確定要進行「打烊結單」嗎？\n這會將畫面上所有的訂單封存至歷史紀錄，並清空畫面。"))return;
+                var today=new Date();
+                var todayStr=today.getFullYear()+'-'+('0'+(today.getMonth()+1)).slice(-2)+'-'+('0'+today.getDate()).slice(-2);
+                // 找出未來預約訂單
+                var futureIds=[];
+                s.onlineOrders.forEach(function(o){
+                    var pd=o.pickupDate||'';
+                    if(pd>todayStr)futureIds.push(o.id);
+                });
+                var msg="確定要進行「打烊結單」嗎？\n這會將今日及過去的訂單封存至歷史紀錄。";
+                if(futureIds.length>0)msg+="\n\n⚠️ 有 "+futureIds.length+" 筆未來預約訂單將保留在畫面上。";
+                if(!confirm(msg))return;
                 var updates={};
                 s.onlineOrders.forEach(function(o){
-                    updates["orders/"+o.id+"/status"]="done";
+                    if(futureIds.indexOf(o.id)===-1)updates["orders/"+o.id+"/status"]="archived";
                 });
                 if(!Object.keys(updates).length){s.toast("✅ 目前沒有待結單訂單");return;}
-                var updateRef=ref(db);
-                update(updateRef,updates).then(function(){
-                    s.toast("✅ 結單完成！畫面已清空，辛苦了！");
+                update(ref(db),updates).then(function(){
+                    var msg="✅ 結單完成！辛苦了！";
+                    if(futureIds.length>0)msg+="（"+futureIds.length+"筆未來預約已保留）";
+                    s.toast(msg);
                     s.exitOnline();
                 }).catch(function(e){alert("結單失敗："+e.message);});
             },
@@ -475,7 +500,30 @@
                 s.ordersLoading=true;
                 onValue(ref(db,"orders"),function(snap){
                     if(!snap.exists()){s.onlineOrders=[];s.ordersLoading=false;return;}
-                    s.onlineOrders=Object.entries(snap.val())
+                    var entries=Object.entries(snap.val());
+                    // ★ 自動補流水號：偵測到無 orderNo 的訂單
+                    entries.forEach(function(e){
+                        var o=e[1];
+                        if(o&&o.status&&o.status!=='archived'&&o.status!=='cancelled'&&!o.orderNo&&!s._assigningNos[e[0]]){
+                            s._assigningNos[e[0]]=true;
+                            // 先確認確實沒有 orderNo（避免 race condition）
+                            get(ref(db,"orders/"+e[0]+"/orderNo")).then(function(snap){
+                                if(snap.exists()&&snap.val()){delete s._assigningNos[e[0]];return;}
+                                return runTransaction(ref(db,"settings/orderCounter"),function(cur){return(cur||0)+1})
+                                .then(function(result){return update(ref(db,"orders/"+e[0]),{orderNo:result.snapshot.val()})});
+                            })
+                            .catch(function(err){
+                                console.warn("補流水號失敗:",err.message);
+                                // 1秒後重試一次
+                                setTimeout(function(){
+                                    runTransaction(ref(db,"settings/orderCounter"),function(cur){return(cur||0)+1})
+                                    .then(function(result){update(ref(db,"orders/"+e[0]),{orderNo:result.snapshot.val()})})
+                                    .catch(function(){});
+                                },1500);
+                            }).finally(function(){delete s._assigningNos[e[0]]});
+                        }
+                    });
+                    s.onlineOrders=entries
                         .filter(function(e){return e[1]&&(e[1].status==="new"||e[1].status==="making"||e[1].status==="done");})
                         .map(function(e){return Object.assign({id:e[0]},e[1]);})
                         .sort(function(a,b){
@@ -564,11 +612,14 @@
                 if(nq<=0){this.cart.splice(idx,1);return;}
                 var u=Math.round(item.itemTotal/item.qty);item.qty=nq;item.itemTotal=u*nq;this.cart.splice(idx,1,item);
             },
-            clearCart:function(){this.cart=[];this.custName="";this.custPhone="";},
+            clearCart:function(){this.cart=[];this.custName="";this.custPhone="";this.posPickupDate=this.todayStr;this.posPickupTime="";},
             doCheckout:function(){
                 var s=this;if(!s.cart.length)return;
                 s.isSubmitting=true;
-                var o={customer:s.custName||"現場",phone:s.custPhone||"",pickupTime:"現場取餐",
+                var pickDate=s.posPickupDate||s.todayStr;
+                var pickTime=s.posPickupTime||(pickDate>s.todayStr?"":"現場取餐");
+                if(!pickTime)pickTime="預約取餐";
+                var o={customer:s.custName||"現場",phone:s.custPhone||"",pickupDate:pickDate,pickupTime:pickTime,
                     items:s.cart.map(function(i){return Object.assign({},i);}),
                     total:s.cartTotal,status:"making",timestamp:Date.now(),source:"pos"};
                 runTransaction(ref(db,"settings/orderCounter"),function(cur){return(cur||0)+1;})
@@ -589,13 +640,14 @@
             viewOrder:function(order){
                 this.editingOrder=order;
                 this.cart=JSON.parse(JSON.stringify(order.items||[]));
+                this.editPickupDate=order.pickupDate||'';
                 this.editPickupTime=order.pickupTime||'';
                 this.editOrderNote=order.orderNote||order.note||'';
                 this.orderMode="online";
                 this.activeView="menu";
                 this.activeMenu=null;
             },
-            exitOnline:function(){this.orderMode="pos";this.editingOrder=null;this.cart=[];this.editPickupTime="";this.editOrderNote="";},
+            exitOnline:function(){this.orderMode="pos";this.editingOrder=null;this.cart=[];this.editPickupDate="";this.editPickupTime="";this.editOrderNote="";},
             saveOrderEdit:function(){
                 var s=this;
                 if(!s.editingOrder||!s.cart.length){s.toast("⚠ 訂單內容為空");return;}
@@ -606,6 +658,7 @@
                     items:s.cart.map(function(i){return Object.assign({},i);}),
                     total:s.cartTotal
                 };
+                if(s.editPickupDate)upd.pickupDate=s.editPickupDate;
                 if(s.editPickupTime)upd.pickupTime=s.editPickupTime;
                 if(s.editOrderNote!==undefined)upd.orderNote=s.editOrderNote;
                 update(ref(db,"orders/"+id),upd).then(function(){
