@@ -427,7 +427,7 @@
                                 <td class="px-5 py-3 text-slate-300 font-mono text-xs">{{ formatTimestamp(order.timestamp) }}</td>
                                 <td class="px-4 py-3 text-white font-medium">{{ order.customer && order.customer.name ? order.customer.name : (order.customer || '顧客') }}</td>
                                 <td class="px-4 py-3 text-slate-400 font-mono text-xs">{{ order.phone || (order.customer && order.customer.phone) || '-' }}</td>
-                                <td class="px-4 py-3 text-slate-300">{{ order.pickupTime || '盡快' }}</td>
+                                <td class="px-4 py-3 text-slate-300">{{ order.pickupDate ? order.pickupDate + ' ' : '' }}{{ order.pickupTime || '盡快' }}</td>
                                 <td class="px-4 py-3 text-center">
                                     <span class="text-xs px-2 py-0.5 rounded-full font-bold"
                                         :class="{'bg-blue-900/60 text-blue-300': order.status==='new','bg-yellow-900/60 text-yellow-300': order.status==='making','bg-emerald-900/60 text-emerald-300': order.status==='done','bg-red-900/60 text-red-400 font-bold': order.status==='cancelled','bg-gray-700 text-gray-400': order.status==='archived'}">                                        {{ {new:'新訂單',making:'製作中',done:'已完成',cancelled:'已取消',archived:'已封存'}[order.status] || order.status }}
@@ -1406,45 +1406,70 @@
                 this.allOrdersCache = null;
                 this.loadStats();
             },
+            // ★ 取得訂單的「營業日」：有 pickupDate 用 pickupDate，否則用 timestamp 日期
+            getOrderDate: function(o) {
+                if (o.pickupDate) return o.pickupDate; // "2026-03-03" 格式
+                if (!o.timestamp) return '';
+                var d = new Date(o.timestamp);
+                return d.getFullYear() + '-' + ('0'+(d.getMonth()+1)).slice(-2) + '-' + ('0'+d.getDate()).slice(-2);
+            },
             loadStats: function() {
                 var self = this;
                 self.statsLoading = true;
                 var doFilter = function() {
                     var today = new Date(); today.setHours(0,0,0,0);
+                    var fmtDate = function(d) { return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); };
+                    var filterByDate = function(startDate, endDate) {
+                        var sStr = fmtDate(startDate);
+                        var eStr = fmtDate(endDate);
+                        return self.allOrdersCache.filter(function(o) {
+                            var od = self.getOrderDate(o);
+                            return od >= sStr && od < eStr;
+                        });
+                    };
+                    var filterByDateInclusive = function(startDate, endDate) {
+                        var sStr = fmtDate(startDate);
+                        var eStr = fmtDate(endDate);
+                        return self.allOrdersCache.filter(function(o) {
+                            var od = self.getOrderDate(o);
+                            return od >= sStr && od <= eStr;
+                        });
+                    };
+
                     if (self.statsMode === 'today') {
                         var tom = new Date(today); tom.setDate(tom.getDate()+1);
-                        self.statsOrders = self.allOrdersCache.filter(function(o) { return o.timestamp >= today.getTime() && o.timestamp < tom.getTime(); });
+                        self.statsOrders = filterByDate(today, tom);
                     } else if (self.statsMode === 'tomorrow') {
                         var tmrStart = new Date(today); tmrStart.setDate(tmrStart.getDate()+1);
                         var tmrEnd = new Date(tmrStart); tmrEnd.setDate(tmrEnd.getDate()+1);
-                        self.statsOrders = self.allOrdersCache.filter(function(o) { return o.timestamp >= tmrStart.getTime() && o.timestamp < tmrEnd.getTime(); });
+                        self.statsOrders = filterByDate(tmrStart, tmrEnd);
                     } else if (self.statsMode === 'yesterday') {
                         var yestStart = new Date(today); yestStart.setDate(yestStart.getDate()-1);
-                        self.statsOrders = self.allOrdersCache.filter(function(o) { return o.timestamp >= yestStart.getTime() && o.timestamp < today.getTime(); });
+                        self.statsOrders = filterByDate(yestStart, today);
                     } else if (self.statsMode === 'dayBefore') {
                         var dbStart = new Date(today); dbStart.setDate(dbStart.getDate()-2);
                         var dbEnd = new Date(today); dbEnd.setDate(dbEnd.getDate()-1);
-                        self.statsOrders = self.allOrdersCache.filter(function(o) { return o.timestamp >= dbStart.getTime() && o.timestamp < dbEnd.getTime(); });
+                        self.statsOrders = filterByDate(dbStart, dbEnd);
                     } else if (self.statsMode === 'last7') {
                         var l7Start = new Date(today); l7Start.setDate(l7Start.getDate()-7);
                         var l7End = new Date(today); l7End.setDate(l7End.getDate()+1);
-                        self.statsOrders = self.allOrdersCache.filter(function(o) { return o.timestamp >= l7Start.getTime() && o.timestamp < l7End.getTime(); });
+                        self.statsOrders = filterByDate(l7Start, l7End);
                     } else if (self.statsMode === 'thisMonth') {
                         var tmStart = new Date(today.getFullYear(), today.getMonth(), 1);
                         var tmEnd = new Date(today.getFullYear(), today.getMonth()+1, 1);
-                        self.statsOrders = self.allOrdersCache.filter(function(o) { return o.timestamp >= tmStart.getTime() && o.timestamp < tmEnd.getTime(); });
+                        self.statsOrders = filterByDate(tmStart, tmEnd);
                     } else if (self.statsMode === 'lastMonth') {
                         var lmStart = new Date(today.getFullYear(), today.getMonth()-1, 1);
                         var lmEnd = new Date(today.getFullYear(), today.getMonth(), 1);
-                        self.statsOrders = self.allOrdersCache.filter(function(o) { return o.timestamp >= lmStart.getTime() && o.timestamp < lmEnd.getTime(); });
+                        self.statsOrders = filterByDate(lmStart, lmEnd);
                     } else if (self.statsMode === 'single' && self.statsDate) {
                         var d = new Date(self.statsDate); d.setHours(0,0,0,0);
                         var de = new Date(d); de.setDate(de.getDate()+1);
-                        self.statsOrders = self.allOrdersCache.filter(function(o) { return o.timestamp >= d.getTime() && o.timestamp < de.getTime(); });
+                        self.statsOrders = filterByDate(d, de);
                     } else if (self.statsMode === 'range' && self.statsStart && self.statsEnd) {
                         var s = new Date(self.statsStart); s.setHours(0,0,0,0);
-                        var e = new Date(self.statsEnd); e.setHours(23,59,59,999);
-                        self.statsOrders = self.allOrdersCache.filter(function(o) { return o.timestamp >= s.getTime() && o.timestamp <= e.getTime(); });
+                        var e = new Date(self.statsEnd); e.setHours(0,0,0,0);
+                        self.statsOrders = filterByDateInclusive(s, e);
                     } else {
                         self.statsOrders = [];
                     }
