@@ -73,6 +73,10 @@
                         </div>
 
                         <div class="p-4 flex-1">
+                            <!-- 訂單備註 -->
+                            <div v-if="order.orderNote" class="bg-blue-50 border border-blue-200 rounded-lg px-3 py-2 mb-3 text-sm text-blue-700 font-bold">
+                                📝 備註：{{ order.orderNote }}
+                            </div>
                             <ul class="space-y-3">
                                 <li v-for="(item, idx) in order.items" :key="idx" class="border-b border-dashed pb-2 last:border-0 last:pb-0">
                                     <div class="flex justify-between items-start">
@@ -113,6 +117,7 @@
                                 </button>
                                 
                                 <div v-if="activeMenu === order.id" class="absolute bottom-12 right-0 bg-white rounded-lg shadow-2xl border border-gray-200 w-36 overflow-hidden z-30">
+                                    <button @click="openEditModal(order); activeMenu = null" class="w-full text-left px-4 py-3 hover:bg-blue-50 text-blue-600 border-b text-sm font-bold">✏️ 編輯訂單</button>
                                     <button @click="printOrder(order); activeMenu = null" class="w-full text-left px-4 py-3 hover:bg-gray-100 text-gray-700 border-b text-sm font-bold">🖨️ 補印工單</button>
                                     <button @click="printReceipt(order); activeMenu = null" class="w-full text-left px-4 py-3 hover:bg-gray-100 text-gray-700 border-b text-sm font-bold">🧾 印收據</button>
                                     <button v-if="order.status !== 'done'" @click="cancelOrder(order); activeMenu = null" class="w-full text-left px-4 py-3 hover:bg-red-50 text-red-600 text-sm font-bold">❌ 取消訂單</button>
@@ -127,6 +132,48 @@
                     目前沒有待處理的訂單 ☕
                 </div>
             </main>
+
+            <!-- ★ 訂單編輯 Modal -->
+            <div v-if="editModal" class="fixed inset-0 z-[100] flex items-center justify-center" style="background:rgba(0,0,0,0.5)" @click.self="editModal=null">
+                <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 overflow-hidden" style="max-height:85vh;display:flex;flex-direction:column;">
+                    <div class="bg-gray-800 px-5 py-3 flex items-center justify-between flex-shrink-0">
+                        <span class="text-white font-bold">✏️ 編輯訂單 No.{{ editModal.orderNo ? String(editModal.orderNo).padStart(3,'0') : '---' }}</span>
+                        <button @click="editModal=null" class="text-gray-400 hover:text-white text-xl">✕</button>
+                    </div>
+                    <div class="flex-1 overflow-y-auto p-5 space-y-4" style="min-height:0">
+                        <div>
+                            <label class="text-sm font-bold text-gray-700 mb-1 block">⏰ 取餐時間</label>
+                            <input v-model="editPickupTime" type="time" class="w-full border-2 border-gray-200 rounded-xl px-4 py-2.5 text-base focus:outline-none focus:border-blue-400">
+                        </div>
+                        <div>
+                            <label class="text-sm font-bold text-gray-700 mb-1 block">📝 訂單備註</label>
+                            <textarea v-model="editOrderNote" rows="3" placeholder="輸入訂單備註…"
+                                class="w-full border-2 border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-blue-400 resize-none placeholder-gray-400"></textarea>
+                        </div>
+                        <div>
+                            <label class="text-sm font-bold text-gray-700 mb-2 block">🍽️ 餐點明細</label>
+                            <div v-for="(item, idx) in editModal.items" :key="idx" class="border border-gray-200 rounded-lg p-3 mb-2">
+                                <div class="flex justify-between items-start">
+                                    <div>
+                                        <span class="text-red-600 font-bold">{{ item.qty }}x</span> <span class="font-bold">{{ item.name }}</span>
+                                        <div v-if="item.optionGroupSelections && item.optionGroupSelections.length" class="flex flex-wrap gap-1 mt-1">
+                                            <span v-for="sel in item.optionGroupSelections" :key="sel.groupName" class="text-xs bg-orange-50 border border-orange-200 text-orange-700 px-1.5 py-0.5 rounded-full font-bold">{{ sel.name }}</span>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="mt-2">
+                                    <input v-model="item.note" type="text" placeholder="備註（選填）"
+                                        class="w-full border border-gray-200 rounded px-3 py-1.5 text-sm focus:outline-none focus:border-blue-400 placeholder-gray-400">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="p-4 bg-gray-50 border-t flex gap-3 flex-shrink-0">
+                        <button @click="editModal=null" class="flex-1 py-2.5 rounded-xl bg-gray-200 text-gray-600 font-bold text-sm">取消</button>
+                        <button @click="saveOrderEdit" :disabled="editSaving" class="flex-1 py-2.5 rounded-xl bg-blue-600 text-white font-bold text-sm disabled:opacity-50">{{ editSaving ? '儲存中...' : '💾 儲存 + 重新列印' }}</button>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -159,7 +206,11 @@
                     password: '',
                     orders: [],
                     previousNewCount: 0,
-                    activeMenu: null, // ★ 控制 +號選單的變數
+                    activeMenu: null,
+                    editModal: null,
+                    editPickupTime: '',
+                    editOrderNote: '',
+                    editSaving: false,
                     alertSound: new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg')
                 }
             },
@@ -282,6 +333,32 @@
                 playAlert() {
                     this.alertSound.currentTime = 0;
                     this.alertSound.play().catch(err => console.log("音效被阻擋"));
+                },
+                openEditModal(order) {
+                    this.editModal = JSON.parse(JSON.stringify(order));
+                    this.editPickupTime = order.pickupTime || '';
+                    this.editOrderNote = order.orderNote || '';
+                },
+                async saveOrderEdit() {
+                    if (!this.editModal) return;
+                    this.editSaving = true;
+                    try {
+                        const id = this.editModal.id;
+                        const taskRef = ref(db, `orders/${id}/print_task`);
+                        const upd = {
+                            pickupTime: this.editPickupTime,
+                            orderNote: this.editOrderNote,
+                            items: this.editModal.items
+                        };
+                        await update(ref(db, `orders/${id}`), upd);
+                        await remove(taskRef);
+                        await set(taskRef, `kitchen_${Date.now()}`);
+                        this.editModal = null;
+                    } catch (err) {
+                        alert('儲存失敗：' + err.message);
+                    } finally {
+                        this.editSaving = false;
+                    }
                 }
             }
         }).mount('#app');
