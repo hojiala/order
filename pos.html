@@ -159,7 +159,8 @@
                     <span class="text-xs px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 font-bold flex-shrink-0">{{ order.source==='pos' ? "POS" : "線上" }}</span>
                   </div>
                   <div class="flex items-center gap-3 mb-1">
-                    <span class="text-xs text-orange-600 font-black bg-orange-50 px-2 py-0.5 rounded">&#35;{{ order.id.slice(-4).toUpperCase() }}</span>
+                    <span class="text-xs text-orange-600 font-black bg-orange-50 px-2 py-0.5 rounded">No.{{ fmtNo(order.orderNo) }}</span>
+                    <span class="text-xs text-gray-400 font-mono bg-gray-50 px-1.5 py-0.5 rounded">&#35;{{ order.id.slice(-4).toUpperCase() }}</span>
                     <span class="text-xs text-gray-500">&#128222; {{ order.phone || (order.customer && order.customer.phone) || "未提供" }}</span>
                   </div>
                   <p class="text-xs text-gray-400">&#128336; {{ order.pickupTime }}</p>
@@ -195,7 +196,7 @@
       <div>
         <p class="font-black text-gray-800 text-sm">
           <span v-if="orderMode==='pos'">&#128999; 目前訂單</span>
-          <span v-else class="text-blue-700">&#128221; 編輯訂單 <span class="font-black text-orange-500">&#35;{{ editingOrder && editingOrder.id.slice(-4).toUpperCase() }}</span></span>
+          <span v-else class="text-blue-700">&#128221; 編輯訂單 <span class="font-black text-orange-500">No.{{ fmtNo(editingOrder && editingOrder.orderNo) }}</span> <span class="text-gray-400 font-mono text-xs">&#35;{{ editingOrder && editingOrder.id.slice(-4).toUpperCase() }}</span></span>
         </p>
         <p v-if="orderMode==='pos'" class="text-xs text-gray-400 mt-0.5">現場點餐</p>
         <p v-if="orderMode!=='pos' && editingOrder" class="text-xs text-gray-400 mt-0.5">
@@ -328,7 +329,7 @@
 
 <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
-    import { getDatabase, ref, onValue, update, push, set, remove } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
+    import { getDatabase, ref, onValue, update, push, set, remove, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
     const firebaseConfig = {
         apiKey:"AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -368,7 +369,8 @@
                     var name=(o.customer&&o.customer.name?o.customer.name:(o.customer||"")).toLowerCase();
                     var phone=(o.phone||(o.customer&&o.customer.phone)||"").toLowerCase();
                     var oid=o.id.slice(-4).toLowerCase();
-                    return name.indexOf(q)>=0||phone.indexOf(q)>=0||oid.indexOf(q)>=0;
+                    var ono=String(o.orderNo||"").padStart(3,"0");
+                    return name.indexOf(q)>=0||phone.indexOf(q)>=0||oid.indexOf(q)>=0||ono.indexOf(q)>=0;
                 });
             },
             tempTotal:function(){
@@ -390,6 +392,7 @@
             onAuthStateChanged(auth,function(u){if(u){s.isLoggedIn=true;s.startAll();}else{s.isLoggedIn=false;}});
         },
         methods:{
+            fmtNo:function(n){return n?String(n).padStart(3,"0"):"???";},
             doLogin:function(){
                 var s=this;
                 if(!s.loginEmail||!s.loginPassword){s.loginError="請輸入信箱與密碼";return;}
@@ -464,13 +467,17 @@
                 var o={customer:s.custName||"現場",phone:s.custPhone||"",pickupTime:"現場取餐",
                     items:s.cart.map(function(i){return Object.assign({},i);}),
                     total:s.cartTotal,status:"making",timestamp:Date.now(),source:"pos"};
-                push(ref(db,"orders"),o)
+                runTransaction(ref(db,"settings/orderCounter"),function(cur){return(cur||0)+1;})
+                    .then(function(result){
+                        o.orderNo=result.snapshot.val();
+                        return push(ref(db,"orders"),o);
+                    })
                     .then(function(snap){
                         var orderId=snap.key;s.lastOrderId=orderId;
                         var taskRef=ref(db,"orders/"+orderId+"/print_task");
                         return remove(taskRef).then(function(){
                             return set(taskRef,"kitchen_"+Date.now());
-                        }).then(function(){s.toast("✅ 已結帳 $"+o.total+"，列印中...");s.clearCart();});
+                        }).then(function(){s.toast("✅ 已結帳 $"+o.total+" (No."+String(o.orderNo).padStart(3,"0")+")，列印中...");s.clearCart();});
                     })
                     .catch(function(e){alert("送出失敗："+e.message);})
                     .finally(function(){s.isSubmitting=false;});
