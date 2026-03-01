@@ -316,10 +316,14 @@
                             {{ {new:'🔴 等待接單',making:'🟡 製作中',done:'🟢 已完成'}[order.status]||order.status }}
                         </span>
                     </div>
-                    <div v-for="(item,i) in (order.items||[])" :key="i" class="text-sm text-gray-600 mb-0.5">
-                        <span class="text-gray-800 font-medium">{{ item.qty }}x</span> {{ item.name }}
-                        <span v-if="item.optionGroupSelections&&item.optionGroupSelections.length" class="text-gray-400 text-xs">({{ item.optionGroupSelections.map(function(s){return s.name}).join(', ') }})</span>
+                    <div v-for="(item,i) in (order.items||[])" :key="i" class="text-sm text-gray-600 mb-1">
+                        <div>
+                            <span class="text-gray-800 font-medium">{{ item.qty }}x</span> {{ item.name }}
+                            <span v-if="item.optionGroupSelections&&item.optionGroupSelections.length" class="text-gray-400 text-xs">({{ item.optionGroupSelections.map(function(s){return s.name}).join(', ') }})</span>
+                        </div>
+                        <div v-if="item.note" class="text-xs text-blue-500 pl-5">📝 {{ item.note }}</div>
                     </div>
+                    <div v-if="order.orderNote" class="text-xs text-purple-600 bg-purple-50 px-2 py-1 rounded mt-1">📋 {{ order.orderNote }}</div>
                     <div class="flex justify-between items-center mt-2">
                         <span class="text-xs text-gray-400">{{ formatTime(order.timestamp) }}</span>
                         <span class="text-orange-500 font-black text-sm">${{ order.total }}</span>
@@ -340,7 +344,10 @@
                 <div class="text-4xl mb-3">✅</div>
                 <p class="text-gray-800 font-black text-lg mb-1">訂單已送出！</p>
                 <p class="text-gray-500 text-sm mt-2">{{ deviceLabel }}</p>
-                <p class="text-orange-500 font-black text-2xl mt-2">No.{{ fmtNo(lastOrderNo) }}</p>
+                <p class="text-orange-500 font-black text-2xl mt-2">
+                    <span v-if="lastOrderNo">No.{{ fmtNo(lastOrderNo) }}</span>
+                    <span v-else class="text-gray-400 text-lg">⏳ 流水號取得中...</span>
+                </p>
                 <p class="text-gray-400 text-xs mt-3">付款方式：{{ lastPayment==='linepay' ? 'LINE Pay' : '店內付款' }}</p>
                 <p v-if="estimatedWait>0" class="text-amber-600 text-sm font-medium mt-2">⏱️ 預估等候約 {{ estimatedWait }} 分鐘</p>
             </div>
@@ -664,15 +671,21 @@
                         var no=result.snapshot.val();
                         update(ref(db,'orders/'+orderId),{orderNo:no}).catch(function(){});
                         s.lastOrderNo=no;
-                        // 更新 localStorage 裡的流水號
-                        try{
-                            var key='dinein_orders_'+s.deviceId;
-                            var saved=JSON.parse(localStorage.getItem(key)||'[]');
-                            saved.forEach(function(o){if(o.id===orderId)o.orderNo=no;});
-                            localStorage.setItem(key,JSON.stringify(saved));
-                            s.loadLocalOrders();
-                        }catch(e){}
-                    }).catch(function(){s.lastOrderNo=null;});
+                        s._updateLocalOrderNo(orderId,no);
+                    }).catch(function(){
+                        // ★ 前台無Auth → 流水號由 admin/pos 自動補發
+                        // 監聽 orderNo 欄位，等到後台補發時自動更新
+                        s.lastOrderNo=null;
+                        var unsub=onValue(ref(db,'orders/'+orderId+'/orderNo'),function(noSnap){
+                            if(noSnap.exists()&&noSnap.val()){
+                                s.lastOrderNo=noSnap.val();
+                                s._updateLocalOrderNo(orderId,noSnap.val());
+                                unsub(); // 取得後停止監聽
+                            }
+                        },function(){});
+                        // 30秒後自動停止監聽
+                        setTimeout(function(){try{unsub();}catch(e){}},30000);
+                    });
                     // 成功畫面
                     s.lastPayment=payMethod;
                     s.showSuccess=true;
@@ -684,6 +697,15 @@
                 }).finally(function(){s.isSubmitting=false});
             },
             // ── 工具 ──
+            _updateLocalOrderNo:function(orderId,no){
+                try{
+                    var key='dinein_orders_'+this.deviceId;
+                    var saved=JSON.parse(localStorage.getItem(key)||'[]');
+                    saved.forEach(function(o){if(o.id===orderId)o.orderNo=no;});
+                    localStorage.setItem(key,JSON.stringify(saved));
+                    this.loadLocalOrders();
+                }catch(e){}
+            },
             fmtNo:function(n){return n?String(n).padStart(3,'0'):'???'},
             formatTime:function(ts){
                 if(!ts)return'';var d=new Date(ts);
