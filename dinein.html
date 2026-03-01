@@ -1,0 +1,609 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
+    <title>元氣早午餐 · 桌邊點餐</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🍳</text></svg>">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="theme-color" content="#F59E0B">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&display=swap" rel="stylesheet">
+    <style>
+        *{font-family:'Noto Sans TC',sans-serif;box-sizing:border-box}
+        [v-cloak]{display:none}
+        body{overscroll-behavior:none;-webkit-tap-highlight-color:transparent;user-select:none}
+        .no-scrollbar::-webkit-scrollbar{display:none}.no-scrollbar{-ms-overflow-style:none;scrollbar-width:none}
+        .qty-badge{position:absolute;top:6px;right:6px;background:#f97316;color:#fff;font-size:.7rem;font-weight:900;width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(249,115,22,.5);z-index:10}
+        .cat-btn{position:relative;transition:color .2s;white-space:nowrap}
+        .cat-btn::after{content:'';position:absolute;bottom:0;left:50%;right:50%;height:3px;background:#f97316;border-radius:2px 2px 0 0;transition:left .25s,right .25s}
+        .cat-btn.active-cat{color:#f97316!important;font-weight:700}
+        .cat-btn.active-cat::after{left:0;right:0}
+        .card{transition:box-shadow .2s,transform .15s}.card:active{transform:scale(.97)}
+        input[type=checkbox],input[type=radio]{accent-color:#f97316}
+        @keyframes spin{to{transform:rotate(360deg)}}.spin{animation:spin .9s linear infinite}
+        @keyframes fadeIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}.fade-in{animation:fadeIn .25s ease}
+        @keyframes pulse2{0%,100%{opacity:1}50%{opacity:.5}}.pulse2{animation:pulse2 1.5s infinite}
+    </style>
+</head>
+<body class="bg-gray-100">
+<div id="app" v-cloak>
+
+<!-- ========== 設備綁定畫面 ========== -->
+<div v-if="!deviceBound" class="min-h-screen flex flex-col items-center justify-center p-6"
+     style="background:linear-gradient(145deg,#f97316 0%,#ea580c 50%,#c2410c 100%)">
+    <div class="text-center mb-8">
+        <div class="text-5xl mb-3">🍳</div>
+        <h1 class="text-3xl font-black text-white" style="text-shadow:0 2px 8px rgba(0,0,0,.15)">元氣早午餐</h1>
+        <p class="text-orange-100 text-sm mt-1">善化中山店 · 桌邊點餐系統</p>
+    </div>
+    <!-- 桌號選擇 -->
+    <div class="w-full max-w-md">
+        <p class="text-white text-sm font-bold mb-3 opacity-90">🪑 選擇桌號</p>
+        <div class="grid grid-cols-6 gap-2 mb-6">
+            <button v-for="n in 18" :key="'t'+n" @click="selectedTable='table_'+n; selectedKiosk=''"
+                :class="selectedTable==='table_'+n ? 'bg-white text-orange-600 border-white' : 'bg-white/15 text-white border-white/30'"
+                class="border-2 rounded-xl py-3 text-base font-black transition backdrop-blur-sm"
+                style="font-family:'Noto Sans TC',sans-serif">{{ n }}桌</button>
+        </div>
+        <div class="w-12 h-0.5 bg-white/30 mx-auto mb-5"></div>
+        <p class="text-white text-sm font-bold mb-3 opacity-90">📱 或選擇自助點餐機</p>
+        <div class="grid grid-cols-4 gap-2 mb-8">
+            <button v-for="n in 4" :key="'k'+n" @click="selectedKiosk='kiosk_'+n; selectedTable=''"
+                :class="selectedKiosk==='kiosk_'+n ? 'bg-white text-orange-600 border-white' : 'bg-white/15 text-white border-white/30'"
+                class="border-2 rounded-xl py-3 text-sm font-bold transition backdrop-blur-sm"
+                style="font-family:'Noto Sans TC',sans-serif">自助{{n}}號</button>
+        </div>
+        <button @click="confirmBind" :disabled="!selectedTable && !selectedKiosk"
+            class="w-full bg-white text-orange-600 font-black text-lg py-4 rounded-2xl shadow-xl disabled:opacity-40 transition active:scale-[.98]"
+            style="font-family:'Noto Sans TC',sans-serif">
+            確認綁定
+        </button>
+    </div>
+</div>
+
+<!-- ========== 主點餐介面 ========== -->
+<div v-else class="max-w-lg mx-auto min-h-screen bg-white shadow-xl relative">
+
+    <!-- 載入中 -->
+    <div v-if="isLoading" class="min-h-screen flex flex-col items-center justify-center bg-white">
+        <div class="w-14 h-14 border-4 border-orange-200 border-t-orange-500 rounded-full spin mb-5"></div>
+        <p class="text-gray-400 text-sm">菜單載入中...</p>
+    </div>
+
+    <!-- 暫停接單 -->
+    <div v-else-if="!settings.isOpen" class="min-h-screen flex flex-col items-center justify-center bg-white p-10 text-center">
+        <div class="text-6xl mb-4">🚫</div>
+        <h2 class="text-2xl font-black text-gray-800 mb-2">暫停接單中</h2>
+        <p class="text-gray-400 text-sm">目前暫停接單，請稍後再試或洽詢店員。</p>
+    </div>
+
+    <!-- 正常點餐 -->
+    <div v-else>
+
+        <!-- ===== 菜單頁 ===== -->
+        <div v-show="currentView==='menu'">
+            <header class="bg-white sticky top-0 z-40 border-b border-gray-100">
+                <div class="flex items-center justify-between px-4 pt-3 pb-2">
+                    <div class="flex items-center gap-2">
+                        <span class="text-xl">🍳</span>
+                        <div>
+                            <h1 class="text-base font-black text-orange-500 leading-tight">元氣早午餐</h1>
+                            <p class="text-xs text-orange-300">善化中山店</p>
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <!-- 桌號標籤 -->
+                        <div class="bg-orange-500 text-white px-3 py-1.5 rounded-xl font-black text-sm">
+                            {{ deviceLabel }}
+                        </div>
+                        <!-- 點餐紀錄按鈕 -->
+                        <button @click="showOrderHistory=true" class="relative bg-gray-100 hover:bg-gray-200 text-gray-600 px-2.5 py-1.5 rounded-xl text-sm font-bold transition">
+                            📋
+                            <span v-if="myOrders.length>0" class="absolute -top-1 -right-1 bg-red-500 text-white text-xs w-4 h-4 rounded-full flex items-center justify-center font-black">{{ myOrders.length }}</span>
+                        </button>
+                        <!-- 更換桌號 -->
+                        <button @click="unbind" class="text-gray-400 text-xs hover:text-gray-600 transition">⚙️</button>
+                    </div>
+                </div>
+                <!-- 預估等候時間 -->
+                <div v-if="estimatedWait>0" class="bg-amber-50 border-b border-amber-100 px-4 py-2 flex items-center justify-center gap-2 text-sm text-amber-700 font-medium">
+                    <span>⏱️</span>
+                    <span>目前預估等候約 <strong>{{ estimatedWait }}</strong> 分鐘</span>
+                </div>
+                <!-- 分類標籤 -->
+                <div class="overflow-x-auto no-scrollbar border-t border-gray-100">
+                    <div class="flex whitespace-nowrap px-2">
+                        <button v-for="cat in categories" :key="cat" @click="currentCategory=cat"
+                            :class="currentCategory===cat ? 'cat-btn active-cat px-4 py-3 text-sm' : 'cat-btn px-4 py-3 text-sm text-gray-400'">
+                            {{ cat }}
+                        </button>
+                    </div>
+                </div>
+            </header>
+
+            <main class="p-3 pb-32">
+                <div v-if="filteredMenu.length===0" class="text-center py-20 text-gray-300">
+                    <div class="text-4xl mb-2">🍽️</div><p class="text-sm">此分類暫無餐點</p>
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                    <div v-for="item in filteredMenu" :key="item.id"
+                         class="card bg-white rounded-2xl overflow-hidden border border-gray-100 shadow-sm relative cursor-pointer"
+                         @click="openDetail(item)">
+                        <div v-if="getQty(item.id)>0" class="qty-badge">{{ getQty(item.id) }}</div>
+                        <div class="bg-gray-100 overflow-hidden" style="aspect-ratio:4/3">
+                            <img v-if="item.img" :src="item.img" class="w-full h-full object-cover" loading="lazy">
+                            <div v-else class="w-full h-full flex items-center justify-center text-gray-200 text-3xl">🍽️</div>
+                        </div>
+                        <div class="p-3">
+                            <h3 class="font-bold text-gray-800 text-sm mb-1" style="display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;line-height:1.4">{{ item.name }}</h3>
+                            <div class="flex items-center justify-between">
+                                <span class="text-orange-500 font-black text-base">${{ item.price }}</span>
+                                <button @click.stop="quickAdd(item)" class="w-9 h-9 bg-orange-500 hover:bg-orange-400 active:scale-90 rounded-full flex items-center justify-center text-white shadow-md text-xl transition" style="flex-shrink:0">+</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </main>
+
+            <!-- 購物車浮動按鈕 -->
+            <div v-if="cart.length>0" @click="currentView='cart'"
+                 class="fixed bottom-5 z-50 cursor-pointer" style="left:50%;transform:translateX(-50%);width:calc(100% - 2.5rem);max-width:24rem">
+                <div class="bg-orange-500 text-white rounded-2xl px-5 py-4 flex items-center justify-between shadow-xl">
+                    <div class="bg-orange-400 rounded-xl px-3 py-1 text-sm font-bold">{{ cartCount }}</div>
+                    <span class="font-bold">查看購物車</span>
+                    <span class="font-black text-lg">${{ cartTotal }}</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- ===== 餐點詳細頁 ===== -->
+        <div v-if="currentView==='detail' && activeItem" class="min-h-screen bg-white">
+            <div class="bg-white border-b border-gray-100 flex items-center px-4 py-3 sticky top-0 z-50" style="backdrop-filter:blur(8px)">
+                <button @click="currentView='menu';activeItem=null" class="w-9 h-9 rounded-full bg-gray-100 flex items-center justify-center text-gray-600 mr-3">←</button>
+                <span class="font-bold text-gray-800 text-sm">{{ activeItem.name }}</span>
+            </div>
+            <div class="pb-36">
+                <div class="bg-gray-100 overflow-hidden" style="aspect-ratio:16/9">
+                    <img v-if="activeItem.img" :src="activeItem.img" class="w-full h-full object-cover" loading="lazy">
+                    <div v-else class="w-full h-full flex items-center justify-center text-gray-200 text-4xl">🍽️</div>
+                </div>
+                <div class="px-5 pt-5 pb-4 border-b border-gray-100">
+                    <div class="flex justify-between items-start">
+                        <h2 class="text-xl font-black text-gray-900 flex-1 mr-4">{{ activeItem.name }}</h2>
+                        <span class="text-orange-500 font-black text-xl">${{ activeItem.price }}</span>
+                    </div>
+                    <p v-if="activeItem.desc" class="text-gray-400 text-sm mt-2" style="line-height:1.7">{{ activeItem.desc }}</p>
+                </div>
+                <!-- 選項群組 -->
+                <template v-for="(grp,gi) in (activeItem.optionGroups||[])" :key="gi">
+                    <div class="border-b border-gray-100">
+                        <div class="px-5 py-2 bg-orange-50/60"><p class="text-gray-700 font-bold text-sm">{{ grp.groupName }} <span class="text-orange-400 font-normal text-xs">（必選）</span></p></div>
+                        <template v-if="grp.type==='radio'">
+                            <label v-for="(ch,ci) in (grp.choices||[])" :key="ci" class="flex items-center justify-between px-5 py-3 border-b border-gray-50 cursor-pointer">
+                                <div class="flex items-center gap-3"><input type="radio" v-model="tempOG[gi]" :value="ci" class="w-5 h-5"><span class="text-gray-700 text-sm">{{ ch.name }}</span></div>
+                                <span class="text-sm font-bold ml-3">
+                                    <span v-if="grp.pricing==='setPrice'" class="text-gray-600">${{ ch.price }}</span>
+                                    <span v-else-if="grp.pricing==='addDelta'&&ch.price>0" class="text-orange-500">+${{ ch.price }}</span>
+                                    <span v-else-if="grp.pricing==='addDelta'&&ch.price===0" class="text-gray-400">免費</span>
+                                    <span v-else-if="grp.pricing==='mealUpgrade'"><span v-if="ch.price>(grp.baseValue||0)" class="text-orange-500">+${{ ch.price-(grp.baseValue||0) }}</span><span v-else class="text-gray-400">$0</span></span>
+                                </span>
+                            </label>
+                        </template>
+                        <template v-if="grp.type==='checkbox'">
+                            <label v-for="(ch,ci) in (grp.choices||[])" :key="ci" class="flex items-center justify-between px-5 py-3 border-b border-gray-50 cursor-pointer">
+                                <div class="flex items-center gap-3"><input type="checkbox" v-model="tempOG[gi]" :value="ci" class="w-5 h-5"><span class="text-gray-700 text-sm">{{ ch.name }}</span></div>
+                                <span v-if="ch.price>0" class="text-orange-400 text-sm font-bold">+${{ ch.price }}</span>
+                            </label>
+                        </template>
+                    </div>
+                </template>
+                <!-- 加料選項 -->
+                <div v-if="activeItem.options&&activeItem.options.length" class="px-5 py-4 border-b border-gray-100">
+                    <p class="text-gray-700 font-bold text-sm mb-3">加料選項</p>
+                    <label v-for="(opt,i) in activeItem.options" :key="i" class="flex items-center justify-between py-3 border-b border-gray-50 cursor-pointer">
+                        <div class="flex items-center gap-3"><input type="checkbox" v-model="tempSels" :value="opt" class="w-5 h-5"><span class="text-gray-700 text-sm">{{ opt.name }}</span></div>
+                        <span class="text-orange-400 text-sm font-bold">+${{ opt.price }}</span>
+                    </label>
+                </div>
+                <!-- 備註 -->
+                <div class="px-5 py-4">
+                    <p class="text-gray-700 font-bold text-sm mb-2">備註 <span class="text-gray-300 font-normal text-xs">（選填）</span></p>
+                    <textarea v-model="tempNote" placeholder="特殊需求請在此填寫" rows="2"
+                        class="w-full border border-gray-200 rounded-xl p-3 text-sm text-gray-700 bg-gray-50 resize-none focus:outline-none focus:border-orange-400"></textarea>
+                </div>
+            </div>
+            <div class="fixed bottom-0 bg-white border-t border-gray-100 px-5 py-4 flex items-center gap-3 z-50" style="left:50%;transform:translateX(-50%);width:100%;max-width:32rem">
+                <div class="flex items-center border border-gray-200 rounded-xl overflow-hidden">
+                    <button @click="tempQty>1&&tempQty--" class="w-11 h-11 flex items-center justify-center text-gray-500 text-xl hover:bg-gray-50">−</button>
+                    <span class="w-10 text-center font-bold text-gray-800">{{ tempQty }}</span>
+                    <button @click="tempQty++" class="w-11 h-11 flex items-center justify-center text-orange-500 text-xl hover:bg-orange-50">＋</button>
+                </div>
+                <button @click="confirmAdd" class="flex-1 bg-orange-500 text-white py-3 rounded-xl font-bold flex justify-between items-center px-5 shadow-lg active:scale-[.98] transition">
+                    <span>加入購物車</span><span class="font-black">${{ tempTotal }}</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- ===== 購物車頁 ===== -->
+        <div v-if="currentView==='cart'" class="min-h-screen bg-gray-50">
+            <div class="bg-white border-b border-gray-100 flex items-center justify-between px-4 py-3 sticky top-0 z-40">
+                <div class="flex items-center gap-3">
+                    <button @click="currentView='menu'" class="w-9 h-9 rounded-full bg-gray-100 flex items-center justify-center text-gray-600">←</button>
+                    <h2 class="font-bold text-gray-800">訂單確認</h2>
+                </div>
+                <div class="bg-orange-500 text-white px-3 py-1 rounded-xl font-black text-sm">{{ deviceLabel }}</div>
+            </div>
+            <div class="p-4 pb-52">
+                <!-- 購物車品項 -->
+                <div class="bg-white rounded-2xl overflow-hidden border border-gray-100 mb-3">
+                    <div class="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
+                        <h3 class="font-bold text-gray-800 text-sm">點餐內容</h3>
+                        <span class="text-xs text-gray-400">共 {{ cartCount }} 項</span>
+                    </div>
+                    <div v-for="(item,idx) in cart" :key="idx" class="px-4 py-3 border-b border-gray-50">
+                        <div class="flex justify-between items-start">
+                            <div class="flex-1 min-w-0 mr-3">
+                                <p class="font-bold text-gray-800 text-sm">{{ item.name }}</p>
+                                <div v-if="item.optionGroupSelections&&item.optionGroupSelections.length" class="flex flex-wrap gap-1 mt-1">
+                                    <span v-for="sel in item.optionGroupSelections" :key="sel.groupName" class="text-xs bg-orange-50 text-orange-600 px-1.5 py-0.5 rounded">{{ sel.name }}</span>
+                                </div>
+                                <div v-if="item.options&&item.options.length" class="text-xs text-gray-400 mt-0.5">{{ item.options.map(function(o){return"+"+o.name}).join(" ") }}</div>
+                                <p v-if="item.note" class="text-xs text-blue-500 mt-0.5">📝 {{ item.note }}</p>
+                            </div>
+                            <p class="text-orange-500 font-black text-sm">${{ item.itemTotal }}</p>
+                        </div>
+                        <div class="flex items-center justify-between mt-2">
+                            <button @click="removeItem(idx)" class="text-xs text-red-400 hover:text-red-600 transition">移除</button>
+                            <div class="flex items-center gap-2">
+                                <button @click="chgQty(idx,-1)" class="w-7 h-7 rounded-full border border-gray-200 text-gray-500 flex items-center justify-center text-sm active:scale-90 transition">−</button>
+                                <span class="w-6 text-center font-bold text-sm text-gray-800">{{ item.qty }}</span>
+                                <button @click="chgQty(idx,1)" class="w-7 h-7 rounded-full border border-gray-200 text-gray-500 flex items-center justify-center text-sm active:scale-90 transition">+</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <!-- 訂單備註 -->
+                <div class="bg-white rounded-2xl border border-gray-100 p-4 mb-3">
+                    <p class="text-gray-700 font-bold text-sm mb-2">訂單備註 <span class="text-gray-300 text-xs font-normal">（選填）</span></p>
+                    <textarea v-model="orderNote" placeholder="如有特殊需求請在此備註" rows="2"
+                        class="w-full border border-gray-200 rounded-xl p-3 text-sm text-gray-700 bg-gray-50 resize-none focus:outline-none focus:border-orange-400"></textarea>
+                </div>
+            </div>
+            <!-- 結帳列 -->
+            <div class="fixed bottom-0 bg-white border-t border-gray-200 px-4 py-3 z-50" style="left:50%;transform:translateX(-50%);width:100%;max-width:32rem">
+                <div class="flex justify-between items-center mb-3">
+                    <span class="text-gray-500 text-sm">合計 {{ cartCount }} 項</span>
+                    <span class="text-2xl font-black text-gray-900">${{ cartTotal }}</span>
+                </div>
+                <div class="grid grid-cols-2 gap-2">
+                    <button @click="submitOrder('store')" :disabled="cart.length===0||isSubmitting"
+                        class="py-3.5 rounded-xl font-black text-white text-sm disabled:opacity-40 transition active:scale-[.98]"
+                        style="background:linear-gradient(135deg,#f97316,#ef4444)">
+                        {{ isSubmitting ? '送出中...' : '💰 店內付款' }}
+                    </button>
+                    <button @click="submitOrder('linepay')" :disabled="cart.length===0||isSubmitting"
+                        class="py-3.5 rounded-xl font-black text-white text-sm disabled:opacity-40 transition active:scale-[.98]"
+                        style="background:linear-gradient(135deg,#06C755,#00B900)">
+                        {{ isSubmitting ? '送出中...' : '💚 LINE Pay' }}
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 點餐紀錄 Modal -->
+    <div v-if="showOrderHistory" class="fixed inset-0 z-50 flex items-center justify-center p-4" style="background:rgba(0,0,0,.5)" @click.self="showOrderHistory=false">
+        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[80vh] flex flex-col overflow-hidden fade-in">
+            <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between flex-shrink-0">
+                <div>
+                    <h3 class="font-bold text-gray-800">📋 本桌點餐紀錄</h3>
+                    <p class="text-xs text-gray-400 mt-0.5">{{ deviceLabel }}</p>
+                </div>
+                <button @click="showOrderHistory=false" class="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center text-gray-400 text-lg">×</button>
+            </div>
+            <div class="flex-1 overflow-y-auto">
+                <div v-if="myOrders.length===0" class="text-center text-gray-400 py-16">
+                    <div class="text-4xl mb-2">📋</div><p class="text-sm">尚無點餐紀錄</p>
+                </div>
+                <div v-for="order in myOrders" :key="order.id" class="px-5 py-4 border-b border-gray-100">
+                    <div class="flex items-center justify-between mb-2">
+                        <span class="text-orange-600 font-black text-sm bg-orange-50 px-2 py-0.5 rounded">No.{{ fmtNo(order.orderNo) }}</span>
+                        <span class="text-xs px-2 py-0.5 rounded-full font-bold"
+                              :class="{'bg-red-100 text-red-600':order.status==='new','bg-yellow-100 text-yellow-700':order.status==='making','bg-green-100 text-green-700':order.status==='done'}">
+                            {{ {new:'🔴 等待接單',making:'🟡 製作中',done:'🟢 已完成'}[order.status]||order.status }}
+                        </span>
+                    </div>
+                    <div v-for="(item,i) in (order.items||[])" :key="i" class="text-sm text-gray-600 mb-0.5">
+                        <span class="text-gray-800 font-medium">{{ item.qty }}x</span> {{ item.name }}
+                        <span v-if="item.optionGroupSelections&&item.optionGroupSelections.length" class="text-gray-400 text-xs">({{ item.optionGroupSelections.map(function(s){return s.name}).join(', ') }})</span>
+                    </div>
+                    <div class="flex justify-between items-center mt-2">
+                        <span class="text-xs text-gray-400">{{ formatTime(order.timestamp) }}</span>
+                        <span class="text-orange-500 font-black text-sm">${{ order.total }}</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 送出成功 Modal -->
+    <div v-if="showSuccess" class="fixed inset-0 z-[999] flex items-center justify-center" style="background:rgba(0,0,0,.45)">
+        <div class="bg-white rounded-2xl shadow-2xl mx-5 overflow-hidden fade-in" style="max-width:22rem;width:100%">
+            <div class="bg-orange-500 px-5 py-3 flex items-center gap-2">
+                <span class="text-xl">🍳</span>
+                <span class="text-white font-black text-base">元氣早午餐</span>
+            </div>
+            <div class="px-6 py-5 text-center">
+                <div class="text-4xl mb-3">✅</div>
+                <p class="text-gray-800 font-black text-lg mb-1">訂單已送出！</p>
+                <p class="text-gray-500 text-sm mt-2">{{ deviceLabel }}</p>
+                <p class="text-orange-500 font-black text-2xl mt-2">No.{{ fmtNo(lastOrderNo) }}</p>
+                <p class="text-gray-400 text-xs mt-3">付款方式：{{ lastPayment==='linepay' ? 'LINE Pay' : '店內付款' }}</p>
+                <p v-if="estimatedWait>0" class="text-amber-600 text-sm font-medium mt-2">⏱️ 預估等候約 {{ estimatedWait }} 分鐘</p>
+            </div>
+            <div class="px-5 pb-4 flex justify-center">
+                <button @click="showSuccess=false" class="bg-orange-500 text-white font-bold px-8 py-2.5 rounded-xl text-sm shadow-lg">確定</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast -->
+    <div v-if="toastMsg" class="fixed bottom-24 left-1/2 z-50 pointer-events-none" style="transform:translateX(-50%)">
+        <div class="bg-gray-900 text-white text-sm font-bold px-5 py-2.5 rounded-full shadow-xl whitespace-nowrap fade-in">{{ toastMsg }}</div>
+    </div>
+</div>
+</div>
+
+<script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
+    import { getDatabase, ref, push, set, get, update, onValue, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
+
+    const firebaseConfig = {
+        apiKey:"AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
+        authDomain:"breakfast-ai-system.firebaseapp.com",
+        databaseURL:"https://breakfast-ai-system-default-rtdb.asia-southeast1.firebasedatabase.app",
+        projectId:"breakfast-ai-system",
+        storageBucket:"breakfast-ai-system.firebasestorage.app",
+        messagingSenderId:"662477350736",
+        appId:"1:662477350736:web:7e3dd6128a6f66a52aae55"
+    };
+    const app=initializeApp(firebaseConfig),db=getDatabase(app);
+    const{createApp}=Vue;
+
+    createApp({
+        data:function(){return{
+            // 設備綁定
+            deviceBound:false, selectedTable:'', selectedKiosk:'',
+            deviceId:'', deviceLabel:'', deviceType:'',
+            // 設定
+            isLoading:true,
+            settings:{isOpen:true,openTime:'06:00',closeTime:'13:15'},
+            // 菜單
+            categories:[], currentCategory:'', menu:[],
+            // 點餐
+            currentView:'menu', activeItem:null,
+            tempQty:1, tempNote:'', tempSels:[], tempOG:{},
+            cart:[], orderNote:'',
+            isSubmitting:false,
+            // UI
+            toastMsg:'', toastTimer:null,
+            showOrderHistory:false, showSuccess:false,
+            lastOrderNo:0, lastPayment:'',
+            // 訂單
+            myOrders:[], allOrders:[],
+            estimatedWait:0
+        }},
+        computed:{
+            filteredMenu:function(){var s=this;return s.menu.filter(function(i){return i.category===s.currentCategory})},
+            cartCount:function(){return this.cart.reduce(function(s,i){return s+i.qty},0)},
+            cartTotal:function(){return this.cart.reduce(function(s,i){return s+(Number(i.itemTotal)||0)},0)},
+            tempTotal:function(){
+                if(!this.activeItem)return 0;
+                var b=this.activeItem.price,e=0,s=this;
+                (this.activeItem.optionGroups||[]).forEach(function(g,gi){
+                    if(g.type==='radio'){
+                        var si=s.tempOG[gi];if(si===undefined||si===null)si=g.defaultIdx||0;
+                        var ch=(g.choices||[])[si];if(!ch)return;
+                        if(g.pricing==='setPrice')b=ch.price;
+                        else if(g.pricing==='addDelta')e+=ch.price;
+                        else if(g.pricing==='mealUpgrade')e+=Math.max(0,ch.price-(g.baseValue||0));
+                    }else{
+                        (s.tempOG[gi]||[]).forEach(function(ci){var ch=(g.choices||[])[ci];if(ch)e+=ch.price})
+                    }
+                });
+                e+=(this.tempSels||[]).reduce(function(s,o){return s+o.price},0);
+                return(b+e)*this.tempQty;
+            }
+        },
+        created:function(){
+            // 恢復設備綁定
+            try{
+                var saved=localStorage.getItem('dinein_device');
+                if(saved){
+                    var d=JSON.parse(saved);
+                    this.deviceId=d.deviceId;this.deviceLabel=d.deviceLabel;this.deviceType=d.deviceType;
+                    this.deviceBound=true;
+                    this.initApp();
+                }
+            }catch(e){}
+        },
+        methods:{
+            // ── 設備綁定 ──
+            confirmBind:function(){
+                if(this.selectedTable){
+                    var n=this.selectedTable.replace('table_','');
+                    this.deviceId=this.selectedTable;
+                    this.deviceLabel=n+'桌';
+                    this.deviceType='table';
+                }else if(this.selectedKiosk){
+                    var k=this.selectedKiosk.replace('kiosk_','');
+                    this.deviceId=this.selectedKiosk;
+                    this.deviceLabel='自助'+k+'號';
+                    this.deviceType='kiosk';
+                }
+                this.deviceBound=true;
+                try{localStorage.setItem('dinein_device',JSON.stringify({deviceId:this.deviceId,deviceLabel:this.deviceLabel,deviceType:this.deviceType}))}catch(e){}
+                this.initApp();
+            },
+            unbind:function(){
+                if(!confirm('確定要更換桌號嗎？'))return;
+                this.deviceBound=false;this.deviceId='';this.deviceLabel='';
+                try{localStorage.removeItem('dinein_device')}catch(e){}
+            },
+            // ── 初始化 ──
+            initApp:function(){
+                var s=this;
+                Promise.all([s.loadSettings(),s.loadMenu()]).then(function(){
+                    s.isLoading=false;
+                    s.listenOrders();
+                    // 即時監聽設定
+                    onValue(ref(db,'settings'),function(snap){
+                        if(!snap.exists())return;
+                        var v=snap.val();
+                        s.settings={isOpen:v.isOpen!==false,openTime:v.openTime||'06:00',closeTime:v.closeTime||'13:15'};
+                    });
+                }).catch(function(e){console.error(e);s.isLoading=false});
+            },
+            loadSettings:function(){
+                var s=this;
+                return get(ref(db,'settings')).then(function(snap){
+                    if(snap.exists()){var v=snap.val();s.settings={isOpen:v.isOpen!==false,openTime:v.openTime||'06:00',closeTime:v.closeTime||'13:15'}}
+                });
+            },
+            loadMenu:function(){
+                var s=this;
+                return get(ref(db,'menu')).then(function(snap){
+                    if(!snap.exists())return;
+                    var d=snap.val(),items=[];
+                    for(var id in d){if(d[id]&&d[id].active!==false)items.push(Object.assign({id:id},d[id]))}
+                    items.sort(function(a,b){
+                        if(a.sortOrder!==undefined&&b.sortOrder!==undefined)return a.sortOrder-b.sortOrder;
+                        if(a.sortOrder!==undefined)return-1;if(b.sortOrder!==undefined)return 1;
+                        return(a.createdAt||0)-(b.createdAt||0)
+                    });
+                    s.menu=items;
+                    // 從 settings 讀取分類順序
+                    return get(ref(db,'settings/categories')).then(function(catSnap){
+                        var ORDER=catSnap.exists()?catSnap.val():['套餐','單點','蛋餅、燒餅','漢堡、蝸牛堡','吐司、厚片','其它、飲品'];
+                        var found=[];
+                        items.forEach(function(i){if(i.category&&found.indexOf(i.category)===-1)found.push(i.category)});
+                        var cats=ORDER.filter(function(c){return found.indexOf(c)!==-1});
+                        found.forEach(function(c){if(cats.indexOf(c)===-1)cats.push(c)});
+                        s.categories=cats;
+                        if(cats.length)s.currentCategory=cats[0];
+                    });
+                });
+            },
+            listenOrders:function(){
+                var s=this;
+                onValue(ref(db,'orders'),function(snap){
+                    if(!snap.exists()){s.allOrders=[];s.myOrders=[];s.estimatedWait=0;return}
+                    var all=Object.entries(snap.val()).filter(function(e){return e[1]&&e[1].status}).map(function(e){return Object.assign({id:e[0]},e[1])});
+                    s.allOrders=all;
+                    // 本桌訂單（今日）
+                    var today=new Date();today.setHours(0,0,0,0);
+                    s.myOrders=all.filter(function(o){
+                        return o.tableDevice===s.deviceId&&o.timestamp>=today.getTime()&&o.status!=='cancelled'&&o.status!=='archived'
+                    }).sort(function(a,b){return b.timestamp-a.timestamp});
+                    // 計算預估等候時間（每筆 making 訂單約 5 分鐘）
+                    var pending=all.filter(function(o){return o.status==='new'||o.status==='making'});
+                    s.estimatedWait=Math.max(0,pending.length*5);
+                });
+            },
+            // ── 菜單操作 ──
+            getQty:function(id){return this.cart.filter(function(i){return i.id===id}).reduce(function(s,i){return s+i.qty},0)},
+            quickAdd:function(item){
+                var hasOpt=(item.options&&item.options.length>0)||(item.optionGroups&&item.optionGroups.length>0);
+                if(hasOpt){this.openDetail(item);return}
+                var existing=null;
+                for(var i=0;i<this.cart.length;i++){if(this.cart[i].id===item.id&&!this.cart[i].note){existing=this.cart[i];break}}
+                if(existing){existing.qty+=1;existing.itemTotal=existing.price*existing.qty}
+                else{this.cart.push({id:item.id,name:item.name,price:item.price,qty:1,note:'',options:[],optionGroupSelections:[],itemTotal:item.price})}
+                this.toast('🛒 已加入：'+item.name);
+            },
+            openDetail:function(item){
+                this.activeItem=item;this.tempQty=1;this.tempNote='';this.tempSels=[];
+                var og={};(item.optionGroups||[]).forEach(function(g,gi){og[gi]=g.type==='checkbox'?[]:(g.defaultIdx||0)});
+                this.tempOG=og;this.currentView='detail';
+            },
+            confirmAdd:function(){
+                var s=this,item=s.activeItem,b=item.price,e=0,ogSels=[];
+                (item.optionGroups||[]).forEach(function(g,gi){
+                    if(g.type==='radio'){
+                        var si=s.tempOG[gi];if(si===undefined||si===null)si=g.defaultIdx||0;
+                        var ch=(g.choices||[])[si];if(!ch)return;
+                        if(g.pricing==='setPrice')b=ch.price;else if(g.pricing==='addDelta')e+=ch.price;
+                        else if(g.pricing==='mealUpgrade')e+=Math.max(0,ch.price-(g.baseValue||0));
+                        ogSels.push({groupName:g.groupName,idx:si,name:ch.name,price:ch.price,pricing:g.pricing,baseValue:g.baseValue||0});
+                    }else{
+                        (s.tempOG[gi]||[]).forEach(function(ci){
+                            var ch=(g.choices||[])[ci];if(ch)
+                            {e+=ch.price;ogSels.push({groupName:g.groupName,idx:ci,name:ch.name,price:ch.price,pricing:'addDelta',baseValue:0})}
+                        });
+                    }
+                });
+                e+=(s.tempSels||[]).reduce(function(x,o){return x+o.price},0);
+                s.cart.push({id:item.id,name:item.name,price:item.price,qty:s.tempQty,note:s.tempNote,
+                    options:s.tempSels.slice(),optionGroupSelections:ogSels,itemTotal:(b+e)*s.tempQty});
+                s.currentView='menu';s.activeItem=null;s.toast('🛒 已加入：'+item.name);
+            },
+            chgQty:function(idx,d){
+                var item=Object.assign({},this.cart[idx]),nq=item.qty+d;
+                if(nq<=0){this.cart.splice(idx,1);if(!this.cart.length)this.currentView='menu';return}
+                var u=Math.round(item.itemTotal/item.qty);item.qty=nq;item.itemTotal=u*nq;this.cart.splice(idx,1,item);
+            },
+            removeItem:function(idx){this.cart.splice(idx,1);if(!this.cart.length)this.currentView='menu'},
+            // ── 送出訂單 ──
+            submitOrder:function(payMethod){
+                if(!this.cart.length||this.isSubmitting)return;
+                var s=this;s.isSubmitting=true;
+                var orderData={
+                    customer:s.deviceLabel,
+                    phone:'',
+                    pickupTime:'內用',
+                    type:'dinein',
+                    source:'dinein',
+                    tableDevice:s.deviceId,
+                    tableLabel:s.deviceLabel,
+                    tableType:s.deviceType,
+                    paymentMethod:payMethod,
+                    items:s.cart.map(function(i){return Object.assign({},i)}),
+                    total:s.cartTotal,
+                    status:'new',
+                    timestamp:Date.now(),
+                    orderNote:s.orderNote||''
+                };
+                // 先取得流水號
+                runTransaction(ref(db,'settings/orderCounter'),function(cur){return(cur||0)+1})
+                .then(function(result){
+                    orderData.orderNo=result.snapshot.val();
+                    return push(ref(db,'orders'),orderData);
+                }).then(function(snap){
+                    var orderId=snap.key;
+                    return set(ref(db,'orders/'+orderId+'/print_task'),'kitchen_'+Date.now());
+                }).then(function(){
+                    s.lastOrderNo=orderData.orderNo;
+                    s.lastPayment=payMethod;
+                    s.showSuccess=true;
+                    s.cart=[];s.orderNote='';s.currentView='menu';
+                    s.toast('✅ 訂單已送出！');
+                }).catch(function(e){
+                    console.error(e);
+                    alert('送出失敗：'+e.message);
+                }).finally(function(){s.isSubmitting=false});
+            },
+            // ── 工具 ──
+            fmtNo:function(n){return n?String(n).padStart(3,'0'):'???'},
+            formatTime:function(ts){
+                if(!ts)return'';var d=new Date(ts);
+                return('0'+(d.getMonth()+1)).slice(-2)+'/'+('0'+d.getDate()).slice(-2)+' '+('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2);
+            },
+            toast:function(msg){var s=this;s.toastMsg=msg;clearTimeout(s.toastTimer);s.toastTimer=setTimeout(function(){s.toastMsg=''},2000)}
+        }
+    }).mount('#app');
+</script>
+</body>
+</html>
