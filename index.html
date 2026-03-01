@@ -80,18 +80,13 @@
         <div v-show="currentView === 'menu'">
             <header class="bg-white sticky top-0 z-40 border-b border-gray-100">
                 <div class="flex items-center justify-between px-4 pt-4 pb-3">
-                    <div>
+                    <div class="flex items-center gap-2">
                         <h1 class="text-xl font-black text-orange-500" style="line-height:1.3;">元氣早午餐</h1>
                         <p class="text-xs text-orange-300 mt-0.5">善化中山店</p>
                     </div>
-                    <div class="flex bg-gray-100 rounded-xl p-1 gap-1">
-                        <button @click="orderType='takeout'"
-                            :class="orderType==='takeout' ? 'bg-white text-orange-500 shadow-sm font-bold' : 'text-gray-400'"
-                            class="px-4 py-1.5 rounded-lg text-sm transition-all">自取</button>
-                        <button @click="orderType='dinein'"
-                            :class="orderType==='dinein' ? 'bg-white text-orange-500 shadow-sm font-bold' : 'text-gray-400'"
-                            class="px-4 py-1.5 rounded-lg text-sm transition-all">內用</button>
-                    </div>
+                    <button @click="showStoreInfo=true"
+                        class="w-9 h-9 rounded-full border-2 border-orange-400 text-orange-500 font-black text-base flex items-center justify-center hover:bg-orange-50 transition"
+                        style="font-family:serif;font-style:italic">i</button>
                 </div>
                 <div class="flex gap-3 px-4 pb-3">
                     <div class="flex-1 bg-gray-50 rounded-xl px-3 py-2 border border-gray-100">
@@ -147,7 +142,7 @@
                             <p class="text-gray-400 text-xs mb-2" style="overflow:hidden;display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;">{{ item.desc }}</p>
                             <div class="flex items-center justify-between">
                                 <span class="text-orange-500 font-black text-base">${{ item.price }}</span>
-                                <button class="plus-btn w-9 h-9 bg-orange-500 hover:bg-orange-400 active:scale-90 rounded-full flex items-center justify-center text-white shadow-md"
+                                <button @click.stop="quickAddOrDetail(item)" class="plus-btn w-9 h-9 bg-orange-500 hover:bg-orange-400 active:scale-90 rounded-full flex items-center justify-center text-white shadow-md"
                                     style="font-size:1.5rem;line-height:1;flex-shrink:0;touch-action:manipulation;">+</button>
                             </div>
                         </div>
@@ -368,6 +363,27 @@
         </div>
     </div>
 
+    <!-- ★ 門市資訊 Modal -->
+    <div v-if="showStoreInfo"
+         class="fixed inset-0 z-[1000] flex items-center justify-center"
+         style="background:rgba(0,0,0,0.45);" @click.self="showStoreInfo=false">
+        <div class="bg-white rounded-2xl shadow-2xl mx-5 overflow-hidden" style="max-width:22rem;width:100%;">
+            <div class="bg-orange-500 px-5 py-3 flex items-center gap-2">
+                <span style="font-size:1.25rem;">🍳</span>
+                <span class="text-white font-black text-base">門市資訊</span>
+            </div>
+            <div class="px-5 py-4">
+                <div v-if="storeInfo" class="text-gray-700 text-sm" style="white-space:pre-line;line-height:1.9;">{{ storeInfo }}</div>
+                <div v-else class="text-gray-400 text-sm text-center py-4">暫無門市資訊</div>
+            </div>
+            <div class="px-5 pb-4 flex justify-end">
+                <button @click="showStoreInfo=false"
+                    class="bg-orange-500 text-white font-bold px-6 py-2 rounded-xl text-sm"
+                    style="box-shadow:0 4px 12px rgba(249,115,22,0.3);">關閉</button>
+            </div>
+        </div>
+    </div>
+
     <!-- ★ Fix4: 通用提示 Modal (取代所有 alert) -->
     <div v-if="showAlertDialog"
          class="fixed inset-0 z-[1000] flex items-center justify-center"
@@ -401,7 +417,7 @@
             <div class="px-6 py-5 text-center">
                 <div class="text-4xl mb-3">🏖️</div>
                 <p class="text-gray-800 font-bold text-base mb-2">今日公休</p>
-                <p class="text-gray-500 text-sm leading-relaxed">很抱歉，今日公休，<br>您可透過預約功能向店家預約點餐。</p>
+                <p class="text-gray-500 text-sm leading-relaxed">請透過預約功能向店家預約點餐。</p>
             </div>
             <div class="px-5 pb-5 flex justify-center">
                 <button @click="showHolidayModal = false"
@@ -437,7 +453,7 @@
 
 <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
-    import { getDatabase, ref, push, set, get, onValue, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
+    import { getDatabase, ref, push, set, get, update, onValue, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
 
     const firebaseConfig = {
         apiKey: "AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -494,7 +510,9 @@
                 alertDialogMsg: '',
                 successPickupTime: '',
                 successOrderTime: '',
-                showHolidayModal: false
+                showHolidayModal: false,
+                showStoreInfo: false,
+                storeInfo: ''
             };
         },
         computed: {
@@ -584,6 +602,7 @@
                             holidays: s.holidays || [],
                             weeklyDaysOff: s.weeklyDaysOff || []
                         };
+                        self.storeInfo = s.storeInfo || '';
                         if (!wasOpen && self.settings.isOpen) self.initDateTime();
                     });
                 }).catch(function(e) {
@@ -708,12 +727,7 @@
                 this.currentView = 'cart';
             },
             handleCardClick: function(item, event) {
-                // 如果點擊目標是 + 按鈕或其子元素，執行快速加入
-                var plusBtn = event.currentTarget.querySelector('.plus-btn');
-                if (plusBtn && plusBtn.contains(event.target)) {
-                    this.quickAddOrDetail(item);
-                    return;
-                }
+                // + 按鈕已有 @click.stop 自行處理，此處僅處理卡片點擊→開啟詳細
                 this.openItemDetail(item);
             },
             openItemDetail: function(item) {
@@ -902,33 +916,45 @@
                     status: 'new',
                     timestamp: Date.now()
                 };
-                // ★ 修正：先取得流水號，再建立訂單（確保 orderNo 一定寫入）
+                // ★ 修正：先嘗試取得流水號，失敗則先送出訂單再補號
+                var gotNo = false;
                 runTransaction(ref(db, 'settings/orderCounter'), function(cur) {
                     return (cur || 0) + 1;
                 }).then(function(result) {
                     orderData.orderNo = result.snapshot.val();
-                    return push(ref(db, 'orders'), orderData);
-                }).then(function(snap) {
-                    var orderId = snap.key;
-                    var taskRef = ref(db, 'orders/' + orderId + '/print_task');
-                    return set(taskRef, 'kitchen_' + Date.now());
-                }).then(function() {
-                    var now = new Date();
-                    var hh = ('0'+now.getHours()).slice(-2);
-                    var mm = ('0'+now.getMinutes()).slice(-2);
-                    self.successPickupTime = self.pickupTime;
-                    self.successOrderTime = hh + ':' + mm;
-                    self.showSuccessModal = true;
-                    self.cart = [];
-                    try { localStorage.removeItem('cart_items'); } catch(e) {}
-                    self.inputName = '';
-                    self.inputPhone = '';
-                    self.currentView = 'menu';
-                }).catch(function(e) {
-                    console.error(e);
-                    self.showAlertModal('傳送失敗', '請檢查網路連線或系統設定！');
+                    gotNo = true;
+                }).catch(function() {
+                    // 流水號取得失敗（權限不足等），繼續送出訂單
                 }).finally(function() {
-                    self.isSubmitting = false;
+                    var newRef = push(ref(db, 'orders'));
+                    set(newRef, orderData).then(function() {
+                        return set(ref(db, 'orders/' + newRef.key + '/print_task'), 'kitchen_' + Date.now());
+                    }).then(function() {
+                        // 如果流水號沒拿到，非同步補設
+                        if (!gotNo) {
+                            runTransaction(ref(db, 'settings/orderCounter'), function(cur) {
+                                return (cur || 0) + 1;
+                            }).then(function(result) {
+                                update(ref(db, 'orders/' + newRef.key), { orderNo: result.snapshot.val() });
+                            }).catch(function() { /* 流水號補設失敗不影響訂單 */ });
+                        }
+                        var now = new Date();
+                        var hh = ('0'+now.getHours()).slice(-2);
+                        var mm = ('0'+now.getMinutes()).slice(-2);
+                        self.successPickupTime = self.pickupTime;
+                        self.successOrderTime = hh + ':' + mm;
+                        self.showSuccessModal = true;
+                        self.cart = [];
+                        try { localStorage.removeItem('cart_items'); } catch(e) {}
+                        self.inputName = '';
+                        self.inputPhone = '';
+                        self.currentView = 'menu';
+                    }).catch(function(e) {
+                        console.error(e);
+                        self.showAlertModal('傳送失敗', '請檢查網路連線或系統設定！');
+                    }).finally(function() {
+                        self.isSubmitting = false;
+                    });
                 });
                 localStorage.setItem('lastOrderTime', Date.now().toString());
             }
