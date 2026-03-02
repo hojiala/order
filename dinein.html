@@ -453,7 +453,7 @@
             deviceId:'', deviceLabel:'', deviceType:'',
             // 設定
             isLoading:true,
-            settings:{isOpen:true,openTime:'06:00',closeTime:'13:15',weeklyDaysOff:[0],holidays:[],dailyHours:{},pickupInterval:15},
+            settings:{isOpen:true,openTime:'06:00',closeTime:'13:15',weeklyDaysOff:[0],holidays:[],dailyHours:{},pickupInterval:15,linePayServerUrl:'',linePayConfirmUrl:''},
             // 菜單
             categories:[], currentCategory:'', menu:[],
             // 點餐
@@ -616,7 +616,7 @@
                     onValue(ref(db,'settings'),function(snap){
                         if(!snap.exists())return;var v=snap.val();
                         s.settings={isOpen:v.isOpen!==false,openTime:v.openTime||'06:00',closeTime:v.closeTime||'13:15',
-                            weeklyDaysOff:v.weeklyDaysOff||[0],holidays:v.holidays||[],dailyHours:v.dailyHours||{},pickupInterval:v.pickupInterval||15};
+                            weeklyDaysOff:v.weeklyDaysOff||[0],holidays:v.holidays||[],dailyHours:v.dailyHours||{},pickupInterval:v.pickupInterval||15,linePayServerUrl:v.linePayServerUrl||'',linePayConfirmUrl:v.linePayConfirmUrl||''};
                     });
                 }).catch(function(e){console.error(e);s.isLoading=false});
             },
@@ -625,7 +625,7 @@
                 return get(ref(db,'settings')).then(function(snap){
                     if(snap.exists()){var v=snap.val();
                         s.settings={isOpen:v.isOpen!==false,openTime:v.openTime||'06:00',closeTime:v.closeTime||'13:15',
-                            weeklyDaysOff:v.weeklyDaysOff||[0],holidays:v.holidays||[],dailyHours:v.dailyHours||{},pickupInterval:v.pickupInterval||15};
+                            weeklyDaysOff:v.weeklyDaysOff||[0],holidays:v.holidays||[],dailyHours:v.dailyHours||{},pickupInterval:v.pickupInterval||15,linePayServerUrl:v.linePayServerUrl||'',linePayConfirmUrl:v.linePayConfirmUrl||''};
                         s.devicePassword=v.dineinPassword||'0000';}
                 });
             },
@@ -855,7 +855,7 @@
                 var s=this;s.isSubmitting=true;
                 var now=new Date();
                 var todayStr=now.getFullYear()+'-'+('0'+(now.getMonth()+1)).slice(-2)+'-'+('0'+now.getDate()).slice(-2);
-                var isTakeout=s.qrOrderType==='takeout'||s.deviceType==='takeout';
+                var isTakeout=s.qrOrderType==='takeout'||s.deviceType==='takeout'||s.deviceType==='kiosk';
                 var orderData={
                     customer:s.deviceLabel,
                     phone:'',
@@ -878,14 +878,46 @@
                     var orderId=snap.key;
                     s.lastOrderIdRef=orderId;
                     s.saveLocalOrder(orderId,orderData);
-                    // ★ 不在此設定 print_task 和 orderNo
-                    // ★ 統一由 admin.html 自動補發流水號 + 觸發列印（避免重複列印）
                     s.lastOrderNo=null;
-                    // 成功畫面
                     s.lastPayment=payMethod;
+
+                    // ★ LINE Pay 付款流程
+                    if(payMethod==='linepay' && s.settings.linePayServerUrl){
+                        s.toast('⏳ 正在連接 LINE Pay...');
+                        var serverUrl=s.settings.linePayServerUrl.replace(/\/$/,'');
+                        fetch(serverUrl+'/api/linepay/request',{
+                            method:'POST',
+                            headers:{'Content-Type':'application/json'},
+                            body:JSON.stringify({
+                                orderId:orderId,
+                                amount:orderData.total,
+                                items:orderData.items,
+                                confirmBaseUrl:s.settings.linePayConfirmUrl||''
+                            })
+                        }).then(function(r){return r.json()}).then(function(data){
+                            if(data.success && data.paymentUrl){
+                                // 記錄返回 URL
+                                try{localStorage.setItem('linepay_return_url',window.location.href)}catch(e){}
+                                // 導向 LINE Pay 付款頁面
+                                window.location.href=data.paymentUrl;
+                            }else{
+                                alert('LINE Pay 連線失敗：'+(data.error||'未知錯誤')+'\n訂單已送出，請改用店內付款');
+                                s.showSuccess=true;
+                                s.cart=[];s.orderNote='';s.currentView='menu';s.saveCart();
+                            }
+                        }).catch(function(e){
+                            console.error('LINE Pay error:',e);
+                            alert('LINE Pay 伺服器無回應\n訂單已送出，請改用店內付款');
+                            s.showSuccess=true;
+                            s.cart=[];s.orderNote='';s.currentView='menu';s.saveCart();
+                        });
+                        return;
+                    }
+
+                    // 一般付款：顯示成功畫面
                     s.showSuccess=true;
                     s.cart=[];s.orderNote='';s.currentView='menu';
-                    s.saveCart(); // 清除購物車存檔
+                    s.saveCart();
                     s.toast('✅ 訂單已送出！');
                 }).catch(function(e){
                     console.error(e);
