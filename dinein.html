@@ -37,7 +37,7 @@
     <div class="text-center mb-8">
         <div class="text-5xl mb-3">🍳</div>
         <h1 class="text-3xl font-black text-white" style="text-shadow:0 2px 8px rgba(0,0,0,.15)">元氣早午餐</h1>
-        <p class="text-orange-100 text-sm mt-1">善化中山店 · 桌邊點餐系統</p>
+        <p class="text-orange-100 text-sm mt-1">善化中山店 · {{ isPhoneMode ? '📱 掃碼內用' : '桌邊點餐系統' }}</p>
     </div>
     <!-- 桌號選擇 -->
     <div class="w-full max-w-md">
@@ -104,8 +104,8 @@
                             📋
                             <span v-if="myOrders.length>0" class="absolute -top-1 -right-1 bg-red-500 text-white text-xs w-4 h-4 rounded-full flex items-center justify-center font-black">{{ myOrders.length }}</span>
                         </button>
-                        <!-- 更換桌號（需密碼）-->
-                        <button @click="showPasswordDialog=true" class="text-gray-400 text-xs hover:text-gray-600 transition">⚙️</button>
+                        <!-- 更換桌號（需密碼，僅平板模式顯示）-->
+                        <button v-if="!isPhoneMode" @click="showPasswordDialog=true" class="text-gray-400 text-xs hover:text-gray-600 transition">⚙️</button>
                     </div>
                 </div>
                 <!-- 預估等候時間 -->
@@ -343,10 +343,10 @@
             <div class="px-6 py-5 text-center">
                 <div class="text-4xl mb-3">✅</div>
                 <p class="text-gray-800 font-black text-lg mb-1">訂單已送出！</p>
-                <p class="text-gray-500 text-sm mt-2">{{ deviceLabel }}</p>
+                <p class="text-gray-800 font-black text-2xl mt-2">{{ deviceLabel }}</p>
                 <p class="text-orange-500 font-black text-2xl mt-2">
                     <span v-if="lastOrderNo">No.{{ fmtNo(lastOrderNo) }}</span>
-                    <span v-else class="text-gray-400 text-lg">⏳ 流水號取得中...</span>
+                    <span v-else class="text-gray-400 text-base">⏳ 流水號取得中...</span>
                 </p>
                 <p class="text-gray-400 text-xs mt-3">付款方式：{{ lastPayment==='linepay' ? 'LINE Pay' : '店內付款' }}</p>
                 <p v-if="estimatedWait>0" class="text-amber-600 text-sm font-medium mt-2">⏱️ 預估等候約 {{ estimatedWait }} 分鐘</p>
@@ -404,7 +404,7 @@
     createApp({
         data:function(){return{
             // 設備綁定
-            deviceBound:false, selectedTable:'', selectedKiosk:'',
+            deviceBound:false, isPhoneMode:false, _phoneSession:'', selectedTable:'', selectedKiosk:'',
             deviceId:'', deviceLabel:'', deviceType:'',
             // 設定
             isLoading:true,
@@ -419,9 +419,9 @@
             // UI
             toastMsg:'', toastTimer:null,
             showOrderHistory:false, showSuccess:false,
-            lastOrderNo:0, lastPayment:'',
+            lastOrderNo:0, lastPayment:'', _lastOrderId:null,
             // 訂單
-            myOrders:[], allOrders:[],
+            myOrders:[], allOrders:[], _pollTimer:null,
             estimatedWait:0,
             // 密碼
             showPasswordDialog:false, passwordInput:'', passwordError:'',
@@ -450,7 +450,30 @@
             }
         },
         created:function(){
-            // 恢復設備綁定
+            var s=this;
+            // ★ QR Code 掃碼：檢查 URL 參數 ?table=6
+            var urlParams=new URLSearchParams(window.location.search);
+            var qrTable=urlParams.get('table');
+            if(qrTable){
+                // 手機掃碼模式
+                var tableNum=qrTable.replace(/[^0-9]/g,'');
+                if(tableNum){
+                    s.deviceId='table_'+tableNum;
+                    s.deviceLabel=tableNum+'桌';
+                    s.deviceType='table';
+                    s.isPhoneMode=true;
+                    s.deviceBound=true;
+                    // 手機 session（不覆蓋平板的 localStorage）
+                    try{
+                        var sid=sessionStorage.getItem('phone_session');
+                        if(!sid){sid='ph_'+Date.now()+'_'+Math.random().toString(36).slice(2,6);sessionStorage.setItem('phone_session',sid);}
+                        s._phoneSession=sid;
+                    }catch(e){s._phoneSession='ph_'+Date.now();}
+                    s.initApp();
+                    return;
+                }
+            }
+            // 恢復設備綁定（平板模式）
             try{
                 var saved=localStorage.getItem('dinein_device');
                 if(saved){
@@ -552,15 +575,57 @@
                         return o.tableDevice===s.deviceId&&o.timestamp>=today.getTime()&&o.status!=='cancelled'&&o.status!=='archived'
                     }).sort(function(a,b){return b.timestamp-a.timestamp});
                     if(fbOrders.length>0)s.myOrders=fbOrders;
+                    // ★ 自動更新 lastOrderNo（後台補發流水號時即時顯示）
+                    if(s._lastOrderId){
+                        var latest=all.find(function(o){return o.id===s._lastOrderId});
+                        if(latest&&latest.orderNo&&!s.lastOrderNo){
+                            s.lastOrderNo=latest.orderNo;
+                            s._updateLocalOrderNo(s._lastOrderId,latest.orderNo);
+                        }
+                    }
                     // 同步更新 localStorage
                     s.syncLocalOrders(fbOrders);
                     // 計算預估等候時間
                     var pending=all.filter(function(o){return o.status==='new'||o.status==='making'});
                     s.estimatedWait=Math.max(0,pending.length*5);
                 },function(err){
-                    // Firebase 讀取失敗（權限不足），使用 localStorage
+                    // Firebase 讀取失敗（權限不足），使用 localStorage + 定時輪詢
                     console.warn('Firebase orders read failed:',err.message);
+                    s._startOrderPolling();
                 });
+            },
+            // ★ 定時輪詢：當 onValue 失敗時，逐筆讀取訂單狀態
+            _startOrderPolling:function(){
+                var s=this;
+                if(s._pollTimer)return;
+                s._pollTimer=setInterval(function(){
+                    if(!s.myOrders.length)return;
+                    s.myOrders.forEach(function(order){
+                        if(!order.id)return;
+                        get(ref(db,'orders/'+order.id)).then(function(snap){
+                            if(!snap.exists())return;
+                            var d=snap.val();
+                            var changed=false;
+                            if(d.status&&d.status!==order.status){order.status=d.status;changed=true;}
+                            if(d.orderNo&&d.orderNo!==order.orderNo){order.orderNo=d.orderNo;changed=true;}
+                            if(changed){
+                                // 更新 localStorage
+                                try{
+                                    var key='dinein_orders_'+s.deviceId;
+                                    var saved=JSON.parse(localStorage.getItem(key)||'[]');
+                                    saved.forEach(function(o){
+                                        if(o.id===order.id){o.status=order.status;o.orderNo=order.orderNo;}
+                                    });
+                                    localStorage.setItem(key,JSON.stringify(saved));
+                                }catch(e){}
+                            }
+                            // 更新 lastOrderNo
+                            if(s._lastOrderId===order.id&&d.orderNo&&!s.lastOrderNo){
+                                s.lastOrderNo=d.orderNo;
+                            }
+                        }).catch(function(){});
+                    });
+                },8000);
             },
             loadLocalOrders:function(){
                 try{
@@ -647,7 +712,7 @@
                     pickupDate:todayStr,
                     pickupTime:'內用',
                     type:'dinein',
-                    source:'dinein',
+                    source:s.isPhoneMode?'qrcode':'dinein',
                     tableDevice:s.deviceId,
                     tableLabel:s.deviceLabel,
                     tableType:s.deviceType,
@@ -661,11 +726,13 @@
                 // ★ 先送出訂單（不需Auth），再嘗試取流水號
                 push(ref(db,'orders'),orderData).then(function(snap){
                     var orderId=snap.key;
+                    s._lastOrderId=orderId; // ★ 記錄ID，讓 listenOrders 自動更新 lastOrderNo
                     // ★ 立即儲存到 localStorage（不等流水號）
                     s.saveLocalOrder(orderId,orderData);
                     // 列印任務
                     set(ref(db,'orders/'+orderId+'/print_task'),'kitchen_'+Date.now()).catch(function(){});
-                    // 嘗試取流水號（需Auth，失敗不影響訂單）
+                    // 嘗試取流水號（需Auth，失敗由後台自動補發）
+                    s.lastOrderNo=null;
                     runTransaction(ref(db,'settings/orderCounter'),function(cur){return(cur||0)+1})
                     .then(function(result){
                         var no=result.snapshot.val();
@@ -673,18 +740,8 @@
                         s.lastOrderNo=no;
                         s._updateLocalOrderNo(orderId,no);
                     }).catch(function(){
-                        // ★ 前台無Auth → 流水號由 admin/pos 自動補發
-                        // 監聽 orderNo 欄位，等到後台補發時自動更新
-                        s.lastOrderNo=null;
-                        var unsub=onValue(ref(db,'orders/'+orderId+'/orderNo'),function(noSnap){
-                            if(noSnap.exists()&&noSnap.val()){
-                                s.lastOrderNo=noSnap.val();
-                                s._updateLocalOrderNo(orderId,noSnap.val());
-                                unsub(); // 取得後停止監聽
-                            }
-                        },function(){});
-                        // 30秒後自動停止監聽
-                        setTimeout(function(){try{unsub();}catch(e){}},30000);
+                        // 流水號需Auth，由 admin/pos 自動補發
+                        // listenOrders 的 onValue 會自動偵測到 orderNo 並更新 lastOrderNo
                     });
                     // 成功畫面
                     s.lastPayment=payMethod;
