@@ -305,6 +305,18 @@
                         </button>
                     </div>
                 </div>
+                <!-- 訂單備註 -->
+                <div class="bg-white rounded-2xl border border-gray-100 overflow-hidden mb-3">
+                    <div class="px-4 py-3 border-b border-gray-100">
+                        <h3 class="font-bold text-gray-800 text-sm">訂單備註 <span class="text-gray-300 text-xs font-normal">（選填）</span></h3>
+                    </div>
+                    <div class="p-4">
+                        <textarea v-model="orderNote" placeholder="如有特殊需求請在此備註" rows="2"
+                            class="w-full border border-gray-200 rounded-xl p-3 text-sm text-gray-700 bg-gray-50 resize-none"
+                            style="outline:none;"
+                            @focus="$event.target.style.borderColor='#fb923c'" @blur="$event.target.style.borderColor='#e5e7eb'"></textarea>
+                    </div>
+                </div>
                 <div class="bg-white rounded-2xl border border-gray-100 overflow-hidden">
                     <div class="px-4 py-3 border-b border-gray-100">
                         <h3 class="font-bold text-gray-800 text-sm">聯絡資訊</h3>
@@ -339,11 +351,17 @@
                     <span class="text-gray-500 text-sm">合計金額</span>
                     <span class="text-orange-500 font-black text-2xl">${{ cartTotal }}</span>
                 </div>
-                <button @click="submitToFirebase" :disabled="isSubmitting"
-                    class="w-full bg-orange-500 text-white py-4 rounded-2xl font-bold text-base"
+                <button @click="submitToFirebase('store')" :disabled="isSubmitting"
+                    class="w-full bg-orange-500 text-white py-3.5 rounded-2xl font-bold text-base mb-2"
                     style="box-shadow:0 8px 20px rgba(249,115,22,0.3);transition:transform 0.15s;">
                     <span v-if="isSubmitting">傳送中...</span>
-                    <span v-else>送出訂單</span>
+                    <span v-else>💰 店內付款</span>
+                </button>
+                <button @click="submitToFirebase('linepay')" :disabled="isSubmitting"
+                    class="w-full bg-green-500 text-white py-3.5 rounded-2xl font-bold text-base"
+                    style="box-shadow:0 8px 20px rgba(34,197,94,0.3);transition:transform 0.15s;">
+                    <span v-if="isSubmitting">傳送中...</span>
+                    <span v-else>💚 LINE Pay</span>
                 </button>
             </div>
         </div>
@@ -483,6 +501,7 @@
 
 <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
+    import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
     import { getDatabase, ref, push, set, get, update, onValue, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
 
     const firebaseConfig = {
@@ -497,6 +516,9 @@
 
     const app = initializeApp(firebaseConfig);
     const db = getDatabase(app);
+    const auth = getAuth(app);
+    // ★ 匿名登入（讓 Firebase 讀取權限通過）
+    signInAnonymously(auth).catch(function(e) { console.warn('匿名登入失敗:', e.message); });
 
     const { createApp } = Vue;
 
@@ -524,6 +546,7 @@
                 availableTimes: [],
                 inputName: '',
                 inputPhone: '',
+                orderNote: '',
                 isSubmitting: false,
                 activeItem: null,
                 editIndex: -1,
@@ -991,7 +1014,7 @@
                     if (hasActive) self.tryRefreshOrderStatus();
                 }, 8000);
             },
-            submitToFirebase: function() {
+            submitToFirebase: function(payMethod) {
                 var self = this;
                 // ★ Fix4: 所有驗證改用自訂 modal，不用 alert()
                 // 檢查冷卻時間，防止惡意下單
@@ -1048,6 +1071,8 @@
                     type: this.orderType,
                     source: 'online',
                     deviceId: self.deviceId || '',
+                    orderNote: this.orderNote || '',
+                    paymentMethod: payMethod || 'store',
                     items: this.cart,
                     total: this.cartTotal,
                     status: 'new',
@@ -1082,6 +1107,7 @@
                     try { localStorage.removeItem('cart_items'); } catch(e) {}
                     self.inputName = '';
                     self.inputPhone = '';
+                    self.orderNote = '';
                     self.currentView = 'menu';
                 }).catch(function(e) {
                     console.error(e);
