@@ -39,7 +39,7 @@
     <div class="text-center mb-6">
         <div class="text-5xl mb-3">🍳</div>
         <h1 class="text-3xl font-black text-white">元氣早午餐</h1>
-        <p class="text-orange-100 text-sm mt-1">📱 掃碼內用 · {{ deviceLabel }}</p>
+        <p class="text-orange-100 text-sm mt-1">{{ qrOrderType==='takeout' ? '📱 掃碼外帶' : '📱 掃碼內用' }} · {{ deviceLabel }}</p>
     </div>
     <div class="bg-white rounded-2xl p-6 shadow-xl w-full max-w-xs">
         <p class="text-gray-700 font-bold text-center mb-1">請輸入店內驗證碼</p>
@@ -59,7 +59,7 @@
     <div class="text-center mb-8">
         <div class="text-5xl mb-3">🍳</div>
         <h1 class="text-3xl font-black text-white" style="text-shadow:0 2px 8px rgba(0,0,0,.15)">元氣早午餐</h1>
-        <p class="text-orange-100 text-sm mt-1">善化中山店 · {{ isPhoneMode ? '📱 掃碼內用' : '桌邊點餐系統' }}</p>
+        <p class="text-orange-100 text-sm mt-1">善化中山店 · {{ isPhoneMode ? (qrOrderType==='takeout' ? '📱 掃碼外帶' : '📱 掃碼內用') : '桌邊點餐系統' }}</p>
     </div>
     <!-- 桌號選擇 -->
     <div class="w-full max-w-md">
@@ -95,11 +95,23 @@
         <p class="text-gray-400 text-sm">菜單載入中...</p>
     </div>
 
-    <!-- 暫停接單 -->
+    <!-- 暫停接單（手動關閉） -->
     <div v-else-if="!settings.isOpen" class="min-h-screen flex flex-col items-center justify-center bg-white p-10 text-center">
         <div class="text-6xl mb-4">🚫</div>
         <h2 class="text-2xl font-black text-gray-800 mb-2">暫停接單中</h2>
         <p class="text-gray-400 text-sm">目前暫停接單，請稍後再試或洽詢店員。</p>
+    </div>
+
+    <!-- 非營業時間 -->
+    <div v-else-if="outsideBusinessHours" class="min-h-screen flex flex-col items-center justify-center bg-white p-10 text-center">
+        <div class="text-6xl mb-5">🌙</div>
+        <h2 class="text-2xl font-black text-gray-800 mb-2">非營業時間</h2>
+        <p class="text-gray-500 text-sm leading-relaxed mb-4">請於營業時間再使用，謝謝您！</p>
+        <div class="bg-orange-50 rounded-2xl px-6 py-4 text-sm text-orange-700 inline-block">
+            <p class="font-bold mb-1">⏰ 營業時間</p>
+            <p class="text-lg font-black">{{ settings.openTime || '06:00' }} ~ {{ settings.closeTime || '13:15' }}</p>
+        </div>
+        <p class="text-gray-300 text-xs mt-6">{{ deviceLabel }}</p>
     </div>
 
     <!-- 正常點餐 -->
@@ -184,7 +196,7 @@
         <!-- ===== 餐點詳細頁 ===== -->
         <div v-if="currentView==='detail' && activeItem" class="min-h-screen bg-white">
             <div class="bg-white border-b border-gray-100 flex items-center px-4 py-3 sticky top-0 z-50" style="backdrop-filter:blur(8px)">
-                <button @click="currentView=(_editingCartIdx>=0?'cart':'menu');activeItem=null;_editingCartIdx=-1" class="w-9 h-9 rounded-full bg-gray-100 flex items-center justify-center text-gray-600 mr-3">←</button>
+                <button @click="currentView=(editingIdx>=0?'cart':'menu');activeItem=null;editingIdx=-1" class="w-9 h-9 rounded-full bg-gray-100 flex items-center justify-center text-gray-600 mr-3">←</button>
                 <span class="font-bold text-gray-800 text-sm">{{ activeItem.name }}</span>
             </div>
             <div class="pb-36">
@@ -244,7 +256,7 @@
                     <button @click="tempQty++" class="w-11 h-11 flex items-center justify-center text-orange-500 text-xl hover:bg-orange-50">＋</button>
                 </div>
                 <button @click="confirmAdd" class="flex-1 bg-orange-500 text-white py-3 rounded-xl font-bold flex justify-between items-center px-5 shadow-lg active:scale-[.98] transition">
-                    <span>{{ _editingCartIdx>=0 ? '更新品項' : '加入購物車' }}</span><span class="font-black">${{ tempTotal }}</span>
+                    <span>{{ editingIdx>=0 ? '更新品項' : '加入購物車' }}</span><span class="font-black">${{ tempTotal }}</span>
                 </button>
             </div>
         </div>
@@ -436,31 +448,44 @@
     createApp({
         data:function(){return{
             // 設備綁定
-            deviceBound:false, isPhoneMode:false, _phoneSession:'', selectedTable:'', selectedKiosk:'',
+            deviceBound:false, isPhoneMode:false, phoneSession:'', qrOrderType:'dinein', selectedTable:'', selectedKiosk:'',
             showPinVerify:false, pinInput:'', pinError:'', storePin:'',
             deviceId:'', deviceLabel:'', deviceType:'',
             // 設定
             isLoading:true,
-            settings:{isOpen:true,openTime:'06:00',closeTime:'13:15'},
+            settings:{isOpen:true,openTime:'06:00',closeTime:'13:15',weeklyDaysOff:[0],holidays:[],dailyHours:{}},
             // 菜單
             categories:[], currentCategory:'', menu:[],
             // 點餐
             currentView:'menu', activeItem:null,
-            tempQty:1, tempNote:'', tempSels:[], tempOG:{}, _editingCartIdx:-1,
+            tempQty:1, tempNote:'', tempSels:[], tempOG:{}, editingIdx:-1,
             cart:[], orderNote:'',
             isSubmitting:false,
             // UI
             toastMsg:'', toastTimer:null,
             showOrderHistory:false, showSuccess:false,
-            lastOrderNo:0, lastPayment:'', _lastOrderId:null,
+            lastOrderNo:0, lastPayment:'', lastOrderIdRef:null,
             // 訂單
-            myOrders:[], allOrders:[], _pollTimer:null,
-            estimatedWait:0,
+            myOrders:[], allOrders:[], pollTimer:null,
+            estimatedWait:0, nowMinute:0,
             // 密碼
             showPasswordDialog:false, passwordInput:'', passwordError:'',
             devicePassword:'0000'
         }},
         computed:{
+            outsideBusinessHours:function(){
+                var s=this.settings,now=new Date(),day=now.getDay();
+                var dummy=this.nowMinute; // 觸發響應式更新
+                if(s.weeklyDaysOff&&s.weeklyDaysOff.indexOf(day)!==-1)return true;
+                var todayStr=now.getFullYear()+'-'+('0'+(now.getMonth()+1)).slice(-2)+'-'+('0'+now.getDate()).slice(-2);
+                if(s.holidays&&s.holidays.indexOf(todayStr)!==-1)return true;
+                var dh=s.dailyHours||{};
+                var dayKey=['sun','mon','tue','wed','thu','fri','sat'][day];
+                var open=s.openTime||'06:00',close=s.closeTime||'13:15';
+                if(dh[dayKey]){if(dh[dayKey].openTime)open=dh[dayKey].openTime;if(dh[dayKey].closeTime)close=dh[dayKey].closeTime;}
+                var hhmm=('0'+now.getHours()).slice(-2)+':'+('0'+now.getMinutes()).slice(-2);
+                return hhmm<open||hhmm>=close;
+            },
             filteredMenu:function(){var s=this;return s.menu.filter(function(i){return i.category===s.currentCategory})},
             cartCount:function(){return this.cart.reduce(function(s,i){return s+i.qty},0)},
             cartTotal:function(){return this.cart.reduce(function(s,i){return s+(Number(i.itemTotal)||0)},0)},
@@ -484,27 +509,35 @@
         },
         created:function(){
             var s=this;
-            // ★ QR Code 掃碼：檢查 URL 參數 ?table=6
+            // ★ QR Code 掃碼：?table=6（內用）或 ?takeout=1（外帶）
             var urlParams=new URLSearchParams(window.location.search);
             var qrTable=urlParams.get('table');
-            if(qrTable){
-                var tableNum=qrTable.replace(/[^0-9]/g,'');
-                if(tableNum){
-                    s.deviceId='table_'+tableNum;
-                    s.deviceLabel=tableNum+'桌';
-                    s.deviceType='table';
+            var qrTakeout=urlParams.get('takeout');
+            if(qrTable||qrTakeout){
+                var num=(qrTable||qrTakeout).replace(/[^0-9]/g,'');
+                if(num){
+                    if(qrTakeout){
+                        s.deviceId='takeout_'+num;
+                        s.deviceLabel='外帶'+num+'號';
+                        s.deviceType='takeout';
+                        s.qrOrderType='takeout';
+                    }else{
+                        s.deviceId='table_'+num;
+                        s.deviceLabel=num+'桌';
+                        s.deviceType='table';
+                        s.qrOrderType='dinein';
+                    }
                     s.isPhoneMode=true;
                     try{
                         var sid=sessionStorage.getItem('phone_session');
                         if(!sid){sid='ph_'+Date.now()+'_'+Math.random().toString(36).slice(2,6);sessionStorage.setItem('phone_session',sid);}
-                        s._phoneSession=sid;
-                    }catch(e){s._phoneSession='ph_'+Date.now();}
-                    // ★ 載入店家 PIN → 有設定就要驗證
+                        s.phoneSession=sid;
+                    }catch(e){s.phoneSession='ph_'+Date.now();}
                     get(ref(db,'settings/dineinPin')).then(function(snap){
                         var pin=snap.exists()?snap.val():'';
                         if(pin){
                             s.storePin=String(pin);
-                            s.showPinVerify=true; // 顯示 PIN 驗證畫面
+                            s.showPinVerify=true;
                         }else{
                             s.deviceBound=true;
                             s.initApp();
@@ -573,22 +606,26 @@
             // ── 初始化 ──
             initApp:function(){
                 var s=this;
-                s.loadCart(); // ★ 恢復購物車
+                s.loadCart();
+                s.nowMinute=Date.now();
+                setInterval(function(){s.nowMinute=Date.now()},30000);
                 Promise.all([s.loadSettings(),s.loadMenu()]).then(function(){
                     s.isLoading=false;
                     s.listenOrders();
-                    // 即時監聽設定
                     onValue(ref(db,'settings'),function(snap){
-                        if(!snap.exists())return;
-                        var v=snap.val();
-                        s.settings={isOpen:v.isOpen!==false,openTime:v.openTime||'06:00',closeTime:v.closeTime||'13:15'};
+                        if(!snap.exists())return;var v=snap.val();
+                        s.settings={isOpen:v.isOpen!==false,openTime:v.openTime||'06:00',closeTime:v.closeTime||'13:15',
+                            weeklyDaysOff:v.weeklyDaysOff||[0],holidays:v.holidays||[],dailyHours:v.dailyHours||{}};
                     });
                 }).catch(function(e){console.error(e);s.isLoading=false});
             },
             loadSettings:function(){
                 var s=this;
                 return get(ref(db,'settings')).then(function(snap){
-                    if(snap.exists()){var v=snap.val();s.settings={isOpen:v.isOpen!==false,openTime:v.openTime||'06:00',closeTime:v.closeTime||'13:15'};s.devicePassword=v.dineinPassword||'0000'}
+                    if(snap.exists()){var v=snap.val();
+                        s.settings={isOpen:v.isOpen!==false,openTime:v.openTime||'06:00',closeTime:v.closeTime||'13:15',
+                            weeklyDaysOff:v.weeklyDaysOff||[0],holidays:v.holidays||[],dailyHours:v.dailyHours||{}};
+                        s.devicePassword=v.dineinPassword||'0000';}
                 });
             },
             loadMenu:function(){
@@ -631,11 +668,11 @@
                     }).sort(function(a,b){return b.timestamp-a.timestamp});
                     if(fbOrders.length>0)s.myOrders=fbOrders;
                     // ★ 自動更新 lastOrderNo（後台補發流水號時即時顯示）
-                    if(s._lastOrderId){
-                        var latest=all.find(function(o){return o.id===s._lastOrderId});
+                    if(s.lastOrderIdRef){
+                        var latest=all.find(function(o){return o.id===s.lastOrderIdRef});
                         if(latest&&latest.orderNo&&!s.lastOrderNo){
                             s.lastOrderNo=latest.orderNo;
-                            s._updateLocalOrderNo(s._lastOrderId,latest.orderNo);
+                            s.updateLocalOrderNo(s.lastOrderIdRef,latest.orderNo);
                         }
                     }
                     // 同步更新 localStorage
@@ -646,14 +683,14 @@
                 },function(err){
                     // Firebase 讀取失敗（權限不足），使用 localStorage + 定時輪詢
                     console.warn('Firebase orders read failed:',err.message);
-                    s._startOrderPolling();
+                    s.startOrderPolling();
                 });
             },
             // ★ 定時輪詢：當 onValue 失敗時，逐筆讀取訂單狀態
-            _startOrderPolling:function(){
+            startOrderPolling:function(){
                 var s=this;
-                if(s._pollTimer)return;
-                s._pollTimer=setInterval(function(){
+                if(s.pollTimer)return;
+                s.pollTimer=setInterval(function(){
                     if(!s.myOrders.length)return;
                     s.myOrders.forEach(function(order){
                         if(!order.id)return;
@@ -675,7 +712,7 @@
                                 }catch(e){}
                             }
                             // 更新 lastOrderNo
-                            if(s._lastOrderId===order.id&&d.orderNo&&!s.lastOrderNo){
+                            if(s.lastOrderIdRef===order.id&&d.orderNo&&!s.lastOrderNo){
                                 s.lastOrderNo=d.orderNo;
                             }
                         }).catch(function(){});
@@ -737,7 +774,7 @@
                 this.toast('🛒 已加入：'+item.name);
             },
             openDetail:function(item){
-                this._editingCartIdx=-1; // 新增模式
+                this.editingIdx=-1; // 新增模式
                 this.activeItem=item;this.tempQty=1;this.tempNote='';this.tempSels=[];
                 var og={};(item.optionGroups||[]).forEach(function(g,gi){og[gi]=g.type==='checkbox'?[]:(g.defaultIdx||0)});
                 this.tempOG=og;this.currentView='detail';
@@ -747,7 +784,7 @@
                 var cartItem=this.cart[idx];
                 var menuItem=this.menu.find(function(m){return m.id===cartItem.id});
                 if(!menuItem){return} // 找不到對應菜單項
-                this._editingCartIdx=idx;
+                this.editingIdx=idx;
                 this.activeItem=menuItem;
                 this.tempQty=cartItem.qty;
                 this.tempNote=cartItem.note||'';
@@ -785,8 +822,8 @@
                 var newItem={id:item.id,name:item.name,price:item.price,qty:s.tempQty,note:s.tempNote,
                     options:s.tempSels.slice(),optionGroupSelections:ogSels,itemTotal:(b+e)*s.tempQty};
                 // ★ 編輯模式：替換；新增模式：加入
-                if(s._editingCartIdx>=0&&s._editingCartIdx<s.cart.length){
-                    s.cart.splice(s._editingCartIdx,1,newItem);
+                if(s.editingIdx>=0&&s.editingIdx<s.cart.length){
+                    s.cart.splice(s.editingIdx,1,newItem);
                     s.toast('✏️ 已更新：'+item.name);
                     s.currentView='cart';
                 }else{
@@ -794,7 +831,7 @@
                     s.toast('🛒 已加入：'+item.name);
                     s.currentView='menu';
                 }
-                s._editingCartIdx=-1;
+                s.editingIdx=-1;
                 s.saveCart();
                 s.activeItem=null;
             },
@@ -817,13 +854,14 @@
                 var s=this;s.isSubmitting=true;
                 var now=new Date();
                 var todayStr=now.getFullYear()+'-'+('0'+(now.getMonth()+1)).slice(-2)+'-'+('0'+now.getDate()).slice(-2);
+                var isTakeout=s.qrOrderType==='takeout'||s.deviceType==='takeout';
                 var orderData={
                     customer:s.deviceLabel,
                     phone:'',
                     pickupDate:todayStr,
-                    pickupTime:'內用',
-                    type:'dinein',
-                    source:s.isPhoneMode?'qrcode':'dinein',
+                    pickupTime:isTakeout?'外帶自取':'內用',
+                    type:isTakeout?'takeout':'dinein',
+                    source:s.isPhoneMode?(isTakeout?'qr_takeout':'qrcode'):'dinein',
                     tableDevice:s.deviceId,
                     tableLabel:s.deviceLabel,
                     tableType:s.deviceType,
@@ -837,7 +875,7 @@
                 // ★ 先送出訂單（不需Auth），再嘗試取流水號
                 push(ref(db,'orders'),orderData).then(function(snap){
                     var orderId=snap.key;
-                    s._lastOrderId=orderId; // ★ 記錄ID，讓 listenOrders 自動更新 lastOrderNo
+                    s.lastOrderIdRef=orderId; // ★ 記錄ID，讓 listenOrders 自動更新 lastOrderNo
                     // ★ 立即儲存到 localStorage（不等流水號）
                     s.saveLocalOrder(orderId,orderData);
                     // 列印任務
@@ -849,7 +887,7 @@
                         var no=result.snapshot.val();
                         update(ref(db,'orders/'+orderId),{orderNo:no}).catch(function(){});
                         s.lastOrderNo=no;
-                        s._updateLocalOrderNo(orderId,no);
+                        s.updateLocalOrderNo(orderId,no);
                     }).catch(function(){
                         // 流水號需Auth，由 admin/pos 自動補發
                         // listenOrders 的 onValue 會自動偵測到 orderNo 並更新 lastOrderNo
@@ -866,7 +904,7 @@
                 }).finally(function(){s.isSubmitting=false});
             },
             // ── 工具 ──
-            _updateLocalOrderNo:function(orderId,no){
+            updateLocalOrderNo:function(orderId,no){
                 try{
                     var key='dinein_orders_'+this.deviceId;
                     var saved=JSON.parse(localStorage.getItem(key)||'[]');
