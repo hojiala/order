@@ -54,7 +54,7 @@
     </div>
 </div>
 
-<div v-else-if="!deviceBound" class="min-h-screen flex flex-col items-center justify-center p-6"
+<div v-else-if="!deviceBound && !isPhoneMode" class="min-h-screen flex flex-col items-center justify-center p-6"
      style="background:linear-gradient(145deg,#f97316 0%,#ea580c 50%,#c2410c 100%)">
     <div class="text-center mb-8">
         <div class="text-5xl mb-3">🍳</div>
@@ -677,9 +677,10 @@
                     }
                     // 同步更新 localStorage
                     s.syncLocalOrders(fbOrders);
-                    // 計算預估等候時間
+                    // 計算預估等候時間（品項數×1.5分鐘，最高20分鐘）
                     var pending=all.filter(function(o){return o.status==='new'||o.status==='making'});
-                    s.estimatedWait=Math.max(0,pending.length*5);
+                    var totalItems=0;pending.forEach(function(o){(o.items||[]).forEach(function(i){totalItems+=(i.qty||1)})});
+                    s.estimatedWait=Math.min(20,Math.max(0,Math.ceil(totalItems*1.5)));
                 },function(err){
                     // Firebase 讀取失敗（權限不足），使用 localStorage + 定時輪詢
                     console.warn('Firebase orders read failed:',err.message);
@@ -875,23 +876,11 @@
                 // ★ 先送出訂單（不需Auth），再嘗試取流水號
                 push(ref(db,'orders'),orderData).then(function(snap){
                     var orderId=snap.key;
-                    s.lastOrderIdRef=orderId; // ★ 記錄ID，讓 listenOrders 自動更新 lastOrderNo
-                    // ★ 立即儲存到 localStorage（不等流水號）
+                    s.lastOrderIdRef=orderId;
                     s.saveLocalOrder(orderId,orderData);
-                    // 列印任務
-                    set(ref(db,'orders/'+orderId+'/print_task'),'kitchen_'+Date.now()).catch(function(){});
-                    // 嘗試取流水號（需Auth，失敗由後台自動補發）
+                    // ★ 不在此設定 print_task 和 orderNo
+                    // ★ 統一由 admin.html 自動補發流水號 + 觸發列印（避免重複列印）
                     s.lastOrderNo=null;
-                    runTransaction(ref(db,'settings/orderCounter'),function(cur){return(cur||0)+1})
-                    .then(function(result){
-                        var no=result.snapshot.val();
-                        update(ref(db,'orders/'+orderId),{orderNo:no}).catch(function(){});
-                        s.lastOrderNo=no;
-                        s.updateLocalOrderNo(orderId,no);
-                    }).catch(function(){
-                        // 流水號需Auth，由 admin/pos 自動補發
-                        // listenOrders 的 onValue 會自動偵測到 orderNo 並更新 lastOrderNo
-                    });
                     // 成功畫面
                     s.lastPayment=payMethod;
                     s.showSuccess=true;
