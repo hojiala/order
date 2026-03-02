@@ -159,7 +159,7 @@
                 <div class="flex-1 min-w-0">
                   <div class="flex items-center gap-1.5 flex-wrap mb-1">
                     <span v-if="order.status==='new'" class="w-2 h-2 bg-red-500 rounded-full flex-shrink-0 animate-pulse"></span>
-                    <span class="font-black text-gray-800 text-sm">{{ order.customer && order.customer.name ? order.customer.name : (order.customer||"顧客") }}</span>
+                    <span class="font-black text-gray-800 text-sm">{{ order.tableLabel || (order.customer && order.customer.name ? order.customer.name : (order.customer||"顧客")) }}</span>
                     <span :class="{'bg-red-100 text-red-700':order.status==='new','bg-yellow-100 text-yellow-700':order.status==='making','bg-green-100 text-green-700':order.status==='done'}"
                       class="text-xs px-2 py-0.5 rounded-full font-bold flex-shrink-0">{{ {new:"新訂單",making:"製作中",done:"已完成"}[order.status]||order.status }}</span>
                     <span :class="{
@@ -507,28 +507,7 @@
                 onValue(ref(db,"orders"),function(snap){
                     if(!snap.exists()){s.onlineOrders=[];s.ordersLoading=false;return;}
                     var entries=Object.entries(snap.val());
-                    // ★ 自動補流水號：偵測到無 orderNo 的訂單
-                    entries.forEach(function(e){
-                        var o=e[1];
-                        if(o&&o.status&&o.status!=='archived'&&o.status!=='cancelled'&&!o.orderNo&&!s.assigningNos[e[0]]){
-                            s.assigningNos[e[0]]=true;
-                            // 先確認確實沒有 orderNo（避免 race condition）
-                            get(ref(db,"orders/"+e[0]+"/orderNo")).then(function(snap){
-                                if(snap.exists()&&snap.val()){delete s.assigningNos[e[0]];return;}
-                                return runTransaction(ref(db,"settings/orderCounter"),function(cur){return(cur||0)+1})
-                                .then(function(result){return update(ref(db,"orders/"+e[0]),{orderNo:result.snapshot.val()})});
-                            })
-                            .catch(function(err){
-                                console.warn("補流水號失敗:",err.message);
-                                // 1秒後重試一次
-                                setTimeout(function(){
-                                    runTransaction(ref(db,"settings/orderCounter"),function(cur){return(cur||0)+1})
-                                    .then(function(result){update(ref(db,"orders/"+e[0]),{orderNo:result.snapshot.val()})})
-                                    .catch(function(){});
-                                },1500);
-                            }).finally(function(){delete s.assigningNos[e[0]]});
-                        }
-                    });
+                    // ★ 流水號統一由 admin.html 自動補發（避免與 admin 重複）
                     s.onlineOrders=entries
                         .filter(function(e){return e[1]&&(e[1].status==="new"||e[1].status==="making"||e[1].status==="done");})
                         .map(function(e){return Object.assign({id:e[0]},e[1]);})
