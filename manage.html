@@ -447,6 +447,68 @@
             </div>
         </div>
 
+        <!-- ===== TAB: QR碼管理 ===== -->
+        <div v-if="activeTab === 'qrcode'" class="p-6 max-w-2xl">
+            <div class="mb-6">
+                <h2 class="text-xl font-bold text-white">📱 QR 碼管理</h2>
+                <p class="text-slate-400 text-sm mt-0.5">設定掃碼內用的網址與驗證碼</p>
+            </div>
+            <div class="space-y-4">
+                <!-- 網址設定 -->
+                <div class="bg-slate-800 rounded-xl border border-slate-700 p-5">
+                    <p class="font-bold text-white mb-2">📋 網站基礎網址</p>
+                    <p class="text-slate-400 text-xs mb-3">請填入您的 GitHub Pages 或其他託管的完整網址（不含檔案名稱）</p>
+                    <input v-model="qrBaseUrl" type="url" placeholder="例如：https://yourname.github.io/breakfast"
+                        class="w-full bg-slate-900 text-white border border-slate-600 rounded-lg px-4 py-3 text-sm focus:border-orange-400 focus:outline-none">
+                    <button @click="saveQrSettings" class="mt-3 bg-orange-500 hover:bg-orange-400 text-white font-bold px-5 py-2.5 rounded-lg text-sm transition">
+                        💾 儲存網址
+                    </button>
+                </div>
+                <!-- 驗證碼 -->
+                <div class="bg-slate-800 rounded-xl border border-slate-700 p-5">
+                    <p class="font-bold text-white mb-2">🔐 掃碼驗證碼（PIN）</p>
+                    <p class="text-slate-400 text-xs mb-3">顧客掃碼後需輸入此驗證碼才能點餐，防止在店外遠端下單。留空 = 不驗證。</p>
+                    <div class="flex gap-3 items-center">
+                        <input v-model="qrPin" type="text" maxlength="4" placeholder="4位數（如1234）"
+                            class="bg-slate-900 text-white text-center text-2xl font-black tracking-[0.5em] border border-slate-600 rounded-lg px-4 py-3 w-48 focus:border-orange-400 focus:outline-none">
+                        <button @click="saveQrPin" class="bg-orange-500 hover:bg-orange-400 text-white font-bold px-5 py-2.5 rounded-lg text-sm transition">
+                            💾 儲存
+                        </button>
+                        <button @click="qrPin='';saveQrPin()" class="bg-slate-600 hover:bg-slate-500 text-white font-bold px-4 py-2.5 rounded-lg text-sm transition">
+                            清除
+                        </button>
+                    </div>
+                    <p v-if="qrPin" class="text-green-400 text-sm mt-2">✅ 已設定驗證碼：<b>{{ qrPin }}</b>（建議列印貼在桌面立牌上）</p>
+                    <p v-else class="text-yellow-400 text-sm mt-2">⚠️ 未設定驗證碼，顧客掃碼後可直接點餐（無防護）</p>
+                </div>
+                <!-- 各桌 QR Code 列表 -->
+                <div class="bg-slate-800 rounded-xl border border-slate-700 p-5">
+                    <p class="font-bold text-white mb-3">🪑 各桌 QR Code 網址</p>
+                    <p v-if="!qrBaseUrl" class="text-yellow-400 text-sm">⚠️ 請先設定上方的基礎網址</p>
+                    <div v-else class="space-y-2">
+                        <div v-for="n in 18" :key="'qr'+n" class="flex items-center gap-3 bg-slate-900/50 rounded-lg px-4 py-2.5">
+                            <span class="text-white font-bold w-12">{{ n }}桌</span>
+                            <input :value="qrBaseUrl.replace(/\/$/,'') + '/dinein.html?table=' + n" readonly
+                                class="flex-1 bg-transparent text-slate-300 text-xs border-none outline-none select-all cursor-text"
+                                @click="$event.target.select()">
+                            <button @click="copyQrUrl(n)" class="text-orange-400 hover:text-orange-300 text-xs font-bold whitespace-nowrap transition">
+                                📋 複製
+                            </button>
+                        </div>
+                    </div>
+                    <div v-if="qrBaseUrl" class="mt-4 p-4 bg-slate-900 rounded-lg">
+                        <p class="text-slate-300 text-sm font-bold mb-2">💡 使用說明</p>
+                        <p class="text-slate-400 text-xs leading-relaxed">
+                            1. 複製各桌網址 → 用 QR Code 產生器（如 <a href="https://www.qr-code-generator.com/" target="_blank" class="text-orange-400 underline">qr-code-generator.com</a>）產生 QR Code<br>
+                            2. 將 QR Code 列印後貼在各桌的桌面立牌上<br>
+                            3. 顧客用手機掃碼 → 輸入驗證碼 → 即可在手機上點餐<br>
+                            4. 訂單會自動顯示在 POS / 管理後台，標記為「📱掃碼」來源
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- ===== TAB: 店面設定 ===== -->
         <div v-if="activeTab === 'settings'" class="p-6 max-w-2xl">
             <div class="mb-6">
@@ -891,6 +953,7 @@
                 activeTab: 'menu', menuSubTab: 'items', tabs: [
                     { id: 'menu',      label: '菜單管理', icon: '🍽️' },
                     { id: 'stats',     label: '營業統計', icon: '📊' },
+                    { id: 'qrcode',    label: 'QR碼管理', icon: '📱' },
                     { id: 'settings',  label: '店面設定', icon: '⚙️' }
                 ],
                 dragIdx: null, dragOverIdx: null, dragType: null, menuOrderDirty: false, tplOrderDirty: false,
@@ -934,6 +997,8 @@
                 editingDrinkIdx: -1,
                 newCategoryName: '',
                 settingsSaving: false, settingsSaved: false,
+                // QR Code 管理
+                qrBaseUrl: '', qrPin: '',
                 // Week day names
                 weekDayNames: ['日','一','二','三','四','五','六']
             };
@@ -1542,6 +1607,8 @@
                             storeInfo: s.storeInfo || '',
                             dineinPassword: s.dineinPassword || '0000'
                         };
+                        self.qrBaseUrl = s.qrBaseUrl || '';
+                        self.qrPin = s.dineinPin ? String(s.dineinPin) : '';
                     }
                 }).catch(function(e) { console.error('讀取設定失敗:', e); });
             },
@@ -1567,6 +1634,28 @@
                     alert('儲存失敗：' + e.message);
                 }).finally(function() {
                     self.settingsSaving = false;
+                });
+            },
+            // QR 碼管理
+            saveQrSettings: function() {
+                var self = this;
+                update(ref(db, 'settings'), { qrBaseUrl: self.qrBaseUrl || '' }).then(function() {
+                    alert('✅ 基礎網址已儲存！');
+                }).catch(function(e) { alert('儲存失敗：' + e.message); });
+            },
+            saveQrPin: function() {
+                var self = this;
+                update(ref(db, 'settings'), { dineinPin: self.qrPin || '' }).then(function() {
+                    if (self.qrPin) alert('✅ 驗證碼已設定為：' + self.qrPin);
+                    else alert('✅ 驗證碼已清除');
+                }).catch(function(e) { alert('儲存失敗：' + e.message); });
+            },
+            copyQrUrl: function(n) {
+                var url = this.qrBaseUrl.replace(/\/$/, '') + '/dinein.html?table=' + n;
+                navigator.clipboard.writeText(url).then(function() {
+                    alert('✅ 已複製 ' + n + '桌的網址');
+                }).catch(function() {
+                    prompt('請手動複製：', url);
                 });
             },
             // 假日
