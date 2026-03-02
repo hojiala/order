@@ -32,7 +32,29 @@
 <div id="app" v-cloak>
 
 <!-- ========== 設備綁定畫面 ========== -->
-<div v-if="!deviceBound" class="min-h-screen flex flex-col items-center justify-center p-6"
+
+<!-- ★ QR 掃碼 PIN 驗證畫面 -->
+<div v-if="showPinVerify" class="min-h-screen flex flex-col items-center justify-center p-6"
+     style="background:linear-gradient(145deg,#f97316 0%,#ea580c 50%,#c2410c 100%)">
+    <div class="text-center mb-6">
+        <div class="text-5xl mb-3">🍳</div>
+        <h1 class="text-3xl font-black text-white">元氣早午餐</h1>
+        <p class="text-orange-100 text-sm mt-1">📱 掃碼內用 · {{ deviceLabel }}</p>
+    </div>
+    <div class="bg-white rounded-2xl p-6 shadow-xl w-full max-w-xs">
+        <p class="text-gray-700 font-bold text-center mb-1">請輸入店內驗證碼</p>
+        <p class="text-gray-400 text-xs text-center mb-4">驗證碼顯示在店內桌面立牌上</p>
+        <input v-model="pinInput" type="tel" maxlength="4" placeholder="4 位數驗證碼"
+            class="w-full text-center text-2xl font-black tracking-[0.5em] border-2 border-gray-200 rounded-xl py-3 focus:border-orange-400 focus:outline-none"
+            @keyup.enter="verifyPin">
+        <p v-if="pinError" class="text-red-500 text-xs text-center mt-2">{{ pinError }}</p>
+        <button @click="verifyPin" class="w-full bg-orange-500 text-white font-bold py-3 rounded-xl mt-4 active:scale-[.98] transition">
+            驗證並進入點餐
+        </button>
+    </div>
+</div>
+
+<div v-else-if="!deviceBound" class="min-h-screen flex flex-col items-center justify-center p-6"
      style="background:linear-gradient(145deg,#f97316 0%,#ea580c 50%,#c2410c 100%)">
     <div class="text-center mb-8">
         <div class="text-5xl mb-3">🍳</div>
@@ -162,7 +184,7 @@
         <!-- ===== 餐點詳細頁 ===== -->
         <div v-if="currentView==='detail' && activeItem" class="min-h-screen bg-white">
             <div class="bg-white border-b border-gray-100 flex items-center px-4 py-3 sticky top-0 z-50" style="backdrop-filter:blur(8px)">
-                <button @click="currentView='menu';activeItem=null" class="w-9 h-9 rounded-full bg-gray-100 flex items-center justify-center text-gray-600 mr-3">←</button>
+                <button @click="currentView=(_editingCartIdx>=0?'cart':'menu');activeItem=null;_editingCartIdx=-1" class="w-9 h-9 rounded-full bg-gray-100 flex items-center justify-center text-gray-600 mr-3">←</button>
                 <span class="font-bold text-gray-800 text-sm">{{ activeItem.name }}</span>
             </div>
             <div class="pb-36">
@@ -222,7 +244,7 @@
                     <button @click="tempQty++" class="w-11 h-11 flex items-center justify-center text-orange-500 text-xl hover:bg-orange-50">＋</button>
                 </div>
                 <button @click="confirmAdd" class="flex-1 bg-orange-500 text-white py-3 rounded-xl font-bold flex justify-between items-center px-5 shadow-lg active:scale-[.98] transition">
-                    <span>加入購物車</span><span class="font-black">${{ tempTotal }}</span>
+                    <span>{{ _editingCartIdx>=0 ? '更新品項' : '加入購物車' }}</span><span class="font-black">${{ tempTotal }}</span>
                 </button>
             </div>
         </div>
@@ -243,7 +265,7 @@
                         <h3 class="font-bold text-gray-800 text-sm">點餐內容</h3>
                         <span class="text-xs text-gray-400">共 {{ cartCount }} 項</span>
                     </div>
-                    <div v-for="(item,idx) in cart" :key="idx" class="px-4 py-3 border-b border-gray-50">
+                    <div v-for="(item,idx) in cart" :key="idx" class="px-4 py-3 border-b border-gray-50 cursor-pointer hover:bg-gray-50 transition" @click="editCartItem(idx)">
                         <div class="flex justify-between items-start">
                             <div class="flex-1 min-w-0 mr-3">
                                 <p class="font-bold text-gray-800 text-sm">{{ item.name }}</p>
@@ -256,13 +278,20 @@
                             <p class="text-orange-500 font-black text-sm">${{ item.itemTotal }}</p>
                         </div>
                         <div class="flex items-center justify-between mt-2">
-                            <button @click="removeItem(idx)" class="text-xs text-red-400 hover:text-red-600 transition">移除</button>
+                            <button @click.stop="removeItem(idx)" class="text-xs text-red-400 hover:text-red-600 transition">移除</button>
                             <div class="flex items-center gap-2">
-                                <button @click="chgQty(idx,-1)" class="w-7 h-7 rounded-full border border-gray-200 text-gray-500 flex items-center justify-center text-sm active:scale-90 transition">−</button>
+                                <button @click.stop="chgQty(idx,-1)" class="w-7 h-7 rounded-full border border-gray-200 text-gray-500 flex items-center justify-center text-sm active:scale-90 transition">−</button>
                                 <span class="w-6 text-center font-bold text-sm text-gray-800">{{ item.qty }}</span>
-                                <button @click="chgQty(idx,1)" class="w-7 h-7 rounded-full border border-gray-200 text-gray-500 flex items-center justify-center text-sm active:scale-90 transition">+</button>
+                                <button @click.stop="chgQty(idx,1)" class="w-7 h-7 rounded-full border border-gray-200 text-gray-500 flex items-center justify-center text-sm active:scale-90 transition">+</button>
                             </div>
                         </div>
+                    </div>
+                    <!-- 繼續點餐 -->
+                    <div class="px-4 py-3">
+                        <button @click="currentView='menu'"
+                            class="w-full border-2 border-dashed border-gray-200 text-gray-400 rounded-xl py-2.5 text-sm hover:border-orange-300 hover:text-orange-400 transition">
+                            ＋ 繼續點餐
+                        </button>
                     </div>
                 </div>
                 <!-- 訂單備註 -->
@@ -387,6 +416,7 @@
 
 <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
+    import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
     import { getDatabase, ref, push, set, get, update, onValue, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
 
     const firebaseConfig = {
@@ -398,13 +428,16 @@
         messagingSenderId:"662477350736",
         appId:"1:662477350736:web:7e3dd6128a6f66a52aae55"
     };
-    const app=initializeApp(firebaseConfig),db=getDatabase(app);
+    const app=initializeApp(firebaseConfig),db=getDatabase(app),auth=getAuth(app);
+    // ★ 匿名登入（讓 Firebase 讀取權限通過）
+    signInAnonymously(auth).catch(function(e){console.warn('匿名登入失敗:',e.message)});
     const{createApp}=Vue;
 
     createApp({
         data:function(){return{
             // 設備綁定
             deviceBound:false, isPhoneMode:false, _phoneSession:'', selectedTable:'', selectedKiosk:'',
+            showPinVerify:false, pinInput:'', pinError:'', storePin:'',
             deviceId:'', deviceLabel:'', deviceType:'',
             // 設定
             isLoading:true,
@@ -413,7 +446,7 @@
             categories:[], currentCategory:'', menu:[],
             // 點餐
             currentView:'menu', activeItem:null,
-            tempQty:1, tempNote:'', tempSels:[], tempOG:{},
+            tempQty:1, tempNote:'', tempSels:[], tempOG:{}, _editingCartIdx:-1,
             cart:[], orderNote:'',
             isSubmitting:false,
             // UI
@@ -455,21 +488,31 @@
             var urlParams=new URLSearchParams(window.location.search);
             var qrTable=urlParams.get('table');
             if(qrTable){
-                // 手機掃碼模式
                 var tableNum=qrTable.replace(/[^0-9]/g,'');
                 if(tableNum){
                     s.deviceId='table_'+tableNum;
                     s.deviceLabel=tableNum+'桌';
                     s.deviceType='table';
                     s.isPhoneMode=true;
-                    s.deviceBound=true;
-                    // 手機 session（不覆蓋平板的 localStorage）
                     try{
                         var sid=sessionStorage.getItem('phone_session');
                         if(!sid){sid='ph_'+Date.now()+'_'+Math.random().toString(36).slice(2,6);sessionStorage.setItem('phone_session',sid);}
                         s._phoneSession=sid;
                     }catch(e){s._phoneSession='ph_'+Date.now();}
-                    s.initApp();
+                    // ★ 載入店家 PIN → 有設定就要驗證
+                    get(ref(db,'settings/dineinPin')).then(function(snap){
+                        var pin=snap.exists()?snap.val():'';
+                        if(pin){
+                            s.storePin=String(pin);
+                            s.showPinVerify=true; // 顯示 PIN 驗證畫面
+                        }else{
+                            s.deviceBound=true;
+                            s.initApp();
+                        }
+                    }).catch(function(){
+                        s.deviceBound=true;
+                        s.initApp();
+                    });
                     return;
                 }
             }
@@ -486,6 +529,17 @@
         },
         methods:{
             // ── 設備綁定 ──
+            verifyPin:function(){
+                if(this.pinInput===this.storePin){
+                    this.showPinVerify=false;
+                    this.pinError='';
+                    this.deviceBound=true;
+                    this.initApp();
+                }else{
+                    this.pinError='驗證碼錯誤，請重新輸入';
+                    this.pinInput='';
+                }
+            },
             confirmBind:function(){
                 if(this.selectedTable){
                     var n=this.selectedTable.replace('table_','');
@@ -519,6 +573,7 @@
             // ── 初始化 ──
             initApp:function(){
                 var s=this;
+                s.loadCart(); // ★ 恢復購物車
                 Promise.all([s.loadSettings(),s.loadMenu()]).then(function(){
                     s.isLoading=false;
                     s.listenOrders();
@@ -660,17 +715,54 @@
             // ── 菜單操作 ──
             getQty:function(id){return this.cart.filter(function(i){return i.id===id}).reduce(function(s,i){return s+i.qty},0)},
             quickAdd:function(item){
-                var hasOpt=(item.options&&item.options.length>0)||(item.optionGroups&&item.optionGroups.length>0);
-                if(hasOpt){this.openDetail(item);return}
+                // ★ 快速加入：使用選項群組預設值直接加入
+                var basePrice=item.price,extra=0,ogSels=[];
+                (item.optionGroups||[]).forEach(function(grp,gi){
+                    var idx=grp.defaultIdx||0;
+                    var ch=(grp.choices||[])[idx];if(!ch)return;
+                    if(grp.pricing==='setPrice')basePrice=ch.price;
+                    else if(grp.pricing==='addDelta')extra+=ch.price;
+                    else if(grp.pricing==='mealUpgrade')extra+=Math.max(0,ch.price-(grp.baseValue||0));
+                    ogSels.push({groupName:grp.groupName,idx:idx,name:ch.name,price:ch.price,pricing:grp.pricing,baseValue:grp.baseValue||0});
+                });
+                var unitPrice=basePrice+extra;
+                var ogKey=JSON.stringify(ogSels);
                 var existing=null;
-                for(var i=0;i<this.cart.length;i++){if(this.cart[i].id===item.id&&!this.cart[i].note){existing=this.cart[i];break}}
-                if(existing){existing.qty+=1;existing.itemTotal=existing.price*existing.qty}
-                else{this.cart.push({id:item.id,name:item.name,price:item.price,qty:1,note:'',options:[],optionGroupSelections:[],itemTotal:item.price})}
+                for(var i=0;i<this.cart.length;i++){
+                    if(this.cart[i].id===item.id&&!this.cart[i].note&&JSON.stringify(this.cart[i].optionGroupSelections)===ogKey){existing=this.cart[i];break}
+                }
+                if(existing){existing.qty+=1;existing.itemTotal=unitPrice*existing.qty}
+                else{this.cart.push({id:item.id,name:item.name,price:item.price,qty:1,note:'',options:[],optionGroupSelections:ogSels,itemTotal:unitPrice})}
+                this.saveCart();
                 this.toast('🛒 已加入：'+item.name);
             },
             openDetail:function(item){
+                this._editingCartIdx=-1; // 新增模式
                 this.activeItem=item;this.tempQty=1;this.tempNote='';this.tempSels=[];
                 var og={};(item.optionGroups||[]).forEach(function(g,gi){og[gi]=g.type==='checkbox'?[]:(g.defaultIdx||0)});
+                this.tempOG=og;this.currentView='detail';
+            },
+            editCartItem:function(idx){
+                // ★ 點擊購物車品項 → 進入編輯模式
+                var cartItem=this.cart[idx];
+                var menuItem=this.menu.find(function(m){return m.id===cartItem.id});
+                if(!menuItem){return} // 找不到對應菜單項
+                this._editingCartIdx=idx;
+                this.activeItem=menuItem;
+                this.tempQty=cartItem.qty;
+                this.tempNote=cartItem.note||'';
+                this.tempSels=(cartItem.options||[]).slice();
+                // 恢復選項群組的選擇狀態
+                var og={};
+                (menuItem.optionGroups||[]).forEach(function(g,gi){
+                    if(g.type==='checkbox'){og[gi]=[];return}
+                    og[gi]=g.defaultIdx||0;
+                    (cartItem.optionGroupSelections||[]).forEach(function(sel){
+                        if(sel.groupName===g.groupName){
+                            (g.choices||[]).forEach(function(ch,ci){if(ch.name===sel.name)og[gi]=ci});
+                        }
+                    });
+                });
                 this.tempOG=og;this.currentView='detail';
             },
             confirmAdd:function(){
@@ -690,16 +782,35 @@
                     }
                 });
                 e+=(s.tempSels||[]).reduce(function(x,o){return x+o.price},0);
-                s.cart.push({id:item.id,name:item.name,price:item.price,qty:s.tempQty,note:s.tempNote,
-                    options:s.tempSels.slice(),optionGroupSelections:ogSels,itemTotal:(b+e)*s.tempQty});
-                s.currentView='menu';s.activeItem=null;s.toast('🛒 已加入：'+item.name);
+                var newItem={id:item.id,name:item.name,price:item.price,qty:s.tempQty,note:s.tempNote,
+                    options:s.tempSels.slice(),optionGroupSelections:ogSels,itemTotal:(b+e)*s.tempQty};
+                // ★ 編輯模式：替換；新增模式：加入
+                if(s._editingCartIdx>=0&&s._editingCartIdx<s.cart.length){
+                    s.cart.splice(s._editingCartIdx,1,newItem);
+                    s.toast('✏️ 已更新：'+item.name);
+                    s.currentView='cart';
+                }else{
+                    s.cart.push(newItem);
+                    s.toast('🛒 已加入：'+item.name);
+                    s.currentView='menu';
+                }
+                s._editingCartIdx=-1;
+                s.saveCart();
+                s.activeItem=null;
             },
             chgQty:function(idx,d){
                 var item=Object.assign({},this.cart[idx]),nq=item.qty+d;
-                if(nq<=0){this.cart.splice(idx,1);if(!this.cart.length)this.currentView='menu';return}
-                var u=Math.round(item.itemTotal/item.qty);item.qty=nq;item.itemTotal=u*nq;this.cart.splice(idx,1,item);
+                if(nq<=0){this.cart.splice(idx,1);this.saveCart();if(!this.cart.length)this.currentView='menu';return}
+                var u=Math.round(item.itemTotal/item.qty);item.qty=nq;item.itemTotal=u*nq;this.cart.splice(idx,1,item);this.saveCart();
             },
-            removeItem:function(idx){this.cart.splice(idx,1);if(!this.cart.length)this.currentView='menu'},
+            removeItem:function(idx){this.cart.splice(idx,1);this.saveCart();if(!this.cart.length)this.currentView='menu'},
+            saveCart:function(){try{localStorage.setItem('dinein_cart_'+this.deviceId,JSON.stringify(this.cart))}catch(e){}},
+            loadCart:function(){
+                try{
+                    var saved=localStorage.getItem('dinein_cart_'+this.deviceId);
+                    if(saved){this.cart=JSON.parse(saved)}
+                }catch(e){this.cart=[]}
+            },
             // ── 送出訂單 ──
             submitOrder:function(payMethod){
                 if(!this.cart.length||this.isSubmitting)return;
@@ -747,6 +858,7 @@
                     s.lastPayment=payMethod;
                     s.showSuccess=true;
                     s.cart=[];s.orderNote='';s.currentView='menu';
+                    s.saveCart(); // 清除購物車存檔
                     s.toast('✅ 訂單已送出！');
                 }).catch(function(e){
                     console.error(e);
