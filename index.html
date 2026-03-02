@@ -84,7 +84,7 @@
                         <h1 class="text-xl font-black text-orange-500" style="line-height:1.3;">元氣早午餐</h1>
                         <p class="text-xs text-orange-300 mt-0.5">善化中山店</p>
                     </div>
-                    <button @click="showStoreInfo=true;tryRefreshOrderStatus()"
+                    <button @click="showStoreInfo=true;storeInfoTab='orders';tryRefreshOrderStatus()"
                         class="w-7 h-7 rounded-full border border-orange-400 text-orange-500 font-black text-xs flex items-center justify-center hover:bg-orange-50 transition"
                         style="font-family:serif;font-style:italic">i</button>
                 </div>
@@ -608,6 +608,7 @@
             } catch(e) { this.cart = []; }
             // ★ 從 localStorage 讀取點餐記錄
             this.loadMyOrders();
+            this.startAutoRefresh();
             this.init();
         },
         methods: {
@@ -953,31 +954,42 @@
             tryRefreshOrderStatus: function() {
                 var self = this;
                 if (!self.myOrders.length) return;
+                var changed = false;
+                var pending = 0;
                 self.myOrders.forEach(function(order) {
                     if (!order.id) return;
-                    get(ref(db, 'orders/' + order.id + '/status')).then(function(snap) {
-                        if (snap.exists()) {
-                            order.status = snap.val();
-                            // 更新 localStorage
-                            try {
-                                var saved = JSON.parse(localStorage.getItem('my_orders') || '[]');
-                                saved.forEach(function(o) { if (o.id === order.id) o.status = snap.val(); });
-                                localStorage.setItem('my_orders', JSON.stringify(saved));
-                            } catch(e) {}
-                        }
-                    }).catch(function() {});
-                    // 也嘗試讀取 orderNo
-                    get(ref(db, 'orders/' + order.id + '/orderNo')).then(function(snap) {
-                        if (snap.exists()) {
-                            order.orderNo = snap.val();
-                            try {
-                                var saved = JSON.parse(localStorage.getItem('my_orders') || '[]');
-                                saved.forEach(function(o) { if (o.id === order.id) o.orderNo = snap.val(); });
-                                localStorage.setItem('my_orders', JSON.stringify(saved));
-                            } catch(e) {}
-                        }
+                    if (order.status === 'done' || order.status === 'cancelled' || order.status === 'archived') return;
+                    pending++;
+                    // 讀取完整訂單資料（status + orderNo）
+                    get(ref(db, 'orders/' + order.id)).then(function(snap) {
+                        if (!snap.exists()) return;
+                        var data = snap.val();
+                        if (data.status && data.status !== order.status) { order.status = data.status; changed = true; }
+                        if (data.orderNo && data.orderNo !== order.orderNo) { order.orderNo = data.orderNo; changed = true; }
                     }).catch(function() {});
                 });
+                // 更新 localStorage
+                setTimeout(function() {
+                    if (changed) {
+                        try {
+                            var saved = JSON.parse(localStorage.getItem('my_orders') || '[]');
+                            self.myOrders.forEach(function(o) {
+                                saved.forEach(function(s) { if (s.id === o.id) { s.status = o.status; s.orderNo = o.orderNo; } });
+                            });
+                            localStorage.setItem('my_orders', JSON.stringify(saved));
+                        } catch(e) {}
+                    }
+                }, 2000);
+            },
+            // ★ 自動輪詢：每 8 秒自動更新訂單狀態
+            startAutoRefresh: function() {
+                var self = this;
+                if (self._refreshTimer) return;
+                self._refreshTimer = setInterval(function() {
+                    if (!self.myOrders.length) return;
+                    var hasActive = self.myOrders.some(function(o) { return o.status === 'new' || o.status === 'making'; });
+                    if (hasActive) self.tryRefreshOrderStatus();
+                }, 8000);
             },
             submitToFirebase: function() {
                 var self = this;
@@ -1056,14 +1068,8 @@
                         update(ref(db, 'orders/' + orderId), { orderNo: no }).catch(function(){});
                         self.updateMyOrderNo(orderId, no);
                     }).catch(function() {
-                        // ★ 前台無Auth → 監聽後台自動補發的流水號
-                        var unsub = onValue(ref(db, 'orders/' + orderId + '/orderNo'), function(noSnap) {
-                            if (noSnap.exists() && noSnap.val()) {
-                                self.updateMyOrderNo(orderId, noSnap.val());
-                                unsub();
-                            }
-                        }, function(){});
-                        setTimeout(function() { try { unsub(); } catch(e) {} }, 30000);
+                        // 流水號需Auth，由後台 admin/pos 自動補發
+                        // 自動輪詢機制 (startAutoRefresh) 會在8秒內更新
                     });
                     // 成功畫面
                     var now = new Date();
