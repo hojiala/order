@@ -467,7 +467,7 @@
             lastOrderNo:0, lastPayment:'', lastOrderIdRef:null,
             // 訂單
             myOrders:[], allOrders:[], pollTimer:null,
-            estimatedWait:0, nowMinute:0,
+            pendingCount:0, nowMinute:0,
             // 密碼
             showPasswordDialog:false, passwordInput:'', passwordError:'',
             devicePassword:'0000'
@@ -489,6 +489,7 @@
             filteredMenu:function(){var s=this;return s.menu.filter(function(i){return i.category===s.currentCategory})},
             cartCount:function(){return this.cart.reduce(function(s,i){return s+i.qty},0)},
             cartTotal:function(){return this.cart.reduce(function(s,i){return s+(Number(i.itemTotal)||0)},0)},
+            estimatedWait:function(){return this.pendingCount>0?(this.settings.pickupInterval||15):0},
             tempTotal:function(){
                 if(!this.activeItem)return 0;
                 var b=this.activeItem.price,e=0,s=this;
@@ -658,7 +659,7 @@
                 s.loadLocalOrders();
                 // ★ 嘗試從 Firebase 讀取（可能因權限失敗）
                 onValue(ref(db,'orders'),function(snap){
-                    if(!snap.exists()){s.estimatedWait=0;return}
+                    if(!snap.exists()){s.pendingCount=0;return}
                     var all=Object.entries(snap.val()).filter(function(e){return e[1]&&e[1].status}).map(function(e){return Object.assign({id:e[0]},e[1])});
                     s.allOrders=all;
                     // 本桌訂單（今日）- Firebase 有最新狀態
@@ -677,9 +678,9 @@
                     }
                     // 同步更新 localStorage
                     s.syncLocalOrders(fbOrders);
-                    // 預估等候時間 = 使用 manage.html 設定的備餐緩衝時間
+                    // 記錄進行中訂單數（estimatedWait 由 computed 自動反應）
                     var pending=all.filter(function(o){return o.status==='new'||o.status==='making'});
-                    s.estimatedWait=pending.length>0?(s.settings.pickupInterval||15):0;
+                    s.pendingCount=pending.length;
                 },function(err){
                     // Firebase 讀取失敗（權限不足），使用 localStorage + 定時輪詢
                     console.warn('Firebase orders read failed:',err.message);
