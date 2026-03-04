@@ -8,6 +8,8 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="theme-color" content="#F59E0B">
+    <!-- QRCode.js for 情境2 LINE Pay QR Code -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&display=swap" rel="stylesheet">
@@ -325,10 +327,10 @@
                         style="background:linear-gradient(135deg,#f97316,#ef4444)">
                         {{ isSubmitting ? '送出中...' : '💰 店內付款' }}
                     </button>
-                    <button @click="submitOrder('linepay')" :disabled="cart.length===0||isSubmitting"
+                    <button @click="submitOrderQR()" :disabled="cart.length===0||isSubmitting"
                         class="py-3.5 rounded-xl font-black text-white text-sm disabled:opacity-40 transition active:scale-[.98]"
                         style="background:linear-gradient(135deg,#06C755,#00B900)">
-                        {{ isSubmitting ? '送出中...' : '💚 LINE Pay' }}
+                        {{ isSubmitting ? '送出中...' : '💚 LINE Pay QR' }}
                     </button>
                 </div>
             </div>
@@ -439,6 +441,37 @@
         </div>
     </div>
 
+
+    <!-- ★ 情境2：LINE Pay QR Code 付款 Modal -->
+    <div v-if="showQRModal" class="fixed inset-0 z-[999] flex items-center justify-center" style="background:rgba(0,0,0,0.75)">
+        <div class="bg-white rounded-2xl shadow-2xl overflow-hidden fade-in" style="max-width:20rem;width:calc(100% - 2rem)">
+            <div class="px-5 py-3 flex items-center gap-2" style="background:linear-gradient(135deg,#06C755,#00B900)">
+                <span class="text-xl">💚</span>
+                <span class="text-white font-black text-sm">LINE Pay 掃碼付款</span>
+                <span class="ml-auto text-white text-sm font-bold">${{ qrAmount }}</span>
+            </div>
+            <div class="px-5 py-4 text-center">
+                <p class="text-gray-600 text-xs mb-3">請用手機 LINE App 掃描以下 QR Code 完成付款</p>
+                <!-- QR Code 容器 -->
+                <div id="qrcode-container" class="flex justify-center mb-3">
+                    <div id="qrcode" class="inline-block p-2 bg-white border-2 border-gray-200 rounded-xl"></div>
+                </div>
+                <!-- 付款狀態 -->
+                <div v-if="qrPolling" class="flex items-center justify-center gap-2 text-gray-500 text-xs">
+                    <div class="w-4 h-4 border-2 border-gray-300 border-t-green-500 rounded-full" style="animation:spin .8s linear infinite"></div>
+                    <span>等待付款中... ({{ qrCountdown }}秒)</span>
+                </div>
+                <div v-if="qrPaidMsg" class="text-green-600 font-bold text-sm">✅ {{ qrPaidMsg }}</div>
+                <div v-if="qrErrorMsg" class="text-red-500 text-xs mt-1">{{ qrErrorMsg }}</div>
+            </div>
+            <div class="px-5 pb-4">
+                <button @click="cancelQRPay" class="w-full bg-gray-100 hover:bg-gray-200 text-gray-600 font-bold py-2.5 rounded-xl text-sm transition">
+                    取消付款
+                </button>
+            </div>
+        </div>
+    </div>
+
     <div v-if="toastMsg" class="fixed bottom-24 left-1/2 z-50 pointer-events-none" style="transform:translateX(-50%)">
         <div class="bg-gray-900 text-white text-sm font-bold px-5 py-2.5 rounded-full shadow-xl whitespace-nowrap fade-in">{{ toastMsg }}</div>
     </div>
@@ -490,7 +523,11 @@
             pendingCount:0, nowMinute:0,
             // 密碼
             showPasswordDialog:false, passwordInput:'', passwordError:'',
-            devicePassword:'0000'
+            devicePassword:'0000',
+            // ★ 情境2 QR Code 付款
+            showQRModal:false, qrAmount:0, qrOrderId:'',
+            qrPolling:false, qrCountdown:120, qrPaidMsg:'', qrErrorMsg:'',
+            qrPollTimer:null, qrCountdownTimer:null
         }},
         computed:{
             outsideBusinessHours:function(){
@@ -897,6 +934,86 @@
                 s.showOrderHistory=false;
                 s.currentView='cart';
             },
+            // ── 情境2：QR Code 付款 ──
+            submitOrderQR:function(){
+                var s=this;
+                if(!s.cart.length||s.isSubmitting)return;
+                if(!s.settings.linePayServerUrl){
+                    s.toast('⚠️ 請先在設定中填入 LINE Pay 伺服器網址');
+                    return;
+                }
+                // 先送出訂單，再取得 QR Code URL
+                s.submitOrder('linepay_qr');
+            },
+            openQRModal:function(orderId, amount, qrUrl){
+                var s=this;
+                s.qrOrderId=orderId;
+                s.qrAmount=amount;
+                s.qrPaidMsg='';
+                s.qrErrorMsg='';
+                s.qrCountdown=120;
+                s.showQRModal=true;
+                // 等 DOM 渲染後產生 QR Code
+                s.$nextTick(function(){
+                    var container=document.getElementById('qrcode');
+                    if(container){
+                        container.innerHTML='';
+                        try{
+                            new QRCode(container,{
+                                text:qrUrl,
+                                width:200,height:200,
+                                colorDark:'#000000',colorLight:'#ffffff',
+                                correctLevel:QRCode.CorrectLevel.H
+                            });
+                        }catch(e){
+                            container.innerHTML='<p style="color:red;font-size:12px">QR Code 產生失敗</p>';
+                        }
+                    }
+                    // 開始輪詢付款狀態
+                    s.startQRPolling();
+                });
+            },
+            startQRPolling:function(){
+                var s=this;
+                s.qrPolling=true;
+                // 倒數計時
+                s.qrCountdownTimer=setInterval(function(){
+                    if(s.qrCountdown>0){s.qrCountdown--;}
+                    else{s.stopQRPolling();s.qrErrorMsg='付款逾時，請重新操作';}
+                },1000);
+                // 每 3 秒查詢 Firebase 付款狀態
+                s.qrPollTimer=setInterval(function(){
+                    get(ref(db,'orders/'+s.qrOrderId+'/paymentStatus')).then(function(snap){
+                        if(snap.exists()&&snap.val()==='paid'){
+                            s.stopQRPolling();
+                            s.qrPaidMsg='付款成功！感謝您的消費 🎉';
+                            setTimeout(function(){s.closeQRModal();},3000);
+                        }
+                    }).catch(function(){});
+                },3000);
+            },
+            stopQRPolling:function(){
+                var s=this;
+                s.qrPolling=false;
+                if(s.qrPollTimer){clearInterval(s.qrPollTimer);s.qrPollTimer=null;}
+                if(s.qrCountdownTimer){clearInterval(s.qrCountdownTimer);s.qrCountdownTimer=null;}
+            },
+            closeQRModal:function(){
+                this.stopQRPolling();
+                this.showQRModal=false;
+                this.qrOrderId='';
+                this.qrPaidMsg='';
+                this.qrErrorMsg='';
+            },
+            cancelQRPay:function(){
+                var s=this;
+                s.stopQRPolling();
+                // 更新 Firebase 訂單付款狀態為取消
+                if(s.qrOrderId){
+                    update(ref(db,'orders/'+s.qrOrderId),{paymentStatus:'cancelled'}).catch(function(){});
+                }
+                s.showQRModal=false;
+            },
             // ── 送出訂單 ──
             submitOrder:function(payMethod){
                 if(!this.cart.length||this.isSubmitting)return;
@@ -929,8 +1046,8 @@
                     s.lastOrderNo=null;
                     s.lastPayment=payMethod;
 
-                    // ★ LINE Pay 付款流程
-                    if(payMethod==='linepay' && s.settings.linePayServerUrl){
+                    // ★ LINE Pay 付款流程（情境1 手機跳轉 / 情境2 QR Code）
+                    if((payMethod==='linepay'||payMethod==='linepay_qr') && s.settings.linePayServerUrl){
                         s.toast('⏳ 正在連接 LINE Pay...');
                         var serverUrl=s.settings.linePayServerUrl.replace(/\/$/,'');
                         fetch(serverUrl+'/api/linepay/request',{
@@ -944,10 +1061,15 @@
                             })
                         }).then(function(r){return r.json()}).then(function(data){
                             if(data.success && data.paymentUrl){
-                                // 記錄返回 URL
-                                try{localStorage.setItem('linepay_return_url',window.location.href)}catch(e){}
-                                // 導向 LINE Pay 付款頁面
-                                window.location.href=data.paymentUrl;
+                                if(payMethod==='linepay_qr'){
+                                    // 情境2：平板不跳轉，改顯示 QR Code 讓顧客手機掃
+                                    s.isSubmitting=false;
+                                    s.openQRModal(orderId, orderData.total, data.qrCodeUrl||data.paymentUrl);
+                                }else{
+                                    // 情境1：手機直接跳轉 LINE Pay
+                                    try{localStorage.setItem('linepay_return_url',window.location.href)}catch(e){}
+                                    window.location.href=data.paymentUrl;
+                                }
                             }else{
                                 alert('LINE Pay 連線失敗：'+(data.error||'未知錯誤')+'\n訂單已送出，請改用店內付款');
                                 s.showSuccess=true;
