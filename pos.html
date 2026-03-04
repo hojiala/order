@@ -687,9 +687,7 @@
                         s.$nextTick(function(){
                             if(s.$refs.barcodeInput) s.$refs.barcodeInput.focus();
                         });
-                        // 列印廚房單
-                        var taskRef=ref(db,"orders/"+snap.key+"/print_task");
-                        return set(taskRef,"kitchen_"+Date.now());
+                        // ★ 不在此列印，等掃碼付款成功後才印（由 submitOfflinePay 觸發）
                     })
                     .catch(function(e){s.toast("❌ 建立訂單失敗："+e.message);})
                     .finally(function(){s.isSubmitting=false;});
@@ -728,6 +726,10 @@
                                 s.offlineSuccess="付款成功！交易編號："+r.transactionId;
                                 s.toast("✅ LINE Pay 掃碼付款成功 $"+s.offlineAmount);
                                 s.offlineSubmitting=false;
+                                // ★ 付款成功後才列印工單
+                                update(ref(db,"orders/"+s.offlineOrderId),{status:"making"});
+                                var taskRef=ref(db,"orders/"+s.offlineOrderId+"/print_task");
+                                remove(taskRef).then(function(){return set(taskRef,"kitchen_"+Date.now());});
                                 setTimeout(function(){s.closeOfflineModal();},2000);
                             }else if(r.status==="error"){
                                 clearInterval(poll);
@@ -754,9 +756,15 @@
                 var pickDate=s.posPickupDate||s.todayStr;
                 var pickTime=s.posPickupTime||(pickDate>s.todayStr?"":"現場取餐");
                 if(!pickTime)pickTime="預約取餐";
+                var isLinePay=(payMethod==='linepay'||payMethod==='linepay_online');
+                // LINE Pay 訂單：status 先設 new，付款確認後 linepay_server 會改 making
                 var o={customer:s.custName||"現場",phone:s.custPhone||"",pickupDate:pickDate,pickupTime:pickTime,
                     items:s.cart.map(function(i){return Object.assign({},i);}),
-                    total:s.cartTotal,status:"making",timestamp:Date.now(),source:"pos",paymentMethod:payMethod||"store"};
+                    total:s.cartTotal,
+                    status:isLinePay?"new":"making",
+                    timestamp:Date.now(),source:"pos",
+                    paymentMethod:isLinePay?"linepay":"store",
+                    paymentStatus:isLinePay?"pending":"paid"};
                 runTransaction(ref(db,"settings/orderCounter"),function(cur){return(cur||0)+1;})
                     .then(function(result){
                         o.orderNo=result.snapshot.val();
@@ -764,45 +772,74 @@
                     })
                     .then(function(snap){
                         var orderId=snap.key;s.lastOrderId=orderId;
-                        var taskRef=ref(db,"orders/"+orderId+"/print_task");
-                        return remove(taskRef).then(function(){
-                            return set(taskRef,"kitchen_"+Date.now());
-                        }).then(function(){
-                            s.toast("✅ 已結帳 $"+o.total+" (No."+String(o.orderNo).padStart(3,"0")+")");
-                            if((payMethod==='linepay'||payMethod==='linepay_online')&&s.linePayConfirmUrl){
-                                // Firebase 中介：寫入請求 → 背景 Worker 處理
-                                set(ref(db,"linepay_requests/"+orderId),{
-                                    amount:o.total,items:o.items,
-                                    confirmBaseUrl:s.linePayConfirmUrl||'',
-                                    status:'pending',createdAt:Date.now()
-                                }).then(function(){
-                                    s.toast('⏳ 正在建立 LINE Pay 連結...');
-                                    var tries=0;
-                                    var poll=setInterval(function(){
-                                        tries++;
-                                        get(ref(db,"linepay_requests/"+orderId)).then(function(snap){
-                                            if(!snap.exists())return;
-                                            var r=snap.val();
-                                            if(r.status==='ready'&&r.paymentUrl){
-                                                clearInterval(poll);
-                                                window.open(r.paymentUrl,'_blank');
-                                                s.toast('✅ LINE Pay 連結已開啟');
-                                            }else if(r.status==='error'){
-                                                clearInterval(poll);
-                                                s.toast('⚠️ LINE Pay 失敗：'+(r.error||'未知錯誤'));
-                                            }else if(tries>=20){
-                                                clearInterval(poll);
-                                                s.toast('⚠️ LINE Pay 逾時，請確認樹莓派服務正常');
-                                            }
-                                        }).catch(function(){});
-                                    },1000);
-                                }).catch(function(e){s.toast('⚠️ 寫入失敗：'+e.message);});
-                            }
-                            s.clearCart();
-                        });
+
+                        if(isLinePay && s.linePayConfirmUrl){
+                            // ★ LINE Pay：先取付款連結，付款成功後才列印
+                            s.toast('⏳ 正在建立 LINE Pay 連結...');
+                            set(ref(db,"linepay_requests/"+orderId),{
+                                amount:o.total,items:o.items,
+                                confirmBaseUrl:s.linePayConfirmUrl||'',
+                                status:'pending',createdAt:Date.now()
+                            }).then(function(){
+                                var tries=0;
+                                var poll=setInterval(function(){
+                                    tries++;
+                                    get(ref(db,"linepay_requests/"+orderId)).then(function(reqSnap){
+                                        if(!reqSnap.exists())return;
+                                        var r=reqSnap.val();
+                                        if(r.status==='ready'&&r.paymentUrl){
+                                            clearInterval(poll);
+                                            s.isSubmitting=false;
+                                            s.clearCart();
+                                            s.toast('✅ LINE Pay 連結已開啟，等待顧客付款');
+                                            window.open(r.paymentUrl,'_blank');
+                                            // ★ 等待付款成功後列印（監聽 paymentStatus）
+                                            var payPoll=setInterval(function(){
+                                                get(ref(db,"orders/"+orderId+"/paymentStatus")).then(function(ps){
+                                                    if(ps.exists()&&ps.val()==='paid'){
+                                                        clearInterval(payPoll);
+                                                        // 更新狀態為 making 並列印
+                                                        update(ref(db,"orders/"+orderId),{status:"making"}).then(function(){
+                                                            var taskRef=ref(db,"orders/"+orderId+"/print_task");
+                                                            return remove(taskRef).then(function(){return set(taskRef,"kitchen_"+Date.now());});
+                                                        });
+                                                        s.toast('✅ LINE Pay 付款成功，已送出工單');
+                                                    }
+                                                }).catch(function(){});
+                                            },3000);
+                                            // 最多等 10 分鐘
+                                            setTimeout(function(){clearInterval(payPoll);},600000);
+                                        }else if(r.status==='error'){
+                                            clearInterval(poll);
+                                            s.isSubmitting=false;
+                                            s.toast('⚠️ LINE Pay 失敗：'+(r.error||'未知錯誤'));
+                                        }else if(tries>=20){
+                                            clearInterval(poll);
+                                            s.isSubmitting=false;
+                                            s.toast('⚠️ LINE Pay 逾時，請確認樹莓派服務正常');
+                                        }
+                                    }).catch(function(){});
+                                },1000);
+                            }).catch(function(e){
+                                s.isSubmitting=false;
+                                s.toast('⚠️ 寫入失敗：'+e.message);
+                            });
+                        }else{
+                            // ★ 店內付款：立即列印
+                            var taskRef=ref(db,"orders/"+orderId+"/print_task");
+                            remove(taskRef).then(function(){
+                                return set(taskRef,"kitchen_"+Date.now());
+                            }).then(function(){
+                                s.toast("✅ 已結帳 $"+o.total+" (No."+String(o.orderNo).padStart(3,"0")+")");
+                                s.clearCart();
+                            }).catch(function(e){alert("列印失敗："+e.message);})
+                            .finally(function(){s.isSubmitting=false;});
+                        }
                     })
-                    .catch(function(e){alert("送出失敗："+e.message);})
-                    .finally(function(){s.isSubmitting=false;});
+                    .catch(function(e){
+                        alert("送出失敗："+e.message);
+                        s.isSubmitting=false;
+                    });
             },
             viewOrder:function(order){
                 this.editingOrder=order;
