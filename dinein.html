@@ -340,14 +340,14 @@
         <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[80vh] flex flex-col overflow-hidden fade-in">
             <div class="px-5 py-4 border-b border-gray-100 flex items-center justify-between flex-shrink-0">
                 <div>
-                    <h3 class="font-bold text-gray-800">📋 本桌點餐紀錄</h3>
+                    <h3 class="font-bold text-gray-800">📋 本桌點餐記錄</h3>
                     <p class="text-xs text-gray-400 mt-0.5">{{ deviceLabel }}</p>
                 </div>
                 <button @click="showOrderHistory=false" class="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center text-gray-400 text-lg">×</button>
             </div>
             <div class="flex-1 overflow-y-auto">
                 <div v-if="myOrders.length===0" class="text-center text-gray-400 py-16">
-                    <div class="text-4xl mb-2">📋</div><p class="text-sm">尚無點餐紀錄</p>
+                    <div class="text-4xl mb-2">📋</div><p class="text-sm">尚無點餐記錄</p>
                 </div>
                 <div v-for="order in myOrders" :key="order.id" class="px-5 py-4 border-b border-gray-100">
                     <div class="flex items-center justify-between mb-2">
@@ -368,6 +368,9 @@
                     <div class="flex justify-between items-center mt-2">
                         <span class="text-xs text-gray-400">{{ formatTime(order.timestamp) }}</span>
                         <span class="text-orange-500 font-black text-sm">${{ order.total }}</span>
+                    </div>
+                    <div class="mt-2">
+                        <button @click="reorderItems(order)" class="w-full bg-orange-50 hover:bg-orange-100 border border-orange-200 text-orange-600 font-bold text-xs py-2 rounded-xl transition">🔁 再訂1次</button>
                     </div>
                 </div>
             </div>
@@ -634,6 +637,10 @@
                         if(!snap.exists())return;var v=snap.val();
                         s.settings={isOpen:v.isOpen!==false,openTime:v.openTime||'06:00',closeTime:v.closeTime||'13:15',
                             weeklyDaysOff:v.weeklyDaysOff||[0],holidays:v.holidays||[],dailyHours:v.dailyHours||{},pickupInterval:v.pickupInterval||15,linePayServerUrl:v.linePayServerUrl||'',linePayConfirmUrl:v.linePayConfirmUrl||'',announcements:v.announcements||[]};
+                        // ★ 設定更新時，自動重新檢查當前分類的公告（即時開啟/關閉公告視窗）
+                        s.$nextTick(function(){
+                            if(s.currentCategory) s.checkAnnouncements(s.currentCategory);
+                        });
                     });
                 }).catch(function(e){console.error(e);s.isLoading=false});
             },
@@ -869,6 +876,23 @@
                     if(saved){this.cart=JSON.parse(saved)}
                 }catch(e){this.cart=[]}
             },
+            // ── 再訂1次 ──
+            reorderItems:function(order){
+                var s=this;
+                if(!order.items||!order.items.length)return;
+                order.items.forEach(function(item){
+                    s.cart.push({
+                        id:item.id,name:item.name,price:item.price,
+                        qty:item.qty,note:item.note||'',
+                        options:item.options||[],
+                        optionGroupSelections:item.optionGroupSelections||[],
+                        itemTotal:item.itemTotal
+                    });
+                });
+                s.saveCart();
+                s.showOrderHistory=false;
+                s.currentView='cart';
+            },
             // ── 送出訂單 ──
             submitOrder:function(payMethod){
                 if(!this.cart.length||this.isSubmitting)return;
@@ -965,15 +989,14 @@
                 var anns=(s.settings.announcements||[]).filter(function(a){return a.active && a.text;});
                 var msgs=[];
                 anns.forEach(function(a){
-                    var key=a.category||'__global__';
                     if(cat){
-                        // 分類公告
-                        if(a.category===cat && !s.shownAnnCats[key+':'+cat]){
+                        // 分類公告：只要active就每次切換都彈出（固定彈出）
+                        if(a.category===cat){
                             msgs.push(a.text);
-                            s.shownAnnCats[key+':'+cat]=true;
                         }
                     }else{
-                        // 全站公告（進站時）
+                        // 全站公告（進站時）：同一 session 只彈一次
+                        var key='__global__'+(a.text||'');
                         if(!a.category && !s.shownAnnCats[key]){
                             msgs.push(a.text);
                             s.shownAnnCats[key]=true;
@@ -983,6 +1006,9 @@
                 if(msgs.length){
                     s.annModalText=msgs.join('\n\n');
                     s.showAnnModal=true;
+                }else if(cat){
+                    // 切換分類且無公告時，自動關閉公告視窗
+                    s.showAnnModal=false;
                 }
             }
         },
