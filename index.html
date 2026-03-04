@@ -1181,34 +1181,45 @@
                     var orderId = snap.key;
                     self.saveMyOrder(orderId, orderData);
 
-                    // ★ LINE Pay 付款流程
-                    if(payMethod==='linepay' && self.settings.linePayServerUrl){
+                    // ★ LINE Pay 付款流程（Firebase 中介，解決 HTTPS→HTTP 問題）
+                    if(payMethod==='linepay' && self.settings.linePayConfirmUrl){
                         self.isSubmitting=false;
-                        var serverUrl=self.settings.linePayServerUrl.replace(/\/$/,'');
-                        fetch(serverUrl+'/api/linepay/request',{
-                            method:'POST',
-                            headers:{'Content-Type':'application/json'},
-                            body:JSON.stringify({
-                                orderId:orderId,
-                                amount:orderData.total,
-                                items:orderData.items,
-                                confirmBaseUrl:self.settings.linePayConfirmUrl||''
-                            })
-                        }).then(function(r){return r.json()}).then(function(data){
-                            if(data.success && data.paymentUrl){
-                                try{localStorage.setItem('linepay_return_url',window.location.href)}catch(e){}
-                                localStorage.setItem('lastOrderTime', Date.now().toString());
-                                window.location.href=data.paymentUrl;
-                            }else{
-                                self.showAlertModal('LINE Pay 連線失敗', (data.error||'未知錯誤')+'\n訂單已送出，請改用店內付款');
-                                self.cart=[];try{localStorage.removeItem('cart_items')}catch(e){}
-                                self.currentView='menu';
-                            }
+                        // 把請求寫入 Firebase，樹莓派背景工作會自動處理並把 paymentUrl 寫回
+                        set(ref(db, 'linepay_requests/' + orderId), {
+                            amount: orderData.total,
+                            items: orderData.items,
+                            confirmBaseUrl: self.settings.linePayConfirmUrl || '',
+                            status: 'pending',
+                            createdAt: Date.now()
+                        }).then(function() {
+                            // 顯示等待畫面
+                            self.showAlertModal('LINE Pay', '正在建立付款連結，請稍候...');
+                            // 輪詢 Firebase 等待樹莓派回寫 paymentUrl（最多 20 秒）
+                            var tries = 0;
+                            var poll = setInterval(function() {
+                                tries++;
+                                get(ref(db, 'linepay_requests/' + orderId)).then(function(snap) {
+                                    if(!snap.exists()) return;
+                                    var r = snap.val();
+                                    if(r.status === 'ready' && r.paymentUrl) {
+                                        clearInterval(poll);
+                                        self.showAlertDialog = false;
+                                        try{localStorage.setItem('linepay_return_url', window.location.href)}catch(e){}
+                                        localStorage.setItem('lastOrderTime', Date.now().toString());
+                                        self.cart=[];try{localStorage.removeItem('cart_items')}catch(e){}
+                                        self.currentView='menu';
+                                        window.location.href = r.paymentUrl;
+                                    } else if(r.status === 'error') {
+                                        clearInterval(poll);
+                                        self.showAlertModal('LINE Pay 失敗', (r.error||'未知錯誤') + '\n訂單已送出，請改用店內付款');
+                                    } else if(tries >= 20) {
+                                        clearInterval(poll);
+                                        self.showAlertModal('LINE Pay 逾時', '樹莓派無回應，請確認服務是否正常運行\n訂單已送出，請改用店內付款');
+                                    }
+                                }).catch(function(){});
+                            }, 1000);
                         }).catch(function(e){
-                            console.error('LINE Pay error:',e);
-                            self.showAlertModal('LINE Pay 無法連線', '伺服器無回應\n訂單已送出，請改用店內付款');
-                            self.cart=[];try{localStorage.removeItem('cart_items')}catch(e){}
-                            self.currentView='menu';
+                            self.showAlertModal('LINE Pay 失敗', '無法寫入請求：' + e.message);
                         });
                         return;
                     }
