@@ -636,10 +636,27 @@
                     </div>
                     <p class="text-slate-400 text-sm mb-4">假日爆單或訂單滿載時，開啟訊息通知顧客。指定分類的訊息會在顧客切換到該分類時彈出。</p>
 
-                    <div class="space-y-3">
+                    <div class="space-y-2" id="ann-list"
+                        @dragover.prevent
+                        @drop="annDrop($event)">
                         <div v-for="(ann,ai) in settings.announcements" :key="ai"
-                            class="bg-slate-700 rounded-lg p-3 border" :class="ann.active ? 'border-amber-500/50' : 'border-slate-600'">
-                            <div class="flex items-center gap-3 mb-2">
+                            class="bg-slate-700 rounded-lg p-3 border transition-all"
+                            :class="ann.active ? 'border-amber-500/50' : 'border-slate-600'"
+                            :draggable="true"
+                            @dragstart="annDragStart($event,ai)"
+                            @dragover.prevent="annDragOver($event,ai)"
+                            @dragleave="annDragLeave($event)"
+                            @drop.stop="annDropOn($event,ai)"
+                            :style="annDragIdx===ai?'opacity:0.4':''"
+                        >
+                            <div class="flex items-center gap-2 mb-2">
+                                <!-- 拖曳把手 -->
+                                <span class="text-slate-500 cursor-grab active:cursor-grabbing text-base select-none flex-shrink-0" title="拖曳排序">⠿</span>
+                                <!-- 上下箭頭 -->
+                                <div class="flex flex-col gap-0.5 flex-shrink-0">
+                                    <button @click="annMoveUp(ai)" :disabled="ai===0" class="text-slate-400 hover:text-amber-400 disabled:opacity-20 text-xs leading-none transition">▲</button>
+                                    <button @click="annMoveDown(ai)" :disabled="ai===settings.announcements.length-1" class="text-slate-400 hover:text-amber-400 disabled:opacity-20 text-xs leading-none transition">▼</button>
+                                </div>
                                 <!-- Toggle -->
                                 <label class="relative inline-flex items-center cursor-pointer flex-shrink-0">
                                     <input type="checkbox" v-model="ann.active" class="sr-only peer">
@@ -670,7 +687,43 @@
                             + 新增訊息
                         </button>
                     </div>
-                    <p class="text-slate-500 text-xs mt-3">💡 全站公告：顧客打開頁面時立即彈出。分類公告：顧客切換到指定分類時彈出。修改後請按「儲存設定」。</p>
+                    <p class="text-slate-500 text-xs mt-3">💡 全站公告：顧客打開頁面時立即彈出。分類公告：顧客切換到指定分類時彈出（每次切換皆會彈出）。修改後請按「儲存設定」。</p>
+                </div>
+
+                <!-- ★ 防止惡意下單設定 -->
+                <div class="bg-slate-800 rounded-xl border border-blue-900/50 p-5">
+                    <div class="flex items-center gap-2 mb-1">
+                        <span class="text-blue-400 text-lg">🛡️</span>
+                        <p class="font-bold text-white">防止惡意下單設定</p>
+                    </div>
+                    <p class="text-slate-400 text-sm mb-4">啟用後，同一裝置在冷卻時間內無法重複送出訂單，防止惡意刷單。</p>
+                    <div class="flex items-center justify-between mb-4">
+                        <div>
+                            <p class="text-white text-sm font-bold">啟用防惡意下單</p>
+                            <p class="text-slate-400 text-xs mt-0.5">開啟後顧客需等待冷卻時間後才能再次下單</p>
+                        </div>
+                        <label class="relative inline-flex items-center cursor-pointer flex-shrink-0">
+                            <input type="checkbox" v-model="settings.orderCooldownEnabled" class="sr-only peer">
+                            <div class="w-12 h-6 bg-slate-500 peer-checked:bg-blue-500 rounded-full transition-colors after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:after:translate-x-6"></div>
+                        </label>
+                    </div>
+                    <div v-if="settings.orderCooldownEnabled" class="bg-slate-700 rounded-lg p-3">
+                        <label class="block text-white text-sm font-bold mb-2">冷卻時間（秒）</label>
+                        <div class="flex items-center gap-3">
+                            <input type="number" v-model.number="settings.orderCooldownSecs" min="30" max="3600" step="30"
+                                class="w-28 bg-slate-600 border border-slate-500 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500">
+                            <span class="text-slate-400 text-sm">秒 ＝ {{ Math.floor((settings.orderCooldownSecs||300)/60) }} 分 {{ (settings.orderCooldownSecs||300)%60 }} 秒</span>
+                        </div>
+                        <div class="flex gap-2 mt-2 flex-wrap">
+                            <button v-for="sec in [60,120,180,300,600]" :key="sec"
+                                @click="settings.orderCooldownSecs=sec"
+                                :class="settings.orderCooldownSecs===sec ? 'bg-blue-500 text-white' : 'bg-slate-600 text-slate-300 hover:bg-slate-500'"
+                                class="px-3 py-1 rounded-lg text-xs font-bold transition">
+                                {{ sec>=60 ? sec/60+'分' : sec+'秒' }}
+                            </button>
+                        </div>
+                    </div>
+                    <p class="text-slate-500 text-xs mt-3">💡 修改後請按「儲存設定」。預設值：300 秒（5 分鐘）。</p>
                 </div>
 
                 <!-- ★ 固定公休星期 -->
@@ -1068,7 +1121,9 @@
                     weeklyDaysOff: [0],
                     categories: ['套餐','單點','蛋餅、燒餅','漢堡、蝸牛堡','吐司、厚片','其它、飲品'],
                     storeInfo: '',
-                    dineinPassword: '0000'
+                    dineinPassword: '0000',
+                    orderCooldownEnabled: true,
+                    orderCooldownSecs: 300
                 },
                 newHoliday: '',
 
@@ -1082,7 +1137,9 @@
                 // QR Code 管理
                 qrBaseUrl: '', qrPin: '', qrEntries: [],
                 // Week day names
-                weekDayNames: ['日','一','二','三','四','五','六']
+                weekDayNames: ['日','一','二','三','四','五','六'],
+                // Announcement drag-and-drop
+                annDragIdx: -1
             };
         },
 
@@ -1690,7 +1747,9 @@
                             dineinPassword: s.dineinPassword || '0000',
                             linePayServerUrl: s.linePayServerUrl || '',
                             linePayConfirmUrl: s.linePayConfirmUrl || '',
-                            announcements: s.announcements || []
+                            announcements: s.announcements || [],
+                            orderCooldownEnabled: s.orderCooldownEnabled !== false,
+                            orderCooldownSecs: s.orderCooldownSecs || 300
                         };
                         self.qrBaseUrl = s.qrBaseUrl || '';
                         self.qrPin = s.dineinPin ? String(s.dineinPin) : '';
@@ -1715,7 +1774,9 @@
                     dineinPassword: self.settings.dineinPassword || '0000',
                     linePayServerUrl: self.settings.linePayServerUrl || '',
                     linePayConfirmUrl: self.settings.linePayConfirmUrl || '',
-                    announcements: self.settings.announcements || []
+                    announcements: self.settings.announcements || [],
+                    orderCooldownEnabled: self.settings.orderCooldownEnabled !== false,
+                    orderCooldownSecs: self.settings.orderCooldownSecs || 300
                 }).then(function() {
                     self.settingsSaved = true;
                     setTimeout(function() { self.settingsSaved = false; }, 3000);
@@ -1783,6 +1844,45 @@
                 this.settings.holidays = this.settings.holidays.filter(function(h) { return h !== date; });
             },
             // 固定公休星期
+            // 公告排序：箭頭
+            annMoveUp: function(idx) {
+                if (idx <= 0) return;
+                var arr = this.settings.announcements;
+                var tmp = arr[idx]; arr.splice(idx, 1); arr.splice(idx - 1, 0, tmp);
+            },
+            annMoveDown: function(idx) {
+                var arr = this.settings.announcements;
+                if (idx >= arr.length - 1) return;
+                var tmp = arr[idx]; arr.splice(idx, 1); arr.splice(idx + 1, 0, tmp);
+            },
+            // 公告排序：拖曳
+            annDragStart: function(e, idx) {
+                this.annDragIdx = idx;
+                e.dataTransfer.effectAllowed = 'move';
+                e.dataTransfer.setData('text/plain', String(idx));
+            },
+            annDragOver: function(e, idx) {
+                e.preventDefault();
+                e.currentTarget.style.borderTop = idx < this.annDragIdx ? '2px solid #f59e0b' : '';
+                e.currentTarget.style.borderBottom = idx > this.annDragIdx ? '2px solid #f59e0b' : '';
+            },
+            annDragLeave: function(e) {
+                e.currentTarget.style.borderTop = '';
+                e.currentTarget.style.borderBottom = '';
+            },
+            annDropOn: function(e, targetIdx) {
+                e.currentTarget.style.borderTop = '';
+                e.currentTarget.style.borderBottom = '';
+                var fromIdx = this.annDragIdx;
+                if (fromIdx < 0 || fromIdx === targetIdx) { this.annDragIdx = -1; return; }
+                var arr = this.settings.announcements;
+                var item = arr.splice(fromIdx, 1)[0];
+                arr.splice(targetIdx, 0, item);
+                this.annDragIdx = -1;
+            },
+            annDrop: function(e) {
+                this.annDragIdx = -1;
+            },
             toggleWeeklyOff: function(dayIdx) {
                 var arr = this.settings.weeklyDaysOff;
                 var pos = arr.indexOf(dayIdx);
