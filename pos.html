@@ -296,9 +296,12 @@
           <button @click="doCheckout('store')" :disabled="cart.length===0||isSubmitting"
             class="py-3 rounded-xl font-black text-white text-sm disabled:opacity-40 transition active:scale-95"
             style="background:linear-gradient(135deg,#f97316,#ef4444)">{{ isSubmitting ? "送出中..." : ("💰 店內付款 $" + cartTotal) }}</button>
-          <button @click="doCheckout('linepay')" :disabled="cart.length===0||isSubmitting"
+          <button @click="doCheckout('linepay_online')" :disabled="cart.length===0||isSubmitting"
             class="py-3 rounded-xl font-black text-white text-sm disabled:opacity-40 transition active:scale-95"
-            style="background:linear-gradient(135deg,#06C755,#00B900)">{{ isSubmitting ? "送出中..." : "💚 LINE Pay" }}</button>
+            style="background:linear-gradient(135deg,#06C755,#00B900)" title="線上跳轉/QR Code">{{ isSubmitting ? "送出中..." : "💚 LINE Pay 線上" }}</button>
+          <button @click="openOfflineModal" :disabled="cart.length===0||isSubmitting"
+            class="py-3 rounded-xl font-black text-white text-sm disabled:opacity-40 transition active:scale-95"
+            style="background:linear-gradient(135deg,#0ea5e9,#06C755)" title="掃描顧客條碼">{{ isSubmitting ? "送出中..." : "📷 掃碼扣款" }}</button>
         </template>
         <template v-if="orderMode!=='pos' && editingOrder">
           <button @click="saveOrderEdit()" :disabled="cart.length===0||isSubmitting"
@@ -370,6 +373,42 @@
   <div class="bg-gray-900 text-white text-sm font-bold px-5 py-2.5 rounded-full shadow-xl whitespace-nowrap">{{ toastMsg }}</div>
 </div>
 
+
+  <!-- ★ 情境3：LINE Pay Offline 掃碼付款 Modal -->
+  <div v-if="showOfflineModal" class="fixed inset-0 z-[999] flex items-center justify-center" style="background:rgba(0,0,0,0.6)">
+    <div class="bg-white rounded-2xl shadow-2xl overflow-hidden" style="max-width:22rem;width:calc(100% - 2rem)">
+      <div class="px-5 py-3 flex items-center gap-2" style="background:linear-gradient(135deg,#06C755,#00B900)">
+        <span class="text-xl">💚</span>
+        <span class="text-white font-black text-base">LINE Pay 條碼付款</span>
+        <button @click="closeOfflineModal" class="ml-auto text-white text-xl font-bold w-7 h-7 flex items-center justify-center rounded-full hover:bg-green-400 transition">✕</button>
+      </div>
+      <div class="px-5 py-4">
+        <p class="text-gray-500 text-sm mb-1">訂單金額</p>
+        <p class="text-3xl font-black text-gray-900 mb-4">${{ offlineAmount }}</p>
+        <p class="text-gray-700 text-sm font-bold mb-2">請顧客出示 LINE Pay 條碼，對準掃碼器掃描：</p>
+        <div class="relative">
+          <input ref="barcodeInput" v-model="offlineBarcode" type="tel" maxlength="20"
+            placeholder="等待掃碼器輸入..."
+            @keyup.enter="submitOfflinePay"
+            class="w-full border-2 rounded-xl px-4 py-3 text-lg font-mono text-center focus:outline-none transition"
+            :class="offlineBarcode.length >= 10 ? 'border-green-400 bg-green-50' : 'border-gray-200'"
+            style="letter-spacing:0.2em">
+          <span v-if="offlineBarcode.length >= 10" class="absolute right-3 top-3 text-green-500 text-xl">✓</span>
+        </div>
+        <p class="text-gray-400 text-xs mt-1 text-center">條碼由掃碼器自動輸入，無需手動鍵入</p>
+        <p v-if="offlineError" class="mt-2 text-red-500 text-sm text-center font-medium">{{ offlineError }}</p>
+        <p v-if="offlineSuccess" class="mt-2 text-green-600 text-sm text-center font-bold">✅ {{ offlineSuccess }}</p>
+      </div>
+      <div class="px-5 pb-4 flex gap-2">
+        <button @click="closeOfflineModal" class="flex-1 bg-gray-200 text-gray-600 font-bold py-3 rounded-xl text-sm hover:bg-gray-300 transition">取消</button>
+        <button @click="submitOfflinePay" :disabled="offlineBarcode.length < 10 || offlineSubmitting"
+          class="flex-1 text-white font-black py-3 rounded-xl text-sm disabled:opacity-40 transition"
+          style="background:linear-gradient(135deg,#06C755,#00B900)">
+          {{ offlineSubmitting ? '扣款中...' : '確認付款' }}
+        </button>
+      </div>
+    </div>
+  </div>
 </div><!-- end app -->
 <div id="pr"></div>
 
@@ -404,7 +443,11 @@
                 toastMsg:"",toastTimer:null,lastOrderId:null,
                 activeMenu:null,menuPos:null,activeMenuOrder:null,
                 archiveConfirm:false,resetConfirm:false,
-                linePayServerUrl:"",linePayConfirmUrl:""
+                linePayServerUrl:"",linePayConfirmUrl:"",
+                // ★ 情境3 Offline 掃碼
+                showOfflineModal:false, offlineBarcode:"", offlineAmount:0,
+                offlineOrderId:"", offlineItems:[], offlineError:"", offlineSuccess:"",
+                offlineSubmitting:false
             };
         },
         computed:{
@@ -614,6 +657,85 @@
                 if(nq<=0){this.cart.splice(idx,1);return;}
                 var u=Math.round(item.itemTotal/item.qty);item.qty=nq;item.itemTotal=u*nq;this.cart.splice(idx,1,item);
             },
+            // ── 情境3：Offline 掃碼 ──
+            openOfflineModal:function(){
+                var s=this;
+                if(!s.cart.length){s.toast("⚠️ 購物車為空");return;}
+                if(!s.linePayServerUrl){s.toast("⚠️ 請先在設定中填入 LINE Pay 伺服器網址");return;}
+                // 先建立訂單到 Firebase，再開啟掃碼 Modal
+                s.isSubmitting=true;
+                var pickDate=s.posPickupDate||s.todayStr;
+                var pickTime=s.posPickupTime||(pickDate>s.todayStr?"":"現場取餐");
+                if(!pickTime)pickTime="預約取餐";
+                var o={customer:s.custName||"現場",phone:s.custPhone||"",pickupDate:pickDate,pickupTime:pickTime,
+                    items:s.cart.map(function(i){return Object.assign({},i);}),
+                    total:s.cartTotal,status:"making",timestamp:Date.now(),source:"pos",paymentMethod:"linepay_offline"};
+                runTransaction(ref(db,"settings/orderCounter"),function(cur){return(cur||0)+1;})
+                    .then(function(result){
+                        o.orderNo=result.snapshot.val();
+                        return push(ref(db,"orders"),o);
+                    })
+                    .then(function(snap){
+                        s.offlineOrderId=snap.key;
+                        s.offlineAmount=o.total;
+                        s.offlineItems=o.items;
+                        s.offlineBarcode="";
+                        s.offlineError="";
+                        s.offlineSuccess="";
+                        s.showOfflineModal=true;
+                        // 自動 focus 輸入框等待掃碼
+                        s.$nextTick(function(){
+                            if(s.$refs.barcodeInput) s.$refs.barcodeInput.focus();
+                        });
+                        // 列印廚房單
+                        var taskRef=ref(db,"orders/"+snap.key+"/print_task");
+                        return set(taskRef,"kitchen_"+Date.now());
+                    })
+                    .catch(function(e){s.toast("❌ 建立訂單失敗："+e.message);})
+                    .finally(function(){s.isSubmitting=false;});
+            },
+            closeOfflineModal:function(){
+                this.showOfflineModal=false;
+                this.offlineBarcode="";
+                this.offlineError="";
+                this.offlineSuccess="";
+                this.offlineSubmitting=false;
+                this.clearCart();
+            },
+            submitOfflinePay:function(){
+                var s=this;
+                var barcode=s.offlineBarcode.trim();
+                if(!barcode||barcode.length<10){s.offlineError="條碼長度不足，請重新掃描";return;}
+                if(!/^\d+$/.test(barcode)){s.offlineError="條碼格式錯誤（應為純數字）";return;}
+                s.offlineSubmitting=true;
+                s.offlineError="";
+                fetch(s.linePayServerUrl.replace(/\/$/,'')+'/api/linepay/offline/pay',{
+                    method:'POST',
+                    headers:{'Content-Type':'application/json'},
+                    body:JSON.stringify({
+                        orderId:s.offlineOrderId,
+                        amount:s.offlineAmount,
+                        items:s.offlineItems,
+                        barcode:barcode
+                    })
+                }).then(function(r){return r.json();})
+                .then(function(data){
+                    if(data.success){
+                        s.offlineSuccess="付款成功！交易編號："+data.transactionId;
+                        s.toast("✅ LINE Pay 掃碼付款成功 $"+s.offlineAmount);
+                        setTimeout(function(){s.closeOfflineModal();},2000);
+                    }else{
+                        s.offlineError=data.error||"付款失敗，請重試";
+                        s.offlineBarcode="";
+                        // 自動清空並 focus 等待重新掃碼
+                        s.$nextTick(function(){
+                            if(s.$refs.barcodeInput) s.$refs.barcodeInput.focus();
+                        });
+                    }
+                })
+                .catch(function(e){s.offlineError="伺服器連線失敗："+e.message;})
+                .finally(function(){s.offlineSubmitting=false;});
+            },
             clearCart:function(){this.cart=[];this.custName="";this.custPhone="";this.posPickupDate=this.todayStr;this.posPickupTime="";},
             doCheckout:function(payMethod){
                 var s=this;if(!s.cart.length)return;
@@ -636,7 +758,7 @@
                             return set(taskRef,"kitchen_"+Date.now());
                         }).then(function(){
                             s.toast("✅ 已結帳 $"+o.total+" (No."+String(o.orderNo).padStart(3,"0")+")");
-                            if(payMethod==='linepay'&&s.linePayServerUrl){
+                            if((payMethod==='linepay'||payMethod==='linepay_online')&&s.linePayServerUrl){
                                 fetch(s.linePayServerUrl.replace(/\/$/,'')+'/api/linepay/request',{
                                     method:'POST',headers:{'Content-Type':'application/json'},
                                     body:JSON.stringify({orderId:orderId,amount:o.total,items:o.items,confirmBaseUrl:s.linePayConfirmUrl||''})
