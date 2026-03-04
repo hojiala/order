@@ -1049,37 +1049,46 @@
                     // ★ LINE Pay 付款流程（情境1 手機跳轉 / 情境2 QR Code）
                     if((payMethod==='linepay'||payMethod==='linepay_qr') && s.settings.linePayServerUrl){
                         s.toast('⏳ 正在連接 LINE Pay...');
-                        var serverUrl=s.settings.linePayServerUrl.replace(/\/$/,'');
-                        fetch(serverUrl+'/api/linepay/request',{
-                            method:'POST',
-                            headers:{'Content-Type':'application/json'},
-                            body:JSON.stringify({
-                                orderId:orderId,
-                                amount:orderData.total,
-                                items:orderData.items,
-                                confirmBaseUrl:s.settings.linePayConfirmUrl||''
-                            })
-                        }).then(function(r){return r.json()}).then(function(data){
-                            if(data.success && data.paymentUrl){
-                                if(payMethod==='linepay_qr'){
-                                    // 情境2：平板不跳轉，改顯示 QR Code 讓顧客手機掃
-                                    s.isSubmitting=false;
-                                    s.openQRModal(orderId, orderData.total, data.qrCodeUrl||data.paymentUrl);
-                                }else{
-                                    // 情境1：手機直接跳轉 LINE Pay
-                                    try{localStorage.setItem('linepay_return_url',window.location.href)}catch(e){}
-                                    window.location.href=data.paymentUrl;
-                                }
-                            }else{
-                                alert('LINE Pay 連線失敗：'+(data.error||'未知錯誤')+'\n訂單已送出，請改用店內付款');
-                                s.showSuccess=true;
-                                s.cart=[];s.orderNote='';s.currentView='menu';s.saveCart();
-                            }
+                        // Firebase 中介：把請求寫入 Firebase，樹莓派背景工作處理後回寫 paymentUrl
+                        set(ref(db,'linepay_requests/'+orderId),{
+                            amount:orderData.total,
+                            items:orderData.items,
+                            confirmBaseUrl:s.settings.linePayConfirmUrl||'',
+                            status:'pending',
+                            createdAt:Date.now()
+                        }).then(function(){
+                            s.toast('⏳ 正在建立付款連結...');
+                            var tries=0;
+                            var poll=setInterval(function(){
+                                tries++;
+                                get(ref(db,'linepay_requests/'+orderId)).then(function(snap){
+                                    if(!snap.exists())return;
+                                    var r=snap.val();
+                                    if(r.status==='ready' && r.paymentUrl){
+                                        clearInterval(poll);
+                                        if(payMethod==='linepay_qr'){
+                                            // 情境2：平板顯示 QR Code
+                                            s.isSubmitting=false;
+                                            s.openQRModal(orderId, orderData.total, r.qrCodeUrl||r.paymentUrl);
+                                        }else{
+                                            // 情境1：手機跳轉（dinein 掃碼手機模式）
+                                            try{localStorage.setItem('linepay_return_url',window.location.href)}catch(e){}
+                                            window.location.href=r.paymentUrl;
+                                        }
+                            }else if(r.status==='error'){
+                                        clearInterval(poll);
+                                        s.toast('⚠️ LINE Pay 失敗：'+(r.error||'未知錯誤'));
+                                        s.isSubmitting=false;
+                                    }else if(tries>=20){
+                                        clearInterval(poll);
+                                        s.toast('⚠️ LINE Pay 逾時，請確認樹莓派服務是否正常');
+                                        s.isSubmitting=false;
+                                    }
+                                }).catch(function(){});
+                            },1000);
                         }).catch(function(e){
-                            console.error('LINE Pay error:',e);
-                            alert('LINE Pay 伺服器無回應\n訂單已送出，請改用店內付款');
-                            s.showSuccess=true;
-                            s.cart=[];s.orderNote='';s.currentView='menu';s.saveCart();
+                            s.toast('⚠️ 寫入 Firebase 失敗：'+e.message);
+                            s.isSubmitting=false;
                         });
                         return;
                     }
