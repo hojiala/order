@@ -438,6 +438,9 @@
                                 <span class="text-xs text-gray-400">取餐：{{ order.pickupTime }}</span>
                                 <span class="text-orange-500 font-black text-sm">${{ order.total }}</span>
                             </div>
+                            <div class="mt-2">
+                                <button @click="reorderItems(order)" class="w-full bg-orange-50 hover:bg-orange-100 border border-orange-200 text-orange-600 font-bold text-xs py-2 rounded-xl transition">🔁 再訂1次</button>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -687,10 +690,16 @@
                             pickupDays: s.pickupDays || 3,
                             pickupInterval: s.pickupInterval || 30, linePayServerUrl: s.linePayServerUrl || '', linePayConfirmUrl: s.linePayConfirmUrl || '', announcements: s.announcements || [],
                             holidays: s.holidays || [],
-                            weeklyDaysOff: s.weeklyDaysOff || []
+                            weeklyDaysOff: s.weeklyDaysOff || [],
+                            orderCooldownEnabled: s.orderCooldownEnabled !== false,
+                            orderCooldownSecs: s.orderCooldownSecs || 300
                         };
                         self.storeInfo = s.storeInfo || '';
                         if (!wasOpen && self.settings.isOpen) self.initDateTime();
+                        // ★ 設定更新時，自動重新檢查當前分類的公告（即時開啟/關閉公告視窗）
+                        self.$nextTick(function() {
+                            if (self.currentCategory) self.checkAnnouncements(self.currentCategory);
+                        });
                     });
                 }).catch(function(e) {
                     console.error('init error:', e);
@@ -710,7 +719,9 @@
                             pickupDays: s.pickupDays || 3,
                             pickupInterval: s.pickupInterval || 30, linePayServerUrl: s.linePayServerUrl || '', linePayConfirmUrl: s.linePayConfirmUrl || '', announcements: s.announcements || [],
                             holidays: s.holidays || [],
-                            weeklyDaysOff: s.weeklyDaysOff || []
+                            weeklyDaysOff: s.weeklyDaysOff || [],
+                            orderCooldownEnabled: s.orderCooldownEnabled !== false,
+                            orderCooldownSecs: s.orderCooldownSecs || 300
                         };
                         // ★ 顯示全站公告
                         self.$nextTick(function() { self.checkAnnouncements(); });
@@ -766,7 +777,8 @@
                     var label = '';
                     if (offset === 0 && i === 0) label = '今天 (' + mm + '/' + dd2 + ')';
                     else if (n === 0) label = '明天 (' + mm + '/' + dd2 + ')';
-                    else if (n === 1) label = '後天 (' + mm + '/' + dd2 + ')';
+                    else if (n === 1 && offset === 0) label = '後天 (' + mm + '/' + dd2 + ')';
+                    else if (n === 1 && offset === 1) label = '後天 (' + mm + '/' + dd2 + ')';
                     else label = mm + '月' + dd2 + '日';
                     dates.push({ value: val, label: label });
                 }
@@ -909,13 +921,14 @@
                 var anns = (s.settings.announcements || []).filter(function(a) { return a.active && a.text; });
                 var msgs = [];
                 anns.forEach(function(a) {
-                    var key = a.category || '__global__';
                     if (cat) {
-                        if (a.category === cat && !s.shownAnnCats[key + ':' + cat]) {
+                        // 分類公告：只要active就每次切換都彈出（固定彈出）
+                        if (a.category === cat) {
                             msgs.push(a.text);
-                            s.shownAnnCats[key + ':' + cat] = true;
                         }
                     } else {
+                        // 全站公告（進站時）：同一 session 只彈一次
+                        var key = '__global__' + (a.text || '');
                         if (!a.category && !s.shownAnnCats[key]) {
                             msgs.push(a.text);
                             s.shownAnnCats[key] = true;
@@ -925,6 +938,9 @@
                 if (msgs.length) {
                     s.annModalText = msgs.join('\n\n');
                     s.showAnnModal = true;
+                } else if (cat) {
+                    // 切換分類且無公告時，若目前顯示的是舊公告則關閉
+                    s.showAnnModal = false;
                 }
             },
             showAlertModal: function(title, msg) {
@@ -1061,13 +1077,34 @@
                     if (hasActive) self.tryRefreshOrderStatus();
                 }, 8000);
             },
+            reorderItems: function(order) {
+                var self = this;
+                if (!order.items || !order.items.length) return;
+                order.items.forEach(function(item) {
+                    self.cart.push({
+                        id: item.id,
+                        name: item.name,
+                        price: item.price,
+                        qty: item.qty,
+                        note: item.note || '',
+                        options: item.options || [],
+                        mealDrink: item.mealDrink || '',
+                        optionGroupSelections: item.optionGroupSelections || [],
+                        itemTotal: item.itemTotal
+                    });
+                });
+                self.showStoreInfo = false;
+                self.goToCart();
+            },
             submitToFirebase: function(payMethod) {
                 var self = this;
                 // ★ Fix4: 所有驗證改用自訂 modal，不用 alert()
                 // 檢查冷卻時間，防止惡意下單
                 var lastOrder = localStorage.getItem('lastOrderTime');
-                var cooldown = 5 * 60 * 1000;
-                if (lastOrder && Date.now() - parseInt(lastOrder) < cooldown) {
+                var cooldownEnabled = self.settings.orderCooldownEnabled !== false;
+                var cooldownSecs = self.settings.orderCooldownSecs || 300;
+                var cooldown = cooldownSecs * 1000;
+                if (cooldownEnabled && lastOrder && Date.now() - parseInt(lastOrder) < cooldown) {
                     var remaining = Math.ceil((cooldown - (Date.now() - parseInt(lastOrder))) / 60000);
                     this.showAlertModal('請稍候', '您剛剛已送出訂單，請等待 ' + remaining + ' 分鐘後再試。');
                     return;
