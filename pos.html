@@ -709,32 +709,43 @@
                 if(!/^\d+$/.test(barcode)){s.offlineError="條碼格式錯誤（應為純數字）";return;}
                 s.offlineSubmitting=true;
                 s.offlineError="";
-                fetch(s.linePayServerUrl.replace(/\/$/,'')+'/api/linepay/offline/pay',{
-                    method:'POST',
-                    headers:{'Content-Type':'application/json'},
-                    body:JSON.stringify({
-                        orderId:s.offlineOrderId,
-                        amount:s.offlineAmount,
-                        items:s.offlineItems,
-                        barcode:barcode
-                    })
-                }).then(function(r){return r.json();})
-                .then(function(data){
-                    if(data.success){
-                        s.offlineSuccess="付款成功！交易編號："+data.transactionId;
-                        s.toast("✅ LINE Pay 掃碼付款成功 $"+s.offlineAmount);
-                        setTimeout(function(){s.closeOfflineModal();},2000);
-                    }else{
-                        s.offlineError=data.error||"付款失敗，請重試";
-                        s.offlineBarcode="";
-                        // 自動清空並 focus 等待重新掃碼
-                        s.$nextTick(function(){
-                            if(s.$refs.barcodeInput) s.$refs.barcodeInput.focus();
-                        });
-                    }
-                })
-                .catch(function(e){s.offlineError="伺服器連線失敗："+e.message;})
-                .finally(function(){s.offlineSubmitting=false;});
+                // Firebase 中介：寫入請求 → 樹莓派 Offline Worker 處理 → 輪詢結果
+                set(ref(db,"linepay_offline_requests/"+s.offlineOrderId),{
+                    amount:s.offlineAmount,
+                    items:s.offlineItems,
+                    barcode:barcode,
+                    status:"pending",
+                    createdAt:Date.now()
+                }).then(function(){
+                    var tries=0;
+                    var poll=setInterval(function(){
+                        tries++;
+                        get(ref(db,"linepay_offline_requests/"+s.offlineOrderId)).then(function(snap){
+                            if(!snap.exists())return;
+                            var r=snap.val();
+                            if(r.status==="done"){
+                                clearInterval(poll);
+                                s.offlineSuccess="付款成功！交易編號："+r.transactionId;
+                                s.toast("✅ LINE Pay 掃碼付款成功 $"+s.offlineAmount);
+                                s.offlineSubmitting=false;
+                                setTimeout(function(){s.closeOfflineModal();},2000);
+                            }else if(r.status==="error"){
+                                clearInterval(poll);
+                                s.offlineError=r.error||"付款失敗，請重試";
+                                s.offlineBarcode="";
+                                s.offlineSubmitting=false;
+                                s.$nextTick(function(){if(s.$refs.barcodeInput)s.$refs.barcodeInput.focus();});
+                            }else if(tries>=20){
+                                clearInterval(poll);
+                                s.offlineError="等待逾時，請確認樹莓派服務正常後重試";
+                                s.offlineSubmitting=false;
+                            }
+                        }).catch(function(){});
+                    },1000);
+                }).catch(function(e){
+                    s.offlineError="寫入請求失敗："+e.message;
+                    s.offlineSubmitting=false;
+                });
             },
             clearCart:function(){this.cart=[];this.custName="";this.custPhone="";this.posPickupDate=this.todayStr;this.posPickupTime="";},
             doCheckout:function(payMethod){
@@ -758,14 +769,34 @@
                             return set(taskRef,"kitchen_"+Date.now());
                         }).then(function(){
                             s.toast("✅ 已結帳 $"+o.total+" (No."+String(o.orderNo).padStart(3,"0")+")");
-                            if((payMethod==='linepay'||payMethod==='linepay_online')&&s.linePayServerUrl){
-                                fetch(s.linePayServerUrl.replace(/\/$/,'')+'/api/linepay/request',{
-                                    method:'POST',headers:{'Content-Type':'application/json'},
-                                    body:JSON.stringify({orderId:orderId,amount:o.total,items:o.items,confirmBaseUrl:s.linePayConfirmUrl||''})
-                                }).then(function(r){return r.json()}).then(function(data){
-                                    if(data.success&&data.paymentUrl){window.open(data.paymentUrl,'_blank');}
-                                    else{s.toast('⚠️ LINE Pay 連線失敗');}
-                                }).catch(function(){s.toast('⚠️ LINE Pay 無回應');});
+                            if((payMethod==='linepay'||payMethod==='linepay_online')&&s.linePayConfirmUrl){
+                                // Firebase 中介：寫入請求 → 背景 Worker 處理
+                                set(ref(db,"linepay_requests/"+orderId),{
+                                    amount:o.total,items:o.items,
+                                    confirmBaseUrl:s.linePayConfirmUrl||'',
+                                    status:'pending',createdAt:Date.now()
+                                }).then(function(){
+                                    s.toast('⏳ 正在建立 LINE Pay 連結...');
+                                    var tries=0;
+                                    var poll=setInterval(function(){
+                                        tries++;
+                                        get(ref(db,"linepay_requests/"+orderId)).then(function(snap){
+                                            if(!snap.exists())return;
+                                            var r=snap.val();
+                                            if(r.status==='ready'&&r.paymentUrl){
+                                                clearInterval(poll);
+                                                window.open(r.paymentUrl,'_blank');
+                                                s.toast('✅ LINE Pay 連結已開啟');
+                                            }else if(r.status==='error'){
+                                                clearInterval(poll);
+                                                s.toast('⚠️ LINE Pay 失敗：'+(r.error||'未知錯誤'));
+                                            }else if(tries>=20){
+                                                clearInterval(poll);
+                                                s.toast('⚠️ LINE Pay 逾時，請確認樹莓派服務正常');
+                                            }
+                                        }).catch(function(){});
+                                    },1000);
+                                }).catch(function(e){s.toast('⚠️ 寫入失敗：'+e.message);});
                             }
                             s.clearCart();
                         });
