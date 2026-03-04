@@ -698,9 +698,13 @@
                         self.storeInfo = s.storeInfo || '';
                         if (!wasOpen && self.settings.isOpen) self.initDateTime();
                         // ★ 設定更新時，自動重新檢查當前分類的公告（即時開啟/關閉公告視窗）
-                        self.$nextTick(function() {
-                            if (self.currentCategory) self.checkAnnouncements(self.currentCategory);
-                        });
+                        // 只有在初始化完成後（_settingsLoaded=true）才重新檢查，避免初次 onValue 觸發把全站公告關掉
+                        if (self._settingsLoaded && self.currentCategory) {
+                            self.$nextTick(function() {
+                                self.checkAnnouncements(self.currentCategory);
+                            });
+                        }
+                        self._settingsLoaded = true;
                     });
                 }).catch(function(e) {
                     console.error('init error:', e);
@@ -777,21 +781,16 @@
                     // 跳過固定公休星期（0=日,1=一,...,6=六）
                     if (weeklyDaysOff.indexOf(d.getDay()) !== -1) continue;
                     var n = dates.length;
+                    // ★ 用「實際距今天數」決定標籤，不受公休跳過影響
+                    var todayMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+                    var dMidnight = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+                    var diffDays = Math.round((dMidnight - todayMidnight) / 86400000);
                     var label = '';
-                    if (offset === 0 && i === 0) {
-                        // 今天還在營業：第一格 = 今天
+                    if (diffDays === 0) {
                         label = '今天 (' + mm + '/' + dd2 + ')';
-                    } else if (offset === 0 && n === 1) {
-                        // 今天在第0格，此格是第1格 = 明天
+                    } else if (diffDays === 1) {
                         label = '明天 (' + mm + '/' + dd2 + ')';
-                    } else if (offset === 0 && n === 2) {
-                        // 今天在第0格，此格是第2格 = 後天
-                        label = '後天 (' + mm + '/' + dd2 + ')';
-                    } else if (offset === 1 && n === 0) {
-                        // 今天已過收單：第一格 = 明天
-                        label = '明天 (' + mm + '/' + dd2 + ')';
-                    } else if (offset === 1 && n === 1) {
-                        // 第二格 = 後天
+                    } else if (diffDays === 2) {
                         label = '後天 (' + mm + '/' + dd2 + ')';
                     } else {
                         label = mm + '月' + dd2 + '日';
@@ -954,10 +953,9 @@
                 if (msgs.length) {
                     s.annModalText = msgs.join('\n\n');
                     s.showAnnModal = true;
-                } else if (cat) {
-                    // 切換分類且無公告時，若目前顯示的是舊公告則關閉
-                    s.showAnnModal = false;
                 }
+                // 注意：不在此處關閉公告視窗，避免誤關全站公告
+                // 無對應公告的分類切換，靜默處理（顧客按「我知道了」自行關閉）
             },
             showAlertModal: function(title, msg) {
                 this.alertDialogTitle = title;
