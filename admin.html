@@ -75,6 +75,11 @@
                                 <span v-if="order.status === 'making'" class="bg-yellow-100 text-yellow-700 px-2 py-1 rounded text-xs font-bold">製作中</span>
                                 <span v-if="order.status === 'done'" class="bg-gray-200 text-gray-600 px-2 py-1 rounded text-xs font-bold">已完成</span>
                                 <p class="text-lg font-bold text-red-500 mt-2">${{ order.total }}</p>
+                                <span v-if="order.paymentMethod==='linepay'||order.paymentMethod==='linepay_offline'"
+                                    class="inline-block text-xs font-bold px-2 py-0.5 rounded-full mt-1"
+                                    :class="order.paymentStatus==='paid' ? 'bg-green-100 text-green-700' : 'bg-orange-100 text-orange-600'">
+                                    {{ order.paymentStatus==='paid' ? '💚 LINE Pay 已付清' : '⏳ LINE Pay 待付款' }}
+                                </span>
                             </div>
                         </div>
 
@@ -310,20 +315,12 @@
                                 return;
                             }
                             const result = await runTransaction(ref(db, 'settings/orderCounter'), (cur) => (cur || 0) + 1);
-                            // ★ LINE Pay 待付款的訂單：只補流水號，不設 print_task
-                            // ★ 列印由前端偵測 paymentStatus=paid 後自行觸發
-                            const paySnap = await get(ref(db, `orders/${orderId}/paymentStatus`));
-                            const payStatus = paySnap.exists() ? paySnap.val() : '';
-                            const updateData = { orderNo: result.snapshot.val() };
-                            if (payStatus !== 'pending') {
-                                updateData.print_task = 'kitchen_' + Date.now();
-                            }
-                            await update(ref(db, `orders/${orderId}`), updateData);
-                            if (payStatus === 'pending') {
-                                console.log(`✅ 流水號 No.${result.snapshot.val()}（LINE Pay 待付款，不列印）→ ${orderId}`);
-                            } else {
-                                console.log(`✅ 流水號 No.${result.snapshot.val()} + 列印 → ${orderId}`);
-                            }
+                            // ★ 同時寫入 orderNo + print_task（一次更新，避免重複列印）
+                            await update(ref(db, `orders/${orderId}`), {
+                                orderNo: result.snapshot.val(),
+                                print_task: 'kitchen_' + Date.now()
+                            });
+                            console.log(`✅ 自動補發流水號 No.${result.snapshot.val()} + 列印 → ${orderId}`);
                             delete this.assigningNos[orderId];
                             return;
                         } catch (err) {
