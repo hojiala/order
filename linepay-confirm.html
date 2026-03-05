@@ -143,51 +143,77 @@ async function processPayment() {
 
   // ── 確認付款 ──
   try {
-    // 從 Firebase 取得交易資訊
-    const txnSnap = await get(ref(db, `linepay_transactions/${orderId}`));
-    if (!txnSnap.exists()) {
-      document.getElementById('errorMsg').textContent = '找不到交易記錄';
-      showView('error');
-      return;
-    }
+    // 從 URL 取得 transactionId（LINE Pay 回傳）
+    const urlTxnId = new URLSearchParams(window.location.search).get('transactionId');
+    
+    // 先嘗試從 URL 取得，再從 Firebase 取
+    let txnId = urlTxnId || transactionId || '';
+    let amount = 0;
 
-    const txnData = txnSnap.val();
-    const txnId = transactionId || txnData.transactionId;
-    const amount = txnData.amount;
+    // 從 Firebase 取得交易資訊（最多重試 3 次）
+    for (let retry = 0; retry < 3; retry++) {
+      try {
+        const txnSnap = await get(ref(db, `linepay_transactions/${orderId}`));
+        if (txnSnap.exists()) {
+          const txnData = txnSnap.val();
+          txnId = txnId || txnData.transactionId || '';
+          amount = txnData.amount || 0;
+          break;
+        }
+      } catch(e) {
+        console.error('讀取交易記錄失敗(retry '+retry+'):', e);
+        await new Promise(r => setTimeout(r, 1000));
+      }
+    }
 
     if (!txnId || !amount) {
-      document.getElementById('errorMsg').textContent = '交易資料不完整';
+      document.getElementById('errorMsg').textContent = '找不到交易記錄 (orderId:' + orderId + ')';
       showView('error');
       return;
     }
 
-    // 寫入確認請求 → 背景 Worker 會自動處理
-    await set(ref(db, `linepay_confirms/${orderId}`), {
-      transactionId: String(txnId),
-      amount: amount,
-      orderId: orderId,
-      timestamp: Date.now()
-    });
-
-    console.log('✅ 確認請求已寫入 Firebase');
-
-    // 等待背景 Worker 處理（最多 15 秒）
-    let confirmed = false;
-    for (let i = 0; i < 30; i++) {
-      await new Promise(r => setTimeout(r, 500));
-      const statusSnap = await get(ref(db, `linepay_transactions/${orderId}/status`));
-      if (statusSnap.exists() && statusSnap.val() === 'confirmed') {
-        confirmed = true;
+    // 寫入確認請求 → 背景 Worker 會自動處理（最多重試 3 次）
+    let writeOk = false;
+    for (let retry = 0; retry < 3; retry++) {
+      try {
+        await set(ref(db, `linepay_confirms/${orderId}`), {
+          transactionId: String(txnId),
+          amount: Number(amount),
+          orderId: orderId,
+          timestamp: Date.now()
+        });
+        writeOk = true;
         break;
+      } catch(e) {
+        console.error('寫入 confirms 失敗(retry '+retry+'):', e);
+        await new Promise(r => setTimeout(r, 1000));
       }
-      // 也檢查是否確認失敗
-      if (statusSnap.exists() && statusSnap.val() === 'confirm_failed') {
-        const errSnap = await get(ref(db, `linepay_transactions/${orderId}/error`));
-        document.getElementById('errorMsg').textContent =
-          errSnap.exists() ? errSnap.val() : '付款確認失敗';
-        showView('error');
-        return;
-      }
+    }
+
+    if (!writeOk) {
+      document.getElementById('errorMsg').textContent = '無法寫入確認請求，請聯絡店員';
+      showView('error');
+      return;
+    }
+
+    // 等待背景 Worker 處理（最多 20 秒）
+    let confirmed = false;
+    for (let i = 0; i < 40; i++) {
+      await new Promise(r => setTimeout(r, 500));
+      try {
+        const statusSnap = await get(ref(db, `linepay_transactions/${orderId}/status`));
+        if (statusSnap.exists() && statusSnap.val() === 'confirmed') {
+          confirmed = true;
+          break;
+        }
+        if (statusSnap.exists() && statusSnap.val() === 'confirm_failed') {
+          const errSnap = await get(ref(db, `linepay_transactions/${orderId}/error`));
+          document.getElementById('errorMsg').textContent =
+            errSnap.exists() ? errSnap.val() : '付款確認失敗';
+          showView('error');
+          return;
+        }
+      } catch(e) { /* 繼續等待 */ }
     }
 
     if (confirmed) {
