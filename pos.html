@@ -188,19 +188,15 @@
                   <template v-if="order.paymentMethod==='linepay'||order.paymentMethod==='linepay_offline'">
                       <span v-if="order.paymentStatus==='paid'"
                           class="inline-block text-xs font-bold px-1.5 py-0.5 rounded-full mt-0.5 bg-green-100 text-green-700">
-                          💚 已付清
-                      </span>
-                      <span v-else-if="order.paymentStatus==='pending'"
-                          class="inline-block text-xs font-bold px-1.5 py-0.5 rounded-full mt-0.5 bg-orange-100 text-orange-600">
-                          ⏳ 尚未確認
+                          💚 LINE Pay 已付清
                       </span>
                       <span v-else
-                          class="inline-block text-xs font-bold px-1.5 py-0.5 rounded-full mt-0.5 bg-red-100 text-red-600">
-                          ❗ 未付款
+                          class="inline-block text-xs font-bold px-1.5 py-0.5 rounded-full mt-0.5 bg-blue-50 text-blue-400">
+                          💚 LINE Pay 處理中
                       </span>
                   </template>
-                  <span v-else class="inline-block text-xs font-bold px-1.5 py-0.5 rounded-full mt-0.5 bg-gray-100 text-gray-500">
-                      💰 店內付款
+                  <span v-else class="inline-block text-xs font-bold px-1.5 py-0.5 rounded-full mt-0.5 bg-red-100 text-red-500">
+                      ⚠️ 未付款
                   </span>
                   <div class="mt-1">
                     <button @click.stop="toggleOrderMenu($event,order.id)"
@@ -302,6 +298,18 @@
             <span>&#128221; 備註：</span>
             <input v-model="editOrderNote" type="text" placeholder="輸入訂單備註…" class="w-full mt-1 bg-white border border-blue-300 rounded px-2 py-1 text-sm text-gray-800 placeholder-gray-400 focus:outline-none focus:border-blue-500">
           </div>
+          <!-- ★ 付款方式變更 -->
+          <div>
+            <p class="font-bold text-blue-700 mb-1">&#128179; 付款方式：</p>
+            <div class="grid grid-cols-2 gap-1.5">
+              <button v-for="pm in [{v:'store',l:'⚠️ 未付款'},{v:'linepay',l:'💚 LINE Pay'},{v:'linepay_qr',l:'💚 LINE Pay QR'},{v:'linepay_offline',l:'📲 掃碼 LINE Pay'},{v:'cash',l:'💵 現金'}]" :key="pm.v"
+                @click="editPayMethod=pm.v"
+                :class="editPayMethod===pm.v ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-200'"
+                class="px-2 py-1.5 rounded-lg border font-bold text-xs transition">
+                {{ pm.l }}
+              </button>
+            </div>
+          </div>
           <p class="text-blue-500 text-xs mt-1">&#128073; 可點擊品項修改內容，或從左側菜單新增</p>
         </div>
       </div>
@@ -313,10 +321,16 @@
         <template v-if="orderMode==='pos'">
           <button @click="doCheckout('store')" :disabled="cart.length===0||isSubmitting"
             class="py-3 rounded-xl font-black text-white text-sm disabled:opacity-40 transition active:scale-95"
-            style="background:linear-gradient(135deg,#f97316,#ef4444)">{{ isSubmitting ? "送出中..." : ("💰 店內付款 $" + cartTotal) }}</button>
+            style="background:linear-gradient(135deg,#f97316,#ef4444)">{{ isSubmitting ? "送出中..." : ("⚠️ 未付款 $" + cartTotal) }}</button>
           <button @click="doCheckout('linepay')" :disabled="cart.length===0||isSubmitting"
             class="py-3 rounded-xl font-black text-white text-sm disabled:opacity-40 transition active:scale-95"
             style="background:linear-gradient(135deg,#06C755,#00B900)">{{ isSubmitting ? "送出中..." : "💚 LINE Pay" }}</button>
+          <button @click="doCheckout('linepay_qr')" :disabled="cart.length===0||isSubmitting"
+            class="py-3 rounded-xl font-black text-white text-sm disabled:opacity-40 transition active:scale-95 col-span-1"
+            style="background:linear-gradient(135deg,#10b981,#059669)">{{ isSubmitting ? "送出中..." : "💚 LINE Pay QR" }}</button>
+          <button @click="doCheckout('linepay_offline')" :disabled="cart.length===0||isSubmitting"
+            class="py-3 rounded-xl font-black text-white text-sm disabled:opacity-40 transition active:scale-95 col-span-1"
+            style="background:linear-gradient(135deg,#0ea5e9,#0284c7)">{{ isSubmitting ? "送出中..." : "📲 掃碼 LINE Pay" }}</button>
         </template>
         <template v-if="orderMode!=='pos' && editingOrder">
           <button @click="saveOrderEdit()" :disabled="cart.length===0||isSubmitting"
@@ -413,7 +427,7 @@
                 menu:[],menuLoading:true,filterCat:"",settings:{categories:[]},
                 activeView:"menu",editMode:false,
                 cart:[],custName:"",custPhone:"",isSubmitting:false,
-                editPickupDate:"",editPickupTime:"",editOrderNote:"",editingCartIdx:-1,
+                editPickupDate:"",editPickupTime:"",editOrderNote:"",editingCartIdx:-1,editPayMethod:'store',
                 posPickupDate:"",posPickupTime:"",
                 orderMode:"pos",editingOrder:null,
                 onlineOrders:[],ordersLoading:false,assigningNos:{},
@@ -639,9 +653,13 @@
                 var pickDate=s.posPickupDate||s.todayStr;
                 var pickTime=s.posPickupTime||(pickDate>s.todayStr?"":"現場取餐");
                 if(!pickTime)pickTime="預約取餐";
+                var realPm=(payMethod==='linepay_qr')?'linepay':payMethod;
+                var isPendingLinePay=(payMethod==='linepay'||payMethod==='linepay_qr');
                 var o={customer:s.custName||"現場",phone:s.custPhone||"",pickupDate:pickDate,pickupTime:pickTime,
                     items:s.cart.map(function(i){return Object.assign({},i);}),
-                    total:s.cartTotal,status:"making",timestamp:Date.now(),source:"pos",paymentMethod:payMethod||"store"};
+                    total:s.cartTotal,status:"making",timestamp:Date.now(),source:"pos",
+                    paymentMethod:realPm,
+                    paymentStatus:isPendingLinePay?'pending':(payMethod==='linepay_offline'?'paid':'')};
                 runTransaction(ref(db,"settings/orderCounter"),function(cur){return(cur||0)+1;})
                     .then(function(result){
                         o.orderNo=result.snapshot.val();
@@ -650,11 +668,13 @@
                     .then(function(snap){
                         var orderId=snap.key;s.lastOrderId=orderId;
                         var taskRef=ref(db,"orders/"+orderId+"/print_task");
-                        return remove(taskRef).then(function(){
-                            return set(taskRef,"kitchen_"+Date.now());
-                        }).then(function(){
+                        // ★ LINE Pay 線上付款(含QR)：不寫 print_task，等 linepay_server 確認後才列印
+                        // 掃碼 LINE Pay / 未付款：直接寫 print_task
+                        var writeTask=(payMethod!=='linepay'&&payMethod!=='linepay_qr');
+                        var taskP=writeTask?remove(taskRef).then(function(){return set(taskRef,"kitchen_"+Date.now());}):Promise.resolve();
+                        return taskP.then(function(){
                             s.toast("✅ 已結帳 $"+o.total+" (No."+String(o.orderNo).padStart(3,"0")+")");
-                            if(payMethod==='linepay'&&s.linePayServerUrl){
+                            if((payMethod==='linepay'||payMethod==='linepay_qr')&&s.linePayServerUrl){
                                 fetch(s.linePayServerUrl.replace(/\/$/,'')+'/api/linepay/request',{
                                     method:'POST',headers:{'Content-Type':'application/json'},
                                     body:JSON.stringify({orderId:orderId,amount:o.total,items:o.items,confirmBaseUrl:s.linePayConfirmUrl||''})
@@ -675,6 +695,7 @@
                 this.editPickupDate=order.pickupDate||'';
                 this.editPickupTime=order.pickupTime||'';
                 this.editOrderNote=order.orderNote||order.note||'';
+                this.editPayMethod=order.paymentMethod||'store';
                 this.orderMode="online";
                 this.activeView="menu";
                 this.activeMenu=null;
@@ -686,9 +707,13 @@
                 s.isSubmitting=true;
                 var id=s.editingOrder.id;
                 var taskRef=ref(db,"orders/"+id+"/print_task");
+                var pm=s.editPayMethod||'store';
+                var realPm=(pm==='linepay_qr')?'linepay':pm;
                 var upd={
                     items:s.cart.map(function(i){return Object.assign({},i);}),
-                    total:s.cartTotal
+                    total:s.cartTotal,
+                    paymentMethod:realPm,
+                    paymentStatus:(realPm==='linepay'||realPm==='linepay_offline')?'paid':''
                 };
                 if(s.editPickupDate)upd.pickupDate=s.editPickupDate;
                 if(s.editPickupTime)upd.pickupTime=s.editPickupTime;
