@@ -527,7 +527,7 @@
             // ★ 情境2 QR Code 付款
             showQRModal:false, qrAmount:0, qrOrderId:'',
             qrPolling:false, qrCountdown:120, qrPaidMsg:'', qrErrorMsg:'',
-            qrPollTimer:null, qrCountdownTimer:null
+            qrPollTimer:null, qrCountdownTimer:null, qrUnsubscribe:null
         }},
         computed:{
             outsideBusinessHours:function(){
@@ -1032,26 +1032,25 @@
                     if(s.qrCountdown>0){s.qrCountdown--;}
                     else{s.stopQRPolling();s.qrErrorMsg='付款逾時，請重新操作';}
                 },1000);
-                // 每 3 秒查詢 Firebase 付款狀態
-                s.qrPollTimer=setInterval(function(){
-                    get(ref(db,'orders/'+s.qrOrderId+'/paymentStatus')).then(function(snap){
-                        if(snap.exists()&&snap.val()==='paid'){
-                            s.stopQRPolling();
-                            s.qrPaidMsg='付款成功！感謝您的消費 🎉';
-                            // ★ 付款成功後才列印工單，並更新狀態為 making
-                            update(ref(db,'orders/'+s.qrOrderId),{status:'making'}).then(function(){
-                                var taskRef=ref(db,'orders/'+s.qrOrderId+'/print_task');
-                                return remove(taskRef).then(function(){return set(taskRef,'kitchen_'+Date.now());});
-                            });
-                            setTimeout(function(){s.closeQRModal(true);},2000);
-                        }
-                    }).catch(function(){});
-                },3000);
+                // ★ 用 onValue 即時監聽付款狀態（比 polling 更可靠）
+                s.qrUnsubscribe=onValue(ref(db,'orders/'+s.qrOrderId+'/paymentStatus'),function(snap){
+                    var val=snap.val();
+                    if(val==='paid'){
+                        s.stopQRPolling();
+                        s.qrPaidMsg='付款成功！感謝您的消費 🎉';
+                        // ★ 付款成功後才列印工單，並更新狀態為 making
+                        update(ref(db,'orders/'+s.qrOrderId),{status:'making'}).then(function(){
+                            var taskRef=ref(db,'orders/'+s.qrOrderId+'/print_task');
+                            return remove(taskRef).then(function(){return set(taskRef,'kitchen_'+Date.now());});
+                        });
+                        setTimeout(function(){s.closeQRModal(true);},2000);
+                    }
+                });
             },
             stopQRPolling:function(){
                 var s=this;
                 s.qrPolling=false;
-                if(s.qrPollTimer){clearInterval(s.qrPollTimer);s.qrPollTimer=null;}
+                if(s.qrUnsubscribe){s.qrUnsubscribe();s.qrUnsubscribe=null;}
                 if(s.qrCountdownTimer){clearInterval(s.qrCountdownTimer);s.qrCountdownTimer=null;}
             },
             closeQRModal:function(paid){
