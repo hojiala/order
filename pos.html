@@ -827,21 +827,19 @@
                                             // 儲存返回 URL，付款完成後 linepay-confirm.html 會讀取
                                             try{localStorage.setItem('linepay_return_url',window.location.href);}catch(e){}
                                             s.showLinePayLinkModal=true;
-                                            // ★ 等待付款成功後列印（監聽 paymentStatus）
-                                            var payPoll=setInterval(function(){
-                                                get(ref(db,"orders/"+orderId+"/paymentStatus")).then(function(ps){
-                                                    if(ps.exists()&&ps.val()==='paid'){
-                                                        clearInterval(payPoll);
-                                                        update(ref(db,"orders/"+orderId),{status:"making"}).then(function(){
-                                                            var taskRef=ref(db,"orders/"+orderId+"/print_task");
-                                                            return remove(taskRef).then(function(){return set(taskRef,"kitchen_"+Date.now());});
-                                                        });
-                                                        s.showLinePayLinkModal=false;
-                                                        s.toast('✅ LINE Pay 付款成功，工單已送出');
-                                                    }
-                                                }).catch(function(){});
-                                            },3000);
-                                            setTimeout(function(){clearInterval(payPoll);},600000);
+                                            // ★ 用 onValue 即時監聽付款狀態
+                                            var unsubPay=onValue(ref(db,"orders/"+orderId+"/paymentStatus"),function(ps){
+                                                if(ps.val()==='paid'){
+                                                    unsubPay();
+                                                    update(ref(db,"orders/"+orderId),{status:"making"}).then(function(){
+                                                        var taskRef=ref(db,"orders/"+orderId+"/print_task");
+                                                        return remove(taskRef).then(function(){return set(taskRef,"kitchen_"+Date.now());});
+                                                    });
+                                                    s.showLinePayLinkModal=false;
+                                                    s.toast('✅ LINE Pay 付款成功，工單已送出');
+                                                }
+                                            });
+                                            setTimeout(function(){unsubPay();},600000);
                                         }else if(r.status==='error'){
                                             clearInterval(poll);
                                             s.isSubmitting=false;
