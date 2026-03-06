@@ -186,7 +186,11 @@
                   <p class="text-orange-500 font-black text-base">${{ order.total }}</p>
                   <!-- 付款狀態 badge -->
                   <template v-if="order.paymentMethod==='linepay'||order.paymentMethod==='linepay_offline'">
-                      <span v-if="order.paymentStatus==='paid' || lpConfirmed[order.id]"
+                      <span v-if="getLinePayState(order)==='refunded'"
+                          class="inline-block text-xs font-bold px-1.5 py-0.5 rounded-full mt-0.5 bg-gray-100 text-gray-600">
+                          LINE Pay (已退款)
+                      </span>
+                      <span v-else-if="getLinePayState(order)==='paid'"
                           class="inline-block text-xs font-bold px-1.5 py-0.5 rounded-full mt-0.5 bg-green-100 text-green-700">
                           💚 LINE Pay 已付清
                       </span>
@@ -483,6 +487,7 @@
                 isLoggedIn:false,isLoggingIn:false,loginEmail:"",loginPassword:"",loginError:"",
                 editPayMethod:'store',
                 lpConfirmed:{},
+                lpStatus:{},
                 menu:[],menuLoading:true,filterCat:"",settings:{categories:[]},
                 activeView:"menu",editMode:false,
                 cart:[],custName:"",custPhone:"",isSubmitting:false,
@@ -638,14 +643,108 @@
                 });
                 // ★ 監聽 linepay_transactions 以確認付款狀態
                 onValue(ref(db,'linepay_transactions'),function(snap){
-                    if(!snap.exists()){s.lpConfirmed={};return;}
+                    if(!snap.exists()){s.lpConfirmed={};s.lpStatus={};return;}
                     var confirmed={};
+                    var statusMap={};
                     var data=snap.val();
                     for(var oid in data){
-                        if(data[oid]&&data[oid].status==='confirmed') confirmed[oid]=true;
+                        var txn=data[oid]||{};
+                        statusMap[oid]=txn.status||'';
+                        if(txn.status==='confirmed') confirmed[oid]=true;
                     }
                     s.lpConfirmed=confirmed;
+                    s.lpStatus=statusMap;
                 });
+            },
+            getLinePayState:function(order){
+                if(!order)return'pending';
+                var txnState=this.lpStatus[order.id]||'';
+                if(order.paymentStatus==='refunded'||txnState==='refunded'||txnState==='cancelled')return'refunded';
+                if(order.paymentStatus==='paid'||this.lpConfirmed[order.id]||txnState==='confirmed')return'paid';
+                return'pending';
+            },
+            requestLinePayRefund:async function(order){
+                var s=this;
+                var reason='店家取消訂單';
+                var reqRef=ref(db,'linepay_refund_requests/'+order.id);
+                try{
+                    await set(reqRef,{orderId:order.id,amount:Number(order.total||0),reason:reason,status:'pending',createdAt:Date.now(),source:'pos'});
+                    for(var i=0;i<40;i++){
+                        await new Promise(function(r){setTimeout(r,500);});
+                        var snap=await get(reqRef);
+                        if(!snap.exists())continue;
+                        var rv=snap.val()||{};
+                        if(rv.status==='done')return{success:true,returnCode:rv.returnCode||'0000'};
+                        if(rv.status==='error')return{success:false,error:rv.error||'退款失敗',returnCode:rv.returnCode||''};
+                    }
+                }catch(_){ }
+
+                if(s.linePayServerUrl){
+                    try{
+                        var res=await fetch(s.linePayServerUrl.replace(/\/$/,'')+'/api/linepay/refund',{
+                            method:'POST',
+                            headers:{'Content-Type':'application/json'},
+                            body:JSON.stringify({orderId:order.id,reason:reason})
+                        });
+                        var rd=await res.json();
+                        if(rd.success)return{success:true,returnCode:rd.returnCode||'0000'};
+                        return{success:false,error:rd.error||'退款失敗',returnCode:rd.returnCode||''};
+                    }catch(_){ }
+                }
+                return{success:false,error:'退款服務無回應'};
+            },
+            cancelOrderCore:async function(order){
+                var s=this;
+                if(!order||!order.id)return false;
+
+                var isLinePay=(order.paymentMethod==='linepay'||order.paymentMethod==='linepay_offline');
+                var shouldRefund=isLinePay&&s.getLinePayState(order)==='paid';
+
+                if(shouldRefund){
+                    if(!confirm(`此訂單已完成 LINE Pay 付款 $${order.total||0}。\n\n確定取消？\n（點「確定」同時申請 LINE Pay 退款，點「取消」放棄操作）`))return false;
+                }else{
+                    if(!confirm("確定要取消這筆訂單嗎？（將自動列印取消單至廚房）"))return false;
+                }
+
+                var taskRef=ref(db,"orders/"+order.id+"/print_task");
+                await remove(taskRef);
+
+                var updates={status:'cancelled',wasCancelled:true};
+                if(s.editingOrder&&s.editingOrder.id===order.id&&s.cart.length){
+                    updates.items=s.cart.map(function(i){return Object.assign({},i);});
+                    updates.total=s.cartTotal;
+                }
+                if(isLinePay&&!shouldRefund){
+                    updates.paymentStatus='refunded';
+                    updates.refundedAt=Date.now();
+                }
+                await update(ref(db,"orders/"+order.id),updates);
+
+                if(shouldRefund){
+                    var refund=await s.requestLinePayRefund(order);
+                    if(refund.success){
+                        var tsOk=Date.now();
+                        await update(ref(db),{
+                            ["orders/"+order.id+"/paymentStatus"]:'refunded',
+                            ["orders/"+order.id+"/refundedAt"]:tsOk,
+                            ["linepay_transactions/"+order.id+"/status"]:'refunded',
+                            ["linepay_transactions/"+order.id+"/refundedAt"]:tsOk
+                        });
+                        s.toast("✅ LINE Pay 已申請退款");
+                    }else{
+                        alert("⚠️ 訂單已取消，但無法連接退款服務，請手動退款。");
+                    }
+                }else if(isLinePay){
+                    await update(ref(db),{
+                        ["linepay_transactions/"+order.id+"/status"]:'refunded',
+                        ["linepay_transactions/"+order.id+"/refundedAt"]:Date.now()
+                    });
+                }
+
+                await set(taskRef,"cancel_"+Date.now());
+                s.toast("❌ 訂單已取消，列印取消單...");
+                if(s.editingOrder&&s.editingOrder.id===order.id)s.exitOnline();
+                return true;
             },
             getQty:function(id){return this.cart.filter(function(i){return i.id===id;}).reduce(function(s,i){return s+i.qty;},0);},
             quickAdd:function(item){
@@ -918,50 +1017,74 @@
                 this.activeMenu=null;
             },
             exitOnline:function(){this.orderMode="pos";this.editingOrder=null;this.cart=[];this.editPickupDate="";this.editPickupTime="";this.editOrderNote="";},
-            saveOrderEdit:function(){
+            saveOrderEdit:async function(){
                 var s=this;
                 if(!s.editingOrder||!s.cart.length){s.toast("⚠ 訂單內容為空");return;}
                 s.isSubmitting=true;
-                var id=s.editingOrder.id;
-                var taskRef=ref(db,"orders/"+id+"/print_task");
-                var pm=s.editPayMethod||'store';
-                var realPm=(pm==='linepay_qr')?'linepay':pm;
-                var upd={
-                    items:s.cart.map(function(i){return Object.assign({},i);}),
-                    total:s.cartTotal,
-                    paymentMethod:realPm,
-                    paymentStatus:(realPm==='linepay'||realPm==='linepay_offline')?'paid':''
-                };
-                if(s.editPickupDate)upd.pickupDate=s.editPickupDate;
-                if(s.editPickupTime)upd.pickupTime=s.editPickupTime;
-                if(s.editOrderNote!==undefined)upd.orderNote=s.editOrderNote;
-                update(ref(db,"orders/"+id),upd).then(function(){
-                    return remove(taskRef).then(function(){
-                        return set(taskRef,"kitchen_"+Date.now());
-                    });
-                }).then(function(){
-                    s.toast("✅ 修改已儲存，重新列印中...");
+                try{
+                    var id=s.editingOrder.id;
+                    var taskRef=ref(db,"orders/"+id+"/print_task");
+                    var pm=s.editPayMethod||'store';
+                    var realPm=(pm==='linepay_qr')?'linepay':pm;
+                    var isLinePay=(realPm==='linepay');
+                    var isOffline=(realPm==='linepay_offline');
+                    var origPaid=(s.editingOrder.paymentStatus==='paid'||s.lpConfirmed[id]);
+                    var newPayStatus=isOffline?'paid':(isLinePay&&origPaid)?'paid':(isLinePay&&!origPaid)?'pending':'';
+
+                    var upd={
+                        items:s.cart.map(function(i){return Object.assign({},i);}),
+                        total:s.cartTotal,
+                        paymentMethod:realPm,
+                        paymentStatus:newPayStatus
+                    };
+                    if(s.editPickupDate)upd.pickupDate=s.editPickupDate;
+                    if(s.editPickupTime)upd.pickupTime=s.editPickupTime;
+                    if(s.editOrderNote!==undefined)upd.orderNote=s.editOrderNote;
+
+                    await update(ref(db,"orders/"+id),upd);
+
+                    if(isLinePay&&newPayStatus==='pending'&&s.linePayConfirmUrl){
+                        await set(ref(db,"linepay_requests/"+id),{
+                            amount:upd.total||0,
+                            items:upd.items||[],
+                            confirmBaseUrl:s.linePayConfirmUrl,
+                            returnPage:'pos',
+                            status:'pending',
+                            createdAt:Date.now()
+                        });
+                        s.toast("✅ 已儲存，已重新發起 LINE Pay 付款連結");
+                    }else{
+                        await remove(taskRef);
+                        await set(taskRef,"kitchen_"+Date.now());
+                        s.toast("✅ 修改已儲存，重新列印中...");
+                    }
+
+                    if(isLinePay&&newPayStatus==='pending'&&!s.linePayConfirmUrl){
+                        alert("⚠️ 已改為 LINE Pay 待付款，但尚未設定 LINE Pay 確認頁網址。");
+                    }
+
                     s.exitOnline();
-                }).catch(function(e){alert("儲存失敗："+e.message);})
-                .finally(function(){s.isSubmitting=false;});
+                }catch(e){
+                    alert("儲存失敗："+e.message);
+                }finally{
+                    s.isSubmitting=false;
+                }
             },
             setStatus:function(id,status){
                 var s=this;
                 var order=s.editingOrder&&s.editingOrder.id===id?s.editingOrder:null;
+
+                if(status==='cancelled'){
+                    var target=order||s.onlineOrders.find(function(o){return o.id===id;})||{id:id,paymentMethod:'store',paymentStatus:''};
+                    s.cancelOrderCore(target).catch(function(e){alert("取消訂單失敗："+e.message);});
+                    return;
+                }
+
                 update(ref(db,"orders/"+id),{status:status,wasCancelled:status==='cancelled'?true:undefined})
                     .then(function(){
                         var m={new:"已還原為新訂單",making:"✅ 已接單，開始製作",done:"✅ 出餐完成",cancelled:"已取消"};
                         s.toast(m[status]||"已更新");
-                        if(status==="cancelled"){
-                            // ★ 從編輯模式取消 → 也要列印取消單
-                            var taskRef=ref(db,"orders/"+id+"/print_task");
-                            remove(taskRef).then(function(){
-                                return set(taskRef,"cancel_"+Date.now());
-                            }).then(function(){
-                                s.toast("❌ 訂單已取消，列印取消單...");
-                            }).catch(function(){});
-                            s.exitOnline();
-                        } else if(s.editingOrder){
+                        if(s.editingOrder){
                             s.editingOrder=Object.assign({},s.editingOrder,{status:status});
                         }
                     }).catch(function(e){alert("更新失敗："+e.message);});
@@ -988,17 +1111,8 @@
                 .catch(function(e){alert("印收據失敗："+e.message);});
             },
             cancelOrder:function(order){
-                if(!confirm("確定要取消這筆訂單嗎？（將自動列印取消單至廚房）"))return;
                 var s=this;
-                var taskRef=ref(db,"orders/"+order.id+"/print_task");
-                remove(taskRef).then(function(){
-                    return update(ref(db,"orders/"+order.id),{status:"cancelled"});
-                }).then(function(){
-                    return set(taskRef,"cancel_"+Date.now());
-                }).then(function(){
-                    s.toast("❌ 訂單已取消，列印取消單...");
-                    if(s.editingOrder&&s.editingOrder.id===order.id)s.exitOnline();
-                }).catch(function(e){alert("取消訂單失敗："+e.message);});
+                s.cancelOrderCore(order).catch(function(e){alert("取消訂單失敗："+e.message);});
             },
 
             toast:function(msg){
