@@ -371,7 +371,15 @@
                     <div v-if="order.orderNote" class="text-xs text-purple-600 bg-purple-50 px-2 py-1 rounded mt-1">📋 {{ order.orderNote }}</div>
                     <div class="flex justify-between items-center mt-2">
                         <span class="text-xs text-gray-400">{{ formatTime(order.timestamp) }}</span>
-                        <span class="text-orange-500 font-black text-sm">${{ order.total }}</span>
+                        <div class="text-right">
+                            <span class="text-orange-500 font-black text-sm">${{ order.total }}</span>
+                            <template v-if="order.paymentMethod==='linepay'||order.paymentMethod==='linepay_offline'">
+                                <span v-if="order.paymentStatus==='paid' || lpConfirmed[order.id]"
+                                    class="block text-xs font-bold text-green-600 mt-0.5">💚 LINE Pay 已付清</span>
+                                <span v-else
+                                    class="block text-xs font-bold text-blue-400 mt-0.5 animate-pulse">💚 LINE Pay 處理中</span>
+                            </template>
+                        </div>
                     </div>
                     <div class="mt-2">
                         <button @click="reorderItems(order)" class="w-full bg-orange-50 hover:bg-orange-100 border border-orange-200 text-orange-600 font-bold text-xs py-2 rounded-xl transition">🔁 再訂1次</button>
@@ -520,6 +528,7 @@
             toastMsg:'', toastTimer:null,
             showOrderHistory:false, showSuccess:false,
             lastOrderNo:0, lastPayment:'', lastOrderIdRef:null,
+                lpConfirmed:{},
             // 訂單
             myOrders:[], allOrders:[], pollTimer:null,
             pendingCount:0, nowMinute:0,
@@ -757,6 +766,16 @@
                         return o.tableDevice===s.deviceId&&o.timestamp>=today.getTime()&&o.status!=='cancelled'&&o.status!=='archived'
                     }).sort(function(a,b){return b.timestamp-a.timestamp});
                     if(fbOrders.length>0)s.myOrders=fbOrders;
+                    // ★ 監聽 linepay_transactions 以確認付款狀態
+                    onValue(ref(db,'linepay_transactions'),function(snap){
+                        if(!snap.exists()){s.lpConfirmed={};return;}
+                        var confirmed={};
+                        var data=snap.val();
+                        for(var oid in data){
+                            if(data[oid]&&data[oid].status==='confirmed') confirmed[oid]=true;
+                        }
+                        s.lpConfirmed=confirmed;
+                    });
                     // ★ 自動更新 lastOrderNo（後台補發流水號時即時顯示）
                     if(s.lastOrderIdRef){
                         var latest=all.find(function(o){return o.id===s.lastOrderIdRef});
