@@ -250,6 +250,8 @@
                     lpConfirmed: {},
                     editSaving: false,
                     assigningNos: {},
+                    linePayServerUrl: '',
+                    linePayConfirmUrl: '',
                     alertSound: new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg')
                 }
             },
@@ -317,6 +319,15 @@
                         this.orders = parsedOrders;
                         if (currentNewCount > this.previousNewCount && this.previousNewCount !== 0) this.playAlert();
                         this.previousNewCount = currentNewCount;
+                    });
+                    // ★ 監聽 settings 取得 linePayServerUrl
+                    const selfS = this;
+                    onValue(ref(db, 'settings'), (snap) => {
+                        if (snap.exists()) {
+                            const sv = snap.val();
+                            selfS.linePayServerUrl = sv.linePayServerUrl || '';
+                            selfS.linePayConfirmUrl = sv.linePayConfirmUrl || '';
+                        }
                     });
                     // ★ 監聽 linepay_transactions 以確認付款狀態（不依賴 orders/paymentStatus）
                     const self2 = this;
@@ -398,8 +409,10 @@
                     }
                 },
                 async cancelOrder(order) {
-                    const isPaidLinePay = (order.paymentMethod === 'linepay' || order.paymentMethod === 'linepay_offline')
-                        && (order.paymentStatus === 'paid' || this.lpConfirmed[order.id]);
+                    const isLinePay = order.paymentMethod === 'linepay' || order.paymentMethod === 'linepay_offline';
+                    const isPaidLinePay = isLinePay
+                        && (order.paymentStatus === 'paid' || this.lpConfirmed[order.id])
+                        && order.paymentStatus !== 'refunded';
                     let doRefund = false;
                     if (isPaidLinePay) {
                         const choice = confirm(`此訂單已完成 LINE Pay 付款 $${order.total}。\n\n確定取消？\n（點「確定」同時申請 LINE Pay 退款，點「取消」放棄操作）`);
@@ -416,9 +429,9 @@
                         updates[`orders/${order.id}/wasCancelled`] = true;
                         await update(ref(db), updates);
                         await set(taskRef, `cancel_${Date.now()}`);
-                        if (doRefund && this.settings.linePayServerUrl) {
+                        if (doRefund && this.linePayServerUrl) {
                             try {
-                                const res = await fetch(this.settings.linePayServerUrl.replace(/\/$/, '') + '/api/linepay/refund', {
+                                const res = await fetch(this.linePayServerUrl.replace(/\/$/, '') + '/api/linepay/refund', {
                                     method: 'POST',
                                     headers: { 'Content-Type': 'application/json' },
                                     body: JSON.stringify({ orderId: order.id, reason: '店家取消訂單' })
@@ -432,6 +445,8 @@
                             } catch(re) {
                                 alert('⚠️ 訂單已取消，但無法連接退款服務，請手動退款。');
                             }
+                        } else if (doRefund && !this.linePayServerUrl) {
+                            alert('⚠️ 訂單已取消（列印完成），但尚未設定 LINE Pay 伺服器網址，無法自動退款。\n請手動至 LINE Pay 商家後台進行退款。');
                         } else {
                             alert('訂單已取消！');
                         }
@@ -488,17 +503,44 @@
                         // 付款方式對應
                         var pm = this.editPayMethod;
                         var realPm = (pm==='linepay_qr') ? 'linepay' : pm;
+                        // ★ 付款狀態邏輯：
+                        // linepay → 重新走付款流程(pending)，等 linepay_server 確認
+                        // linepay_offline → 掃碼當場付清 → paid
+                        // store/cash → 無付款狀態
+                        const isLinePay = realPm === 'linepay';
+                        const isOffline = realPm === 'linepay_offline';
+                        const origPaid = (this.editModal.paymentStatus === 'paid' || this.lpConfirmed[this.editModal.id]);
+                        // 若原本已付清(LINE Pay)且仍選LINE Pay → 保留paid
+                        // 若重新選LINE Pay但原本未付 → pending
+                        const newPayStatus = isOffline ? 'paid'
+                            : (isLinePay && origPaid) ? 'paid'
+                            : (isLinePay && !origPaid) ? 'pending'
+                            : '';
                         const upd = {
                             pickupDate: this.editPickupDate,
                             pickupTime: this.editPickupTime,
                             orderNote: this.editOrderNote,
                             items: this.editModal.items,
                             paymentMethod: realPm,
-                            paymentStatus: (realPm==='linepay'||realPm==='linepay_offline') ? 'paid' : ''
+                            paymentStatus: newPayStatus
                         };
                         await update(ref(db, `orders/${id}`), upd);
-                        await remove(taskRef);
-                        await set(taskRef, `kitchen_${Date.now()}`);
+                        if (isLinePay && newPayStatus === 'pending' && this.linePayConfirmUrl) {
+                            // ★ 重新發起 LINE Pay 付款請求
+                            const { set: fbSet, ref: fbRef } = { set, ref };
+                            await fbSet(fbRef(db, `linepay_requests/${id}`), {
+                                amount: upd.items ? upd.items.reduce((s,i)=>s+(i.itemTotal||0),0) : (this.editModal.total||0),
+                                items: upd.items || [],
+                                confirmBaseUrl: this.linePayConfirmUrl,
+                                returnPage: 'admin',
+                                status: 'pending',
+                                createdAt: Date.now()
+                            });
+                            alert(`✅ 儲存完成。\n已重新發起 LINE Pay 付款請求，請等待顧客付款後工單將自動列印。`);
+                        } else {
+                            await remove(taskRef);
+                            await set(taskRef, `kitchen_${Date.now()}`);
+                        }
                         this.editModal = null;
                     } catch (err) {
                         alert('儲存失敗：' + err.message);
