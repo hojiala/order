@@ -381,8 +381,12 @@
                             </template>
                         </div>
                     </div>
-                    <div class="mt-2">
-                        <button @click="reorderItems(order)" class="w-full bg-orange-50 hover:bg-orange-100 border border-orange-200 text-orange-600 font-bold text-xs py-2 rounded-xl transition">🔁 再訂1次</button>
+                    <div class="mt-2 grid grid-cols-3 gap-1.5">
+                        <button @click="reorderItems(order)" class="bg-orange-50 hover:bg-orange-100 border border-orange-200 text-orange-600 font-bold text-xs py-2 rounded-xl transition">🔁 再訂1次</button>
+                        <button @click="reprintOrder(order)"
+                            class="bg-blue-50 hover:bg-blue-100 border border-blue-200 text-blue-600 font-bold text-xs py-2 rounded-xl transition">🖨️ 補印工單</button>
+                        <button v-if="order.status!=='cancelled'" @click="cancelOrder(order)"
+                            class="bg-red-50 hover:bg-red-100 border border-red-200 text-red-500 font-bold text-xs py-2 rounded-xl transition">✕ 取消</button>
                     </div>
                 </div>
             </div>
@@ -491,7 +495,7 @@
 <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-    import { getDatabase, ref, push, set, get, update, onValue, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
+    import { getDatabase, ref, push, set, get, update, remove, onValue, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
 
     const firebaseConfig = {
         apiKey:"AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -973,6 +977,34 @@
                 s.saveCart();
                 s.showOrderHistory=false;
                 s.currentView='cart';
+            },
+            reprintOrder:function(order){
+                var s=this;
+                if(!confirm('重新列印工單？'))return;
+                var taskRef=ref(db,'orders/'+order.id+'/print_task');
+                remove(taskRef).then(function(){
+                    return set(taskRef,'kitchen_'+Date.now());
+                }).then(function(){
+                    s.toast('🖨️ 補印工單中...');
+                }).catch(function(e){s.toast('⚠️ 補印失敗：'+e.message);});
+            },
+            cancelOrder:function(order){
+                var s=this;
+                var isPaidLinePay=(order.paymentMethod==='linepay'||order.paymentMethod==='linepay_offline')
+                    &&(order.paymentStatus==='paid'||s.lpConfirmed[order.id])
+                    &&order.paymentStatus!=='refunded';
+                var msg=isPaidLinePay
+                    ?'此訂單已完成 LINE Pay 付款。確定取消？（需手動至 LINE Pay 商家後台退款）'
+                    :'確定要取消這筆訂單嗎？（將自動列印取消單至廚房）';
+                if(!confirm(msg))return;
+                var taskRef=ref(db,'orders/'+order.id+'/print_task');
+                remove(taskRef).then(function(){
+                    return update(ref(db,'orders/'+order.id),{status:'cancelled',wasCancelled:true});
+                }).then(function(){
+                    return set(taskRef,'cancel_'+Date.now());
+                }).then(function(){
+                    s.toast('❌ 訂單已取消，列印取消單...');
+                }).catch(function(e){s.toast('⚠️ 取消失敗：'+e.message);});
             },
             // ── 情境2：QR Code 付款 ──
             submitOrderQR:function(){
