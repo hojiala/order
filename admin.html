@@ -77,12 +77,12 @@
                                 <p class="text-lg font-bold text-red-500 mt-2">${{ order.total }}</p>
                                 <!-- 付款狀態 -->
                                 <template v-if="order.paymentMethod==='linepay'||order.paymentMethod==='linepay_offline'">
-                                    <span v-if="order.paymentStatus==='paid'"
+                                    <span v-if="order.paymentStatus==='paid' || lpConfirmed[order.id]"
                                         class="inline-block text-xs font-bold px-2 py-0.5 rounded-full mt-1 bg-green-100 text-green-700">
                                         💚 LINE Pay 已付清
                                     </span>
                                     <span v-else
-                                        class="inline-block text-xs font-bold px-2 py-0.5 rounded-full mt-1 bg-blue-50 text-blue-400">
+                                        class="inline-block text-xs font-bold px-2 py-0.5 rounded-full mt-1 bg-blue-50 text-blue-400 animate-pulse">
                                         💚 LINE Pay 處理中
                                     </span>
                                 </template>
@@ -247,6 +247,7 @@
                     editPickupTime: '',
                     editOrderNote: '',
                     editPayMethod: 'store',
+                    lpConfirmed: {},
                     editSaving: false,
                     assigningNos: {},
                     alertSound: new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg')
@@ -316,6 +317,16 @@
                         this.orders = parsedOrders;
                         if (currentNewCount > this.previousNewCount && this.previousNewCount !== 0) this.playAlert();
                         this.previousNewCount = currentNewCount;
+                    });
+                    // ★ 監聽 linepay_transactions 以確認付款狀態（不依賴 orders/paymentStatus）
+                    const self2 = this;
+                    onValue(ref(db, 'linepay_transactions'), (snap) => {
+                        const data = snap.val() || {};
+                        const confirmed = {};
+                        for (const oid in data) {
+                            if (data[oid] && data[oid].status === 'confirmed') confirmed[oid] = true;
+                        }
+                        self2.lpConfirmed = confirmed;
                     });
                 },
                 toggleMenu(orderId) {
@@ -387,20 +398,45 @@
                     }
                 },
                 async cancelOrder(order) {
-                    if (confirm("確定要取消這筆訂單嗎？（將自動列印取消單至廚房）")) {
-                        // ★ 同上，取消單也用時間戳記確保觸發
-                        const taskRef = ref(db, `orders/${order.id}/print_task`);
-                        try {
-                            await remove(taskRef);
-                            const updates = {};
-                            updates[`orders/${order.id}/status`] = 'cancelled';
-                            updates[`orders/${order.id}/wasCancelled`] = true;
-                            await update(ref(db), updates);
-                            await set(taskRef, `cancel_${Date.now()}`);
-                            alert("訂單已取消！");
-                        } catch (err) {
-                            alert("取消訂單失敗：" + err);
+                    const isPaidLinePay = (order.paymentMethod === 'linepay' || order.paymentMethod === 'linepay_offline')
+                        && (order.paymentStatus === 'paid' || this.lpConfirmed[order.id]);
+                    let doRefund = false;
+                    if (isPaidLinePay) {
+                        const choice = confirm(`此訂單已完成 LINE Pay 付款 $${order.total}。\n\n確定取消？\n（點「確定」同時申請 LINE Pay 退款，點「取消」放棄操作）`);
+                        if (!choice) return;
+                        doRefund = true;
+                    } else {
+                        if (!confirm('確定要取消這筆訂單嗎？（將自動列印取消單至廚房）')) return;
+                    }
+                    const taskRef = ref(db, `orders/${order.id}/print_task`);
+                    try {
+                        await remove(taskRef);
+                        const updates = {};
+                        updates[`orders/${order.id}/status`] = 'cancelled';
+                        updates[`orders/${order.id}/wasCancelled`] = true;
+                        await update(ref(db), updates);
+                        await set(taskRef, `cancel_${Date.now()}`);
+                        if (doRefund && this.settings.linePayServerUrl) {
+                            try {
+                                const res = await fetch(this.settings.linePayServerUrl.replace(/\/$/, '') + '/api/linepay/refund', {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ orderId: order.id, reason: '店家取消訂單' })
+                                });
+                                const rd = await res.json();
+                                if (rd.success) {
+                                    alert(`✅ 訂單已取消，LINE Pay 退款 $${order.total} 申請成功！\n結果碼: ${rd.returnCode}\n退款將於數個工作日內返還顧客帳戶。`);
+                                } else {
+                                    alert(`⚠️ 訂單已取消（列印完成），但退款失敗：\n${rd.error}\n結果碼: ${rd.returnCode || '?'}\n請手動至 LINE Pay 商家後台進行退款。`);
+                                }
+                            } catch(re) {
+                                alert('⚠️ 訂單已取消，但無法連接退款服務，請手動退款。');
+                            }
+                        } else {
+                            alert('訂單已取消！');
                         }
+                    } catch (err) {
+                        alert('取消訂單失敗：' + err);
                     }
                 },
                 // ★ 打烊結單：只封存今天及過去的訂單，保留未來預約
