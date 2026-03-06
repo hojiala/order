@@ -77,7 +77,11 @@
                                 <p class="text-lg font-bold text-red-500 mt-2">${{ order.total }}</p>
                                 <!-- 付款狀態 -->
                                 <template v-if="order.paymentMethod==='linepay'||order.paymentMethod==='linepay_offline'">
-                                    <span v-if="order.paymentStatus==='paid' || lpConfirmed[order.id]"
+                                    <span v-if="getLinePayState(order)==='refunded'"
+                                        class="inline-block text-xs font-bold px-2 py-0.5 rounded-full mt-1 bg-gray-100 text-gray-600">
+                                        LINE Pay (已退款)
+                                    </span>
+                                    <span v-else-if="getLinePayState(order)==='paid'"
                                         class="inline-block text-xs font-bold px-2 py-0.5 rounded-full mt-1 bg-green-100 text-green-700">
                                         💚 LINE Pay 已付清
                                     </span>
@@ -248,6 +252,7 @@
                     editOrderNote: '',
                     editPayMethod: 'store',
                     lpConfirmed: {},
+                    lpStatus: {},
                     editSaving: false,
                     assigningNos: {},
                     linePayServerUrl: '',
@@ -334,10 +339,14 @@
                     onValue(ref(db, 'linepay_transactions'), (snap) => {
                         const data = snap.val() || {};
                         const confirmed = {};
+                        const statusMap = {};
                         for (const oid in data) {
-                            if (data[oid] && data[oid].status === 'confirmed') confirmed[oid] = true;
+                            const txn = data[oid] || {};
+                            statusMap[oid] = txn.status || '';
+                            if (txn.status === 'confirmed') confirmed[oid] = true;
                         }
                         self2.lpConfirmed = confirmed;
+                        self2.lpStatus = statusMap;
                     });
                 },
                 toggleMenu(orderId) {
@@ -408,48 +417,107 @@
                         alert("印收據失敗：" + err);
                     }
                 },
+                getLinePayState(order) {
+                    if (!order) return 'pending';
+                    const txnState = this.lpStatus[order.id] || '';
+                    if (order.paymentStatus === 'refunded' || txnState === 'refunded' || txnState === 'cancelled') return 'refunded';
+                    if (order.paymentStatus === 'paid' || this.lpConfirmed[order.id] || txnState === 'confirmed') return 'paid';
+                    return 'pending';
+                },
+                async requestLinePayRefund(order) {
+                    const reason = '店家取消訂單';
+                    const reqRef = ref(db, `linepay_refund_requests/${order.id}`);
+
+                    try {
+                        await set(reqRef, {
+                            orderId: order.id,
+                            amount: Number(order.total || 0),
+                            reason,
+                            status: 'pending',
+                            createdAt: Date.now(),
+                            source: 'admin'
+                        });
+
+                        for (let i = 0; i < 40; i++) {
+                            await new Promise(r => setTimeout(r, 500));
+                            const snap = await get(reqRef);
+                            if (!snap.exists()) continue;
+                            const rv = snap.val() || {};
+                            if (rv.status === 'done') {
+                                return { success: true, returnCode: rv.returnCode || '0000' };
+                            }
+                            if (rv.status === 'error') {
+                                return { success: false, error: rv.error || '退款失敗', returnCode: rv.returnCode || '' };
+                            }
+                        }
+                    } catch (_) {}
+
+                    if (this.linePayServerUrl) {
+                        try {
+                            const res = await fetch(this.linePayServerUrl.replace(/\/$/, '') + '/api/linepay/refund', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ orderId: order.id, reason })
+                            });
+                            const rd = await res.json();
+                            if (rd.success) return { success: true, returnCode: rd.returnCode || '0000' };
+                            return { success: false, error: rd.error || '退款失敗', returnCode: rd.returnCode || '' };
+                        } catch (_) {}
+                    }
+
+                    return { success: false, error: '退款服務無回應' };
+                },
                 async cancelOrder(order) {
                     const isLinePay = order.paymentMethod === 'linepay' || order.paymentMethod === 'linepay_offline';
-                    const isPaidLinePay = isLinePay
-                        && (order.paymentStatus === 'paid' || this.lpConfirmed[order.id])
-                        && order.paymentStatus !== 'refunded';
-                    let doRefund = false;
-                    if (isPaidLinePay) {
+                    const shouldRefund = isLinePay && this.getLinePayState(order) === 'paid';
+
+                    if (shouldRefund) {
                         const choice = confirm(`此訂單已完成 LINE Pay 付款 $${order.total}。\n\n確定取消？\n（點「確定」同時申請 LINE Pay 退款，點「取消」放棄操作）`);
                         if (!choice) return;
-                        doRefund = true;
                     } else {
                         if (!confirm('確定要取消這筆訂單嗎？（將自動列印取消單至廚房）')) return;
                     }
+
                     const taskRef = ref(db, `orders/${order.id}/print_task`);
                     try {
                         await remove(taskRef);
-                        const updates = {};
-                        updates[`orders/${order.id}/status`] = 'cancelled';
-                        updates[`orders/${order.id}/wasCancelled`] = true;
+
+                        const updates = {
+                            [`orders/${order.id}/status`]: 'cancelled',
+                            [`orders/${order.id}/wasCancelled`]: true
+                        };
+
+                        if (isLinePay && !shouldRefund) {
+                            const ts = Date.now();
+                            updates[`orders/${order.id}/paymentStatus`] = 'refunded';
+                            updates[`orders/${order.id}/refundedAt`] = ts;
+                            updates[`linepay_transactions/${order.id}/status`] = 'refunded';
+                            updates[`linepay_transactions/${order.id}/refundedAt`] = ts;
+                        }
+
                         await update(ref(db), updates);
-                        await set(taskRef, `cancel_${Date.now()}`);
-                        if (doRefund && this.linePayServerUrl) {
-                            try {
-                                const res = await fetch(this.linePayServerUrl.replace(/\/$/, '') + '/api/linepay/refund', {
-                                    method: 'POST',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ orderId: order.id, reason: '店家取消訂單' })
+
+                        if (shouldRefund) {
+                            const refund = await this.requestLinePayRefund(order);
+                            if (refund.success) {
+                                const ts = Date.now();
+                                await update(ref(db), {
+                                    [`orders/${order.id}/paymentStatus`]: 'refunded',
+                                    [`orders/${order.id}/refundedAt`]: ts,
+                                    [`linepay_transactions/${order.id}/status`]: 'refunded',
+                                    [`linepay_transactions/${order.id}/refundedAt`]: ts
                                 });
-                                const rd = await res.json();
-                                if (rd.success) {
-                                    alert(`✅ 訂單已取消，LINE Pay 退款 $${order.total} 申請成功！\n結果碼: ${rd.returnCode}\n退款將於數個工作日內返還顧客帳戶。`);
-                                } else {
-                                    alert(`⚠️ 訂單已取消（列印完成），但退款失敗：\n${rd.error}\n結果碼: ${rd.returnCode || '?'}\n請手動至 LINE Pay 商家後台進行退款。`);
-                                }
-                            } catch(re) {
+                                alert(`✅ 訂單已取消，LINE Pay 退款 $${order.total} 申請成功！\n結果碼: ${refund.returnCode || '0000'}\n退款將於數個工作日內返還顧客帳戶。`);
+                            } else {
                                 alert('⚠️ 訂單已取消，但無法連接退款服務，請手動退款。');
                             }
-                        } else if (doRefund && !this.linePayServerUrl) {
-                            alert('⚠️ 訂單已取消（列印完成），但尚未設定 LINE Pay 伺服器網址，無法自動退款。\n請手動至 LINE Pay 商家後台進行退款。');
+                        } else if (isLinePay) {
+                            alert('✅ 訂單已取消，LINE Pay 狀態已標記為已退款。');
                         } else {
                             alert('訂單已取消！');
                         }
+
+                        await set(taskRef, `cancel_${Date.now()}`);
                     } catch (err) {
                         alert('取消訂單失敗：' + err);
                     }
