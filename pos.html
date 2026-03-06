@@ -318,6 +318,16 @@
             style="background:linear-gradient(135deg,#0ea5e9,#06C755)" title="掃描顧客條碼">{{ isSubmitting ? "送出中..." : "📷 掃碼扣款" }}</button>
         </template>
         <template v-if="orderMode!=='pos' && editingOrder">
+          <!-- ★ 付款方式選擇 -->
+          <div class="col-span-2 mb-1">
+            <p class="text-xs font-bold text-gray-500 mb-1.5">💳 付款方式</p>
+            <div class="grid grid-cols-2 gap-1.5">
+              <button v-for="pm in [{v:'store',l:'⚠️ 未付款'},{v:'linepay',l:'💚 LINE Pay'},{v:'linepay_offline',l:'📲 掃碼 LINE Pay'},{v:'cash',l:'💵 現金'}]" :key="pm.v"
+                @click="editPayMethod=pm.v"
+                :class="editPayMethod===pm.v ? 'bg-green-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'"
+                class="py-2 rounded-xl font-bold text-xs transition">{{ pm.l }}</button>
+            </div>
+          </div>
           <button @click="saveOrderEdit()" :disabled="cart.length===0||isSubmitting"
             class="col-span-2 py-3 rounded-xl font-black text-white text-sm disabled:opacity-40 transition active:scale-95"
             style="background:linear-gradient(135deg,#3b82f6,#6366f1)">{{ isSubmitting ? "儲存中..." : "&#128190; 儲存修改 + 重新列印" }}</button>
@@ -471,6 +481,7 @@
         data:function(){
             return{
                 isLoggedIn:false,isLoggingIn:false,loginEmail:"",loginPassword:"",loginError:"",
+                editPayMethod:'store',
                 lpConfirmed:{},
                 menu:[],menuLoading:true,filterCat:"",settings:{categories:[]},
                 activeView:"menu",editMode:false,
@@ -901,6 +912,7 @@
                 this.editPickupDate=order.pickupDate||'';
                 this.editPickupTime=order.pickupTime||'';
                 this.editOrderNote=order.orderNote||order.note||'';
+                this.editPayMethod=order.paymentMethod||'store';
                 this.orderMode="online";
                 this.activeView="menu";
                 this.activeMenu=null;
@@ -912,9 +924,13 @@
                 s.isSubmitting=true;
                 var id=s.editingOrder.id;
                 var taskRef=ref(db,"orders/"+id+"/print_task");
+                var pm=s.editPayMethod||'store';
+                var realPm=(pm==='linepay_qr')?'linepay':pm;
                 var upd={
                     items:s.cart.map(function(i){return Object.assign({},i);}),
-                    total:s.cartTotal
+                    total:s.cartTotal,
+                    paymentMethod:realPm,
+                    paymentStatus:(realPm==='linepay'||realPm==='linepay_offline')?'paid':''
                 };
                 if(s.editPickupDate)upd.pickupDate=s.editPickupDate;
                 if(s.editPickupTime)upd.pickupTime=s.editPickupTime;
@@ -931,12 +947,23 @@
             },
             setStatus:function(id,status){
                 var s=this;
-                update(ref(db,"orders/"+id),{status:status})
+                var order=s.editingOrder&&s.editingOrder.id===id?s.editingOrder:null;
+                update(ref(db,"orders/"+id),{status:status,wasCancelled:status==='cancelled'?true:undefined})
                     .then(function(){
                         var m={new:"已還原為新訂單",making:"✅ 已接單，開始製作",done:"✅ 出餐完成",cancelled:"已取消"};
                         s.toast(m[status]||"已更新");
-                        if(status==="cancelled")s.exitOnline();
-                        else if(s.editingOrder)s.editingOrder=Object.assign({},s.editingOrder,{status:status});
+                        if(status==="cancelled"){
+                            // ★ 從編輯模式取消 → 也要列印取消單
+                            var taskRef=ref(db,"orders/"+id+"/print_task");
+                            remove(taskRef).then(function(){
+                                return set(taskRef,"cancel_"+Date.now());
+                            }).then(function(){
+                                s.toast("❌ 訂單已取消，列印取消單...");
+                            }).catch(function(){});
+                            s.exitOnline();
+                        } else if(s.editingOrder){
+                            s.editingOrder=Object.assign({},s.editingOrder,{status:status});
+                        }
                     }).catch(function(e){alert("更新失敗："+e.message);});
             },
             toggleActive:function(item){
