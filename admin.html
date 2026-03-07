@@ -442,7 +442,7 @@
                             source: 'admin'
                         });
 
-                        for (let i = 0; i < 12; i++) {
+                        for (let i = 0; i < 60; i++) {
                             await new Promise(r => setTimeout(r, 500));
                             const snap = await get(reqRef);
                             if (!snap.exists()) continue;
@@ -489,6 +489,12 @@
                         } catch (_) {}
                     }
 
+                    try {
+                        const psnap = await get(ref(db, `orders/${order.id}/paymentStatus`));
+                        if (psnap.exists() && String(psnap.val() || '').toLowerCase() === 'refunded') {
+                            return { success: true, returnCode: 'LATE_REFUNDED' };
+                        }
+                    } catch (_) {}
                     return { success: false, error: '退款服務無回應' };
                 },
                 async cancelOrder(order) {
@@ -540,7 +546,10 @@
                             if (latestOrder.total !== undefined) updates[`orders/${order.id}/total`] = latestOrder.total;
                         }
 
-                        if (isLinePay && linePayState !== 'paid' && linePayState !== 'refunded') {
+                        if (shouldRefund) {
+                            if ((latestOrder.paymentStatus || '') !== 'paid') updates[`orders/${order.id}/paymentStatus`] = 'paid';
+                            updates[`orders/${order.id}/paymentMethod`] = (latestOrder.paymentMethod === 'linepay_offline') ? 'linepay_offline' : 'linepay';
+                        } else if (isLinePay && linePayState !== 'paid' && linePayState !== 'refunded') {
                             updates[`orders/${order.id}/paymentStatus`] = 'pending';
                             updates[`orders/${order.id}/unpaidCancelledAt`] = Date.now();
                         }
@@ -560,7 +569,7 @@
                                 });
                                 alert(`✅ 訂單已取消，LINE Pay 退款 $${latestOrder.total || order.total || 0} 申請成功！\n結果碼: ${refund.returnCode || '0000'}\n退款將於數個工作日內返還顧客帳戶。`);
                             } else {
-                                alert('⚠️ 訂單已取消，但無法連接退款服務，請手動退款。');
+                                alert('⚠️ 訂單已取消，但退款失敗：'+(refund.error||'服務無回應')+'。請手動退款。');
                             }
                         } else if (isLinePay && linePayState !== 'refunded') {
                             await update(ref(db), {
@@ -572,6 +581,7 @@
                             alert('訂單已取消！');
                         }
 
+                        if (shouldRefund) await new Promise(r => setTimeout(r, 900));
                         await set(taskRef, `cancel_${Date.now()}`);
                     } catch (err) {
                         alert('取消訂單失敗：' + err);
