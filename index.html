@@ -1154,7 +1154,7 @@
                 var self = this;
                 // ★ Fix4: 所有驗證改用自訂 modal，不用 alert()
                 // 檢查冷卻時間，防止惡意下單
-                var lastOrder = localStorage.getItem('lastOrderTime');
+                var lastOrder = ''; try{ lastOrder = localStorage.getItem('lastOrderTime'); }catch(e){}
                 var cooldownEnabled = self.settings.orderCooldownEnabled !== false;
                 var cooldownSecs = self.settings.orderCooldownSecs || 300;
                 var cooldown = cooldownSecs * 1000;
@@ -1223,13 +1223,24 @@
                     self.saveMyOrder(orderId, orderData);
 
                     // ★ LINE Pay 付款流程（Firebase 中介，解決 HTTPS→HTTP 問題）
-                    if(payMethod==='linepay' && self.settings.linePayConfirmUrl){
+                    var confirmBase = (self.settings.linePayConfirmUrl || '').trim();
+                    if(confirmBase){
+                        if(!/\/linepay-confirm\.html(\?|$)/i.test(confirmBase)){
+                            if(/\.html(\?|$)/i.test(confirmBase)){
+                                confirmBase = confirmBase.replace(/\/[^/?#]+\.html(?=([?#]|$))/i, '/linepay-confirm.html');
+                            }else{
+                                confirmBase = confirmBase.replace(/\/+$/,'') + '/linepay-confirm.html';
+                            }
+                        }
+                    }                    if(payMethod==='linepay' && confirmBase){
                         self.isSubmitting=false;
                         // 把請求寫入 Firebase，樹莓派背景工作會自動處理並把 paymentUrl 寫回
                         set(ref(db, 'linepay_requests/' + orderId), {
                             amount: orderData.total,
                             items: orderData.items,
-                            confirmBaseUrl: self.settings.linePayConfirmUrl || '',
+                            confirmBaseUrl: confirmBase,
+                            returnPage: 'index',
+                            returnDeviceId: self.deviceId || '',
                             status: 'pending',
                             createdAt: Date.now()
                         }).then(function() {
@@ -1246,7 +1257,7 @@
                                         clearInterval(poll);
                                         self.showAlertDialog = false;
                                         try{localStorage.setItem('linepay_return_url', window.location.href)}catch(e){}
-                                        localStorage.setItem('lastOrderTime', Date.now().toString());
+                                        try{localStorage.setItem('lastOrderTime', Date.now().toString());}catch(e){}
                                         self.cart=[];try{localStorage.removeItem('cart_items')}catch(e){}
                                         self.currentView='menu';
                                         window.location.href = r.paymentUrl;
@@ -1284,7 +1295,7 @@
                 }).finally(function() {
                     self.isSubmitting = false;
                 });
-                localStorage.setItem('lastOrderTime', Date.now().toString());
+                try{localStorage.setItem('lastOrderTime', Date.now().toString());}catch(e){}
             }
         }
     }).mount('#app');
