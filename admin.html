@@ -86,8 +86,8 @@
                                         💚 LINE Pay 已付清
                                     </span>
                                     <span v-else
-                                        class="inline-block text-xs font-bold px-2 py-0.5 rounded-full mt-1 bg-blue-50 text-blue-400 animate-pulse">
-                                        💚 LINE Pay 處理中
+                                        class="inline-block text-xs font-bold px-2 py-0.5 rounded-full mt-1 bg-red-100 text-red-600">
+                                        ⚠️ 未付款
                                     </span>
                                 </template>
                                 <span v-else-if="order.paymentMethod==='cash' && order.paymentStatus==='paid'"
@@ -442,7 +442,7 @@
                             source: 'admin'
                         });
 
-                        for (let i = 0; i < 60; i++) {
+                        for (let i = 0; i < 12; i++) {
                             await new Promise(r => setTimeout(r, 500));
                             const snap = await get(reqRef);
                             if (!snap.exists()) continue;
@@ -460,11 +460,12 @@
                     if (this.linePayServerUrl) baseCandidates.push(this.linePayServerUrl);
                     try {
                         const u = new URL(window.location.href);
+                        baseCandidates.push(`${u.protocol}//${u.hostname}:5000`);
                         baseCandidates.push(`${u.protocol}//${u.hostname}:5001`);
                         baseCandidates.push(u.origin);
                     } catch (_) {}
-                    baseCandidates.push('http://127.0.0.1:5001');
-                    baseCandidates.push('http://localhost:5001');
+                    baseCandidates.push('http://127.0.0.1:5000');
+                    baseCandidates.push('http://localhost:5000');
 
                     const tried = new Set();
                     for (const b of baseCandidates) {
@@ -472,11 +473,15 @@
                         if (!base || tried.has(base)) continue;
                         tried.add(base);
                         try {
+                            const ctl = new AbortController();
+                            const timer = setTimeout(() => { try { ctl.abort(); } catch(e) {} }, 2500);
                             const res = await fetch(base + '/api/linepay/refund', {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ orderId: order.id, reason })
+                                body: JSON.stringify({ orderId: order.id, reason }),
+                                signal: ctl.signal
                             });
+                            clearTimeout(timer);
                             if (!res.ok) continue;
                             const rd = await res.json();
                             if (rd.success || rd.returnCode === 'ALREADY_REFUNDED') return { success: true, returnCode: rd.returnCode || '0000' };
@@ -487,12 +492,35 @@
                     return { success: false, error: '退款服務無回應' };
                 },
                 async cancelOrder(order) {
-                    const isLinePay = order.paymentMethod === 'linepay' || order.paymentMethod === 'linepay_offline';
-                    const linePayState = isLinePay ? this.getLinePayState(order) : 'pending';
+                    let latestOrder = { ...order };
+                    try {
+                        const fullSnap = await get(ref(db, `orders/${order.id}`));
+                        if (fullSnap.exists()) {
+                            latestOrder = { ...latestOrder, ...(fullSnap.val() || {}), id: order.id };
+                        }
+                    } catch (_) {}
+
+                    const isLinePay = latestOrder.paymentMethod === 'linepay' || latestOrder.paymentMethod === 'linepay_offline';
+                    let linePayState = isLinePay ? this.getLinePayState(latestOrder) : 'pending';
+
+                    if (isLinePay && linePayState === 'pending') {
+                        try {
+                            const txnSnap = await get(ref(db, `linepay_transactions/${order.id}`));
+                            const paySnap = await get(ref(db, `orders/${order.id}/paymentStatus`));
+                            const txnData = txnSnap.exists() ? (txnSnap.val() || {}) : {};
+                            const txnState = (typeof txnData === 'object') ? (txnData.status || '') : txnData;
+                            const txnConfirmedAt = (typeof txnData === 'object') ? (txnData.confirmedAt || 0) : 0;
+                            const payState = paySnap.exists() ? paySnap.val() : (latestOrder.paymentStatus || '');
+                            const orderConfirmedAt = latestOrder.paymentConfirmedAt || 0;
+                            if (payState === 'paid' || txnState === 'confirmed' || orderConfirmedAt || txnConfirmedAt) linePayState = 'paid';
+                            else if (payState === 'refunded' || txnState === 'refunded') linePayState = 'refunded';
+                        } catch (_) {}
+                    }
+
                     const shouldRefund = isLinePay && linePayState === 'paid';
 
                     if (shouldRefund) {
-                        const choice = confirm(`此訂單已完成 LINE Pay 付款 $${order.total}。\n\n確定取消？\n（點「確定」同時申請 LINE Pay 退款，點「取消」放棄操作）`);
+                        const choice = confirm(`此訂單已完成 LINE Pay 付款 $${latestOrder.total || order.total || 0}。\n\n確定取消？\n（點「確定」同時申請 LINE Pay 退款，點「取消」放棄操作）`);
                         if (!choice) return;
                     } else {
                         if (!confirm('確定要取消這筆訂單嗎？（將自動列印取消單至廚房）')) return;
@@ -507,7 +535,12 @@
                             [`orders/${order.id}/wasCancelled`]: true
                         };
 
-                        if (isLinePay && !shouldRefund) {
+                        if (Array.isArray(latestOrder.items) && latestOrder.items.length) {
+                            updates[`orders/${order.id}/items`] = latestOrder.items.map(i => ({ ...i }));
+                            if (latestOrder.total !== undefined) updates[`orders/${order.id}/total`] = latestOrder.total;
+                        }
+
+                        if (isLinePay && linePayState !== 'paid' && linePayState !== 'refunded') {
                             updates[`orders/${order.id}/paymentStatus`] = 'pending';
                             updates[`orders/${order.id}/unpaidCancelledAt`] = Date.now();
                         }
@@ -515,20 +548,21 @@
                         await update(ref(db), updates);
 
                         if (shouldRefund) {
-                            const refund = await this.requestLinePayRefund(order);
+                            const refund = await this.requestLinePayRefund(latestOrder);
                             if (refund.success) {
                                 const ts = Date.now();
                                 await update(ref(db), {
                                     [`orders/${order.id}/paymentStatus`]: 'refunded',
+                                    [`orders/${order.id}/paymentMethod`]: 'linepay_refund',
                                     [`orders/${order.id}/refundedAt`]: ts,
                                     [`linepay_transactions/${order.id}/status`]: 'refunded',
                                     [`linepay_transactions/${order.id}/refundedAt`]: ts
                                 });
-                                alert(`✅ 訂單已取消，LINE Pay 退款 $${order.total} 申請成功！\n結果碼: ${refund.returnCode || '0000'}\n退款將於數個工作日內返還顧客帳戶。`);
+                                alert(`✅ 訂單已取消，LINE Pay 退款 $${latestOrder.total || order.total || 0} 申請成功！\n結果碼: ${refund.returnCode || '0000'}\n退款將於數個工作日內返還顧客帳戶。`);
                             } else {
                                 alert('⚠️ 訂單已取消，但無法連接退款服務，請手動退款。');
                             }
-                        } else if (isLinePay) {
+                        } else if (isLinePay && linePayState !== 'refunded') {
                             await update(ref(db), {
                                 [`linepay_transactions/${order.id}/status`]: 'cancelled',
                                 [`linepay_transactions/${order.id}/cancelledAt`]: Date.now()
@@ -542,8 +576,7 @@
                     } catch (err) {
                         alert('取消訂單失敗：' + err);
                     }
-                },
-                // ★ 打烊結單：只封存今天及過去的訂單，保留未來預約
+                },                // ★ 打烊結單：只封存今天及過去的訂單，保留未來預約
                 dailyClose() {
                     const today = new Date();
                     const todayStr = today.getFullYear()+'-'+('0'+(today.getMonth()+1)).slice(-2)+'-'+('0'+today.getDate()).slice(-2);
@@ -592,6 +625,16 @@
                         // 付款方式對應
                         var pm = this.editPayMethod;
                         var realPm = (pm==='linepay_qr') ? 'linepay' : pm;
+                        var confirmBase = (this.linePayConfirmUrl || '').trim();
+                        if (confirmBase) {
+                            if (!/\/linepay-confirm\.html(\?|$)/i.test(confirmBase)) {
+                                if (/\.html(\?|$)/i.test(confirmBase)) {
+                                    confirmBase = confirmBase.replace(/\/[^/?#]+\.html(?=([?#]|$))/i, '/linepay-confirm.html');
+                                } else {
+                                    confirmBase = confirmBase.replace(/\/+$/, '') + '/linepay-confirm.html';
+                                }
+                            }
+                        }
                         // ★ 付款狀態邏輯：
                         // linepay → 重新走付款流程(pending)，等 linepay_server 確認
                         // linepay_offline → 掃碼當場付清 → paid
@@ -616,13 +659,13 @@
                             paymentStatus: newPayStatus
                         };
                         await update(ref(db, `orders/${id}`), upd);
-                        if (isLinePay && newPayStatus === 'pending' && this.linePayConfirmUrl) {
+                        if (isLinePay && newPayStatus === 'pending' && confirmBase) {
                             // ★ 重新發起 LINE Pay 付款請求
                             const { set: fbSet, ref: fbRef } = { set, ref };
                             await fbSet(fbRef(db, `linepay_requests/${id}`), {
                                 amount: upd.items ? upd.items.reduce((s,i)=>s+(i.itemTotal||0),0) : (this.editModal.total||0),
                                 items: upd.items || [],
-                                confirmBaseUrl: this.linePayConfirmUrl,
+                                confirmBaseUrl: confirmBase,
                                 returnPage: 'admin',
                                 status: 'pending',
                                 createdAt: Date.now()
