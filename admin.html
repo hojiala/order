@@ -90,6 +90,10 @@
                                         💚 LINE Pay 處理中
                                     </span>
                                 </template>
+                                <span v-else-if="order.paymentMethod==='cash' && order.paymentStatus==='paid'"
+                                    class="inline-block text-xs font-bold px-2 py-0.5 rounded-full mt-1 bg-green-100 text-green-700">
+                                    💵 現金已付款
+                                </span>
                                 <span v-else class="inline-block text-xs font-bold px-2 py-0.5 rounded-full mt-1 bg-red-100 text-red-600">
                                     ⚠️ 未付款
                                 </span>
@@ -168,7 +172,7 @@
                         <div>
                             <label class="text-sm font-bold text-gray-700 mb-2 block">💳 付款方式</label>
                             <div class="grid grid-cols-2 gap-2">
-                                <button v-for="pm in [{v:'store',l:'⚠️ 未付款'},{v:'linepay',l:'💚 LINE Pay'},{v:'linepay_qr',l:'💚 LINE Pay QR'},{v:'linepay_offline',l:'📲 掃碼 LINE Pay'},{v:'cash',l:'💵 現金'}]" :key="pm.v"
+                                <button v-for="pm in [{v:'store',l:'⚠️ 未付款'},{v:'linepay',l:'💚 LINE Pay'},{v:'linepay_qr',l:'💚 LINE Pay QR'},{v:'linepay_offline',l:'📲 掃碼 LINE Pay'},{v:'cash',l:'💵 現金已付款'}]" :key="pm.v"
                                     @click="editPayMethod=pm.v"
                                     :class="editPayMethod===pm.v ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-200 hover:border-blue-300'"
                                     class="px-3 py-2 rounded-xl border-2 font-bold text-sm transition">
@@ -420,7 +424,7 @@
                 getLinePayState(order) {
                     if (!order) return 'pending';
                     const txnState = this.lpStatus[order.id] || '';
-                    if (order.paymentStatus === 'refunded' || txnState === 'refunded' || txnState === 'cancelled') return 'refunded';
+                    if (order.paymentStatus === 'refunded' || txnState === 'refunded') return 'refunded';
                     if (order.paymentStatus === 'paid' || this.lpConfirmed[order.id] || txnState === 'confirmed') return 'paid';
                     return 'pending';
                 },
@@ -438,12 +442,12 @@
                             source: 'admin'
                         });
 
-                        for (let i = 0; i < 40; i++) {
+                        for (let i = 0; i < 60; i++) {
                             await new Promise(r => setTimeout(r, 500));
                             const snap = await get(reqRef);
                             if (!snap.exists()) continue;
                             const rv = snap.val() || {};
-                            if (rv.status === 'done') {
+                            if (rv.status === 'done' || rv.returnCode === 'ALREADY_REFUNDED') {
                                 return { success: true, returnCode: rv.returnCode || '0000' };
                             }
                             if (rv.status === 'error') {
@@ -452,16 +456,31 @@
                         }
                     } catch (_) {}
 
-                    if (this.linePayServerUrl) {
+                    const baseCandidates = [];
+                    if (this.linePayServerUrl) baseCandidates.push(this.linePayServerUrl);
+                    try {
+                        const u = new URL(window.location.href);
+                        baseCandidates.push(`${u.protocol}//${u.hostname}:5001`);
+                        baseCandidates.push(u.origin);
+                    } catch (_) {}
+                    baseCandidates.push('http://127.0.0.1:5001');
+                    baseCandidates.push('http://localhost:5001');
+
+                    const tried = new Set();
+                    for (const b of baseCandidates) {
+                        const base = (b || '').replace(/\/$/, '');
+                        if (!base || tried.has(base)) continue;
+                        tried.add(base);
                         try {
-                            const res = await fetch(this.linePayServerUrl.replace(/\/$/, '') + '/api/linepay/refund', {
+                            const res = await fetch(base + '/api/linepay/refund', {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify({ orderId: order.id, reason })
                             });
+                            if (!res.ok) continue;
                             const rd = await res.json();
-                            if (rd.success) return { success: true, returnCode: rd.returnCode || '0000' };
-                            return { success: false, error: rd.error || '退款失敗', returnCode: rd.returnCode || '' };
+                            if (rd.success || rd.returnCode === 'ALREADY_REFUNDED') return { success: true, returnCode: rd.returnCode || '0000' };
+                            if (rd.error) return { success: false, error: rd.error || '退款失敗', returnCode: rd.returnCode || '' };
                         } catch (_) {}
                     }
 
@@ -469,7 +488,8 @@
                 },
                 async cancelOrder(order) {
                     const isLinePay = order.paymentMethod === 'linepay' || order.paymentMethod === 'linepay_offline';
-                    const shouldRefund = isLinePay && this.getLinePayState(order) === 'paid';
+                    const linePayState = isLinePay ? this.getLinePayState(order) : 'pending';
+                    const shouldRefund = isLinePay && linePayState === 'paid';
 
                     if (shouldRefund) {
                         const choice = confirm(`此訂單已完成 LINE Pay 付款 $${order.total}。\n\n確定取消？\n（點「確定」同時申請 LINE Pay 退款，點「取消」放棄操作）`);
@@ -488,11 +508,8 @@
                         };
 
                         if (isLinePay && !shouldRefund) {
-                            const ts = Date.now();
-                            updates[`orders/${order.id}/paymentStatus`] = 'refunded';
-                            updates[`orders/${order.id}/refundedAt`] = ts;
-                            updates[`linepay_transactions/${order.id}/status`] = 'refunded';
-                            updates[`linepay_transactions/${order.id}/refundedAt`] = ts;
+                            updates[`orders/${order.id}/paymentStatus`] = 'pending';
+                            updates[`orders/${order.id}/unpaidCancelledAt`] = Date.now();
                         }
 
                         await update(ref(db), updates);
@@ -512,7 +529,11 @@
                                 alert('⚠️ 訂單已取消，但無法連接退款服務，請手動退款。');
                             }
                         } else if (isLinePay) {
-                            alert('✅ 訂單已取消，LINE Pay 狀態已標記為已退款。');
+                            await update(ref(db), {
+                                [`linepay_transactions/${order.id}/status`]: 'cancelled',
+                                [`linepay_transactions/${order.id}/cancelledAt`]: Date.now()
+                            });
+                            alert('✅ 訂單已取消（LINE Pay 未付款）。');
                         } else {
                             alert('訂單已取消！');
                         }
@@ -581,6 +602,8 @@
                         // 若原本已付清(LINE Pay)且仍選LINE Pay → 保留paid
                         // 若重新選LINE Pay但原本未付 → pending
                         const newPayStatus = isOffline ? 'paid'
+                            : (realPm === 'cash') ? 'paid'
+                            : (realPm === 'store') ? 'pending'
                             : (isLinePay && origPaid) ? 'paid'
                             : (isLinePay && !origPaid) ? 'pending'
                             : '';
