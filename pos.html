@@ -199,6 +199,10 @@
                           💚 LINE Pay 處理中
                       </span>
                   </template>
+                  <span v-else-if="order.paymentMethod==='cash' && order.paymentStatus==='paid'"
+                      class="inline-block text-xs font-bold px-1.5 py-0.5 rounded-full mt-0.5 bg-green-100 text-green-700">
+                      💵 現金已付款
+                  </span>
                   <span v-else class="inline-block text-xs font-bold px-1.5 py-0.5 rounded-full mt-0.5 bg-red-100 text-red-500">
                       ⚠️ 未付款
                   </span>
@@ -266,9 +270,9 @@
             <p class="text-orange-500 font-black text-sm mt-1">${{ item.itemTotal }}</p>
           </div>
           <div class="flex items-center gap-1 flex-shrink-0 mt-0.5">
-            <button @click="chgQty(idx,-1)" class="w-7 h-7 rounded-full border border-gray-200 text-gray-500 flex items-center justify-center font-bold text-base hover:bg-red-50 hover:text-red-500 transition active:scale-90">&#8722;</button>
+            <button @click.stop="chgQty(idx,-1)" class="w-7 h-7 rounded-full border border-gray-200 text-gray-500 flex items-center justify-center font-bold text-base hover:bg-red-50 hover:text-red-500 transition active:scale-90">&#8722;</button>
             <span class="w-6 text-center font-bold text-sm text-gray-800">{{ item.qty }}</span>
-            <button @click="chgQty(idx,1)" class="w-7 h-7 rounded-full border border-gray-200 text-gray-500 flex items-center justify-center font-bold text-base hover:bg-green-50 hover:text-green-500 transition active:scale-90">+</button>
+            <button @click.stop="chgQty(idx,1)" class="w-7 h-7 rounded-full border border-gray-200 text-gray-500 flex items-center justify-center font-bold text-base hover:bg-green-50 hover:text-green-500 transition active:scale-90">+</button>
           </div>
         </div>
       </div>
@@ -326,7 +330,7 @@
           <div class="col-span-2 mb-1">
             <p class="text-xs font-bold text-gray-500 mb-1.5">💳 付款方式</p>
             <div class="grid grid-cols-2 gap-1.5">
-              <button v-for="pm in [{v:'store',l:'⚠️ 未付款'},{v:'linepay',l:'💚 LINE Pay'},{v:'linepay_offline',l:'📲 掃碼 LINE Pay'},{v:'cash',l:'💵 現金'}]" :key="pm.v"
+              <button v-for="pm in [{v:'store',l:'⚠️ 未付款'},{v:'linepay',l:'💚 LINE Pay'},{v:'linepay_offline',l:'📲 掃碼 LINE Pay'},{v:'cash',l:'💵 現金已付款'}]" :key="pm.v"
                 @click="editPayMethod=pm.v"
                 :class="editPayMethod===pm.v ? 'bg-green-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'"
                 class="py-2 rounded-xl font-bold text-xs transition">{{ pm.l }}</button>
@@ -421,7 +425,7 @@
         <p class="text-amber-500 text-xs mt-3 font-medium">⏳ 等待顧客付款中...</p>
       </div>
       <div class="px-5 pb-4">
-        <button @click="showLinePayLinkModal=false" class="w-full bg-gray-100 hover:bg-gray-200 text-gray-500 font-bold py-2.5 rounded-xl text-sm transition">
+        <button @click="closeLinePayModal" class="w-full bg-gray-100 hover:bg-gray-200 text-gray-500 font-bold py-2.5 rounded-xl text-sm transition">
           關閉（付款仍在等待中）
         </button>
       </div>
@@ -659,7 +663,7 @@
             getLinePayState:function(order){
                 if(!order)return'pending';
                 var txnState=this.lpStatus[order.id]||'';
-                if(order.paymentStatus==='refunded'||txnState==='refunded'||txnState==='cancelled')return'refunded';
+                if(order.paymentStatus==='refunded'||txnState==='refunded')return'refunded';
                 if(order.paymentStatus==='paid'||this.lpConfirmed[order.id]||txnState==='confirmed')return'paid';
                 return'pending';
             },
@@ -669,26 +673,41 @@
                 var reqRef=ref(db,'linepay_refund_requests/'+order.id);
                 try{
                     await set(reqRef,{orderId:order.id,amount:Number(order.total||0),reason:reason,status:'pending',createdAt:Date.now(),source:'pos'});
-                    for(var i=0;i<40;i++){
+                    for(var i=0;i<60;i++){
                         await new Promise(function(r){setTimeout(r,500);});
                         var snap=await get(reqRef);
                         if(!snap.exists())continue;
                         var rv=snap.val()||{};
-                        if(rv.status==='done')return{success:true,returnCode:rv.returnCode||'0000'};
+                        if(rv.status==='done'||rv.returnCode==='ALREADY_REFUNDED')return{success:true,returnCode:rv.returnCode||'0000'};
                         if(rv.status==='error')return{success:false,error:rv.error||'退款失敗',returnCode:rv.returnCode||''};
                     }
                 }catch(_){ }
 
-                if(s.linePayServerUrl){
+                var bases=[];
+                if(s.linePayServerUrl)bases.push(s.linePayServerUrl);
+                try{
+                    var u=new URL(window.location.href);
+                    bases.push(u.protocol+'//'+u.hostname+':5001');
+                    bases.push(u.origin);
+                }catch(_){ }
+                bases.push('http://127.0.0.1:5001');
+                bases.push('http://localhost:5001');
+
+                var tried={};
+                for(var bi=0;bi<bases.length;bi++){
+                    var base=(bases[bi]||'').replace(/\/$/,'');
+                    if(!base||tried[base])continue;
+                    tried[base]=true;
                     try{
-                        var res=await fetch(s.linePayServerUrl.replace(/\/$/,'')+'/api/linepay/refund',{
+                        var res=await fetch(base+'/api/linepay/refund',{
                             method:'POST',
                             headers:{'Content-Type':'application/json'},
                             body:JSON.stringify({orderId:order.id,reason:reason})
                         });
+                        if(!res.ok)continue;
                         var rd=await res.json();
-                        if(rd.success)return{success:true,returnCode:rd.returnCode||'0000'};
-                        return{success:false,error:rd.error||'退款失敗',returnCode:rd.returnCode||''};
+                        if(rd.success||rd.returnCode==='ALREADY_REFUNDED')return{success:true,returnCode:rd.returnCode||'0000'};
+                        if(rd.error)return{success:false,error:rd.error||'退款失敗',returnCode:rd.returnCode||''};
                     }catch(_){ }
                 }
                 return{success:false,error:'退款服務無回應'};
@@ -698,15 +717,16 @@
                 if(!order||!order.id)return false;
 
                 var isLinePay=(order.paymentMethod==='linepay'||order.paymentMethod==='linepay_offline');
-                var shouldRefund=isLinePay&&s.getLinePayState(order)==='paid';
+                var linePayState=isLinePay?s.getLinePayState(order):'pending';
+                var shouldRefund=isLinePay&&linePayState==='paid';
 
                 if(shouldRefund){
                     if(!confirm(`此訂單已完成 LINE Pay 付款 $${order.total||0}。\n\n確定取消？\n（點「確定」同時申請 LINE Pay 退款，點「取消」放棄操作）`))return false;
                 }else{
-                    if(!confirm("確定要取消這筆訂單嗎？（將自動列印取消單至廚房）"))return false;
+                    if(!confirm('確定要取消這筆訂單嗎？（將自動列印取消單至廚房）'))return false;
                 }
 
-                var taskRef=ref(db,"orders/"+order.id+"/print_task");
+                var taskRef=ref(db,'orders/'+order.id+'/print_task');
                 await remove(taskRef);
 
                 var updates={status:'cancelled',wasCancelled:true};
@@ -715,36 +735,71 @@
                     updates.total=s.cartTotal;
                 }
                 if(isLinePay&&!shouldRefund){
-                    updates.paymentStatus='refunded';
-                    updates.refundedAt=Date.now();
+                    updates.paymentStatus='pending';
+                    updates.unpaidCancelledAt=Date.now();
                 }
-                await update(ref(db,"orders/"+order.id),updates);
+                await update(ref(db,'orders/'+order.id),updates);
 
                 if(shouldRefund){
                     var refund=await s.requestLinePayRefund(order);
                     if(refund.success){
                         var tsOk=Date.now();
                         await update(ref(db),{
-                            ["orders/"+order.id+"/paymentStatus"]:'refunded',
-                            ["orders/"+order.id+"/refundedAt"]:tsOk,
-                            ["linepay_transactions/"+order.id+"/status"]:'refunded',
-                            ["linepay_transactions/"+order.id+"/refundedAt"]:tsOk
+                            ['orders/'+order.id+'/paymentStatus']:'refunded',
+                            ['orders/'+order.id+'/refundedAt']:tsOk,
+                            ['linepay_transactions/'+order.id+'/status']:'refunded',
+                            ['linepay_transactions/'+order.id+'/refundedAt']:tsOk
                         });
-                        s.toast("✅ LINE Pay 已申請退款");
+                        s.toast('✅ LINE Pay 已申請退款');
                     }else{
-                        alert("⚠️ 訂單已取消，但無法連接退款服務，請手動退款。");
+                        alert('⚠️ 訂單已取消，但無法連接退款服務，請手動退款。');
                     }
                 }else if(isLinePay){
                     await update(ref(db),{
-                        ["linepay_transactions/"+order.id+"/status"]:'refunded',
-                        ["linepay_transactions/"+order.id+"/refundedAt"]:Date.now()
+                        ['linepay_transactions/'+order.id+'/status']:'cancelled',
+                        ['linepay_transactions/'+order.id+'/cancelledAt']:Date.now()
                     });
                 }
 
-                await set(taskRef,"cancel_"+Date.now());
-                s.toast("❌ 訂單已取消，列印取消單...");
+                await set(taskRef,'cancel_'+Date.now());
+                s.toast('❌ 訂單已取消，列印取消單...');
                 if(s.editingOrder&&s.editingOrder.id===order.id)s.exitOnline();
                 return true;
+            },
+            closeLinePayModal:async function(){
+                var s=this;
+                s.showLinePayLinkModal=false;
+                var orderId=s.pendingLinePayOrderId;
+                s.pendingLinePayUrl='';
+                s.pendingLinePayOrderId='';
+                if(!orderId)return;
+                try{
+                    var osnap=await get(ref(db,'orders/'+orderId));
+                    if(!osnap.exists())return;
+                    var ov=osnap.val()||{};
+                    var txnState=s.lpStatus[orderId]||'';
+                    var paid=(ov.paymentStatus==='paid'||s.lpConfirmed[orderId]||txnState==='confirmed');
+                    if(paid)return;
+
+                    var ts=Date.now();
+                    var orderUpd={
+                        status:ov.status==='done'?'done':'making',
+                        paymentStatus:'pending'
+                    };
+                    if(!ov.pendingPrintAt)orderUpd.pendingPrintAt=ts;
+                    await update(ref(db,'orders/'+orderId),orderUpd);
+
+                    if(!ov.pendingPrintAt){
+                        var taskRef=ref(db,'orders/'+orderId+'/print_task');
+                        await remove(taskRef);
+                        await set(taskRef,'kitchen_'+ts);
+                        s.toast('⚠️ 付款仍在等待中，已列印未付款工單');
+                    }else{
+                        s.toast('⚠️ 付款仍在等待中');
+                    }
+                }catch(e){
+                    s.toast('⚠️ 關閉付款視窗後更新失敗：'+e.message);
+                }
             },
             getQty:function(id){return this.cart.filter(function(i){return i.id===id;}).reduce(function(s,i){return s+i.qty;},0);},
             quickAdd:function(item){
@@ -824,7 +879,7 @@
             openOfflineModal:function(){
                 var s=this;
                 if(!s.cart.length){s.toast("⚠️ 購物車為空");return;}
-                if(!s.linePayConfirmUrl){s.toast("⚠️ 請先在設定中填入 LINE Pay 確認頁網址");return;}
+
                 // 先建立訂單到 Firebase，再開啟掃碼 Modal
                 s.isSubmitting=true;
                 var pickDate=s.posPickupDate||s.todayStr;
@@ -921,6 +976,11 @@
                 var pickTime=s.posPickupTime||(pickDate>s.todayStr?"":"現場取餐");
                 if(!pickTime)pickTime="預約取餐";
                 var isLinePay=(payMethod==='linepay'||payMethod==='linepay_online');
+                if(isLinePay&&!s.linePayConfirmUrl){
+                    s.isSubmitting=false;
+                    s.toast('⚠️ 請先在設定中填入 LINE Pay 確認頁網址');
+                    return;
+                }
                 // LINE Pay 訂單：status 先設 new，付款確認後 linepay_server 會改 making
                 var o={customer:s.custName||"現場",phone:s.custPhone||"",pickupDate:pickDate,pickupTime:pickTime,
                     items:s.cart.map(function(i){return Object.assign({},i);}),
@@ -937,7 +997,7 @@
                     .then(function(snap){
                         var orderId=snap.key;s.lastOrderId=orderId;
 
-                        if(isLinePay && s.linePayConfirmUrl){
+                        if(isLinePay){
                             // ★ LINE Pay：先取付款連結，付款成功後才列印
                             s.toast('⏳ 正在建立 LINE Pay 連結...');
                             set(ref(db,"linepay_requests/"+orderId),{
@@ -968,6 +1028,8 @@
                                                 if(ps.val()==='confirmed'){
                                                     unsubPay();
                                                     s.showLinePayLinkModal=false;
+                                                    s.pendingLinePayUrl='';
+                                                    s.pendingLinePayOrderId='';
                                                     s.toast('✅ LINE Pay 付款成功，工單列印中');
                                                 }
                                             });
@@ -1019,32 +1081,91 @@
             exitOnline:function(){this.orderMode="pos";this.editingOrder=null;this.cart=[];this.editPickupDate="";this.editPickupTime="";this.editOrderNote="";},
             saveOrderEdit:async function(){
                 var s=this;
-                if(!s.editingOrder||!s.cart.length){s.toast("⚠ 訂單內容為空");return;}
+                if(!s.editingOrder||!s.cart.length){s.toast('⚠ 訂單內容為空');return;}
                 s.isSubmitting=true;
                 try{
                     var id=s.editingOrder.id;
-                    var taskRef=ref(db,"orders/"+id+"/print_task");
+                    var taskRef=ref(db,'orders/'+id+'/print_task');
                     var pm=s.editPayMethod||'store';
                     var realPm=(pm==='linepay_qr')?'linepay':pm;
-                    var isLinePay=(realPm==='linepay');
-                    var isOffline=(realPm==='linepay_offline');
-                    var origPaid=(s.editingOrder.paymentStatus==='paid'||s.lpConfirmed[id]);
-                    var newPayStatus=isOffline?'paid':(isLinePay&&origPaid)?'paid':(isLinePay&&!origPaid)?'pending':'';
+                    var oldPm=s.editingOrder.paymentMethod||'store';
+                    var oldPaid=(s.editingOrder.paymentStatus==='paid'||s.lpConfirmed[id]||s.lpStatus[id]==='confirmed');
 
                     var upd={
                         items:s.cart.map(function(i){return Object.assign({},i);}),
-                        total:s.cartTotal,
-                        paymentMethod:realPm,
-                        paymentStatus:newPayStatus
+                        total:s.cartTotal
                     };
                     if(s.editPickupDate)upd.pickupDate=s.editPickupDate;
                     if(s.editPickupTime)upd.pickupTime=s.editPickupTime;
                     if(s.editOrderNote!==undefined)upd.orderNote=s.editOrderNote;
 
-                    await update(ref(db,"orders/"+id),upd);
+                    if(realPm==='cash'){
+                        upd.paymentMethod='cash';
+                        upd.paymentStatus='paid';
+                        await update(ref(db,'orders/'+id),upd);
+                        await remove(taskRef);
+                        await set(taskRef,'kitchen_'+Date.now());
+                        s.toast('✅ 已改為現金已付款，重新列印中...');
+                        s.exitOnline();
+                        return;
+                    }
 
-                    if(isLinePay&&newPayStatus==='pending'&&s.linePayConfirmUrl){
-                        await set(ref(db,"linepay_requests/"+id),{
+                    if(realPm==='store'){
+                        upd.paymentMethod='store';
+                        upd.paymentStatus='pending';
+                        await update(ref(db,'orders/'+id),upd);
+                        await remove(taskRef);
+                        await set(taskRef,'kitchen_'+Date.now());
+                        s.toast('✅ 已改為未付款，重新列印中...');
+                        s.exitOnline();
+                        return;
+                    }
+
+                    if(realPm==='linepay_offline'){
+                        upd.paymentMethod='linepay';
+                        upd.paymentStatus='pending';
+                        await update(ref(db,'orders/'+id),upd);
+                        await remove(taskRef);
+
+                        s.offlineOrderId=id;
+                        s.offlineAmount=upd.total||0;
+                        s.offlineItems=upd.items||[];
+                        s.offlineBarcode='';
+                        s.offlineError='';
+                        s.offlineSuccess='';
+                        s.showOfflineModal=true;
+                        s.exitOnline();
+                        s.$nextTick(function(){ if(s.$refs.barcodeInput) s.$refs.barcodeInput.focus(); });
+                        s.toast('📲 請掃描顧客 LINE Pay 條碼完成付款');
+                        return;
+                    }
+
+                    if(realPm==='linepay'){
+                        var keepPaid=(oldPm==='linepay'&&oldPaid);
+                        if(keepPaid){
+                            upd.paymentMethod='linepay';
+                            upd.paymentStatus='paid';
+                            await update(ref(db,'orders/'+id),upd);
+                            await remove(taskRef);
+                            await set(taskRef,'kitchen_'+Date.now());
+                            s.toast('✅ LINE Pay 已付清，重新列印中...');
+                            s.exitOnline();
+                            return;
+                        }
+
+                        upd.paymentMethod='linepay';
+                        upd.paymentStatus='pending';
+                        await update(ref(db,'orders/'+id),upd);
+                        await remove(taskRef);
+
+                        if(!s.linePayConfirmUrl){
+                            alert('⚠️ 已改為 LINE Pay 待付款，但尚未設定 LINE Pay 確認頁網址。');
+                            s.exitOnline();
+                            return;
+                        }
+
+                        s.toast('⏳ 正在建立 LINE Pay 連結...');
+                        await set(ref(db,'linepay_requests/'+id),{
                             amount:upd.total||0,
                             items:upd.items||[],
                             confirmBaseUrl:s.linePayConfirmUrl,
@@ -1052,20 +1173,54 @@
                             status:'pending',
                             createdAt:Date.now()
                         });
-                        s.toast("✅ 已儲存，已重新發起 LINE Pay 付款連結");
-                    }else{
-                        await remove(taskRef);
-                        await set(taskRef,"kitchen_"+Date.now());
-                        s.toast("✅ 修改已儲存，重新列印中...");
+
+                        var handled=false;
+                        for(var tries=0;tries<25;tries++){
+                            await new Promise(function(r){setTimeout(r,1000);});
+                            var reqSnap=await get(ref(db,'linepay_requests/'+id));
+                            if(!reqSnap.exists())continue;
+                            var r=reqSnap.val()||{};
+                            if(r.status==='ready'&&r.paymentUrl){
+                                handled=true;
+                                s.pendingLinePayUrl=r.paymentUrl;
+                                s.pendingLinePayOrderId=id;
+                                try{localStorage.setItem('linepay_return_url',window.location.href);}catch(e){}
+                                s.showLinePayLinkModal=true;
+                                s.exitOnline();
+                                var unsubPay=onValue(ref(db,'linepay_transactions/'+id+'/status'),function(ps){
+                                    if(ps.val()==='confirmed'){
+                                        unsubPay();
+                                        s.showLinePayLinkModal=false;
+                                        s.pendingLinePayUrl='';
+                                        s.pendingLinePayOrderId='';
+                                        s.toast('✅ LINE Pay 付款成功，工單列印中');
+                                    }
+                                });
+                                setTimeout(function(){unsubPay();},600000);
+                                break;
+                            }
+                            if(r.status==='error'){
+                                handled=true;
+                                var errCode=r.returnCode?(' ['+r.returnCode+']'):'';
+                                s.toast('⚠️ LINE Pay 失敗'+errCode+'：'+(r.error||'未知錯誤'));
+                                s.exitOnline();
+                                break;
+                            }
+                        }
+                        if(!handled){
+                            s.toast('⚠️ LINE Pay 逾時，請確認樹莓派服務正常');
+                            s.exitOnline();
+                        }
+                        return;
                     }
 
-                    if(isLinePay&&newPayStatus==='pending'&&!s.linePayConfirmUrl){
-                        alert("⚠️ 已改為 LINE Pay 待付款，但尚未設定 LINE Pay 確認頁網址。");
-                    }
-
+                    await update(ref(db,'orders/'+id),upd);
+                    await remove(taskRef);
+                    await set(taskRef,'kitchen_'+Date.now());
+                    s.toast('✅ 修改已儲存，重新列印中...');
                     s.exitOnline();
                 }catch(e){
-                    alert("儲存失敗："+e.message);
+                    alert('儲存失敗：'+e.message);
                 }finally{
                     s.isSubmitting=false;
                 }
