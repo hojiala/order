@@ -422,7 +422,7 @@
                         <div class="bg-gray-50 px-3 py-2 flex items-center justify-between border-b border-gray-200">
                             <div class="flex items-center gap-2">
                                 <span class="text-xs font-black text-orange-600 bg-orange-50 px-2 py-0.5 rounded">#{{ order.id ? order.id.slice(-4).toUpperCase() : '----' }}</span>
-                                <span :class="{'text-red-500': order.status==='new','text-yellow-600': order.status==='making','text-green-600': order.status==='done' || (order.status==='archived' && order.status!=='cancelled' && !order.wasCancelled),'text-gray-400': order.status==='cancelled' || (order.status==='archived' && order.wasCancelled)}" class="text-xs font-bold">{{ order.status==='archived' ? (order.wasCancelled ? '⚫ 已取消' : '🟢 已完成') : ({new:'🔴 等待接單',making:'🟡 製作中',done:'🟢 已完成',cancelled:'⚫ 已取消'}[order.status] || order.status) }}</span>
+                                <span :class="{'text-red-500': order.status==='new','text-yellow-600': order.status==='making','text-green-600': order.status==='done' || (order.status==='archived' && !order.wasCancelled),'text-gray-400': order.status==='cancelled' || (order.status==='archived' && order.wasCancelled)}" class="text-xs font-bold">{{ order.status==='archived' ? (order.wasCancelled ? '⚫ 已取消' : '🟢 已完成') : ({new:'🔴 等待接單',making:'🟡 製作中',done:'🟢 已完成',cancelled:'⚫ 已取消'}[order.status] || order.status) }}</span>
                             </div>
                             <span class="text-xs text-gray-400">{{ formatOrderTime(order.timestamp) }}</span>
                         </div>
@@ -1104,11 +1104,8 @@
                 var self = this;
                 if (!self.myOrders.length) return;
                 var changed = false;
-                var pending = 0;
                 self.myOrders.forEach(function(order) {
                     if (!order.id) return;
-                    pending++;
-                    // 讀取完整訂單資料（status + orderNo + paymentMethod + paymentStatus + wasCancelled）
                     get(ref(db, 'orders/' + order.id)).then(function(snap) {
                         if (!snap.exists()) return;
                         var data = snap.val();
@@ -1117,28 +1114,50 @@
                         if (data.paymentMethod && data.paymentMethod !== order.paymentMethod) { order.paymentMethod = data.paymentMethod; changed = true; }
                         if (data.paymentStatus && data.paymentStatus !== order.paymentStatus) { order.paymentStatus = data.paymentStatus; changed = true; }
                         if (data.wasCancelled !== undefined && data.wasCancelled !== order.wasCancelled) { order.wasCancelled = data.wasCancelled; changed = true; }
+                        // ★ LINE Pay: 若 paymentStatus 仍為 pending，額外檢查 linepay_transactions
+                        var isLP = (order.paymentMethod === 'linepay' || order.paymentMethod === 'linepay_offline' || data.paymentMethod === 'linepay' || data.paymentMethod === 'linepay_offline');
+                        if (isLP && order.paymentStatus !== 'paid') {
+                            get(ref(db, 'linepay_transactions/' + order.id + '/status')).then(function(txnSnap) {
+                                if (txnSnap.exists() && txnSnap.val() === 'confirmed') {
+                                    order.paymentStatus = 'paid';
+                                    changed = true;
+                                    self._saveMyOrdersToStorage();
+                                }
+                            }).catch(function() {});
+                        }
                     }).catch(function() {});
                 });
-                // 更新 localStorage
                 setTimeout(function() {
-                    if (changed) {
-                        try {
-                            var saved = JSON.parse(localStorage.getItem('my_orders') || '[]');
-                            self.myOrders.forEach(function(o) {
-                                saved.forEach(function(s) { if (s.id === o.id) { s.status = o.status; s.orderNo = o.orderNo; s.paymentMethod = o.paymentMethod; s.paymentStatus = o.paymentStatus; s.wasCancelled = o.wasCancelled; } });
-                            });
-                            localStorage.setItem('my_orders', JSON.stringify(saved));
-                        } catch(e) {}
-                    }
-                }, 2000);
+                    if (changed) self._saveMyOrdersToStorage();
+                }, 2500);
+            },
+            _saveMyOrdersToStorage: function() {
+                try {
+                    var saved = JSON.parse(localStorage.getItem('my_orders') || '[]');
+                    this.myOrders.forEach(function(o) {
+                        saved.forEach(function(s) {
+                            if (s.id === o.id) {
+                                s.status = o.status; s.orderNo = o.orderNo;
+                                s.paymentMethod = o.paymentMethod; s.paymentStatus = o.paymentStatus;
+                                s.wasCancelled = o.wasCancelled;
+                            }
+                        });
+                    });
+                    localStorage.setItem('my_orders', JSON.stringify(saved));
+                } catch(e) {}
             },
             // ★ 自動輪詢：每 8 秒自動更新訂單狀態
             startAutoRefresh: function() {
                 var self = this;
                 if (self.refreshTimer) return;
+                // ★ 頁面載入時立即執行一次，確保 LINE Pay 狀態即時更新
+                setTimeout(function() { self.tryRefreshOrderStatus(); }, 2000);
                 self.refreshTimer = setInterval(function() {
                     if (!self.myOrders.length) return;
-                    var hasActive = self.myOrders.some(function(o) { return o.status === 'new' || o.status === 'making'; });
+                    var hasActive = self.myOrders.some(function(o) {
+                        return o.status === 'new' || o.status === 'making' ||
+                            ((o.paymentMethod === 'linepay' || o.paymentMethod === 'linepay_offline') && o.paymentStatus !== 'paid');
+                    });
                     if (hasActive) self.tryRefreshOrderStatus();
                 }, 8000);
             },
@@ -1292,7 +1311,6 @@
                     var hh = ('0'+now.getHours()).slice(-2);
                     var mm = ('0'+now.getMinutes()).slice(-2);
                     var nowDate = now.getFullYear() + '/' + ('0'+(now.getMonth()+1)).slice(-2) + '/' + ('0'+now.getDate()).slice(-2);
-                    // 取餐時間含日期和星期
                     var pickupDateObj = self.pickupDate ? new Date(self.pickupDate + 'T00:00:00') : now;
                     var dayNames = ['星期日','星期一','星期二','星期三','星期四','星期五','星期六'];
                     var pickupDateStr = pickupDateObj.getFullYear() + '/' + ('0'+(pickupDateObj.getMonth()+1)).slice(-2) + '/' + ('0'+pickupDateObj.getDate()).slice(-2);
