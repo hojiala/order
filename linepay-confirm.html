@@ -41,8 +41,9 @@ body{font-family:"Helvetica Neue",Arial,"PingFang TC","Microsoft JhengHei",sans-
     <div class="icon">✅</div>
     <p class="title">付款成功！</p>
     <p class="msg">感謝您使用 LINE Pay 付款</p>
-    <div class="orderno" id="orderInfo"></div>
-    <br><br>
+    <p class="msg" id="pickupTimeInfo" style="display:none;color:#333;font-weight:500;margin-bottom:4px;"></p>
+    <p class="msg" id="orderTimeInfo" style="display:none;color:#333;font-weight:500;margin-bottom:8px;"></p>
+    <p id="phoneReminder" style="display:none;font-size:18px;font-weight:900;color:#f97316;margin-bottom:20px;">取餐請告知電話末3碼</p>
     <a class="btn" id="backBtn" href="javascript:void(0)">返回點餐頁面</a>
   </div>
 
@@ -236,20 +237,47 @@ async function processPayment() {
     }
 
     if (confirmed) {
-      // 取得訂單編號
-      const orderSnap = await get(ref(db, `orders/${orderId}/orderNo`));
-      const orderNo = orderSnap.exists() ? orderSnap.val() : '';
-      if (orderNo) {
-        document.getElementById('orderInfo').textContent =
-          `訂單 No.${String(orderNo).padStart(3, '0')}`;
-      } else {
-        document.getElementById('orderInfo').textContent =
-          `訂單 #${orderId.slice(-4).toUpperCase()}`;
-      }
+      // 取得訂單資料（取餐時間、下單時間）
+      try {
+        const orderSnap = await get(ref(db, `orders/${orderId}`));
+        if (orderSnap.exists()) {
+          const orderData = orderSnap.val();
+          const dayNames = ['星期日','星期一','星期二','星期三','星期四','星期五','星期六'];
+          // 取餐時間
+          if (orderData.pickupDate || orderData.pickupTime) {
+            let pickupStr = '';
+            if (orderData.pickupDate) {
+              const pd = new Date(orderData.pickupDate + 'T00:00:00');
+              const pyyyy = pd.getFullYear();
+              const pmm = String(pd.getMonth()+1).padStart(2,'0');
+              const pdd = String(pd.getDate()).padStart(2,'0');
+              const dow = dayNames[pd.getDay()];
+              pickupStr = `${pyyyy}/${pmm}/${pdd}(${dow}) ${orderData.pickupTime || ''}`;
+            } else {
+              pickupStr = orderData.pickupTime || '';
+            }
+            const pickupEl = document.getElementById('pickupTimeInfo');
+            pickupEl.textContent = '取餐時間：' + pickupStr;
+            pickupEl.style.display = 'block';
+          }
+          // 下單時間
+          if (orderData.timestamp) {
+            const od = new Date(orderData.timestamp);
+            const oyyyy = od.getFullYear();
+            const omm = String(od.getMonth()+1).padStart(2,'0');
+            const odd = String(od.getDate()).padStart(2,'0');
+            const ohh = String(od.getHours()).padStart(2,'0');
+            const omin = String(od.getMinutes()).padStart(2,'0');
+            const orderTimeEl = document.getElementById('orderTimeInfo');
+            orderTimeEl.textContent = '下單時間：' + `${oyyyy}/${omm}/${odd} ${ohh}:${omin}`;
+            orderTimeEl.style.display = 'block';
+          }
+        }
+      } catch(e) { console.error('讀取訂單資料失敗:', e); }
+      document.getElementById('phoneReminder').style.display = 'block';
       showView('success');
     } else {
       // 超時但可能仍在處理中
-      document.getElementById('orderInfo').textContent = '付款正在處理中';
       document.getElementById('success').querySelector('.title').textContent = '付款處理中';
       document.getElementById('success').querySelector('.msg').textContent =
         '您的付款正在確認中，請稍後在訂單中查看付款狀態';
