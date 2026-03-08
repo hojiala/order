@@ -421,8 +421,8 @@
                     <div v-for="order in myOrders" :key="order.id" class="border border-gray-200 rounded-xl overflow-hidden">
                         <div class="bg-gray-50 px-3 py-2 flex items-center justify-between border-b border-gray-200">
                             <div class="flex items-center gap-2">
-                                <span class="text-xs font-black text-orange-600 bg-orange-50 px-2 py-0.5 rounded">No.{{ order.orderNo ? String(order.orderNo).padStart(3,'0') : '---' }}</span>
-                                <span :class="{'text-red-500': order.status==='new','text-yellow-600': order.status==='making','text-green-600': order.status==='done','text-gray-400': order.status==='cancelled'}" class="text-xs font-bold">{{ {new:'🔴 等待接單',making:'🟡 製作中',done:'🟢 已完成',cancelled:'⚫ 已取消'}[order.status] || order.status }}</span>
+                                <span class="text-xs font-black text-orange-600 bg-orange-50 px-2 py-0.5 rounded">#{{ order.id ? order.id.slice(-4).toUpperCase() : '----' }}</span>
+                                <span :class="{'text-red-500': order.status==='new','text-yellow-600': order.status==='making','text-green-600': order.status==='done' || (order.status==='archived' && order.status!=='cancelled' && !order.wasCancelled),'text-gray-400': order.status==='cancelled' || (order.status==='archived' && order.wasCancelled)}" class="text-xs font-bold">{{ order.status==='archived' ? (order.wasCancelled ? '⚫ 已取消' : '🟢 已完成') : ({new:'🔴 等待接單',making:'🟡 製作中',done:'🟢 已完成',cancelled:'⚫ 已取消'}[order.status] || order.status) }}</span>
                             </div>
                             <span class="text-xs text-gray-400">{{ formatOrderTime(order.timestamp) }}</span>
                         </div>
@@ -435,7 +435,10 @@
                                 <div v-if="item.note" class="text-xs text-blue-500 pl-5">📝 {{ item.note }}</div>
                             </div>
                             <div class="flex justify-between items-center mt-1 pt-1 border-t border-gray-100">
-                                <span class="text-xs text-gray-400">取餐：{{ order.pickupTime }}</span>
+                                <div>
+                                    <span class="text-xs text-gray-400">取餐：{{ order.pickupDate ? order.pickupDate + ' ' : '' }}{{ order.pickupTime }}</span>
+                                    <span class="text-xs ml-2" :class="(order.paymentMethod==='linepay'||order.paymentMethod==='linepay_offline') ? (order.paymentStatus==='paid' ? 'text-green-600 font-bold' : 'text-blue-500') : 'text-gray-400'">{{ (order.paymentMethod==='linepay'||order.paymentMethod==='linepay_offline') ? (order.paymentStatus==='paid' ? 'LINE Pay (已付清)' : 'LINE Pay (待付款)') : '店內付款 (未付款)' }}</span>
+                                </div>
                                 <span class="text-orange-500 font-black text-sm">${{ order.total }}</span>
                             </div>
                             <div class="mt-2">
@@ -526,12 +529,13 @@
         <div class="bg-white rounded-2xl shadow-2xl mx-5 overflow-hidden" style="max-width:22rem;width:100%;">
             <div class="bg-orange-500 px-5 py-3 flex items-center gap-2">
                 <span style="font-size:1.25rem;">🍳</span>
-                <span class="text-white font-black text-base">元氣早午餐</span>
+                <span class="text-white font-black text-base">元氣早午餐善化中山店</span>
             </div>
             <div class="px-6 py-5">
                 <p class="text-gray-800 font-bold text-base mb-1">✅ 訂單已送出！</p>
                 <p class="text-gray-500 text-sm mt-2">取餐時間：<span class="text-orange-500 font-bold">{{ successPickupTime }}</span></p>
                 <p class="text-gray-500 text-sm mt-1">下單時間：<span class="font-medium">{{ successOrderTime }}</span></p>
+                <p class="text-orange-600 mt-3" style="font-size:1rem;font-weight:900;">取餐請告知電話末3碼</p>
             </div>
             <div class="px-5 pb-4 flex justify-end">
                 <button @click="showSuccessModal = false"
@@ -1054,7 +1058,12 @@
             formatOrderTime: function(ts) {
                 if (!ts) return '';
                 var d = new Date(ts);
-                return ('0'+d.getHours()).slice(-2) + ':' + ('0'+d.getMinutes()).slice(-2);
+                var yyyy = d.getFullYear();
+                var mm = ('0'+(d.getMonth()+1)).slice(-2);
+                var dd = ('0'+d.getDate()).slice(-2);
+                var hh = ('0'+d.getHours()).slice(-2);
+                var min = ('0'+d.getMinutes()).slice(-2);
+                return yyyy + '/' + mm + '/' + dd + ' ' + hh + ':' + min;
             },
             loadMyOrders: function() {
                 try {
@@ -1098,14 +1107,16 @@
                 var pending = 0;
                 self.myOrders.forEach(function(order) {
                     if (!order.id) return;
-                    if (order.status === 'done' || order.status === 'cancelled' || order.status === 'archived') return;
                     pending++;
-                    // 讀取完整訂單資料（status + orderNo）
+                    // 讀取完整訂單資料（status + orderNo + paymentMethod + paymentStatus + wasCancelled）
                     get(ref(db, 'orders/' + order.id)).then(function(snap) {
                         if (!snap.exists()) return;
                         var data = snap.val();
                         if (data.status && data.status !== order.status) { order.status = data.status; changed = true; }
                         if (data.orderNo && data.orderNo !== order.orderNo) { order.orderNo = data.orderNo; changed = true; }
+                        if (data.paymentMethod && data.paymentMethod !== order.paymentMethod) { order.paymentMethod = data.paymentMethod; changed = true; }
+                        if (data.paymentStatus && data.paymentStatus !== order.paymentStatus) { order.paymentStatus = data.paymentStatus; changed = true; }
+                        if (data.wasCancelled !== undefined && data.wasCancelled !== order.wasCancelled) { order.wasCancelled = data.wasCancelled; changed = true; }
                     }).catch(function() {});
                 });
                 // 更新 localStorage
@@ -1114,7 +1125,7 @@
                         try {
                             var saved = JSON.parse(localStorage.getItem('my_orders') || '[]');
                             self.myOrders.forEach(function(o) {
-                                saved.forEach(function(s) { if (s.id === o.id) { s.status = o.status; s.orderNo = o.orderNo; } });
+                                saved.forEach(function(s) { if (s.id === o.id) { s.status = o.status; s.orderNo = o.orderNo; s.paymentMethod = o.paymentMethod; s.paymentStatus = o.paymentStatus; s.wasCancelled = o.wasCancelled; } });
                             });
                             localStorage.setItem('my_orders', JSON.stringify(saved));
                         } catch(e) {}
@@ -1280,8 +1291,14 @@
                     var now = new Date();
                     var hh = ('0'+now.getHours()).slice(-2);
                     var mm = ('0'+now.getMinutes()).slice(-2);
-                    self.successPickupTime = self.pickupTime;
-                    self.successOrderTime = hh + ':' + mm;
+                    var nowDate = now.getFullYear() + '/' + ('0'+(now.getMonth()+1)).slice(-2) + '/' + ('0'+now.getDate()).slice(-2);
+                    // 取餐時間含日期和星期
+                    var pickupDateObj = self.pickupDate ? new Date(self.pickupDate + 'T00:00:00') : now;
+                    var dayNames = ['星期日','星期一','星期二','星期三','星期四','星期五','星期六'];
+                    var pickupDateStr = pickupDateObj.getFullYear() + '/' + ('0'+(pickupDateObj.getMonth()+1)).slice(-2) + '/' + ('0'+pickupDateObj.getDate()).slice(-2);
+                    var pickupDayOfWeek = dayNames[pickupDateObj.getDay()];
+                    self.successPickupTime = pickupDateStr + '(' + pickupDayOfWeek + ') ' + self.pickupTime;
+                    self.successOrderTime = nowDate + ' ' + hh + ':' + mm;
                     self.showSuccessModal = true;
                     self.cart = [];
                     try { localStorage.removeItem('cart_items'); } catch(e) {}
