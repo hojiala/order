@@ -218,9 +218,11 @@
                 </div>
             </div>
         </div>
+        <!-- Toast -->
+        <div v-if="toastMsg" class="fixed bottom-6 left-1/2 -translate-x-1/2 z-[999] pointer-events-none">
+            <div class="bg-gray-900 text-white text-sm font-bold px-5 py-2.5 rounded-full shadow-xl whitespace-nowrap">{{ toastMsg }}</div>
+        </div>
     </div>
-
-    <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
         import { getDatabase, ref, onValue, update, set, get, remove, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
         import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
@@ -261,6 +263,7 @@
                     assigningNos: {},
                     linePayServerUrl: '',
                     linePayConfirmUrl: '',
+                    toastMsg: '', toastTimer: null,
                     alertSound: new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg')
                 }
             },
@@ -299,9 +302,10 @@
                 });
             },
             methods: {
+                toast(msg) { this.toastMsg = msg; clearTimeout(this.toastTimer); this.toastTimer = setTimeout(() => { this.toastMsg = ''; }, 4000); },
                 async login() {
                     try { await signInWithEmailAndPassword(auth, this.email, this.password); } 
-                    catch (error) { alert("登入失敗，請檢查信箱與密碼。"); }
+                    catch (error) { this.toast('❌ 登入失敗，請檢查信箱與密碼'); }
                 },
                 async logout() {
                     try { await signOut(auth); } catch (error) { console.error("登出失敗", error); }
@@ -396,7 +400,7 @@
                 updateStatus(orderId, newStatus) {
                     const updates = {};
                     updates[`orders/${orderId}/status`] = newStatus;
-                    update(ref(db), updates).catch(err => alert("更新狀態失敗"));
+                    update(ref(db), updates).catch(err => this.toast("❌ 更新狀態失敗"));
                 },
                 async printOrder(order) {
                     // ★ 修復問題 2 & 3：先清空 print_task，再寫入新值（含時間戳記）
@@ -407,7 +411,7 @@
                         await set(taskRef, `kitchen_${Date.now()}`);
                         console.log("廚房工單補印指令發送成功");
                     } catch (err) {
-                        alert("補印工單失敗：" + err);
+                        this.toast("❌ 補印工單失敗：" + err);
                     }
                 },
                 async printReceipt(order) {
@@ -418,7 +422,7 @@
                         await set(taskRef, `receipt_${Date.now()}`);
                         console.log("客戶收據列印指令發送成功");
                     } catch (err) {
-                        alert("印收據失敗：" + err);
+                        this.toast("❌ 印收據失敗：" + err);
                     }
                 },
                 getLinePayState(order) {
@@ -567,24 +571,24 @@
                                     [`linepay_transactions/${order.id}/status`]: 'refunded',
                                     [`linepay_transactions/${order.id}/refundedAt`]: ts
                                 });
-                                alert(`✅ 訂單已取消，LINE Pay 退款 $${latestOrder.total || order.total || 0} 申請成功！\n結果碼: ${refund.returnCode || '0000'}\n退款將於數個工作日內返還顧客帳戶。`);
+                                this.toast(`✅ LINE Pay 退款 $${latestOrder.total || order.total || 0} 申請成功`);
                             } else {
-                                alert('⚠️ 訂單已取消，但退款失敗：'+(refund.error||'服務無回應')+'。請手動退款。');
+                                this.toast('⚠️ 退款失敗：'+(refund.error||'服務無回應')+'，請手動退款');
                             }
                         } else if (isLinePay && linePayState !== 'refunded') {
                             await update(ref(db), {
                                 [`linepay_transactions/${order.id}/status`]: 'cancelled',
                                 [`linepay_transactions/${order.id}/cancelledAt`]: Date.now()
                             });
-                            alert('✅ 訂單已取消（LINE Pay 未付款）。');
+                            this.toast('✅ 訂單已取消（LINE Pay 未付款）');
                         } else {
-                            alert('訂單已取消！');
+                            this.toast('✅ 訂單已取消');
                         }
 
                         if (shouldRefund) await new Promise(r => setTimeout(r, 900));
                         await set(taskRef, `cancel_${Date.now()}`);
                     } catch (err) {
-                        alert('取消訂單失敗：' + err);
+                        this.toast('❌ 取消訂單失敗：' + err);
                     }
                 },                // ★ 打烊結單：只封存今天及過去的訂單，保留未來預約
                 dailyClose() {
@@ -608,12 +612,12 @@
                             updates['orders/' + o.id + '/status'] = 'archived';
                         }
                     });
-                    if (!Object.keys(updates).length) { alert("✅ 目前沒有需要結單的訂單"); return; }
+                    if (!Object.keys(updates).length) { this.toast("✅ 目前沒有需要結單的訂單"); return; }
                     update(ref(db), updates).then(() => {
                         var msg = "✅ 結單完成！辛苦了！";
                         if (futureCount > 0) msg += "\n（" + futureCount + " 筆未來預約訂單已保留）";
-                        alert(msg);
-                    }).catch(err => alert("結單失敗：" + err));
+                        this.toast(msg);
+                    }).catch(err => this.toast("❌ 結單失敗：" + err));
                 },
                 playAlert() {
                     this.alertSound.currentTime = 0;
@@ -680,14 +684,14 @@
                                 status: 'pending',
                                 createdAt: Date.now()
                             });
-                            alert(`✅ 儲存完成。\n已重新發起 LINE Pay 付款請求，請等待顧客付款後工單將自動列印。`);
+                            this.toast('✅ 儲存完成，已重新發起 LINE Pay 付款請求');
                         } else {
                             await remove(taskRef);
                             await set(taskRef, `kitchen_${Date.now()}`);
                         }
                         this.editModal = null;
                     } catch (err) {
-                        alert('儲存失敗：' + err.message);
+                        this.toast('❌ 儲存失敗：' + err.message);
                     } finally {
                         this.editSaving = false;
                     }
