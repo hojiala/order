@@ -434,6 +434,7 @@
                                 </div>
                                 <div v-if="item.note" class="text-xs text-blue-500 pl-5">📝 {{ item.note }}</div>
                             </div>
+                            <div v-if="order.orderNote" class="text-xs text-purple-600 bg-purple-50 px-2 py-1 rounded mt-1">📋 {{ order.orderNote }}</div>
                             <div class="flex justify-between items-center mt-1 pt-1 border-t border-gray-100">
                                 <div>
                                     <span class="text-xs text-gray-400">取餐：{{ order.pickupDate ? order.pickupDate + ' ' : '' }}{{ order.pickupTime }}</span>
@@ -442,7 +443,7 @@
                                 </div>
                                 <span class="text-orange-500 font-black text-sm">${{ order.total }}</span>
                             </div>
-                            <div class="mt-2 flex gap-2" v-if="order.status!=='cancelled' && order.status!=='archived'">
+                            <div class="mt-2 flex gap-2" v-if="order.status!=='archived'">
                                 <button @click="reorderItems(order)" class="flex-1 bg-orange-50 hover:bg-orange-100 border border-orange-200 text-orange-600 font-bold text-xs py-2 rounded-xl transition">🔁 再訂1次</button>
                                 <button v-if="order.status==='new'||order.status==='making'" @click="cancelMyOrder(order)" class="flex-1 bg-red-50 hover:bg-red-100 border border-red-200 text-red-500 font-bold text-xs py-2 rounded-xl transition">❌ 取消</button>
                             </div>
@@ -502,7 +503,7 @@
         </div>
     </div>
 
-    <!-- ★ 確認 Modal (取代所有 confirm) -->
+    <!-- ★ 確認 Modal (取代 confirm) -->
     <div v-if="showConfirmDialog"
          class="fixed inset-0 z-[1001] flex items-center justify-center"
          style="background:rgba(0,0,0,0.45);">
@@ -1136,19 +1137,18 @@
                         if (data.orderNo && data.orderNo !== order.orderNo) { order.orderNo = data.orderNo; changed = true; }
                         if (data.paymentMethod && data.paymentMethod !== order.paymentMethod) { order.paymentMethod = data.paymentMethod; changed = true; }
                         if (data.wasCancelled !== undefined && data.wasCancelled !== order.wasCancelled) { order.wasCancelled = data.wasCancelled; changed = true; }
-                        // ★ paymentStatus: 只升級不降級（paid 不會被覆蓋成 pending，避免閃爍）
-                        if (data.paymentStatus === 'paid' && order.paymentStatus !== 'paid' && order.paymentStatus !== 'refunded') { order.paymentStatus = 'paid'; changed = true; }
-                        else if (data.paymentStatus === 'refunded' && order.paymentStatus !== 'refunded') { order.paymentStatus = 'refunded'; changed = true; }
+                        // ★ paymentStatus 只升級不降級
+                        if (data.paymentStatus === 'refunded' && order.paymentStatus !== 'refunded') { order.paymentStatus = 'refunded'; changed = true; }
+                        else if (data.paymentStatus === 'paid' && order.paymentStatus !== 'paid' && order.paymentStatus !== 'refunded') { order.paymentStatus = 'paid'; changed = true; }
                         else if (!order.paymentStatus && data.paymentStatus) { order.paymentStatus = data.paymentStatus; changed = true; }
-                        // ★ LINE Pay: 額外檢查 linepay_transactions 確認付款
-                        var isLP = (data.paymentMethod === 'linepay' || data.paymentMethod === 'linepay_offline' || data.paymentMethod === 'linepay_refund' || order.paymentMethod === 'linepay' || order.paymentMethod === 'linepay_offline');
+                        // ★ LINE Pay: 額外檢查 linepay_transactions
+                        var isLP = (data.paymentMethod === 'linepay' || data.paymentMethod === 'linepay_offline' || data.paymentMethod === 'linepay_refund');
                         if (isLP && order.paymentStatus !== 'paid' && order.paymentStatus !== 'refunded') {
                             get(ref(db, 'linepay_transactions/' + order.id + '/status')).then(function(txnSnap) {
-                                if (txnSnap.exists()) {
-                                    var txnSt = txnSnap.val();
-                                    if (txnSt === 'confirmed' && order.paymentStatus !== 'paid') { order.paymentStatus = 'paid'; self._saveMyOrdersToStorage(); }
-                                    if (txnSt === 'refunded' && order.paymentStatus !== 'refunded') { order.paymentStatus = 'refunded'; self._saveMyOrdersToStorage(); }
-                                }
+                                if (!txnSnap.exists()) return;
+                                var txnSt = txnSnap.val();
+                                if (txnSt === 'confirmed' && order.paymentStatus !== 'paid') { order.paymentStatus = 'paid'; self._saveMyOrdersToStorage(); }
+                                if (txnSt === 'refunded' && order.paymentStatus !== 'refunded') { order.paymentStatus = 'refunded'; self._saveMyOrdersToStorage(); }
                             }).catch(function() {});
                         }
                     }).catch(function() {});
@@ -1159,20 +1159,15 @@
                 try {
                     var saved = JSON.parse(localStorage.getItem('my_orders') || '[]');
                     this.myOrders.forEach(function(o) {
-                        saved.forEach(function(s) {
-                            if (s.id === o.id) { s.status = o.status; s.orderNo = o.orderNo; s.paymentMethod = o.paymentMethod; s.paymentStatus = o.paymentStatus; s.wasCancelled = o.wasCancelled; }
-                        });
+                        saved.forEach(function(s) { if (s.id === o.id) { s.status = o.status; s.orderNo = o.orderNo; s.paymentMethod = o.paymentMethod; s.paymentStatus = o.paymentStatus; s.wasCancelled = o.wasCancelled; } });
                     });
                     localStorage.setItem('my_orders', JSON.stringify(saved));
                 } catch(e) {}
             },
             showConfirmModal: function(title, msg, callback) {
-                this.confirmDialogTitle = title;
-                this.confirmDialogMsg = msg;
-                this.confirmDialogCallback = callback;
-                this.showConfirmDialog = true;
+                this.confirmDialogTitle = title; this.confirmDialogMsg = msg; this.confirmDialogCallback = callback; this.showConfirmDialog = true;
             },
-            // ★ 自動輪詢：每 8 秒自動更新訂單狀態
+            // ★ 自動輪詢
             startAutoRefresh: function() {
                 var self = this;
                 if (self.refreshTimer) return;
@@ -1226,40 +1221,33 @@
                     ? '此訂單已完成 LINE Pay 付款 $' + order.total + '，取消後將自動申請退款至您的 LINE Pay 帳戶。\n\n確定要取消嗎？'
                     : '確定要取消這筆訂單嗎？';
                 self.showConfirmModal('取消訂單', msgText, function() {
-                    // 先設為取消狀態
                     var upd = { status: 'cancelled', wasCancelled: true, cancelledBy: 'customer', cancelledAt: Date.now() };
+                    // ★ LINE Pay 已付清：先標記退款狀態，再觸發列印，確保工單顯示「已退款」
+                    if (isLinePayPaid) {
+                        upd.paymentMethod = 'linepay_refund';
+                        upd.paymentStatus = 'refunded';
+                    }
                     update(ref(db, 'orders/' + order.id), upd).then(function() {
                         order.status = 'cancelled';
                         order.wasCancelled = true;
-                        // 觸發列印取消單
-                        set(ref(db, 'orders/' + order.id + '/print_task'), 'cancel_' + Date.now());
                         if (isLinePayPaid) {
-                            // ★ LINE Pay 退款：寫入退款請求，由樹莓派背景工作處理
+                            order.paymentMethod = 'linepay_refund';
+                            order.paymentStatus = 'refunded';
+                            // ★ 寫入退款請求，由樹莓派背景工作處理實際退款
                             set(ref(db, 'linepay_refund_requests/' + order.id), {
                                 orderId: order.id, amount: Number(order.total || 0),
                                 reason: '顧客自行取消', status: 'pending', createdAt: Date.now(), source: 'customer'
                             });
+                        }
+                        // ★ 觸發列印取消單（此時 paymentMethod 已更新為 linepay_refund）
+                        var taskRef = ref(db, 'orders/' + order.id + '/print_task');
+                        set(taskRef, 'cancel_' + Date.now());
+                        self._saveMyOrdersToStorage();
+                        if (isLinePayPaid) {
                             self.showAlertModal('訂單已取消', '退款已送出申請，LINE Pay 退款將自動處理，款項約 1-3 個工作天退回。');
-                            // 輪詢退款結果
-                            var refundPoll = setInterval(function() {
-                                get(ref(db, 'linepay_refund_requests/' + order.id)).then(function(snap) {
-                                    if (!snap.exists()) return;
-                                    var rv = snap.val() || {};
-                                    if (rv.status === 'done') {
-                                        clearInterval(refundPoll);
-                                        order.paymentStatus = 'refunded';
-                                        order.paymentMethod = 'linepay_refund';
-                                        self._saveMyOrdersToStorage();
-                                    } else if (rv.status === 'error') {
-                                        clearInterval(refundPoll);
-                                    }
-                                }).catch(function() {});
-                            }, 2000);
-                            setTimeout(function() { clearInterval(refundPoll); }, 30000);
                         } else {
                             self.showAlertModal('已取消', '訂單已取消，感謝您的通知！');
                         }
-                        self._saveMyOrdersToStorage();
                     }).catch(function(e) {
                         self.showAlertModal('取消失敗', '無法取消訂單：' + e.message);
                     });
@@ -1303,8 +1291,9 @@
                     var nowMin = now.getHours() * 60 + now.getMinutes();
                     var pParts = this.pickupTime.split(':');
                     var pickupMin = parseInt(pParts[0]) * 60 + parseInt(pParts[1]);
-                    // ★ 只在取餐時間已經「真正過了」才攔截（不再用緩衝時間重複驗證）
+                    // ★ 只在取餐時間已經「真正過了」才攔截
                     if (pickupMin <= nowMin) {
+                        // 自動更新時間清單並提示顧客重選
                         this.updateAvailableTimes();
                         this.showAlertModal('取餐時間已過', '您選擇的取餐時間「' + this.pickupTime + '」已過期，已自動更新為最早可取餐時間，請確認後再送出。');
                         return;
