@@ -441,8 +441,9 @@
                                 </div>
                                 <span class="text-orange-500 font-black text-sm">${{ order.total }}</span>
                             </div>
-                            <div class="mt-2">
-                                <button @click="reorderItems(order)" class="w-full bg-orange-50 hover:bg-orange-100 border border-orange-200 text-orange-600 font-bold text-xs py-2 rounded-xl transition">🔁 再訂1次</button>
+                            <div class="mt-2 flex gap-2" v-if="order.status!=='cancelled' && order.status!=='archived'">
+                                <button @click="reorderItems(order)" class="flex-1 bg-orange-50 hover:bg-orange-100 border border-orange-200 text-orange-600 font-bold text-xs py-2 rounded-xl transition">🔁 再訂1次</button>
+                                <button v-if="order.status==='new'||order.status==='making'" @click="cancelMyOrder(order)" class="flex-1 bg-red-50 hover:bg-red-100 border border-red-200 text-red-500 font-bold text-xs py-2 rounded-xl transition">❌ 取消</button>
                             </div>
                         </div>
                     </div>
@@ -722,7 +723,8 @@
                             holidays: s.holidays || [],
                             weeklyDaysOff: s.weeklyDaysOff || [],
                             orderCooldownEnabled: s.orderCooldownEnabled !== false,
-                            orderCooldownSecs: s.orderCooldownSecs || 300
+                            orderCooldownSecs: s.orderCooldownSecs || 300,
+                            cancelLimitMinutes: s.cancelLimitMinutes || 15
                         };
                         self.storeInfo = s.storeInfo || '';
                         self.storePhone = s.storePhone || '';
@@ -1058,12 +1060,7 @@
             formatOrderTime: function(ts) {
                 if (!ts) return '';
                 var d = new Date(ts);
-                var yyyy = d.getFullYear();
-                var mm = ('0'+(d.getMonth()+1)).slice(-2);
-                var dd = ('0'+d.getDate()).slice(-2);
-                var hh = ('0'+d.getHours()).slice(-2);
-                var min = ('0'+d.getMinutes()).slice(-2);
-                return yyyy + '/' + mm + '/' + dd + ' ' + hh + ':' + min;
+                return d.getFullYear() + '/' + ('0'+(d.getMonth()+1)).slice(-2) + '/' + ('0'+d.getDate()).slice(-2) + ' ' + ('0'+d.getHours()).slice(-2) + ':' + ('0'+d.getMinutes()).slice(-2);
             },
             loadMyOrders: function() {
                 try {
@@ -1112,35 +1109,31 @@
                         if (data.status && data.status !== order.status) { order.status = data.status; changed = true; }
                         if (data.orderNo && data.orderNo !== order.orderNo) { order.orderNo = data.orderNo; changed = true; }
                         if (data.paymentMethod && data.paymentMethod !== order.paymentMethod) { order.paymentMethod = data.paymentMethod; changed = true; }
-                        if (data.paymentStatus && data.paymentStatus !== order.paymentStatus) { order.paymentStatus = data.paymentStatus; changed = true; }
                         if (data.wasCancelled !== undefined && data.wasCancelled !== order.wasCancelled) { order.wasCancelled = data.wasCancelled; changed = true; }
-                        // ★ LINE Pay: 若 paymentStatus 仍為 pending，額外檢查 linepay_transactions
-                        var isLP = (order.paymentMethod === 'linepay' || order.paymentMethod === 'linepay_offline' || data.paymentMethod === 'linepay' || data.paymentMethod === 'linepay_offline');
-                        if (isLP && order.paymentStatus !== 'paid') {
+                        // ★ paymentStatus: 只升級不降級（避免 paid → pending 閃爍）
+                        if (data.paymentStatus === 'paid' && order.paymentStatus !== 'paid') { order.paymentStatus = 'paid'; changed = true; }
+                        else if (data.paymentStatus === 'refunded') { order.paymentStatus = 'refunded'; changed = true; }
+                        else if (!order.paymentStatus && data.paymentStatus) { order.paymentStatus = data.paymentStatus; changed = true; }
+                        // ★ LINE Pay: 額外檢查 linepay_transactions 確認付款
+                        var isLP = (data.paymentMethod === 'linepay' || data.paymentMethod === 'linepay_offline' || order.paymentMethod === 'linepay' || order.paymentMethod === 'linepay_offline');
+                        if (isLP && order.paymentStatus !== 'paid' && order.paymentStatus !== 'refunded') {
                             get(ref(db, 'linepay_transactions/' + order.id + '/status')).then(function(txnSnap) {
-                                if (txnSnap.exists() && txnSnap.val() === 'confirmed') {
+                                if (txnSnap.exists() && txnSnap.val() === 'confirmed' && order.paymentStatus !== 'paid') {
                                     order.paymentStatus = 'paid';
-                                    changed = true;
                                     self._saveMyOrdersToStorage();
                                 }
                             }).catch(function() {});
                         }
                     }).catch(function() {});
                 });
-                setTimeout(function() {
-                    if (changed) self._saveMyOrdersToStorage();
-                }, 2500);
+                setTimeout(function() { if (changed) self._saveMyOrdersToStorage(); }, 2500);
             },
             _saveMyOrdersToStorage: function() {
                 try {
                     var saved = JSON.parse(localStorage.getItem('my_orders') || '[]');
                     this.myOrders.forEach(function(o) {
                         saved.forEach(function(s) {
-                            if (s.id === o.id) {
-                                s.status = o.status; s.orderNo = o.orderNo;
-                                s.paymentMethod = o.paymentMethod; s.paymentStatus = o.paymentStatus;
-                                s.wasCancelled = o.wasCancelled;
-                            }
+                            if (s.id === o.id) { s.status = o.status; s.orderNo = o.orderNo; s.paymentMethod = o.paymentMethod; s.paymentStatus = o.paymentStatus; s.wasCancelled = o.wasCancelled; }
                         });
                     });
                     localStorage.setItem('my_orders', JSON.stringify(saved));
@@ -1150,13 +1143,12 @@
             startAutoRefresh: function() {
                 var self = this;
                 if (self.refreshTimer) return;
-                // ★ 頁面載入時立即執行一次，確保 LINE Pay 狀態即時更新
                 setTimeout(function() { self.tryRefreshOrderStatus(); }, 2000);
                 self.refreshTimer = setInterval(function() {
                     if (!self.myOrders.length) return;
                     var hasActive = self.myOrders.some(function(o) {
                         return o.status === 'new' || o.status === 'making' ||
-                            ((o.paymentMethod === 'linepay' || o.paymentMethod === 'linepay_offline') && o.paymentStatus !== 'paid');
+                            ((o.paymentMethod === 'linepay' || o.paymentMethod === 'linepay_offline') && o.paymentStatus !== 'paid' && o.paymentStatus !== 'refunded');
                     });
                     if (hasActive) self.tryRefreshOrderStatus();
                 }, 8000);
@@ -1179,6 +1171,36 @@
                 });
                 self.showStoreInfo = false;
                 self.goToCart();
+            },
+            cancelMyOrder: function(order) {
+                var self = this;
+                if (!order || !order.id) return;
+                // ★ 取消時間限制：取餐時間前 N 分鐘內不可取消
+                var cancelLimitMin = self.settings.cancelLimitMinutes || 15;
+                if (order.pickupDate && order.pickupTime && order.pickupTime !== '盡快' && order.pickupTime !== '現場取餐') {
+                    var pickupStr = order.pickupDate + 'T' + order.pickupTime + ':00';
+                    var pickupTs = new Date(pickupStr).getTime();
+                    if (!isNaN(pickupTs)) {
+                        var now = Date.now();
+                        var diffMin = (pickupTs - now) / 60000;
+                        if (diffMin <= cancelLimitMin) {
+                            self.showAlertModal('無法取消', '距離取餐時間不足 ' + cancelLimitMin + ' 分鐘，已無法線上取消訂單。\n\n如需取消，請直接聯繫店家，造成不便敬請見諒！');
+                            return;
+                        }
+                    }
+                }
+                if (!confirm('確定要取消這筆訂單嗎？')) return;
+                update(ref(db, 'orders/' + order.id), { status: 'cancelled', wasCancelled: true, cancelledBy: 'customer', cancelledAt: Date.now() }).then(function() {
+                    // 觸發列印取消單
+                    var taskRef = ref(db, 'orders/' + order.id + '/print_task');
+                    set(taskRef, 'cancel_' + Date.now());
+                    order.status = 'cancelled';
+                    order.wasCancelled = true;
+                    self._saveMyOrdersToStorage();
+                    self.showAlertModal('已取消', '訂單已取消，感謝您的通知！');
+                }).catch(function(e) {
+                    self.showAlertModal('取消失敗', '無法取消訂單：' + e.message);
+                });
             },
             submitToFirebase: function(payMethod) {
                 var self = this;
