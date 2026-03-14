@@ -179,7 +179,7 @@
                     <span class="text-xs text-gray-500">&#128222; {{ order.phone || (order.customer && order.customer.phone) || "未提供" }}</span>
                   </div>
                   <p class="text-xs text-gray-400">&#128336; {{ order.pickupDate && order.pickupDate !== todayStr ? order.pickupDate + ' ' : '' }}{{ order.tableType==='kiosk' && order.pickupTime==='內用' ? '外帶自取' : order.pickupTime }}</p>
-                  <p class="text-xs text-gray-500 mt-0.5 truncate">{{ (order.items||[]).map(function(i){return i.qty+"x"+i.name}).join("、") }}</p>
+                  <p class="text-xs text-gray-500 mt-0.5 truncate">{{ orderItemsSummary(order) }}</p>
                   <p v-if="order.orderNote" class="text-xs text-blue-500 mt-0.5 truncate">&#128221; {{ order.orderNote }}</p>
                 </div>
               <div class="flex-shrink-0 text-right">
@@ -274,8 +274,8 @@
               <span v-for="sel in item.optionGroupSelections" :key="sel.groupName"
                 class="text-xs bg-orange-50 text-orange-600 border border-orange-200 px-1.5 py-0.5 rounded">
                 {{ sel.name }}<span v-if="sel.pricing==='mealUpgrade' && sel.price>sel.baseValue"> +${{ sel.price-sel.baseValue }}</span></span></div>
-            <div v-if="item.options && item.options.length" class="text-xs text-gray-400 mt-0.5">{{ item.options.map(function(o){return "+"+o.name}).join(" ") }}</div>
-            <div v-if="item.posExtras && item.posExtras.length" class="text-xs text-purple-500 mt-0.5">🔧 {{ item.posExtras.map(function(e){return e.name}).join(', ') }}</div>
+            <div v-if="item.options && item.options.length" class="text-xs text-gray-400 mt-0.5">{{ item.options.map(function(o){return "+"+o.name+" $"+(o.price||0);}).join(" ") }}</div>
+            <div v-if="item.posExtras && item.posExtras.length" class="text-xs text-purple-500 mt-0.5">🔧 {{ item.posExtras.map(function(e){return e.name+" $"+(e.price||0);}).join(', ') }}</div>
             <div v-if="item.note" class="text-xs text-blue-500 mt-0.5">&#128221; {{ item.note }}</div>
             <p class="text-orange-500 font-black text-sm mt-1">${{ item.itemTotal }}</p>
           </div>
@@ -518,7 +518,7 @@
                 editPayMethod:'store',
                 lpConfirmed:{},
                 lpStatus:{},
-                menu:[],menuLoading:true,filterCat:"",settings:{categories:[]},
+                menu:[],menuLoading:true,filterCat:"",settings:{categories:[],stations:[{name:'湯麵',ip:'192.168.0.6'},{name:'麵包台',ip:'192.168.0.7'},{name:'飲料台',ip:'192.168.0.8'}]},
                 activeView:"menu",editMode:false,
                 cart:[],custName:"",custPhone:"",isSubmitting:false,
                 editPickupDate:"",editPickupTime:"",editOrderNote:"",editingCartIdx:-1,
@@ -580,7 +580,24 @@
             onAuthStateChanged(auth,function(u){if(u){s.isLoggedIn=true;s.startAll();}else{s.isLoggedIn=false;}});
         },
         methods:{
+            getDefaultStationName:function(){
+                var sts=this.settings.stations||[];
+                return (sts.length&&sts[0].name)?sts[0].name:'麵包台';
+            },
             fmtNo:function(n){return n?String(n).padStart(3,"0"):"???";},
+            orderItemsSummary:function(order){
+                var items=(order&&order.items)||[];
+                return items.map(function(i){
+                    var parts=[];
+                    if(i.options&&i.options.length){
+                        parts.push(i.options.map(function(o){return "+"+o.name+"$"+(o.price||0);}).join(","));
+                    }
+                    if(i.posExtras&&i.posExtras.length){
+                        parts.push("🔧"+i.posExtras.map(function(e){return e.name+"$"+(e.price||0);}).join(","));
+                    }
+                    return i.qty+"x"+i.name+(parts.length?("("+parts.join(" ")+")"):"");
+                }).join("、");
+            },
             toggleOrderMenu:function(event,orderId){
                 if(this.activeMenu===orderId){this.activeMenu=null;this.menuPos=null;this.activeMenuOrder=null;return;}
                 this.activeMenu=orderId;
@@ -649,7 +666,11 @@
                     s.menuLoading=false;
                 });
                 onValue(ref(db,"settings"),function(snap){
-                    if(snap.exists()){var v=snap.val();s.settings={categories:v.categories||[],hideAllTab:!!v.hideAllTab,posOnlyCategories:v.posOnlyCategories||[]};s.linePayServerUrl=v.linePayServerUrl||'';s.linePayConfirmUrl=v.linePayConfirmUrl||'';s.posTables=v.posTables||[];}
+                    if(snap.exists()){var v=snap.val();
+                        var defaultStations=[{name:'湯麵',ip:'192.168.0.6'},{name:'麵包台',ip:'192.168.0.7'},{name:'飲料台',ip:'192.168.0.8'}];
+                        s.settings={categories:v.categories||[],hideAllTab:!!v.hideAllTab,posOnlyCategories:v.posOnlyCategories||[],
+                            stations:(v.stations&&v.stations.length)?v.stations:defaultStations};
+                        s.linePayServerUrl=v.linePayServerUrl||'';s.linePayConfirmUrl=v.linePayConfirmUrl||'';s.posTables=v.posTables||[];}
                 });
                 s.ordersLoading=true;
                 onValue(ref(db,"orders"),function(snap){
@@ -884,7 +905,7 @@
                 var key=JSON.stringify(ogSels),found=null;
                 for(var i=0;i<this.cart.length;i++){var c=this.cart[i];if(c.id===item.id&&!c.note&&(!c.options||!c.options.length)&&JSON.stringify(c.optionGroupSelections||[])===key){found=c;break;}}
                 if(found){found.qty+=1;found.itemTotal=up*found.qty;}
-                else{this.cart.push({id:item.id,name:item.name,price:item.price,qty:1,note:"",options:[],optionGroupSelections:ogSels,itemTotal:up});}
+                else{this.cart.push({id:item.id,name:item.name,price:item.price,station:item.station||this.getDefaultStationName(),qty:1,note:"",options:[],optionGroupSelections:ogSels,itemTotal:up});}
                 this.toast("✓ "+item.name);
             },
             addOrDetail:function(item){
@@ -928,7 +949,7 @@
                 });
                 e+=(s.tempSels||[]).reduce(function(x,o){return x+o.price;},0);
                 e+=(s.tempPosExtras||[]).reduce(function(x,o){return x+(o.price||0);},0);
-                var newItem={id:item.id,name:item.name,price:item.price,qty:s.tempQty,note:s.tempNote,options:s.tempSels.slice(),posExtras:(s.tempPosExtras||[]).slice(),optionGroupSelections:sels,itemTotal:(b+e)*s.tempQty};
+                var newItem={id:item.id,name:item.name,price:item.price,station:item.station||s.getDefaultStationName(),qty:s.tempQty,note:s.tempNote,options:s.tempSels.slice(),posExtras:(s.tempPosExtras||[]).slice(),optionGroupSelections:sels,itemTotal:(b+e)*s.tempQty};
                 if(s.editingCartIdx>=0&&s.editingCartIdx<s.cart.length){
                     // 修改已有品項
                     s.cart.splice(s.editingCartIdx,1,newItem);
@@ -1072,7 +1093,8 @@
                     status:isLinePay?"new":"making",
                     timestamp:Date.now(),source:"pos",
                     paymentMethod:isLinePay?"linepay":"store",
-                    paymentStatus:isLinePay?"pending":"pending"};
+                    paymentStatus:isLinePay?"pending":"pending",
+                    stationMap:s.settings.stations||[]};
                 if(s.posOrderType==='dinein'&&s.posTableLabel)o.tableLabel=s.posTableLabel;
                 runTransaction(ref(db,"settings/orderCounter"),function(cur){return(cur||0)+1;})
                     .then(function(result){
@@ -1352,7 +1374,7 @@
                 var taskRef=ref(db,"orders/"+order.id+"/print_task");
                 var s=this;
                 remove(taskRef).then(function(){
-                    return set(taskRef,"kitchen_"+Date.now());
+                    return set(taskRef,"kitchen_reprint_"+Date.now());
                 }).then(function(){s.toast("🖨️ 補印工單中...");})
                 .catch(function(e){alert("補印工單失敗："+e.message);});
             },
