@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
@@ -279,25 +279,23 @@
                         <h3 class="font-bold text-gray-800 text-sm">點餐內容</h3>
                         <span class="text-xs text-gray-400">共 {{ cartCount }} 項</span>
                     </div>
-                    <div v-for="(item,idx) in cart" :key="idx" class="px-4 py-3 border-b border-gray-50 cursor-pointer hover:bg-gray-50 transition" @click="editCartItem(idx)">
-                        <div class="flex justify-between items-start">
-                            <div class="flex-1 min-w-0 mr-3">
-                                <p class="font-bold text-gray-800 text-sm">{{ item.name }}</p>
-                                <div v-if="item.optionGroupSelections&&item.optionGroupSelections.length" class="flex flex-wrap gap-1 mt-1">
-                                    <span v-for="sel in item.optionGroupSelections" :key="sel.groupName" class="text-xs bg-orange-50 text-orange-600 px-1.5 py-0.5 rounded">{{ sel.name }}</span>
-                                </div>
-                                <div v-if="item.options&&item.options.length" class="text-xs text-gray-400 mt-0.5">{{ item.options.map(function(o){return"+"+o.name}).join(" ") }}</div>
-                                <p v-if="item.note" class="text-xs text-blue-500 mt-0.5">📝 {{ item.note }}</p>
-                            </div>
-                            <p class="text-orange-500 font-black text-sm">${{ item.itemTotal }}</p>
+                    <div v-for="(item,idx) in cart" :key="idx"
+                         @click="editCartItem(idx)"
+                         class="flex items-start px-4 py-3 border-b border-gray-50 cursor-pointer hover:bg-gray-50">
+                        <div class="bg-orange-100 text-orange-600 rounded-lg flex items-center justify-center font-bold text-sm mr-3 mt-0.5" style="width:1.75rem;height:1.75rem;flex-shrink:0;">{{ item.qty }}</div>
+                        <div class="flex-1" style="min-width:0;">
+                            <p class="font-semibold text-gray-800 text-sm">{{ item.name }}</p>
+                            <!-- 選項群組選擇摘要 -->
+                            <p v-for="sel in (item.optionGroupSelections || [])" :key="sel.groupName" class="text-xs text-gray-500 mt-0.5">
+                                {{ sel.groupName }}：{{ sel.name }}<span v-if="sel.pricing==='mealUpgrade' && sel.price > sel.baseValue" class="text-orange-400">（補${{ sel.price - sel.baseValue }}）</span>
+                            </p>
+                            <p v-for="opt in item.options" :key="opt.name" class="text-xs text-gray-400 mt-0.5">＋ {{ opt.name }}</p>
+                            <p v-if="item.mealDrink" class="text-xs text-orange-400 mt-0.5">&#x1F964; {{ item.mealDrink }}</p>
+                            <p v-if="item.note" class="text-xs text-blue-400 mt-0.5">&#x1F4DD; {{ item.note }}</p>
                         </div>
-                        <div class="flex items-center justify-between mt-2">
-                            <button @click.stop="removeItem(idx)" class="text-xs text-red-400 hover:text-red-600 transition">移除</button>
-                            <div class="flex items-center gap-2">
-                                <button @click.stop="chgQty(idx,-1)" class="w-7 h-7 rounded-full border border-gray-200 text-gray-500 flex items-center justify-center text-sm active:scale-90 transition">−</button>
-                                <span class="w-6 text-center font-bold text-sm text-gray-800">{{ item.qty }}</span>
-                                <button @click.stop="chgQty(idx,1)" class="w-7 h-7 rounded-full border border-gray-200 text-gray-500 flex items-center justify-center text-sm active:scale-90 transition">+</button>
-                            </div>
+                        <div class="ml-3 flex flex-col items-end" style="flex-shrink:0;">
+                            <span class="font-bold text-gray-800 text-sm">${{ item.itemTotal }}</span>
+                            <button @click.stop="removeItem(idx)" class="text-gray-300 text-lg mt-1" style="transition:color 0.15s;" @mouseover="$event.target.style.color='#f87171'" @mouseout="$event.target.style.color='#d1d5db'">&#x1F5D1;</button>
                         </div>
                     </div>
                     <!-- 繼續點餐 -->
@@ -558,7 +556,7 @@
                 var hhmm=('0'+now.getHours()).slice(-2)+':'+('0'+now.getMinutes()).slice(-2);
                 return hhmm<open||hhmm>=close;
             },
-            filteredMenu:function(){var s=this;return s.menu.filter(function(i){return i.category===s.currentCategory})},
+            filteredMenu:function(){var s=this;return s.menu.filter(function(i){return i.category===s.currentCategory&&s.isItemAvailable(i)})},
             cartCount:function(){return this.cart.reduce(function(s,i){return s+i.qty},0)},
             cartTotal:function(){return this.cart.reduce(function(s,i){return s+(Number(i.itemTotal)||0)},0)},
             estimatedWait:function(){return this.pendingCount>0?(this.settings.pickupInterval||15):0},
@@ -653,6 +651,22 @@
             }
         },
         methods:{
+            getDefaultStationName:function(){
+                var sts=this.settings.stations||[];
+                return (sts.length&&sts[0].name)?sts[0].name:'麵包台';
+            },
+            isItemAvailable:function(item){
+                if(!item||!item.availableAfter)return true;
+                var parts=String(item.availableAfter).split(':');
+                if(parts.length<2)return true;
+                var h=parseInt(parts[0],10);
+                var m=parseInt(parts[1],10);
+                if(isNaN(h)||isNaN(m))return true;
+                var now=new Date();
+                var nowMin=now.getHours()*60+now.getMinutes();
+                var startMin=h*60+m;
+                return nowMin>=startMin;
+            },
             // ── 設備綁定 ──
             verifyPin:function(){
                 if(this.pinInput===this.storePin){
@@ -706,8 +720,9 @@
                     s.listenOrders();
                     onValue(ref(db,'settings'),function(snap){
                         if(!snap.exists())return;var v=snap.val();
+                        var defaultStations=[{name:'湯麵',ip:'192.168.0.6'},{name:'麵包台',ip:'192.168.0.7'},{name:'飲料台',ip:'192.168.0.8'}];
                         s.settings={isOpen:v.isOpen!==false,openTime:v.openTime||'06:00',closeTime:v.closeTime||'13:15',
-                            weeklyDaysOff:v.weeklyDaysOff||[0],holidays:v.holidays||[],dailyHours:v.dailyHours||{},pickupInterval:v.pickupInterval||15,linePayServerUrl:v.linePayServerUrl||'',linePayConfirmUrl:v.linePayConfirmUrl||'',announcements:v.announcements||[]};
+                            weeklyDaysOff:v.weeklyDaysOff||[0],holidays:v.holidays||[],dailyHours:v.dailyHours||{},pickupInterval:v.pickupInterval||15,linePayServerUrl:v.linePayServerUrl||'',linePayConfirmUrl:v.linePayConfirmUrl||'',announcements:v.announcements||[],stations:(v.stations&&v.stations.length)?v.stations:defaultStations};
                         // ★ 設定更新時，自動重新檢查當前分類的公告（即時開啟/關閉公告視窗）
                         // 只有在初始化完成後才重新檢查，避免初次 onValue 觸發把全站公告關掉
                         if(s._settingsLoaded && s.currentCategory){
@@ -721,8 +736,9 @@
                 var s=this;
                 return get(ref(db,'settings')).then(function(snap){
                     if(snap.exists()){var v=snap.val();
+                        var defaultStations=[{name:'湯麵',ip:'192.168.0.6'},{name:'麵包台',ip:'192.168.0.7'},{name:'飲料台',ip:'192.168.0.8'}];
                         s.settings={isOpen:v.isOpen!==false,openTime:v.openTime||'06:00',closeTime:v.closeTime||'13:15',
-                            weeklyDaysOff:v.weeklyDaysOff||[0],holidays:v.holidays||[],dailyHours:v.dailyHours||{},pickupInterval:v.pickupInterval||15,linePayServerUrl:v.linePayServerUrl||'',linePayConfirmUrl:v.linePayConfirmUrl||'',announcements:v.announcements||[]};
+                            weeklyDaysOff:v.weeklyDaysOff||[0],holidays:v.holidays||[],dailyHours:v.dailyHours||{},pickupInterval:v.pickupInterval||15,linePayServerUrl:v.linePayServerUrl||'',linePayConfirmUrl:v.linePayConfirmUrl||'',announcements:v.announcements||[],stations:(v.stations&&v.stations.length)?v.stations:defaultStations};
                         s.devicePassword=v.dineinPassword||'0000';
                         // ★ 顯示全站公告
                         s.$nextTick(function(){s.checkAnnouncements();});
@@ -882,7 +898,7 @@
                     if(this.cart[i].id===item.id&&!this.cart[i].note&&JSON.stringify(this.cart[i].optionGroupSelections)===ogKey){existing=this.cart[i];break}
                 }
                 if(existing){existing.qty+=1;existing.itemTotal=unitPrice*existing.qty}
-                else{this.cart.push({id:item.id,name:item.name,price:item.price,qty:1,note:'',options:[],optionGroupSelections:ogSels,itemTotal:unitPrice})}
+                else{this.cart.push({id:item.id,name:item.name,price:item.price,station:item.station||this.getDefaultStationName(),qty:1,note:'',options:[],optionGroupSelections:ogSels,itemTotal:unitPrice})}
                 this.saveCart();
                 this.toast('🛒 已加入：'+item.name);
             },
@@ -932,7 +948,7 @@
                     }
                 });
                 e+=(s.tempSels||[]).reduce(function(x,o){return x+o.price},0);
-                var newItem={id:item.id,name:item.name,price:item.price,qty:s.tempQty,note:s.tempNote,
+                var newItem={id:item.id,name:item.name,price:item.price,station:item.station||s.getDefaultStationName(),qty:s.tempQty,note:s.tempNote,
                     options:s.tempSels.slice(),optionGroupSelections:ogSels,itemTotal:(b+e)*s.tempQty};
                 // ★ 編輯模式：替換；新增模式：加入
                 if(s.editingIdx>=0&&s.editingIdx<s.cart.length){
@@ -1115,6 +1131,7 @@
                     paymentMethod:(payMethod==='linepay_qr'||payMethod==='linepay')?'linepay':payMethod,
                     paymentStatus:(payMethod==='linepay_qr'||payMethod==='linepay')?'pending':'',
                     items:s.cart.map(function(i){return Object.assign({},i)}),
+                    stationMap:s.settings.stations||[],
                     total:s.cartTotal,
                     status:'new',
                     timestamp:Date.now(),
