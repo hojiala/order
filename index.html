@@ -621,7 +621,9 @@
         },
         computed: {
             filteredMenu: function() {
-                return this.menu.filter(function(i) { return i.category === this.currentCategory; }.bind(this));
+                return this.menu.filter(function(i) {
+                    return i.category === this.currentCategory && this.isItemAvailable(i);
+                }.bind(this));
             },
             cartCount: function() {
                 return this.cart.reduce(function(s, i) { return s + i.qty; }, 0);
@@ -687,6 +689,22 @@
             this.init();
         },
         methods: {
+            getDefaultStationName: function() {
+                var sts = this.settings.stations || [];
+                return (sts.length && sts[0].name) ? sts[0].name : '麵包台';
+            },
+            isItemAvailable: function(item) {
+                if (!item || !item.availableAfter) return true;
+                var parts = String(item.availableAfter).split(':');
+                if (parts.length < 2) return true;
+                var h = parseInt(parts[0], 10);
+                var m = parseInt(parts[1], 10);
+                if (isNaN(h) || isNaN(m)) return true;
+                var now = new Date();
+                var nowMin = now.getHours() * 60 + now.getMinutes();
+                var startMin = h * 60 + m;
+                return nowMin >= startMin;
+            },
             checkHoliday: function() {
                 var today = new Date();
                 var yyyy = today.getFullYear();
@@ -710,6 +728,11 @@
                         if (!snap.exists()) return;
                         var s = snap.val();
                         var wasOpen = self.settings.isOpen;
+                        var defaultStations = [
+                            { name: '湯麵', ip: '192.168.0.6' },
+                            { name: '麵包台', ip: '192.168.0.7' },
+                            { name: '飲料台', ip: '192.168.0.8' }
+                        ];
                         self.settings = {
                             isOpen: s.isOpen !== false,
                             openTime: s.openTime || '06:00',
@@ -719,7 +742,8 @@
                             holidays: s.holidays || [],
                             weeklyDaysOff: s.weeklyDaysOff || [],
                             orderCooldownEnabled: s.orderCooldownEnabled !== false,
-                            orderCooldownSecs: s.orderCooldownSecs || 300
+                            orderCooldownSecs: s.orderCooldownSecs || 300,
+                            stations: (s.stations && s.stations.length) ? s.stations : defaultStations
                         };
                         self.storeInfo = s.storeInfo || '';
                         self.storePhone = s.storePhone || '';
@@ -758,6 +782,11 @@
                 return get(ref(db, 'settings')).then(function(snap) {
                     if (snap.exists()) {
                         var s = snap.val();
+                        var defaultStations = [
+                            { name: '湯麵', ip: '192.168.0.6' },
+                            { name: '麵包台', ip: '192.168.0.7' },
+                            { name: '飲料台', ip: '192.168.0.8' }
+                        ];
                         self.settings = {
                             isOpen: s.isOpen !== false,
                             openTime: s.openTime || '06:00',
@@ -767,7 +796,8 @@
                             holidays: s.holidays || [],
                             weeklyDaysOff: s.weeklyDaysOff || [],
                             orderCooldownEnabled: s.orderCooldownEnabled !== false,
-                            orderCooldownSecs: s.orderCooldownSecs || 300
+                            orderCooldownSecs: s.orderCooldownSecs || 300,
+                            stations: (s.stations && s.stations.length) ? s.stations : defaultStations
                         };
                         // ★ 顯示全站公告
                         self.$nextTick(function() { self.checkAnnouncements(); });
@@ -957,6 +987,7 @@
                     id: this.activeItem.id,
                     name: this.activeItem.name,
                     price: this.activeItem.price,
+                    station: this.activeItem.station || this.getDefaultStationName(),
                     qty: this.tempQty,
                     note: this.tempNote,
                     options: this.tempSelections.slice(),
@@ -1039,6 +1070,7 @@
                 } else {
                     this.cart.push({
                         id: item.id, name: item.name, price: item.price,
+                        station: item.station || this.getDefaultStationName(),
                         qty: 1, note: '', options: [], mealDrink: mealDrink,
                         optionGroupSelections: ogSels,
                         itemTotal: unitPrice
@@ -1214,6 +1246,7 @@
                     paymentMethod: payMethod || 'store',
                     paymentStatus: payMethod === 'linepay' ? 'pending' : '',
                     items: this.cart,
+                    stationMap: self.settings.stations || [],
                     total: this.cartTotal,
                     status: 'new',
                     timestamp: Date.now()
