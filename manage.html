@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
@@ -294,7 +294,19 @@
                                 <label class="text-slate-400 text-xs font-bold uppercase tracking-wider block">選項清單</label>
                                 <button v-if="templateForm.pricing === 'mealUpgrade'" @click="fillStandardDrinks" class="text-xs bg-emerald-900/60 hover:bg-emerald-800 text-emerald-400 border border-emerald-700 px-3 py-1 rounded-lg transition">⚡ 一鍵填入標準飲料清單</button>
                             </div>
-                            <div v-for="(ch, ci) in templateForm.choices" :key="ci" class="flex gap-2 mb-2 items-center">
+                            <div v-for="(ch, ci) in templateForm.choices" :key="ci"
+                                class="flex gap-2 mb-2 items-center drag-item"
+                                :class="{'ring-2 ring-amber-400 opacity-60 rounded-lg': tplChoiceDragIdx===ci, 'ring-1 ring-slate-600 rounded-lg': tplChoiceDragIdx!==null && tplChoiceDragIdx!==ci}"
+                                draggable="true"
+                                @dragstart="tplChoiceDragStart($event, ci)"
+                                @dragover.prevent="tplChoiceDragOverIdx=ci"
+                                @drop.prevent="tplChoiceDrop($event, ci)"
+                                @dragend="tplChoiceDragIdx=null; tplChoiceDragOverIdx=null">
+                                <div class="flex flex-col gap-0.5 flex-shrink-0">
+                                    <button @click="tplChoiceMove(ci,-1)" :disabled="ci===0" class="text-slate-500 hover:text-white disabled:opacity-20 text-xs leading-none">▲</button>
+                                    <button @click="tplChoiceMove(ci,1)" :disabled="ci===templateForm.choices.length-1" class="text-slate-500 hover:text-white disabled:opacity-20 text-xs leading-none">▼</button>
+                                </div>
+                                <span class="text-slate-500 cursor-grab text-sm flex-shrink-0">⠿</span>
                                 <input v-model="ch.name" type="text" :placeholder="templateForm.pricing==='mealUpgrade' ? '飲料名稱' : '選項名稱'" class="flex-1 bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm placeholder-slate-400 focus:outline-none focus:border-amber-500">
                                 <div class="relative w-28"><span class="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 text-xs">$</span>
                                     <input v-model.number="ch.price" type="number" min="0" :placeholder="templateForm.pricing==='setPrice' ? '完整售價' : (templateForm.pricing==='mealUpgrade' ? '飲料售價' : '差價(0=免費)')" class="w-full bg-slate-700 border border-slate-600 rounded-lg pl-5 pr-2 py-2 text-white text-sm placeholder-slate-400 focus:outline-none focus:border-amber-500"></div>
@@ -1261,6 +1273,7 @@ window._doCountUp = function() {
                     { id: 'settings',  label: '店面設定', icon: '⚙️' }
                 ],
                 dragIdx: null, dragOverIdx: null, dragType: null, menuOrderDirty: false, tplOrderDirty: false,
+                tplChoiceDragIdx: null, tplChoiceDragOverIdx: null,
                 posExtraDragIdx: null, posExtraDragOverIdx: null,
                 // Menu
                 menuItems: [], menuLoading: true, filterCat: '',
@@ -1726,6 +1739,22 @@ window._doCountUp = function() {
                 this.dragIdx = null; this.dragOverIdx = null;
                 this.tplOrderDirty = true;
             },
+            // ── TEMPLATE CHOICE SORT ──
+            tplChoiceDragStart: function(e, i) { this.tplChoiceDragIdx = i; e.dataTransfer.effectAllowed = 'move'; },
+            tplChoiceDrop: function(e, toIdx) {
+                var fromIdx = this.tplChoiceDragIdx;
+                if (fromIdx === null || fromIdx === toIdx) { this.tplChoiceDragIdx = null; return; }
+                var arr = this.templateForm.choices || [];
+                var item = arr.splice(fromIdx, 1)[0];
+                arr.splice(toIdx, 0, item);
+                this.tplChoiceDragIdx = null; this.tplChoiceDragOverIdx = null;
+            },
+            tplChoiceMove: function(i, d) {
+                var arr = this.templateForm.choices || [];
+                var n = i + d;
+                if (n < 0 || n >= arr.length) return;
+                var tmp = arr[i]; arr.splice(i, 1); arr.splice(n, 0, tmp);
+            },
             tplMoveUp: function(i) {
                 if (i === 0) return;
                 var arr = this.optionTemplates;
@@ -1781,10 +1810,34 @@ window._doCountUp = function() {
                 set(ref(db, 'settings/standardDrinks'), self.standardDrinks)
                     .then(function() {
                         self.standardDrinksSaved = true;
+                        self.syncStandardDrinksToMenu();
                         setTimeout(function(){ self.standardDrinksSaved = false; }, 3000);
                     })
                     .catch(function(e){ alert('儲存失敗：' + e.message); })
                     .finally(function(){ self.standardDrinksSaving = false; });
+            },
+            syncStandardDrinksToMenu: function() {
+                var self = this;
+                var drinks = (self.standardDrinks || []).filter(function(d){ return d && d.name && d.name.trim(); })
+                    .map(function(d){ return { name: d.name.trim(), price: Number(d.price)||0 }; });
+                if (!drinks.length) return;
+                var updates = {};
+                (self.menuItems || []).forEach(function(item){
+                    var ogs = item.optionGroups || [];
+                    var changed = false;
+                    var newOGs = ogs.map(function(g){
+                        var gname = (g.groupName || '');
+                        if (g.pricing === 'mealUpgrade' && gname.indexOf('飲料') !== -1) {
+                            changed = true;
+                            var ng = Object.assign({}, g, { choices: JSON.parse(JSON.stringify(drinks)) });
+                            return ng;
+                        }
+                        return g;
+                    });
+                    if (changed) updates['menu/' + item.id + '/optionGroups'] = newOGs;
+                });
+                if (!Object.keys(updates).length) return;
+                update(ref(db), updates).catch(function(e){ console.warn('同步飲料清單失敗', e.message); });
             },
             addDrink: function() { this.standardDrinks.push({ name:'', price:0 }); },
             removeDrink: function(i) { this.standardDrinks.splice(i, 1); },
@@ -1837,6 +1890,7 @@ window._doCountUp = function() {
                 if (!tf.templateName.trim()) { alert('請填寫模板名稱'); return; }
                 if (!tf.groupName.trim()) { alert('請填寫群組名稱'); return; }
                 if (!tf.choices.length || !tf.choices[0].name.trim()) { alert('請至少新增一個選項'); return; }
+                var tplId = self.editingTemplateId;
                 var data = {
                     templateName: tf.templateName.trim(),
                     groupName: tf.groupName.trim(),
@@ -1846,15 +1900,48 @@ window._doCountUp = function() {
                     baseValue: tf.baseValue || 0,
                     choices: tf.choices.filter(function(c) { return c.name.trim(); })
                 };
-                var p = self.editingTemplateId
-                    ? update(ref(db, 'settings/optionTemplates/' + self.editingTemplateId), data)
+                var p = tplId
+                    ? update(ref(db, 'settings/optionTemplates/' + tplId), data)
                     : push(ref(db, 'settings/optionTemplates'), data);
                 p.then(function() {
+                    if (tplId) self.syncTemplateToMenu(tplId, data);
                     self.showTemplateForm = false;
                     self.editingTemplateId = null;
                     self.loadTemplates();
                     self.loadStandardDrinks();
                 }).catch(function(e) { alert('儲存失敗：' + e.message); });
+            },
+            syncTemplateToMenu: function(tplId, tplData) {
+                var self = this;
+                if (!tplId || !tplData) return;
+                var updates = {};
+                (self.menuItems || []).forEach(function(item){
+                    var ogs = item.optionGroups || [];
+                    var changed = false;
+                    var newOGs = ogs.map(function(g){
+                        var match = (g.templateId && g.templateId === tplId);
+                        if (!match) {
+                            match = (g.groupName === tplData.groupName && g.type === tplData.type && g.pricing === tplData.pricing);
+                        }
+                        if (match) {
+                            changed = true;
+                            return Object.assign({}, g, {
+                                templateId: tplId,
+                                templateName: tplData.templateName,
+                                groupName: tplData.groupName,
+                                type: tplData.type,
+                                pricing: tplData.pricing,
+                                defaultIdx: tplData.defaultIdx || 0,
+                                baseValue: tplData.baseValue || 0,
+                                choices: JSON.parse(JSON.stringify(tplData.choices || []))
+                            });
+                        }
+                        return g;
+                    });
+                    if (changed) updates['menu/' + item.id + '/optionGroups'] = newOGs;
+                });
+                if (!Object.keys(updates).length) return;
+                update(ref(db), updates).catch(function(e){ console.warn('同步模板失敗', e.message); });
             },
             deleteTemplate: function(id) {
                 if (!confirm('確定刪除此模板？')) return;
@@ -1875,6 +1962,8 @@ window._doCountUp = function() {
             applyTemplate: function(tpl) {
                 // 深複製模板，加入目前餐點的選項群組
                 var grp = JSON.parse(JSON.stringify({
+                    templateId: tpl.id,
+                    templateName: tpl.templateName,
                     groupName: tpl.groupName,
                     type: tpl.type,
                     pricing: tpl.pricing,
@@ -2013,6 +2102,11 @@ window._doCountUp = function() {
                 }
                 this.settings.dailyHours[dayIdx][type === 'open' ? 'openTime' : 'closeTime'] = value;
             },
+            normalizeWeekDays: function(arr) {
+                if (!arr) return [];
+                var list = Array.isArray(arr) ? arr : Object.values(arr);
+                return list.map(function(v){ return parseInt(v,10); }).filter(function(v){ return !isNaN(v); });
+            },
             applyDefaultHoursToAll: function() {
                 var self = this;
                 self.settings.dailyHours = {};
@@ -2028,6 +2122,7 @@ window._doCountUp = function() {
                 get(ref(db, 'settings')).then(function(snap) {
                     if (snap.exists()) {
                         var s = snap.val();
+                        var wd = self.normalizeWeekDays(s.weeklyDaysOff);
                         self.settings = {
                             isOpen: s.isOpen !== false,
                             openTime: s.openTime || '06:00',
@@ -2036,7 +2131,7 @@ window._doCountUp = function() {
                             pickupDays: s.pickupDays || 3,
                             pickupInterval: s.pickupInterval || 30,
                             holidays: s.holidays || [],
-                            weeklyDaysOff: s.weeklyDaysOff || [0],
+                            weeklyDaysOff: wd,
                             categories: s.categories || ['套餐','單點','蛋餅、燒餅','漢堡、蝸牛堡','吐司、厚片','其它、飲品'],
                             stations: (s.stations && s.stations.length) ? s.stations : (self.settings.stations || []),
                             storeInfo: s.storeInfo || '',
@@ -2069,7 +2164,7 @@ window._doCountUp = function() {
                     pickupDays: self.settings.pickupDays,
                     pickupInterval: self.settings.pickupInterval,
                     holidays: self.settings.holidays || [],
-                    weeklyDaysOff: self.settings.weeklyDaysOff || [],
+                    weeklyDaysOff: self.normalizeWeekDays(self.settings.weeklyDaysOff),
                     categories: self.settings.categories || [],
                     storeInfo: self.settings.storeInfo || '',
                     storePhone: self.settings.storePhone || '',
@@ -2152,10 +2247,17 @@ window._doCountUp = function() {
             },
             // 固定公休星期
             toggleWeeklyOff: function(dayIdx) {
+                if (!this.settings.weeklyDaysOff) this.settings.weeklyDaysOff = [];
                 var arr = this.settings.weeklyDaysOff;
-                var pos = arr.indexOf(dayIdx);
+                var day = parseInt(dayIdx, 10);
+                if (arr.length) {
+                    var norm = this.normalizeWeekDays(arr);
+                    arr.splice(0, arr.length);
+                    norm.forEach(function(v){ arr.push(v); });
+                }
+                var pos = arr.indexOf(day);
                 if (pos !== -1) arr.splice(pos, 1);
-                else arr.push(dayIdx);
+                else if (!isNaN(day)) arr.push(day);
             },
             // 分類管理
             addCategory: function() {
