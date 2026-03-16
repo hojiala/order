@@ -1943,8 +1943,14 @@ window._doCountUp = function() {
                 p.then(function(result) {
                     var syncPromise;
                     if (tplId) {
-                        // ★ 編輯現有模板 → 同步至所有餐點
-                        syncPromise = self.syncTemplateToMenu(tplId, data);
+                        // ★ 編輯現有模板 → 同步至所有餐點（optionGroups + posExtras）
+                        var ogSync = self.syncTemplateToMenu(tplId, data);
+                        // ★ 若模板名稱含「食材加點」或「POS加點」，也同步 posExtras
+                        var isPosExtrasTemplate = (data.templateName.indexOf('食材加點') !== -1 || data.templateName.indexOf('POS加點') !== -1 || data.groupName.indexOf('食材加點') !== -1);
+                        var peSync = isPosExtrasTemplate ? self.syncPosExtrasTemplateToMenu(data) : Promise.resolve(0);
+                        syncPromise = Promise.all([ogSync || Promise.resolve(0), peSync]).then(function(results){
+                            return (results[0] || 0) + (results[1] || 0);
+                        });
                     } else {
                         syncPromise = Promise.resolve(0);
                     }
@@ -2008,7 +2014,28 @@ window._doCountUp = function() {
                     return count;
                 }).catch(function(e){ console.warn('同步模板失敗', e.message); return 0; });
             },
-            deleteTemplate: function(id) {
+            // ★ 同步「食材加點」模板到所有餐點的 posExtras
+            syncPosExtrasTemplateToMenu: function(tplData) {
+                var self = this;
+                if (!tplData || !tplData.choices) return Promise.resolve(0);
+                if (!self.menuItems || !self.menuItems.length) return Promise.resolve(0);
+                var newExtras = tplData.choices.filter(function(c){ return c.name && c.name.trim(); })
+                    .map(function(c){ return { name: c.name.trim(), price: Number(c.price) || 0 }; });
+                var updates = {};
+                var count = 0;
+                self.menuItems.forEach(function(item){
+                    // 只同步已有 posExtras 的餐點（表示曾經套用過此模板）
+                    if (item.posExtras && item.posExtras.length > 0) {
+                        updates['menu/' + item.id + '/posExtras'] = JSON.parse(JSON.stringify(newExtras));
+                        count++;
+                    }
+                });
+                if (!Object.keys(updates).length) return Promise.resolve(0);
+                return update(ref(db), updates).then(function(){
+                    console.log('✅ 食材加點模板已同步至 ' + count + ' 個餐點');
+                    return count;
+                }).catch(function(e){ console.warn('同步食材加點失敗', e.message); return 0; });
+            },
                 if (!confirm('確定刪除此模板？')) return;
                 var self = this;
                 remove(ref(db, 'settings/optionTemplates/' + id)).then(function() {
