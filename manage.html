@@ -1810,7 +1810,33 @@ window._doCountUp = function() {
                 set(ref(db, 'settings/standardDrinks'), self.standardDrinks)
                     .then(function() {
                         self.standardDrinksSaved = true;
-                        self.syncStandardDrinksToMenu();
+                        // ★ 同步到所有餐點的飲料選項群組
+                        var drinks = (self.standardDrinks || []).filter(function(d){ return d && d.name && d.name.trim(); })
+                            .map(function(d){ return { name: d.name.trim(), price: Number(d.price)||0 }; });
+                        if (drinks.length && self.menuItems && self.menuItems.length) {
+                            var updates = {};
+                            var count = 0;
+                            self.menuItems.forEach(function(item){
+                                var ogs = item.optionGroups || [];
+                                var changed = false;
+                                var newOGs = ogs.map(function(g){
+                                    var gname = (g.groupName || '');
+                                    if (g.pricing === 'mealUpgrade' && (gname.indexOf('飲料') !== -1 || gname.indexOf('飲品') !== -1)) {
+                                        changed = true;
+                                        return Object.assign({}, g, { choices: JSON.parse(JSON.stringify(drinks)) });
+                                    }
+                                    return g;
+                                });
+                                if (changed) { updates['menu/' + item.id + '/optionGroups'] = newOGs; count++; }
+                            });
+                            if (Object.keys(updates).length) {
+                                update(ref(db), updates).then(function(){
+                                    alert('✅ 飲料清單已儲存，並同步更新 ' + count + ' 個餐點的飲料選項');
+                                }).catch(function(e){ alert('飲料清單已儲存，但同步餐點失敗：' + e.message); });
+                            } else {
+                                alert('✅ 飲料清單已儲存（無匹配的餐點需同步）');
+                            }
+                        }
                         setTimeout(function(){ self.standardDrinksSaved = false; }, 3000);
                     })
                     .catch(function(e){ alert('儲存失敗：' + e.message); })
@@ -1821,23 +1847,34 @@ window._doCountUp = function() {
                 var drinks = (self.standardDrinks || []).filter(function(d){ return d && d.name && d.name.trim(); })
                     .map(function(d){ return { name: d.name.trim(), price: Number(d.price)||0 }; });
                 if (!drinks.length) return;
+                if (!self.menuItems || !self.menuItems.length) {
+                    console.warn('syncStandardDrinksToMenu: menuItems 尚未載入');
+                    return;
+                }
                 var updates = {};
+                var count = 0;
                 (self.menuItems || []).forEach(function(item){
                     var ogs = item.optionGroups || [];
                     var changed = false;
                     var newOGs = ogs.map(function(g){
                         var gname = (g.groupName || '');
-                        if (g.pricing === 'mealUpgrade' && gname.indexOf('飲料') !== -1) {
+                        // ★ 放寬匹配：只要群組名稱包含「飲料」或「飲品」且定價模式為 mealUpgrade
+                        if (g.pricing === 'mealUpgrade' && (gname.indexOf('飲料') !== -1 || gname.indexOf('飲品') !== -1)) {
                             changed = true;
                             var ng = Object.assign({}, g, { choices: JSON.parse(JSON.stringify(drinks)) });
                             return ng;
                         }
                         return g;
                     });
-                    if (changed) updates['menu/' + item.id + '/optionGroups'] = newOGs;
+                    if (changed) { updates['menu/' + item.id + '/optionGroups'] = newOGs; count++; }
                 });
-                if (!Object.keys(updates).length) return;
-                update(ref(db), updates).catch(function(e){ console.warn('同步飲料清單失敗', e.message); });
+                if (!Object.keys(updates).length) {
+                    console.log('syncStandardDrinksToMenu: 無匹配的餐點需同步');
+                    return;
+                }
+                update(ref(db), updates).then(function(){
+                    console.log('✅ 飲料清單已同步至 ' + count + ' 個餐點');
+                }).catch(function(e){ console.warn('同步飲料清單失敗', e.message); });
             },
             addDrink: function() { this.standardDrinks.push({ name:'', price:0 }); },
             removeDrink: function(i) { this.standardDrinks.splice(i, 1); },
@@ -1903,8 +1940,21 @@ window._doCountUp = function() {
                 var p = tplId
                     ? update(ref(db, 'settings/optionTemplates/' + tplId), data)
                     : push(ref(db, 'settings/optionTemplates'), data);
-                p.then(function() {
-                    if (tplId) self.syncTemplateToMenu(tplId, data);
+                p.then(function(result) {
+                    var syncPromise;
+                    if (tplId) {
+                        // ★ 編輯現有模板 → 同步至所有餐點
+                        syncPromise = self.syncTemplateToMenu(tplId, data);
+                    } else {
+                        syncPromise = Promise.resolve(0);
+                    }
+                    (syncPromise || Promise.resolve(0)).then(function(syncCount){
+                        if (tplId && syncCount > 0) {
+                            alert('✅ 模板已更新，並同步更新 ' + syncCount + ' 個餐點');
+                        } else if (tplId) {
+                            alert('✅ 模板已更新（無匹配的餐點需同步）');
+                        }
+                    });
                     self.showTemplateForm = false;
                     self.editingTemplateId = null;
                     self.loadTemplates();
@@ -1914,12 +1964,24 @@ window._doCountUp = function() {
             syncTemplateToMenu: function(tplId, tplData) {
                 var self = this;
                 if (!tplId || !tplData) return;
+                if (!self.menuItems || !self.menuItems.length) {
+                    console.warn('syncTemplateToMenu: menuItems 尚未載入');
+                    return;
+                }
                 var updates = {};
+                var count = 0;
                 (self.menuItems || []).forEach(function(item){
                     var ogs = item.optionGroups || [];
                     var changed = false;
                     var newOGs = ogs.map(function(g){
+                        // ★ 匹配條件（優先順序）：
+                        // 1. templateId 完全匹配（最可靠）
+                        // 2. templateName + groupName 匹配（向下相容無 templateId 的舊資料）
+                        // 3. groupName + type + pricing 匹配（最後手段）
                         var match = (g.templateId && g.templateId === tplId);
+                        if (!match && g.templateName) {
+                            match = (g.templateName === tplData.templateName);
+                        }
                         if (!match) {
                             match = (g.groupName === tplData.groupName && g.type === tplData.type && g.pricing === tplData.pricing);
                         }
@@ -1938,10 +2000,13 @@ window._doCountUp = function() {
                         }
                         return g;
                     });
-                    if (changed) updates['menu/' + item.id + '/optionGroups'] = newOGs;
+                    if (changed) { updates['menu/' + item.id + '/optionGroups'] = newOGs; count++; }
                 });
-                if (!Object.keys(updates).length) return;
-                update(ref(db), updates).catch(function(e){ console.warn('同步模板失敗', e.message); });
+                if (!Object.keys(updates).length) return Promise.resolve(0);
+                return update(ref(db), updates).then(function(){
+                    console.log('✅ 模板已同步至 ' + count + ' 個餐點');
+                    return count;
+                }).catch(function(e){ console.warn('同步模板失敗', e.message); return 0; });
             },
             deleteTemplate: function(id) {
                 if (!confirm('確定刪除此模板？')) return;
