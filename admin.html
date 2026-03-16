@@ -236,7 +236,7 @@
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
-        import { getDatabase, ref, onValue, update, set, get, remove, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
+        import { getDatabase, ref, onValue, update, set, get, remove, runTransaction, query, limitToLast, orderByChild, startAt } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
         import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
 
         // ★★★ 請貼入您相同的 Firebase 配置 ★★★
@@ -306,6 +306,7 @@
                 onAuthStateChanged(auth, (user) => {
                     if (user) {
                         this.isLoggedIn = true;
+                        this.autoArchiveOldOrders();
                         this.listenToOrders();
                     } else {
                         this.isLoggedIn = false;
@@ -315,6 +316,75 @@
             },
             methods: {
                 toast(msg) { this.toastMsg = msg; clearTimeout(this.toastTimer); this.toastTimer = setTimeout(() => { this.toastMsg = ''; }, 4000); },
+                // ★ 自動歸檔：將昨天以前的訂單搬到 orders_archive/，釋放 orders/ 節點大小
+                async autoArchiveOldOrders() {
+                    try {
+                        const today = new Date(); today.setHours(0, 0, 0, 0);
+                        const cutoff = today.getTime();
+                        // 歸檔 orders
+                        const ordersSnap = await get(ref(db, 'orders'));
+                        if (ordersSnap.exists()) {
+                            const data = ordersSnap.val();
+                            const updates = {};
+                            let count = 0;
+                            for (const id in data) {
+                                const o = data[id];
+                                if (!o || !o.timestamp) continue;
+                                // 只歸檔已完成/已取消/已封存 且 時間在今天之前的訂單
+                                if (o.timestamp < cutoff && (o.status === 'done' || o.status === 'cancelled' || o.status === 'archived')) {
+                                    updates['orders_archive/' + id] = o;
+                                    updates['orders/' + id] = null; // 從 orders 刪除
+                                    count++;
+                                }
+                            }
+                            if (count > 0) {
+                                await update(ref(db), updates);
+                                console.log('✅ 自動歸檔 ' + count + ' 筆舊訂單');
+                            }
+                        }
+                        // 歸檔 linepay_transactions
+                        const lpSnap = await get(ref(db, 'linepay_transactions'));
+                        if (lpSnap.exists()) {
+                            const lpData = lpSnap.val();
+                            const lpUpdates = {};
+                            let lpCount = 0;
+                            for (const id in lpData) {
+                                const t = lpData[id];
+                                if (!t) continue;
+                                const ts = t.timestamp || t.createdAt || t.cancelledAt || 0;
+                                if (ts && ts < cutoff) {
+                                    lpUpdates['linepay_archive/' + id] = t;
+                                    lpUpdates['linepay_transactions/' + id] = null;
+                                    lpCount++;
+                                }
+                            }
+                            if (lpCount > 0) {
+                                await update(ref(db), lpUpdates);
+                                console.log('✅ 自動歸檔 ' + lpCount + ' 筆舊 LINE Pay 交易');
+                            }
+                        }
+                        // 歸檔 linepay_confirms
+                        const lcSnap = await get(ref(db, 'linepay_confirms'));
+                        if (lcSnap.exists()) {
+                            const lcData = lcSnap.val();
+                            const lcUpdates = {};
+                            let lcCount = 0;
+                            for (const id in lcData) {
+                                const c = lcData[id];
+                                if (!c) continue;
+                                const ts = c.timestamp || 0;
+                                if (ts && ts < cutoff) {
+                                    lcUpdates['linepay_confirms/' + id] = null;
+                                    lcCount++;
+                                }
+                            }
+                            if (lcCount > 0) {
+                                await update(ref(db), lcUpdates);
+                                console.log('✅ 清理 ' + lcCount + ' 筆舊 LINE Pay confirms');
+                            }
+                        }
+                    } catch(e) { console.warn('自動歸檔失敗:', e.message); }
+                },
                 async login() {
                     try { await signInWithEmailAndPassword(auth, this.email, this.password); } 
                     catch (error) { this.toast("❌ 登入失敗，請檢查信箱與密碼"); }
@@ -323,9 +393,9 @@
                     try { await signOut(auth); } catch (error) { console.error("登出失敗", error); }
                 },
                 listenToOrders() {
-                    const ordersRef = ref(db, 'orders');
                     const self = this;
-                    onValue(ordersRef, (snapshot) => {
+                    // ★ 限制只監聽最近 300 筆訂單（節省流量）
+                    onValue(query(ref(db, 'orders'), limitToLast(300)), (snapshot) => {
                         const data = snapshot.val();
                         const parsedOrders = [];
                         let currentNewCount = 0;
@@ -345,18 +415,27 @@
                         if (currentNewCount > this.previousNewCount && this.previousNewCount !== 0) this.playAlert();
                         this.previousNewCount = currentNewCount;
                     });
-                    // ★ 監聽 settings 取得 linePayServerUrl
+                    // ★ 讀取 settings（一次性 + 定時刷新，取代 onValue）
                     const selfS = this;
-                    onValue(ref(db, 'settings'), (snap) => {
+                    get(ref(db, 'settings')).then((snap) => {
                         if (snap.exists()) {
                             const sv = snap.val();
                             selfS.linePayServerUrl = sv.linePayServerUrl || '';
                             selfS.linePayConfirmUrl = sv.linePayConfirmUrl || '';
                         }
                     });
-                    // ★ 監聽 linepay_transactions 以確認付款狀態（不依賴 orders/paymentStatus）
+                    setInterval(() => {
+                        get(ref(db, 'settings')).then((snap) => {
+                            if (snap.exists()) {
+                                const sv = snap.val();
+                                selfS.linePayServerUrl = sv.linePayServerUrl || '';
+                                selfS.linePayConfirmUrl = sv.linePayConfirmUrl || '';
+                            }
+                        });
+                    }, 300000);
+                    // ★ 監聽 linepay_transactions（限最近 200 筆，節省流量）
                     const self2 = this;
-                    onValue(ref(db, 'linepay_transactions'), (snap) => {
+                    onValue(query(ref(db, 'linepay_transactions'), limitToLast(200)), (snap) => {
                         const data = snap.val() || {};
                         const confirmed = {};
                         const statusMap = {};
