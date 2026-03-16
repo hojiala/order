@@ -517,7 +517,7 @@
             deviceId:'', deviceLabel:'', deviceType:'',
             // 設定
             isLoading:true,
-            settings:{isOpen:true,openTime:'06:00',closeTime:'13:15',weeklyDaysOff:[0],holidays:[],dailyHours:{},pickupInterval:15,linePayServerUrl:'',linePayConfirmUrl:'',announcements:[]},
+            settings:{isOpen:true,openTime:'06:00',closeTime:'13:15',weeklyDaysOff:[],holidays:[],dailyHours:{},pickupInterval:15,linePayServerUrl:'',linePayConfirmUrl:'',announcements:[]},
             // 菜單
             categories:[], currentCategory:'', menu:[],
             // 點餐
@@ -546,9 +546,16 @@
             outsideBusinessHours:function(){
                 var s=this.settings,now=new Date(),day=now.getDay();
                 var dummy=this.nowMinute; // 觸發響應式更新
-                if(s.weeklyDaysOff&&s.weeklyDaysOff.indexOf(day)!==-1)return true;
+                // ★ 正規化 weeklyDaysOff（相容 Firebase 物件/字串格式）
+                var wdo=s.weeklyDaysOff||[];
+                if(!Array.isArray(wdo))wdo=Object.values(wdo);
+                var dayOff=false;
+                for(var i=0;i<wdo.length;i++){if(parseInt(wdo[i],10)===day){dayOff=true;break;}}
+                if(dayOff)return true;
                 var todayStr=now.getFullYear()+'-'+('0'+(now.getMonth()+1)).slice(-2)+'-'+('0'+now.getDate()).slice(-2);
-                if(s.holidays&&s.holidays.indexOf(todayStr)!==-1)return true;
+                var hols=s.holidays||[];
+                if(!Array.isArray(hols))hols=Object.values(hols);
+                if(hols.indexOf(todayStr)!==-1)return true;
                 var dh=s.dailyHours||{};
                 var dayKey=['sun','mon','tue','wed','thu','fri','sat'][day];
                 var open=s.openTime||'06:00',close=s.closeTime||'13:15';
@@ -725,7 +732,7 @@
                         if(!snap.exists())return;var v=snap.val();
                         var defaultStations=[{name:'湯麵',ip:'192.168.0.6'},{name:'麵包台',ip:'192.168.0.7'},{name:'飲料台',ip:'192.168.0.8'}];
                         s.settings={isOpen:v.isOpen!==false,openTime:v.openTime||'06:00',closeTime:v.closeTime||'13:15',
-                            weeklyDaysOff:v.weeklyDaysOff||[0],holidays:v.holidays||[],dailyHours:v.dailyHours||{},pickupInterval:v.pickupInterval||15,linePayServerUrl:v.linePayServerUrl||'',linePayConfirmUrl:v.linePayConfirmUrl||'',announcements:v.announcements||[],stations:(v.stations&&v.stations.length)?v.stations:defaultStations};
+                            weeklyDaysOff:Array.isArray(v.weeklyDaysOff)?v.weeklyDaysOff:(v.weeklyDaysOff?Object.values(v.weeklyDaysOff):[]),holidays:v.holidays||[],dailyHours:v.dailyHours||{},pickupInterval:v.pickupInterval||15,linePayServerUrl:v.linePayServerUrl||'',linePayConfirmUrl:v.linePayConfirmUrl||'',announcements:v.announcements||[],stations:(v.stations&&v.stations.length)?v.stations:defaultStations,posOnlyCategories:v.posOnlyCategories||[]};
                         // ★ 設定更新時，自動重新檢查當前分類的公告（即時開啟/關閉公告視窗）
                         // 只有在初始化完成後才重新檢查，避免初次 onValue 觸發把全站公告關掉
                         if(s._settingsLoaded && s.currentCategory){
@@ -741,7 +748,7 @@
                     if(snap.exists()){var v=snap.val();
                         var defaultStations=[{name:'湯麵',ip:'192.168.0.6'},{name:'麵包台',ip:'192.168.0.7'},{name:'飲料台',ip:'192.168.0.8'}];
                         s.settings={isOpen:v.isOpen!==false,openTime:v.openTime||'06:00',closeTime:v.closeTime||'13:15',
-                            weeklyDaysOff:v.weeklyDaysOff||[0],holidays:v.holidays||[],dailyHours:v.dailyHours||{},pickupInterval:v.pickupInterval||15,linePayServerUrl:v.linePayServerUrl||'',linePayConfirmUrl:v.linePayConfirmUrl||'',announcements:v.announcements||[],stations:(v.stations&&v.stations.length)?v.stations:defaultStations};
+                            weeklyDaysOff:Array.isArray(v.weeklyDaysOff)?v.weeklyDaysOff:(v.weeklyDaysOff?Object.values(v.weeklyDaysOff):[]),holidays:v.holidays||[],dailyHours:v.dailyHours||{},pickupInterval:v.pickupInterval||15,linePayServerUrl:v.linePayServerUrl||'',linePayConfirmUrl:v.linePayConfirmUrl||'',announcements:v.announcements||[],stations:(v.stations&&v.stations.length)?v.stations:defaultStations,posOnlyCategories:v.posOnlyCategories||[]};
                         s.devicePassword=v.dineinPassword||'0000';
                         // ★ 顯示全站公告
                         s.$nextTick(function(){s.checkAnnouncements();});
@@ -761,12 +768,17 @@
                     });
                     s.menu=items;
                     // 從 settings 讀取分類順序
-                    return get(ref(db,'settings/categories')).then(function(catSnap){
-                        var ORDER=catSnap.exists()?catSnap.val():['套餐','單點','蛋餅、燒餅','漢堡、蝸牛堡','吐司、厚片','其它、飲品'];
+                    return get(ref(db,'settings')).then(function(settingsSnap){
+                        var sv=settingsSnap.exists()?settingsSnap.val():{};
+                        var ORDER=sv.categories||['套餐','單點','蛋餅、燒餅','漢堡、蝸牛堡','吐司、厚片','其它、飲品'];
+                        // ★ 過濾 POS 專用分類
+                        var posOnly=sv.posOnlyCategories||s.settings.posOnlyCategories||[];
                         var found=[];
                         items.forEach(function(i){if(i.category&&found.indexOf(i.category)===-1)found.push(i.category)});
-                        var cats=ORDER.filter(function(c){return found.indexOf(c)!==-1});
-                        found.forEach(function(c){if(cats.indexOf(c)===-1)cats.push(c)});
+                        var cats=ORDER.filter(function(c){return found.indexOf(c)!==-1&&posOnly.indexOf(c)===-1});
+                        found.forEach(function(c){if(cats.indexOf(c)===-1&&posOnly.indexOf(c)===-1)cats.push(c)});
+                        // ★ 從菜單中移除 POS 專用分類的餐點
+                        if(posOnly.length){s.menu=items.filter(function(i){return posOnly.indexOf(i.category)===-1})}
                         s.categories=cats;
                         if(cats.length)s.currentCategory=cats[0];
                         // ★ 標記初始化完成
