@@ -372,14 +372,11 @@
                         <div class="text-right">
                             <span class="text-orange-500 font-black text-sm">${{ order.total }}</span>
                             <template v-if="order.paymentMethod==='linepay'||order.paymentMethod==='linepay_offline'">
-                                <span v-if="order.paymentStatus==='refunded'||(order.status==='cancelled'&&order.paymentStatus==='paid')"
-                                    class="block text-xs font-bold text-purple-500 mt-0.5">💜 LINE Pay 已退款</span>
-                                <span v-else-if="order.paymentStatus==='paid' || lpConfirmed[order.id]"
-                                    class="block text-xs font-bold text-green-600 mt-0.5">💚 LINE Pay 已付清</span>
-                                <span v-else-if="order.status==='cancelled'"
-                                    class="block text-xs font-bold text-gray-400 mt-0.5">LINE Pay 已取消</span>
-                                <span v-else
-                                    class="block text-xs font-bold text-blue-400 mt-0.5 animate-pulse">💚 LINE Pay 處理中</span>
+                                <span v-if="order.paymentStatus==='refunded'" class="block text-xs font-bold text-purple-500 mt-0.5">💜 LINE Pay 已退款</span>
+                                <span v-else-if="order.status==='cancelled'&&(order.paymentStatus==='paid'||order.paymentStatus==='refunded')" class="block text-xs font-bold text-purple-500 mt-0.5">💜 LINE Pay 已退款</span>
+                                <span v-else-if="order.paymentStatus==='paid'||lpConfirmed[order.id]" class="block text-xs font-bold text-green-600 mt-0.5">💚 LINE Pay 已付清</span>
+                                <span v-else-if="order.status==='cancelled'" class="block text-xs font-bold text-gray-400 mt-0.5">LINE Pay 已取消</span>
+                                <span v-else class="block text-xs font-bold text-blue-400 mt-0.5 animate-pulse">💚 LINE Pay 處理中</span>
                             </template>
                             <template v-else-if="order.paymentMethod==='store'||!order.paymentMethod">
                                 <span v-if="order.paymentStatus==='paid'" class="block text-xs font-bold text-green-600 mt-0.5">💰 已付款</span>
@@ -728,15 +725,18 @@
                 Promise.all([s.loadSettings(),s.loadMenu()]).then(function(){
                     s.isLoading=false;
                     s.listenOrders();
-                    s._settingsLoaded=true;
-                    // ★ 每 3 分鐘刷新設定（取代 onValue 持續監聽，大幅節省流量）
-                    setInterval(function(){
-                        s.loadSettings().then(function(){
-                            if(s._settingsLoaded && s.currentCategory){
-                                s.$nextTick(function(){s.checkAnnouncements(s.currentCategory);});
-                            }
-                        });
-                    },180000);
+                    onValue(ref(db,'settings'),function(snap){
+                        if(!snap.exists())return;var v=snap.val();
+                        var defaultStations=[{name:'湯麵',ip:'192.168.0.6'},{name:'麵包台',ip:'192.168.0.7'},{name:'飲料台',ip:'192.168.0.8'}];
+                        s.settings={isOpen:v.isOpen!==false,openTime:v.openTime||'06:00',closeTime:v.closeTime||'13:15',
+                            weeklyDaysOff:Array.isArray(v.weeklyDaysOff)?v.weeklyDaysOff:(v.weeklyDaysOff?Object.values(v.weeklyDaysOff):[]),holidays:v.holidays||[],dailyHours:v.dailyHours||{},pickupInterval:v.pickupInterval||15,linePayServerUrl:v.linePayServerUrl||'',linePayConfirmUrl:v.linePayConfirmUrl||'',announcements:v.announcements||[],stations:(v.stations&&v.stations.length)?v.stations:defaultStations,posOnlyCategories:v.posOnlyCategories||[]};
+                        // ★ 設定更新時，自動重新檢查當前分類的公告（即時開啟/關閉公告視窗）
+                        // 只有在初始化完成後才重新檢查，避免初次 onValue 觸發把全站公告關掉
+                        if(s._settingsLoaded && s.currentCategory){
+                            s.$nextTick(function(){s.checkAnnouncements(s.currentCategory);});
+                        }
+                        s._settingsLoaded=true;
+                    });
                 }).catch(function(e){console.error(e);s.isLoading=false});
             },
             loadSettings:function(){
@@ -783,56 +783,45 @@
                 var s=this;
                 // ★ 先從 localStorage 載入本桌訂單記錄
                 s.loadLocalOrders();
-                // ★ 用輪詢模式逐筆讀取自己的訂單狀態（取代 onValue 全量下載，大幅節省流量）
-                s.startOrderPolling();
-                // ★ 一次性讀取進行中訂單數（用於等候時間估算）
-                s.refreshPendingCount();
-                // ★ 每 60 秒刷新一次進行中訂單數
-                s._pendingTimer=setInterval(function(){s.refreshPendingCount();},60000);
-            },
-            // ★ 讀取進行中訂單數量（一次性 get，不持續監聽）
-            refreshPendingCount:function(){
-                var s=this;
-                get(ref(db,'orders')).then(function(snap){
-                    if(!snap.exists()){s.pendingCount=0;return;}
-                    var data=snap.val(); var count=0;
+                // ★ 嘗試從 Firebase 讀取（可能因權限失敗）
+                onValue(ref(db,'orders'),function(snap){
+                    if(!snap.exists()){s.pendingCount=0;return}
+                    var all=Object.entries(snap.val()).filter(function(e){return e[1]&&e[1].status}).map(function(e){return Object.assign({id:e[0]},e[1])});
+                    s.allOrders=all;
+                    // 本桌訂單（今日）- Firebase 有最新狀態
                     var today=new Date();today.setHours(0,0,0,0);
-                    for(var id in data){
-                        var o=data[id];
-                        if(o&&(o.status==='new'||o.status==='making'))count++;
-                        // 順便同步自己裝置的訂單
-                        if(o&&o.tableDevice===s.deviceId&&o.timestamp>=today.getTime()){
-                            s.myOrders.forEach(function(local){
-                                if(local.id===id){
-                                    var ch=false;
-                                    if(o.status&&o.status!==local.status){local.status=o.status;ch=true;}
-                                    if(o.orderNo&&o.orderNo!==local.orderNo){local.orderNo=o.orderNo;ch=true;}
-                                    if(o.paymentStatus&&o.paymentStatus!==local.paymentStatus){local.paymentStatus=o.paymentStatus;ch=true;}
-                                    if(o.paymentMethod&&o.paymentMethod!==local.paymentMethod){local.paymentMethod=o.paymentMethod;ch=true;}
-                                    if(ch){
-                                        try{var key='dinein_orders_'+s.deviceId;var saved=JSON.parse(localStorage.getItem(key)||'[]');
-                                        saved.forEach(function(sv){if(sv.id===id){sv.status=local.status;sv.orderNo=local.orderNo;sv.paymentStatus=local.paymentStatus;sv.paymentMethod=local.paymentMethod;}});
-                                        localStorage.setItem(key,JSON.stringify(saved));}catch(e){}
-                                    }
-                                    // 更新 lastOrderNo
-                                    if(s.lastOrderIdRef===id&&o.orderNo&&!s.lastOrderNo){s.lastOrderNo=o.orderNo;s.updateLocalOrderNo(id,o.orderNo);}
-                                }
-                            });
+                    var fbOrders=all.filter(function(o){
+                        return o.tableDevice===s.deviceId&&o.timestamp>=today.getTime()&&o.status!=='cancelled'&&o.status!=='archived'
+                    }).sort(function(a,b){return b.timestamp-a.timestamp});
+                    if(fbOrders.length>0)s.myOrders=fbOrders;
+                    // ★ 監聽 linepay_transactions 以確認付款狀態
+                    onValue(ref(db,'linepay_transactions'),function(snap){
+                        if(!snap.exists()){s.lpConfirmed={};return;}
+                        var confirmed={};
+                        var data=snap.val();
+                        for(var oid in data){
+                            if(data[oid]&&data[oid].status==='confirmed') confirmed[oid]=true;
+                        }
+                        s.lpConfirmed=confirmed;
+                    });
+                    // ★ 自動更新 lastOrderNo（後台補發流水號時即時顯示）
+                    if(s.lastOrderIdRef){
+                        var latest=all.find(function(o){return o.id===s.lastOrderIdRef});
+                        if(latest&&latest.orderNo&&!s.lastOrderNo){
+                            s.lastOrderNo=latest.orderNo;
+                            s.updateLocalOrderNo(s.lastOrderIdRef,latest.orderNo);
                         }
                     }
-                    s.pendingCount=count;
-                    // 同步 linepay 狀態（只查自己訂單的）
-                    var myIds=s.myOrders.filter(function(o){return o.paymentMethod==='linepay'||o.paymentMethod==='linepay_offline';}).map(function(o){return o.id;});
-                    if(myIds.length){
-                        var confirmed={};
-                        myIds.forEach(function(oid){
-                            get(ref(db,'linepay_transactions/'+oid+'/status')).then(function(lpSnap){
-                                if(lpSnap.exists()&&lpSnap.val()==='confirmed')confirmed[oid]=true;
-                                s.lpConfirmed=Object.assign({},s.lpConfirmed,confirmed);
-                            }).catch(function(){});
-                        });
-                    }
-                }).catch(function(e){console.warn('refreshPendingCount:',e.message);});
+                    // 同步更新 localStorage
+                    s.syncLocalOrders(fbOrders);
+                    // 記錄進行中訂單數（estimatedWait 由 computed 自動反應）
+                    var pending=all.filter(function(o){return o.status==='new'||o.status==='making'});
+                    s.pendingCount=pending.length;
+                },function(err){
+                    // Firebase 讀取失敗（權限不足），使用 localStorage + 定時輪詢
+                    console.warn('Firebase orders read failed:',err.message);
+                    s.startOrderPolling();
+                });
             },
             // ★ 定時輪詢：當 onValue 失敗時，逐筆讀取訂單狀態
             startOrderPolling:function(){
@@ -860,7 +849,6 @@
                                     localStorage.setItem(key,JSON.stringify(saved));
                                 }catch(e){}
                             }
-                            // 更新 lastOrderNo
                             if(s.lastOrderIdRef===order.id&&d.orderNo&&!s.lastOrderNo){
                                 s.lastOrderNo=d.orderNo;
                             }
