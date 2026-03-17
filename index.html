@@ -424,12 +424,11 @@
                                 <span class="text-xs font-black text-orange-600 bg-orange-50 px-2 py-0.5 rounded">No.{{ order.orderNo ? String(order.orderNo).padStart(3,'0') : '---' }}</span>
                                 <span :class="{'text-red-500': order.status==='new','text-yellow-600': order.status==='making','text-green-600': order.status==='done','text-gray-400': order.status==='cancelled'}" class="text-xs font-bold">{{ {new:'🔴 等待接單',making:'🟡 製作中',done:'🟢 已完成',cancelled:'⚫ 已取消'}[order.status] || order.status }}</span>
                             </div>
-                            <span class="text-xs text-gray-400">{{ formatOrderTime(order.timestamp) }}</span>
                         </div>
                         <div class="px-3 py-2">
                             <div class="text-xs text-gray-400 mb-1">
                                 <span>訂餐：{{ formatOrderTime(order.timestamp) }}</span>
-                                <span v-if="order.pickupDate || order.pickupTime" class="ml-2">｜預定：{{ order.pickupDate ? order.pickupDate + ' ' : '' }}{{ order.pickupTime || '盡快' }}</span>
+                                <span v-if="order.pickupDate || order.pickupTime" class="ml-1">｜預定：{{ order.pickupDate ? order.pickupDate + ' ' : '' }}{{ order.pickupTime || '盡快' }}</span>
                             </div>
                             <div v-for="(item,ii) in (order.items||[])" :key="ii" class="text-sm text-gray-700 py-0.5">
                                 <div>
@@ -440,15 +439,15 @@
                             </div>
                             <div class="flex justify-between items-center mt-1 pt-1 border-t border-gray-100">
                                 <div>
-                                    <span class="text-xs text-gray-400">取餐：{{ order.pickupTime || '盡快' }}</span>
                                     <template v-if="order.paymentMethod==='linepay'||order.paymentMethod==='linepay_offline'">
-                                        <span v-if="order.paymentStatus==='paid'" class="text-xs font-bold text-green-600 ml-2">💚 LINE Pay 已付清</span>
-                                        <span v-else-if="order.paymentStatus==='refunded'" class="text-xs font-bold text-orange-500 ml-2">LINE Pay 已退款</span>
-                                        <span v-else class="text-xs font-bold text-blue-400 ml-2">💚 LINE Pay 處理中</span>
+                                        <span v-if="order.paymentStatus==='refunded'||(order.status==='cancelled'&&order.paymentStatus==='paid')" class="text-xs font-bold text-purple-500">💜 LINE Pay 已退款</span>
+                                        <span v-else-if="order.paymentStatus==='paid'" class="text-xs font-bold text-green-600">💚 LINE Pay 已付清</span>
+                                        <span v-else-if="order.status==='cancelled'" class="text-xs font-bold text-gray-400">LINE Pay 已取消</span>
+                                        <span v-else class="text-xs font-bold text-blue-400">💚 LINE Pay 處理中</span>
                                     </template>
                                     <template v-else-if="order.paymentMethod==='store'||!order.paymentMethod">
-                                        <span v-if="order.paymentStatus==='paid'" class="text-xs font-bold text-green-600 ml-2">💰 已付款</span>
-                                        <span v-else class="text-xs text-gray-400 ml-2">💰 未付款</span>
+                                        <span v-if="order.paymentStatus==='paid'" class="text-xs font-bold text-green-600">💰 已付款</span>
+                                        <span v-else class="text-xs text-gray-400">💰 未付款</span>
                                     </template>
                                 </div>
                                 <span class="text-orange-500 font-black text-sm">${{ order.total }}</span>
@@ -741,9 +740,19 @@
                     self.isLoading = false;
                     self.checkHoliday();
                     if (self.settings.isOpen) self.initDateTime();
-                    // 即時監聽設定
-                    onValue(ref(db, 'settings'), function(snap) {
-                        if (!snap.exists()) return;
+                    self._settingsLoaded = true;
+                    // ★ 每 3 分鐘刷新設定（取代 onValue 持續監聽，大幅節省 Firebase 流量）
+                    setInterval(function() { self.loadSettings(); }, 180000);
+                }).catch(function(e) {
+                    console.error('init error:', e);
+                    self.isLoading = false;
+                    self.initDateTime();
+                });
+            },
+            loadSettings: function() {
+                var self = this;
+                return get(ref(db, 'settings')).then(function(snap) {
+                    if (snap.exists()) {
                         var s = snap.val();
                         var wasOpen = self.settings.isOpen;
                         var defaultStations = [
@@ -780,47 +789,13 @@
                             var cl = (dh[idx] && dh[idx].closeTime) || closeTime;
                             return { day: '週'+n, time: o + ' ~ ' + cl, off: false };
                         });
-                        if (!wasOpen && self.settings.isOpen) self.initDateTime();
-                        // ★ 設定更新時，自動重新檢查當前分類的公告（即時開啟/關閉公告視窗）
-                        // 只有在初始化完成後（_settingsLoaded=true）才重新檢查，避免初次 onValue 觸發把全站公告關掉
+                        if (self._settingsLoaded && !wasOpen && self.settings.isOpen) self.initDateTime();
+                        // ★ 公告檢查
                         if (self._settingsLoaded && self.currentCategory) {
-                            self.$nextTick(function() {
-                                self.checkAnnouncements(self.currentCategory);
-                            });
+                            self.$nextTick(function() { self.checkAnnouncements(self.currentCategory); });
+                        } else {
+                            self.$nextTick(function() { self.checkAnnouncements(); });
                         }
-                        self._settingsLoaded = true;
-                    });
-                }).catch(function(e) {
-                    console.error('init error:', e);
-                    self.isLoading = false;
-                    self.initDateTime();
-                });
-            },
-            loadSettings: function() {
-                var self = this;
-                return get(ref(db, 'settings')).then(function(snap) {
-                    if (snap.exists()) {
-                        var s = snap.val();
-                        var defaultStations = [
-                            { name: '湯麵', ip: '192.168.0.6' },
-                            { name: '麵包台', ip: '192.168.0.7' },
-                            { name: '飲料台', ip: '192.168.0.8' }
-                        ];
-                        self.settings = {
-                            isOpen: s.isOpen !== false,
-                            openTime: s.openTime || '06:00',
-                            closeTime: s.closeTime || '13:15',
-                            pickupDays: s.pickupDays || 3,
-                            pickupInterval: s.pickupInterval || 30, linePayServerUrl: s.linePayServerUrl || '', linePayConfirmUrl: s.linePayConfirmUrl || '', announcements: s.announcements || [],
-                            holidays: s.holidays || [],
-                            weeklyDaysOff: s.weeklyDaysOff || [],
-                            orderCooldownEnabled: s.orderCooldownEnabled !== false,
-                            orderCooldownSecs: s.orderCooldownSecs || 300,
-                            stations: (s.stations && s.stations.length) ? s.stations : defaultStations,
-                            posOnlyCategories: s.posOnlyCategories || []
-                        };
-                        // ★ 顯示全站公告
-                        self.$nextTick(function() { self.checkAnnouncements(); });
                     }
                 }).catch(function(e) { console.warn('設定讀取失敗，使用預設值', e); });
             },
@@ -852,13 +827,9 @@
                             items.forEach(function(i) { if (i.category && found.indexOf(i.category) === -1) found.push(i.category); });
                             var cats = ORDER.filter(function(c) { return found.indexOf(c) !== -1 && posOnly.indexOf(c) === -1; });
                             found.forEach(function(c) { if (cats.indexOf(c) === -1 && posOnly.indexOf(c) === -1) cats.push(c); });
-                            // ★ 從菜單中移除 POS 專用分類的餐點
-                            if (posOnly.length) {
-                                self.menu = items.filter(function(i) { return posOnly.indexOf(i.category) === -1; });
-                            }
+                            if (posOnly.length) { self.menu = items.filter(function(i) { return posOnly.indexOf(i.category) === -1; }); }
                             self.categories = cats;
                             if (cats.length) self.currentCategory = cats[0];
-                            // ★ 標記菜單已初始化完成，之後 currentCategory 的變化才是用戶主動切換
                             self.$nextTick(function() { self._menuLoaded = true; });
                         });
                     }
@@ -1190,14 +1161,13 @@
                     }
                 }, 2000);
             },
-            // ★ 自動輪詢：每 8 秒自動更新訂單狀態
+            // ★ 自動輪詢：每 8 秒自動更新訂單狀態（含付款狀態）
             startAutoRefresh: function() {
                 var self = this;
                 if (self.refreshTimer) return;
                 self.refreshTimer = setInterval(function() {
                     if (!self.myOrders.length) return;
-                    var hasActive = self.myOrders.some(function(o) { return o.status === 'new' || o.status === 'making'; });
-                    if (hasActive) self.tryRefreshOrderStatus();
+                    self.tryRefreshOrderStatus();
                 }, 8000);
             },
             reorderItems: function(order) {
