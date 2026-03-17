@@ -440,12 +440,13 @@
                             <div class="flex justify-between items-center mt-1 pt-1 border-t border-gray-100">
                                 <div>
                                     <template v-if="order.paymentMethod==='linepay'||order.paymentMethod==='linepay_offline'">
-                                        <span v-if="order.paymentStatus==='refunded'||(order.status==='cancelled'&&order.paymentStatus==='paid')" class="text-xs font-bold text-purple-500">💜 LINE Pay 已退款</span>
+                                        <span v-if="order.paymentStatus==='refunded'" class="text-xs font-bold text-purple-500">💜 LINE Pay 已退款</span>
+                                        <span v-else-if="order.status==='cancelled'&&(order.paymentStatus==='paid'||order.paymentStatus==='refunded')" class="text-xs font-bold text-purple-500">💜 LINE Pay 已退款</span>
                                         <span v-else-if="order.paymentStatus==='paid'" class="text-xs font-bold text-green-600">💚 LINE Pay 已付清</span>
                                         <span v-else-if="order.status==='cancelled'" class="text-xs font-bold text-gray-400">LINE Pay 已取消</span>
                                         <span v-else class="text-xs font-bold text-blue-400">💚 LINE Pay 處理中</span>
                                     </template>
-                                    <template v-else-if="order.paymentMethod==='store'||!order.paymentMethod">
+                                    <template v-else>
                                         <span v-if="order.paymentStatus==='paid'" class="text-xs font-bold text-green-600">💰 已付款</span>
                                         <span v-else class="text-xs text-gray-400">💰 未付款</span>
                                     </template>
@@ -740,19 +741,9 @@
                     self.isLoading = false;
                     self.checkHoliday();
                     if (self.settings.isOpen) self.initDateTime();
-                    self._settingsLoaded = true;
-                    // ★ 每 3 分鐘刷新設定（取代 onValue 持續監聽，大幅節省 Firebase 流量）
-                    setInterval(function() { self.loadSettings(); }, 180000);
-                }).catch(function(e) {
-                    console.error('init error:', e);
-                    self.isLoading = false;
-                    self.initDateTime();
-                });
-            },
-            loadSettings: function() {
-                var self = this;
-                return get(ref(db, 'settings')).then(function(snap) {
-                    if (snap.exists()) {
+                    // 即時監聽設定
+                    onValue(ref(db, 'settings'), function(snap) {
+                        if (!snap.exists()) return;
                         var s = snap.val();
                         var wasOpen = self.settings.isOpen;
                         var defaultStations = [
@@ -771,7 +762,8 @@
                             orderCooldownEnabled: s.orderCooldownEnabled !== false,
                             orderCooldownSecs: s.orderCooldownSecs || 300,
                             stations: (s.stations && s.stations.length) ? s.stations : defaultStations,
-                            posOnlyCategories: s.posOnlyCategories || []
+                            posOnlyCategories: s.posOnlyCategories || [],
+                            cancelLimitMinutes: s.cancelLimitMinutes || 15
                         };
                         self.storeInfo = s.storeInfo || '';
                         self.storePhone = s.storePhone || '';
@@ -789,13 +781,48 @@
                             var cl = (dh[idx] && dh[idx].closeTime) || closeTime;
                             return { day: '週'+n, time: o + ' ~ ' + cl, off: false };
                         });
-                        if (self._settingsLoaded && !wasOpen && self.settings.isOpen) self.initDateTime();
-                        // ★ 公告檢查
+                        if (!wasOpen && self.settings.isOpen) self.initDateTime();
+                        // ★ 設定更新時，自動重新檢查當前分類的公告（即時開啟/關閉公告視窗）
+                        // 只有在初始化完成後（_settingsLoaded=true）才重新檢查，避免初次 onValue 觸發把全站公告關掉
                         if (self._settingsLoaded && self.currentCategory) {
-                            self.$nextTick(function() { self.checkAnnouncements(self.currentCategory); });
-                        } else {
-                            self.$nextTick(function() { self.checkAnnouncements(); });
+                            self.$nextTick(function() {
+                                self.checkAnnouncements(self.currentCategory);
+                            });
                         }
+                        self._settingsLoaded = true;
+                    });
+                }).catch(function(e) {
+                    console.error('init error:', e);
+                    self.isLoading = false;
+                    self.initDateTime();
+                });
+            },
+            loadSettings: function() {
+                var self = this;
+                return get(ref(db, 'settings')).then(function(snap) {
+                    if (snap.exists()) {
+                        var s = snap.val();
+                        var defaultStations = [
+                            { name: '湯麵', ip: '192.168.0.6' },
+                            { name: '麵包台', ip: '192.168.0.7' },
+                            { name: '飲料台', ip: '192.168.0.8' }
+                        ];
+                        self.settings = {
+                            isOpen: s.isOpen !== false,
+                            openTime: s.openTime || '06:00',
+                            closeTime: s.closeTime || '13:15',
+                            pickupDays: s.pickupDays || 3,
+                            pickupInterval: s.pickupInterval || 30, linePayServerUrl: s.linePayServerUrl || '', linePayConfirmUrl: s.linePayConfirmUrl || '', announcements: s.announcements || [],
+                            holidays: s.holidays || [],
+                            weeklyDaysOff: s.weeklyDaysOff || [],
+                            orderCooldownEnabled: s.orderCooldownEnabled !== false,
+                            orderCooldownSecs: s.orderCooldownSecs || 300,
+                            stations: (s.stations && s.stations.length) ? s.stations : defaultStations,
+                            posOnlyCategories: s.posOnlyCategories || [],
+                            cancelLimitMinutes: s.cancelLimitMinutes || 15
+                        };
+                        // ★ 顯示全站公告
+                        self.$nextTick(function() { self.checkAnnouncements(); });
                     }
                 }).catch(function(e) { console.warn('設定讀取失敗，使用預設值', e); });
             },
@@ -1006,7 +1033,12 @@
             },
             removeFromCart: function(index) {
                 this.cart.splice(index, 1);
-                if (!this.cart.length) this.currentView = 'menu';
+                if (!this.cart.length) {
+                    // ★ 購物車清空：重置所有狀態並返回首頁
+                    this.activeItem = null;
+                    this.editIndex = -1;
+                    this.currentView = 'menu';
+                }
             },
             checkAnnouncements: function(cat) {
                 var s = this;
@@ -1128,17 +1160,13 @@
                     }
                 } catch(e) {}
             },
-            // ★ 嘗試從 Firebase 讀取訂單狀態更新（可能因權限失敗）
+            // ★ 嘗試從 Firebase 讀取訂單狀態更新（含付款狀態）
             tryRefreshOrderStatus: function() {
                 var self = this;
                 if (!self.myOrders.length) return;
                 var changed = false;
-                var pending = 0;
                 self.myOrders.forEach(function(order) {
                     if (!order.id) return;
-                    if (order.status === 'done' || order.status === 'cancelled' || order.status === 'archived') return;
-                    pending++;
-                    // 讀取完整訂單資料（status + orderNo）
                     get(ref(db, 'orders/' + order.id)).then(function(snap) {
                         if (!snap.exists()) return;
                         var data = snap.val();
@@ -1154,14 +1182,16 @@
                         try {
                             var saved = JSON.parse(localStorage.getItem('my_orders') || '[]');
                             self.myOrders.forEach(function(o) {
-                                saved.forEach(function(s) { if (s.id === o.id) { s.status = o.status; s.orderNo = o.orderNo; s.paymentStatus = o.paymentStatus; s.paymentMethod = o.paymentMethod; } });
+                                saved.forEach(function(s) {
+                                    if (s.id === o.id) { s.status = o.status; s.orderNo = o.orderNo; s.paymentStatus = o.paymentStatus; s.paymentMethod = o.paymentMethod; }
+                                });
                             });
                             localStorage.setItem('my_orders', JSON.stringify(saved));
                         } catch(e) {}
                     }
                 }, 2000);
             },
-            // ★ 自動輪詢：每 8 秒自動更新訂單狀態（含付款狀態）
+            // ★ 自動輪詢：每 8 秒自動更新所有訂單狀態（含付款狀態）
             startAutoRefresh: function() {
                 var self = this;
                 if (self.refreshTimer) return;
@@ -1188,6 +1218,44 @@
                 });
                 self.showStoreInfo = false;
                 self.goToCart();
+            },
+            cancelMyOrder: function(order) {
+                var self = this;
+                if (!order || !order.id) return;
+                // 計算取餐時間與現在的差距
+                var limitMin = self.settings.cancelLimitMinutes || 15;
+                var pickupDate = order.pickupDate || '';
+                var pickupTime = order.pickupTime || '';
+                if (pickupDate && pickupTime && pickupTime !== '盡快' && pickupTime !== '已過點餐時間') {
+                    var pickupStr = pickupDate + 'T' + pickupTime + ':00';
+                    var pickupTs = new Date(pickupStr).getTime();
+                    var nowTs = Date.now();
+                    var diffMin = (pickupTs - nowTs) / 60000;
+                    if (diffMin <= limitMin) {
+                        self.showAlertModal('無法取消', '距離取餐時間不足 ' + limitMin + ' 分鐘，已無法線上取消訂單。\n如需取消，請直接聯繫店家，造成不便敬請見諒！');
+                        return;
+                    }
+                }
+                if (!confirm('確定要取消此訂單嗎？')) return;
+                update(ref(db, 'orders/' + order.id), {
+                    status: 'cancelled',
+                    cancelledAt: Date.now(),
+                    cancelSource: 'customer',
+                    print_task: null
+                }).then(function() {
+                    // 觸發廚房列印取消單
+                    set(ref(db, 'orders/' + order.id + '/print_task'), 'cancel_' + Date.now());
+                    order.status = 'cancelled';
+                    // 更新 localStorage
+                    try {
+                        var saved = JSON.parse(localStorage.getItem('my_orders') || '[]');
+                        saved.forEach(function(s) { if (s.id === order.id) s.status = 'cancelled'; });
+                        localStorage.setItem('my_orders', JSON.stringify(saved));
+                    } catch(e) {}
+                    self.showAlertModal('已取消', '訂單已取消，廚房將收到取消通知。');
+                }).catch(function(e) {
+                    self.showAlertModal('取消失敗', '無法取消訂單：' + e.message);
+                });
             },
             submitToFirebase: function(payMethod) {
                 var self = this;
@@ -1225,15 +1293,22 @@
                 if (isToday && this.pickupTime !== '已過點餐時間') {
                     var now = new Date();
                     var nowMin = now.getHours() * 60 + now.getMinutes();
-                    var nowCeil5 = Math.ceil(nowMin / 5) * 5;
-                    var interval = this.settings.pickupInterval || 30;
-                    var earliest = nowCeil5 + interval;
                     var pParts = this.pickupTime.split(':');
                     var pickupMin = parseInt(pParts[0]) * 60 + parseInt(pParts[1]);
-                    if (pickupMin < earliest) {
-                        // 自動更新時間清單並提示顧客重選
+                    var interval = this.settings.pickupInterval || 30;
+                    var nowCeil5 = Math.ceil(nowMin / 5) * 5;
+                    var earliestSlot = nowCeil5 + interval;
+                    if (pickupMin <= nowMin) {
+                        // ★ 時間真正過了
+                        var origTime = this.pickupTime;
                         this.updateAvailableTimes();
-                        this.showAlertModal('取餐時間已過', '您選擇的取餐時間「' + this.pickupTime + '」已過期，已自動更新為最早可取餐時間，請確認後再送出。');
+                        this.showAlertModal('取餐時間已過', '您選擇的取餐時間「' + origTime + '」已過期，已自動更新為最早可取餐時間「' + this.pickupTime + '」，請確認後再送出。');
+                        return;
+                    } else if (pickupMin < earliestSlot) {
+                        // ★ 時間未過但不符備餐緩衝
+                        var origTime2 = this.pickupTime;
+                        this.updateAvailableTimes();
+                        this.showAlertModal('取餐時間調整', '原先選擇的取餐時間「' + origTime2 + '」因備餐時間需要，已自動調整為「' + this.pickupTime + '」，請確認後再送出。');
                         return;
                     }
                 }
