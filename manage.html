@@ -1241,7 +1241,7 @@ window._doCountUp = function() {
 </script>
 <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
-    import { getDatabase, ref, set, get, push, update, remove, onValue } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
+    import { getDatabase, ref, set, get, push, update, remove, onValue, query, limitToLast } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
 
     const firebaseConfig = {
@@ -1427,8 +1427,8 @@ window._doCountUp = function() {
                     self.loadStats();
                     self.loadTemplates();
                     self.loadStandardDrinks();
-                    // ★ 監聽 linepay_transactions 以確認付款狀態
-                    onValue(ref(db,'linepay_transactions'),function(snap){
+                    // ★ 監聯 linepay_transactions（限最近 200 筆，節省流量）
+                    onValue(query(ref(db,'linepay_transactions'),limitToLast(200)),function(snap){
                         if(!snap.exists()){self.lpConfirmed={};return;}
                         var confirmed={};
                         var data=snap.val();
@@ -1810,15 +1810,12 @@ window._doCountUp = function() {
                 set(ref(db, 'settings/standardDrinks'), self.standardDrinks)
                     .then(function() {
                         self.standardDrinksSaved = true;
-                        // ★ 同步到所有餐點的飲料選項群組
                         var drinks = (self.standardDrinks || []).filter(function(d){ return d && d.name && d.name.trim(); })
                             .map(function(d){ return { name: d.name.trim(), price: Number(d.price)||0 }; });
                         if (drinks.length && self.menuItems && self.menuItems.length) {
-                            var updates = {};
-                            var count = 0;
+                            var updates = {}; var count = 0;
                             self.menuItems.forEach(function(item){
-                                var ogs = item.optionGroups || [];
-                                var changed = false;
+                                var ogs = item.optionGroups || []; var changed = false;
                                 var newOGs = ogs.map(function(g){
                                     var gname = (g.groupName || '');
                                     if (g.pricing === 'mealUpgrade' && (gname.indexOf('飲料') !== -1 || gname.indexOf('飲品') !== -1)) {
@@ -1833,8 +1830,6 @@ window._doCountUp = function() {
                                 update(ref(db), updates).then(function(){
                                     alert('✅ 飲料清單已儲存，並同步更新 ' + count + ' 個餐點的飲料選項');
                                 }).catch(function(e){ alert('飲料清單已儲存，但同步餐點失敗：' + e.message); });
-                            } else {
-                                alert('✅ 飲料清單已儲存（無匹配的餐點需同步）');
                             }
                         }
                         setTimeout(function(){ self.standardDrinksSaved = false; }, 3000);
@@ -1846,35 +1841,22 @@ window._doCountUp = function() {
                 var self = this;
                 var drinks = (self.standardDrinks || []).filter(function(d){ return d && d.name && d.name.trim(); })
                     .map(function(d){ return { name: d.name.trim(), price: Number(d.price)||0 }; });
-                if (!drinks.length) return;
-                if (!self.menuItems || !self.menuItems.length) {
-                    console.warn('syncStandardDrinksToMenu: menuItems 尚未載入');
-                    return;
-                }
+                if (!drinks.length || !self.menuItems || !self.menuItems.length) return;
                 var updates = {};
-                var count = 0;
                 (self.menuItems || []).forEach(function(item){
-                    var ogs = item.optionGroups || [];
-                    var changed = false;
+                    var ogs = item.optionGroups || []; var changed = false;
                     var newOGs = ogs.map(function(g){
                         var gname = (g.groupName || '');
-                        // ★ 放寬匹配：只要群組名稱包含「飲料」或「飲品」且定價模式為 mealUpgrade
                         if (g.pricing === 'mealUpgrade' && (gname.indexOf('飲料') !== -1 || gname.indexOf('飲品') !== -1)) {
                             changed = true;
-                            var ng = Object.assign({}, g, { choices: JSON.parse(JSON.stringify(drinks)) });
-                            return ng;
+                            return Object.assign({}, g, { choices: JSON.parse(JSON.stringify(drinks)) });
                         }
                         return g;
                     });
-                    if (changed) { updates['menu/' + item.id + '/optionGroups'] = newOGs; count++; }
+                    if (changed) updates['menu/' + item.id + '/optionGroups'] = newOGs;
                 });
-                if (!Object.keys(updates).length) {
-                    console.log('syncStandardDrinksToMenu: 無匹配的餐點需同步');
-                    return;
-                }
-                update(ref(db), updates).then(function(){
-                    console.log('✅ 飲料清單已同步至 ' + count + ' 個餐點');
-                }).catch(function(e){ console.warn('同步飲料清單失敗', e.message); });
+                if (!Object.keys(updates).length) return;
+                update(ref(db), updates).catch(function(e){ console.warn('同步飲料清單失敗', e.message); });
             },
             addDrink: function() { this.standardDrinks.push({ name:'', price:0 }); },
             removeDrink: function(i) { this.standardDrinks.splice(i, 1); },
@@ -1940,26 +1922,17 @@ window._doCountUp = function() {
                 var p = tplId
                     ? update(ref(db, 'settings/optionTemplates/' + tplId), data)
                     : push(ref(db, 'settings/optionTemplates'), data);
-                p.then(function(result) {
-                    var syncPromise;
+                p.then(function() {
+                    var syncPromise = Promise.resolve(0);
                     if (tplId) {
-                        // ★ 編輯現有模板 → 同步至所有餐點（optionGroups + posExtras）
-                        var ogSync = self.syncTemplateToMenu(tplId, data);
-                        // ★ 若模板名稱含「食材加點」或「POS加點」，也同步 posExtras
-                        var isPosExtrasTemplate = (data.templateName.indexOf('食材加點') !== -1 || data.templateName.indexOf('POS加點') !== -1 || data.groupName.indexOf('食材加點') !== -1);
-                        var peSync = isPosExtrasTemplate ? self.syncPosExtrasTemplateToMenu(data) : Promise.resolve(0);
-                        syncPromise = Promise.all([ogSync || Promise.resolve(0), peSync]).then(function(results){
-                            return (results[0] || 0) + (results[1] || 0);
-                        });
-                    } else {
-                        syncPromise = Promise.resolve(0);
+                        var ogSync = self.syncTemplateToMenu(tplId, data) || Promise.resolve(0);
+                        var isPE = (data.templateName.indexOf('食材加點') !== -1 || data.templateName.indexOf('POS加點') !== -1 || data.groupName.indexOf('食材加點') !== -1);
+                        var peSync = isPE ? self.syncPosExtrasTemplateToMenu(data) : Promise.resolve(0);
+                        syncPromise = Promise.all([ogSync, peSync]).then(function(r){ return (r[0]||0)+(r[1]||0); });
                     }
-                    (syncPromise || Promise.resolve(0)).then(function(syncCount){
-                        if (tplId && syncCount > 0) {
-                            alert('✅ 模板已更新，並同步更新 ' + syncCount + ' 個餐點');
-                        } else if (tplId) {
-                            alert('✅ 模板已更新（無匹配的餐點需同步）');
-                        }
+                    syncPromise.then(function(syncCount){
+                        if (tplId && syncCount > 0) { alert('✅ 模板已更新，並同步更新 ' + syncCount + ' 個餐點'); }
+                        else if (tplId) { alert('✅ 模板已更新（無匹配的餐點需同步）'); }
                     });
                     self.showTemplateForm = false;
                     self.editingTemplateId = null;
@@ -1969,38 +1942,20 @@ window._doCountUp = function() {
             },
             syncTemplateToMenu: function(tplId, tplData) {
                 var self = this;
-                if (!tplId || !tplData) return;
-                if (!self.menuItems || !self.menuItems.length) {
-                    console.warn('syncTemplateToMenu: menuItems 尚未載入');
-                    return;
-                }
-                var updates = {};
-                var count = 0;
+                if (!tplId || !tplData || !self.menuItems || !self.menuItems.length) return Promise.resolve(0);
+                var updates = {}; var count = 0;
                 (self.menuItems || []).forEach(function(item){
-                    var ogs = item.optionGroups || [];
-                    var changed = false;
+                    var ogs = item.optionGroups || []; var changed = false;
                     var newOGs = ogs.map(function(g){
-                        // ★ 匹配條件（優先順序）：
-                        // 1. templateId 完全匹配（最可靠）
-                        // 2. templateName + groupName 匹配（向下相容無 templateId 的舊資料）
-                        // 3. groupName + type + pricing 匹配（最後手段）
                         var match = (g.templateId && g.templateId === tplId);
-                        if (!match && g.templateName) {
-                            match = (g.templateName === tplData.templateName);
-                        }
-                        if (!match) {
-                            match = (g.groupName === tplData.groupName && g.type === tplData.type && g.pricing === tplData.pricing);
-                        }
+                        if (!match && g.templateName) { match = (g.templateName === tplData.templateName); }
+                        if (!match) { match = (g.groupName === tplData.groupName && g.type === tplData.type && g.pricing === tplData.pricing); }
                         if (match) {
                             changed = true;
                             return Object.assign({}, g, {
-                                templateId: tplId,
-                                templateName: tplData.templateName,
-                                groupName: tplData.groupName,
-                                type: tplData.type,
-                                pricing: tplData.pricing,
-                                defaultIdx: tplData.defaultIdx || 0,
-                                baseValue: tplData.baseValue || 0,
+                                templateId: tplId, templateName: tplData.templateName,
+                                groupName: tplData.groupName, type: tplData.type, pricing: tplData.pricing,
+                                defaultIdx: tplData.defaultIdx || 0, baseValue: tplData.baseValue || 0,
                                 choices: JSON.parse(JSON.stringify(tplData.choices || []))
                             });
                         }
@@ -2009,33 +1964,24 @@ window._doCountUp = function() {
                     if (changed) { updates['menu/' + item.id + '/optionGroups'] = newOGs; count++; }
                 });
                 if (!Object.keys(updates).length) return Promise.resolve(0);
-                return update(ref(db), updates).then(function(){
-                    console.log('✅ 模板已同步至 ' + count + ' 個餐點');
-                    return count;
-                }).catch(function(e){ console.warn('同步模板失敗', e.message); return 0; });
+                return update(ref(db), updates).then(function(){ return count; }).catch(function(e){ console.warn('同步模板失敗', e.message); return 0; });
             },
-            // ★ 同步「食材加點」模板到所有餐點的 posExtras
             syncPosExtrasTemplateToMenu: function(tplData) {
                 var self = this;
-                if (!tplData || !tplData.choices) return Promise.resolve(0);
-                if (!self.menuItems || !self.menuItems.length) return Promise.resolve(0);
+                if (!tplData || !tplData.choices || !self.menuItems || !self.menuItems.length) return Promise.resolve(0);
                 var newExtras = tplData.choices.filter(function(c){ return c.name && c.name.trim(); })
                     .map(function(c){ return { name: c.name.trim(), price: Number(c.price) || 0 }; });
-                var updates = {};
-                var count = 0;
+                var updates = {}; var count = 0;
                 self.menuItems.forEach(function(item){
-                    // 只同步已有 posExtras 的餐點（表示曾經套用過此模板）
                     if (item.posExtras && item.posExtras.length > 0) {
                         updates['menu/' + item.id + '/posExtras'] = JSON.parse(JSON.stringify(newExtras));
                         count++;
                     }
                 });
                 if (!Object.keys(updates).length) return Promise.resolve(0);
-                return update(ref(db), updates).then(function(){
-                    console.log('✅ 食材加點模板已同步至 ' + count + ' 個餐點');
-                    return count;
-                }).catch(function(e){ console.warn('同步食材加點失敗', e.message); return 0; });
+                return update(ref(db), updates).then(function(){ return count; }).catch(function(e){ console.warn('同步食材加點失敗', e.message); return 0; });
             },
+            deleteTemplate: function(id) {
                 if (!confirm('確定刪除此模板？')) return;
                 var self = this;
                 remove(ref(db, 'settings/optionTemplates/' + id)).then(function() {
