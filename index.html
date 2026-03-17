@@ -441,9 +441,9 @@
                                 <div>
                                     <template v-if="order.paymentMethod==='linepay'||order.paymentMethod==='linepay_offline'">
                                         <span v-if="order.paymentStatus==='refunded'" class="text-xs font-bold text-purple-500">💜 LINE Pay 已退款</span>
-                                        <span v-else-if="order.status==='cancelled'&&(order.paymentStatus==='paid'||order.paymentStatus==='refunded')" class="text-xs font-bold text-purple-500">💜 LINE Pay 已退款</span>
+                                        <span v-else-if="order.status==='cancelled'&&order.paymentStatus==='paid'" class="text-xs font-bold text-purple-500">💜 LINE Pay 已退款</span>
                                         <span v-else-if="order.paymentStatus==='paid'" class="text-xs font-bold text-green-600">💚 LINE Pay 已付清</span>
-                                        <span v-else-if="order.status==='cancelled'" class="text-xs font-bold text-gray-400">LINE Pay 已取消</span>
+                                        <span v-else-if="order.status==='cancelled'" class="text-xs font-bold text-gray-400">💰 未付款</span>
                                         <span v-else class="text-xs font-bold text-blue-400">💚 LINE Pay 處理中</span>
                                     </template>
                                     <template v-else>
@@ -548,6 +548,7 @@
                 <p class="text-gray-800 font-bold text-base mb-1">✅ 訂單已送出！</p>
                 <p class="text-gray-500 text-sm mt-2">取餐時間：<span class="text-orange-500 font-bold">{{ successPickupTime }}</span></p>
                 <p class="text-gray-500 text-sm mt-1">下單時間：<span class="font-medium">{{ successOrderTime }}</span></p>
+                <p class="text-orange-600 font-black text-sm mt-3">取餐請告知手機末三碼</p>
             </div>
             <div class="px-5 pb-4 flex justify-end">
                 <button @click="showSuccessModal = false"
@@ -845,7 +846,6 @@
                             return (a.createdAt || 0) - (b.createdAt || 0);
                         });
                         self.menu = items;
-                        // ★ 讀取分類順序和 POS 專用分類
                         get(ref(db, 'settings')).then(function(setSnap) {
                             var sv = setSnap.exists() ? setSnap.val() : {};
                             var ORDER = sv.categories || ['套餐','單點','蛋餅、燒餅','漢堡、蝸牛堡','吐司、厚片','其它、飲品'];
@@ -1034,7 +1034,6 @@
             removeFromCart: function(index) {
                 this.cart.splice(index, 1);
                 if (!this.cart.length) {
-                    // ★ 購物車清空：重置所有狀態並返回首頁
                     this.activeItem = null;
                     this.editIndex = -1;
                     this.currentView = 'menu';
@@ -1160,7 +1159,7 @@
                     }
                 } catch(e) {}
             },
-            // ★ 嘗試從 Firebase 讀取訂單狀態更新（含付款狀態）
+            // ★ 嘗試從 Firebase 讀取訂單狀態更新（可能因權限失敗）
             tryRefreshOrderStatus: function() {
                 var self = this;
                 if (!self.myOrders.length) return;
@@ -1172,18 +1171,20 @@
                         var data = snap.val();
                         if (data.status && data.status !== order.status) { order.status = data.status; changed = true; }
                         if (data.orderNo && data.orderNo !== order.orderNo) { order.orderNo = data.orderNo; changed = true; }
-                        if (data.paymentStatus && data.paymentStatus !== order.paymentStatus) { order.paymentStatus = data.paymentStatus; changed = true; }
+                        if (data.paymentStatus !== undefined && data.paymentStatus !== order.paymentStatus) { order.paymentStatus = data.paymentStatus; changed = true; }
                         if (data.paymentMethod && data.paymentMethod !== order.paymentMethod) { order.paymentMethod = data.paymentMethod; changed = true; }
                     }).catch(function() {});
                 });
-                // 更新 localStorage
                 setTimeout(function() {
                     if (changed) {
                         try {
                             var saved = JSON.parse(localStorage.getItem('my_orders') || '[]');
                             self.myOrders.forEach(function(o) {
                                 saved.forEach(function(s) {
-                                    if (s.id === o.id) { s.status = o.status; s.orderNo = o.orderNo; s.paymentStatus = o.paymentStatus; s.paymentMethod = o.paymentMethod; }
+                                    if (s.id === o.id) {
+                                        s.status = o.status; s.orderNo = o.orderNo;
+                                        s.paymentStatus = o.paymentStatus; s.paymentMethod = o.paymentMethod;
+                                    }
                                 });
                             });
                             localStorage.setItem('my_orders', JSON.stringify(saved));
@@ -1191,7 +1192,7 @@
                     }
                 }, 2000);
             },
-            // ★ 自動輪詢：每 8 秒自動更新所有訂單狀態（含付款狀態）
+            // ★ 自動輪詢：每 8 秒更新所有訂單狀態（含付款狀態）
             startAutoRefresh: function() {
                 var self = this;
                 if (self.refreshTimer) return;
@@ -1222,15 +1223,13 @@
             cancelMyOrder: function(order) {
                 var self = this;
                 if (!order || !order.id) return;
-                // 計算取餐時間與現在的差距
                 var limitMin = self.settings.cancelLimitMinutes || 15;
                 var pickupDate = order.pickupDate || '';
                 var pickupTime = order.pickupTime || '';
                 if (pickupDate && pickupTime && pickupTime !== '盡快' && pickupTime !== '已過點餐時間') {
                     var pickupStr = pickupDate + 'T' + pickupTime + ':00';
                     var pickupTs = new Date(pickupStr).getTime();
-                    var nowTs = Date.now();
-                    var diffMin = (pickupTs - nowTs) / 60000;
+                    var diffMin = (pickupTs - Date.now()) / 60000;
                     if (diffMin <= limitMin) {
                         self.showAlertModal('無法取消', '距離取餐時間不足 ' + limitMin + ' 分鐘，已無法線上取消訂單。\n如需取消，請直接聯繫店家，造成不便敬請見諒！');
                         return;
@@ -1238,15 +1237,10 @@
                 }
                 if (!confirm('確定要取消此訂單嗎？')) return;
                 update(ref(db, 'orders/' + order.id), {
-                    status: 'cancelled',
-                    cancelledAt: Date.now(),
-                    cancelSource: 'customer',
-                    print_task: null
+                    status: 'cancelled', cancelledAt: Date.now(), cancelSource: 'customer', print_task: null
                 }).then(function() {
-                    // 觸發廚房列印取消單
                     set(ref(db, 'orders/' + order.id + '/print_task'), 'cancel_' + Date.now());
                     order.status = 'cancelled';
-                    // 更新 localStorage
                     try {
                         var saved = JSON.parse(localStorage.getItem('my_orders') || '[]');
                         saved.forEach(function(s) { if (s.id === order.id) s.status = 'cancelled'; });
@@ -1295,17 +1289,15 @@
                     var nowMin = now.getHours() * 60 + now.getMinutes();
                     var pParts = this.pickupTime.split(':');
                     var pickupMin = parseInt(pParts[0]) * 60 + parseInt(pParts[1]);
-                    var interval = this.settings.pickupInterval || 30;
                     var nowCeil5 = Math.ceil(nowMin / 5) * 5;
+                    var interval = this.settings.pickupInterval || 30;
                     var earliestSlot = nowCeil5 + interval;
                     if (pickupMin <= nowMin) {
-                        // ★ 時間真正過了
                         var origTime = this.pickupTime;
                         this.updateAvailableTimes();
                         this.showAlertModal('取餐時間已過', '您選擇的取餐時間「' + origTime + '」已過期，已自動更新為最早可取餐時間「' + this.pickupTime + '」，請確認後再送出。');
                         return;
                     } else if (pickupMin < earliestSlot) {
-                        // ★ 時間未過但不符備餐緩衝
                         var origTime2 = this.pickupTime;
                         this.updateAvailableTimes();
                         this.showAlertModal('取餐時間調整', '原先選擇的取餐時間「' + origTime2 + '」因備餐時間需要，已自動調整為「' + this.pickupTime + '」，請確認後再送出。');
