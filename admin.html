@@ -236,7 +236,7 @@
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
-        import { getDatabase, ref, onValue, update, set, get, remove, runTransaction, query, limitToLast, orderByChild, startAt } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
+        import { getDatabase, ref, onValue, update, set, get, remove, runTransaction, query, limitToLast } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
         import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
 
         // ★★★ 請貼入您相同的 Firebase 配置 ★★★
@@ -316,74 +316,37 @@
             },
             methods: {
                 toast(msg) { this.toastMsg = msg; clearTimeout(this.toastTimer); this.toastTimer = setTimeout(() => { this.toastMsg = ''; }, 4000); },
-                // ★ 自動歸檔：將昨天以前的訂單搬到 orders_archive/，釋放 orders/ 節點大小
                 async autoArchiveOldOrders() {
                     try {
                         const today = new Date(); today.setHours(0, 0, 0, 0);
                         const cutoff = today.getTime();
-                        // 歸檔 orders
-                        const ordersSnap = await get(ref(db, 'orders'));
-                        if (ordersSnap.exists()) {
-                            const data = ordersSnap.val();
-                            const updates = {};
-                            let count = 0;
-                            for (const id in data) {
-                                const o = data[id];
-                                if (!o || !o.timestamp) continue;
-                                // 只歸檔已完成/已取消/已封存 且 時間在今天之前的訂單
-                                if (o.timestamp < cutoff && (o.status === 'done' || o.status === 'cancelled' || o.status === 'archived')) {
-                                    updates['orders_archive/' + id] = o;
-                                    updates['orders/' + id] = null; // 從 orders 刪除
-                                    count++;
-                                }
-                            }
-                            if (count > 0) {
-                                await update(ref(db), updates);
-                                console.log('✅ 自動歸檔 ' + count + ' 筆舊訂單');
+                        const snap = await get(ref(db, 'orders'));
+                        if (!snap.exists()) return;
+                        const data = snap.val();
+                        const updates = {};
+                        let count = 0;
+                        for (const id in data) {
+                            const o = data[id];
+                            if (!o || !o.timestamp) continue;
+                            if (o.timestamp < cutoff && (o.status === 'done' || o.status === 'cancelled' || o.status === 'archived')) {
+                                updates['orders_archive/' + id] = o;
+                                updates['orders/' + id] = null;
+                                count++;
                             }
                         }
+                        if (count > 0) { await update(ref(db), updates); console.log('✅ 歸檔 ' + count + ' 筆舊訂單'); }
                         // 歸檔 linepay_transactions
                         const lpSnap = await get(ref(db, 'linepay_transactions'));
                         if (lpSnap.exists()) {
-                            const lpData = lpSnap.val();
-                            const lpUpdates = {};
-                            let lpCount = 0;
+                            const lpData = lpSnap.val(); const lpUp = {}; let lc = 0;
                             for (const id in lpData) {
-                                const t = lpData[id];
-                                if (!t) continue;
+                                const t = lpData[id]; if (!t) continue;
                                 const ts = t.timestamp || t.createdAt || t.cancelledAt || 0;
-                                if (ts && ts < cutoff) {
-                                    lpUpdates['linepay_archive/' + id] = t;
-                                    lpUpdates['linepay_transactions/' + id] = null;
-                                    lpCount++;
-                                }
+                                if (ts && ts < cutoff) { lpUp['linepay_archive/' + id] = t; lpUp['linepay_transactions/' + id] = null; lc++; }
                             }
-                            if (lpCount > 0) {
-                                await update(ref(db), lpUpdates);
-                                console.log('✅ 自動歸檔 ' + lpCount + ' 筆舊 LINE Pay 交易');
-                            }
+                            if (lc > 0) { await update(ref(db), lpUp); console.log('✅ 歸檔 ' + lc + ' 筆舊交易'); }
                         }
-                        // 歸檔 linepay_confirms
-                        const lcSnap = await get(ref(db, 'linepay_confirms'));
-                        if (lcSnap.exists()) {
-                            const lcData = lcSnap.val();
-                            const lcUpdates = {};
-                            let lcCount = 0;
-                            for (const id in lcData) {
-                                const c = lcData[id];
-                                if (!c) continue;
-                                const ts = c.timestamp || 0;
-                                if (ts && ts < cutoff) {
-                                    lcUpdates['linepay_confirms/' + id] = null;
-                                    lcCount++;
-                                }
-                            }
-                            if (lcCount > 0) {
-                                await update(ref(db), lcUpdates);
-                                console.log('✅ 清理 ' + lcCount + ' 筆舊 LINE Pay confirms');
-                            }
-                        }
-                    } catch(e) { console.warn('自動歸檔失敗:', e.message); }
+                    } catch(e) { console.warn('歸檔失敗:', e.message); }
                 },
                 async login() {
                     try { await signInWithEmailAndPassword(auth, this.email, this.password); } 
@@ -393,9 +356,9 @@
                     try { await signOut(auth); } catch (error) { console.error("登出失敗", error); }
                 },
                 listenToOrders() {
+                    const ordersRef = ref(db, 'orders');
                     const self = this;
-                    // ★ 限制只監聽最近 300 筆訂單（節省流量）
-                    onValue(query(ref(db, 'orders'), limitToLast(300)), (snapshot) => {
+                    onValue(query(ordersRef, limitToLast(200)), (snapshot) => {
                         const data = snapshot.val();
                         const parsedOrders = [];
                         let currentNewCount = 0;
@@ -415,16 +378,9 @@
                         if (currentNewCount > this.previousNewCount && this.previousNewCount !== 0) this.playAlert();
                         this.previousNewCount = currentNewCount;
                     });
-                    // ★ 讀取 settings（一次性 + 定時刷新，取代 onValue）
+                    // ★ 讀取 settings（一次性+定時，取代 onValue 節省流量）
                     const selfS = this;
-                    get(ref(db, 'settings')).then((snap) => {
-                        if (snap.exists()) {
-                            const sv = snap.val();
-                            selfS.linePayServerUrl = sv.linePayServerUrl || '';
-                            selfS.linePayConfirmUrl = sv.linePayConfirmUrl || '';
-                        }
-                    });
-                    setInterval(() => {
+                    const _loadAdminSettings = () => {
                         get(ref(db, 'settings')).then((snap) => {
                             if (snap.exists()) {
                                 const sv = snap.val();
@@ -432,10 +388,12 @@
                                 selfS.linePayConfirmUrl = sv.linePayConfirmUrl || '';
                             }
                         });
-                    }, 300000);
-                    // ★ 監聽 linepay_transactions（限最近 200 筆，節省流量）
+                    };
+                    _loadAdminSettings();
+                    setInterval(_loadAdminSettings, 300000);
+                    // ★ 監聽 linepay_transactions 以確認付款狀態（不依賴 orders/paymentStatus）
                     const self2 = this;
-                    onValue(query(ref(db, 'linepay_transactions'), limitToLast(200)), (snap) => {
+                    onValue(query(ref(db, 'linepay_transactions'), limitToLast(100)), (snap) => {
                         const data = snap.val() || {};
                         const confirmed = {};
                         const statusMap = {};
@@ -472,6 +430,8 @@
                             const updateData = { orderNo: result.snapshot.val() };
                             if (payStatus !== 'pending') {
                                 updateData.print_task = 'kitchen_' + Date.now();
+                                // ★ 同步寫入 print_queue（Node-RED 監聽此路徑）
+                                get(ref(db, 'orders/' + orderId)).then(s => { if(s.exists()) set(ref(db, 'print_queue/' + orderId), Object.assign({}, s.val(), {print_task: updateData.print_task})); });
                             }
                             await update(ref(db, `orders/${orderId}`), updateData);
                             if (payStatus === 'pending') {
@@ -499,7 +459,10 @@
                     const taskRef = ref(db, `orders/${order.id}/print_task`);
                     try {
                         await remove(taskRef);
-                        await set(taskRef, `kitchen_reprint_${Date.now()}`);
+                        const reprintTask = `kitchen_reprint_${Date.now()}`;
+                        await set(taskRef, reprintTask);
+                        const reprintSnap = await get(ref(db, `orders/${order.id}`));
+                        if(reprintSnap.exists()) await set(ref(db, `print_queue/${order.id}`), Object.assign({}, reprintSnap.val(), {print_task: reprintTask}));
                         console.log("廚房工單補印指令發送成功");
                     } catch (err) {
                         this.toast("❌ 補印工單失敗：" + err);
@@ -510,7 +473,10 @@
                     const taskRef = ref(db, `orders/${order.id}/print_task`);
                     try {
                         await remove(taskRef);
-                        await set(taskRef, `receipt_${Date.now()}`);
+                        const receiptTask = `receipt_${Date.now()}`;
+                        await set(taskRef, receiptTask);
+                        const receiptSnap = await get(ref(db, `orders/${order.id}`));
+                        if(receiptSnap.exists()) await set(ref(db, `print_queue/${order.id}`), Object.assign({}, receiptSnap.val(), {print_task: receiptTask}));
                         console.log("客戶收據列印指令發送成功");
                     } catch (err) {
                         this.toast("❌ 印收據失敗：" + err);
