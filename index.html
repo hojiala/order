@@ -1162,44 +1162,32 @@
                 var changed = false;
                 self.myOrders.forEach(function(order) {
                     if (!order.id) return;
-                    // ★ 不跳過任何訂單！done/cancelled 的訂單也需要更新 paymentStatus
                     get(ref(db, 'orders/' + order.id)).then(function(snap) {
                         if (!snap.exists()) return;
                         var data = snap.val();
                         if (data.status && data.status !== order.status) { order.status = data.status; changed = true; }
                         if (data.orderNo && data.orderNo !== order.orderNo) { order.orderNo = data.orderNo; changed = true; }
-                        // ★ 同步付款狀態（根本原因修正：之前漏掉這兩行）
                         if (data.paymentStatus !== undefined && data.paymentStatus !== order.paymentStatus) { order.paymentStatus = data.paymentStatus; changed = true; }
                         if (data.paymentMethod && data.paymentMethod !== order.paymentMethod) { order.paymentMethod = data.paymentMethod; changed = true; }
                     }).catch(function() {});
                 });
-                // 更新 localStorage
                 setTimeout(function() {
                     if (changed) {
                         try {
                             var saved = JSON.parse(localStorage.getItem('my_orders') || '[]');
                             self.myOrders.forEach(function(o) {
-                                saved.forEach(function(s) {
-                                    if (s.id === o.id) {
-                                        s.status = o.status; s.orderNo = o.orderNo;
-                                        // ★ 同步付款狀態到 localStorage（根本原因修正：之前漏掉）
-                                        s.paymentStatus = o.paymentStatus;
-                                        s.paymentMethod = o.paymentMethod;
-                                    }
-                                });
+                                saved.forEach(function(s) { if (s.id === o.id) { s.status = o.status; s.orderNo = o.orderNo; s.paymentStatus = o.paymentStatus; s.paymentMethod = o.paymentMethod; } });
                             });
                             localStorage.setItem('my_orders', JSON.stringify(saved));
                         } catch(e) {}
                     }
                 }, 2000);
             },
-            // ★ 自動輪詢：每 8 秒更新所有訂單（不限 active，否則付款狀態永遠不會更新）
             startAutoRefresh: function() {
                 var self = this;
                 if (self.refreshTimer) return;
                 self.refreshTimer = setInterval(function() {
                     if (!self.myOrders.length) return;
-                    // ★ 根本原因修正：移除 hasActive 限制，所有訂單都需要更新付款狀態
                     self.tryRefreshOrderStatus();
                 }, 8000);
             },
@@ -1207,7 +1195,17 @@
                 var self = this;
                 if (!order.items || !order.items.length) return;
                 order.items.forEach(function(item) {
-                    self.cart.push({ id:item.id, name:item.name, price:item.price, qty:item.qty, note:item.note||'', options:item.options||[], mealDrink:item.mealDrink||'', optionGroupSelections:item.optionGroupSelections||[], itemTotal:item.itemTotal });
+                    self.cart.push({
+                        id: item.id,
+                        name: item.name,
+                        price: item.price,
+                        qty: item.qty,
+                        note: item.note || '',
+                        options: item.options || [],
+                        mealDrink: item.mealDrink || '',
+                        optionGroupSelections: item.optionGroupSelections || [],
+                        itemTotal: item.itemTotal
+                    });
                 });
                 self.showStoreInfo = false;
                 self.goToCart();
@@ -1219,10 +1217,7 @@
                 var pd = order.pickupDate || '', pt = order.pickupTime || '';
                 if (pd && pt && pt !== '盡快' && pt !== '已過點餐時間') {
                     var diff = (new Date(pd + 'T' + pt + ':00').getTime() - Date.now()) / 60000;
-                    if (diff <= limitMin) {
-                        self.showAlertModal('無法取消', '距離取餐時間不足 ' + limitMin + ' 分鐘，已無法線上取消訂單。\n如需取消，請直接聯繫店家，造成不便敬請見諒！');
-                        return;
-                    }
+                    if (diff <= limitMin) { self.showAlertModal('無法取消', '距離取餐時間不足 ' + limitMin + ' 分鐘，已無法線上取消訂單。\n如需取消，請直接聯繫店家，造成不便敬請見諒！'); return; }
                 }
                 if (!confirm('確定要取消此訂單嗎？')) return;
                 update(ref(db, 'orders/' + order.id), { status:'cancelled', cancelledAt:Date.now(), cancelSource:'customer', print_task:null }).then(function() {
