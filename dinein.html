@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+﻿﻿﻿<!DOCTYPE html>
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
@@ -371,8 +371,8 @@
                         <span class="text-xs text-gray-400">訂餐：{{ formatTime(order.timestamp) }}</span>
                         <div class="text-right">
                             <span class="text-orange-500 font-black text-sm">${{ order.total }}</span>
-                            <template v-if="order.paymentMethod==='linepay'||order.paymentMethod==='linepay_offline'">
-                                <span v-if="order.paymentStatus==='refunded'" class="block text-xs font-bold text-purple-500 mt-0.5">💜 LINE Pay 已退款</span>
+                            <template v-if="order.paymentMethod==='linepay'||order.paymentMethod==='linepay_offline'||order.paymentMethod==='linepay_refund'">
+                                <span v-if="order.paymentStatus==='refunded'||order.paymentMethod==='linepay_refund'" class="block text-xs font-bold text-purple-500 mt-0.5">💜 LINE Pay 已退款</span>
                                 <span v-else-if="order.status==='cancelled'&&order.paymentStatus==='paid'" class="block text-xs font-bold text-purple-500 mt-0.5">💜 LINE Pay 已退款</span>
                                 <span v-else-if="order.paymentStatus==='paid'||lpConfirmed[order.id]" class="block text-xs font-bold text-green-600 mt-0.5">💚 LINE Pay 已付清</span>
                                 <span v-else-if="order.status==='cancelled'" class="block text-xs font-bold text-gray-400 mt-0.5">💰 未付款</span>
@@ -491,7 +491,7 @@
 <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-    import { getDatabase, ref, push, set, get, update, remove, onValue, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
+    import { getDatabase, ref, push, set, get, update, remove, onValue, runTransaction, query, orderByChild, equalTo } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
 
     const firebaseConfig = {
         apiKey:"AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -781,7 +781,7 @@
                 // ★ 先從 localStorage 載入本桌訂單記錄
                 s.loadLocalOrders();
                 // ★ 嘗試從 Firebase 讀取（可能因權限失敗）
-                onValue(ref(db,'orders'),function(snap){
+                onValue(query(ref(db,'orders'), orderByChild('tableDevice'), equalTo(s.deviceId)),function(snap){
                     if(!snap.exists()){s.pendingCount=0;return}
                     var all=Object.entries(snap.val()).filter(function(e){return e[1]&&e[1].status}).map(function(e){return Object.assign({id:e[0]},e[1])});
                     s.allOrders=all;
@@ -791,16 +791,8 @@
                         return o.tableDevice===s.deviceId&&o.timestamp>=today.getTime()&&o.status!=='archived'
                     }).sort(function(a,b){return b.timestamp-a.timestamp});
                     if(fbOrders.length>0)s.myOrders=fbOrders;
-                    // ★ 監聽 linepay_transactions 以確認付款狀態
-                    onValue(ref(db,'linepay_transactions'),function(snap){
-                        if(!snap.exists()){s.lpConfirmed={};return;}
-                        var confirmed={};
-                        var data=snap.val();
-                        for(var oid in data){
-                            if(data[oid]&&data[oid].status==='confirmed') confirmed[oid]=true;
-                        }
-                        s.lpConfirmed=confirmed;
-                    });
+                    // ★ 只查詢本桌未完成 LINE Pay 訂單，避免下載整包 linepay_transactions
+                    s.refreshLinePayConfirmed(fbOrders);
                     // ★ 自動更新 lastOrderNo（後台補發流水號時即時顯示）
                     if(s.lastOrderIdRef){
                         var latest=all.find(function(o){return o.id===s.lastOrderIdRef});
@@ -852,6 +844,7 @@
                             }
                         }).catch(function(){});
                     });
+                    s.refreshLinePayConfirmed(s.myOrders);
                 },8000);
             },
             loadLocalOrders:function(){
@@ -883,6 +876,26 @@
                     if(!fbOrders||!fbOrders.length)return;
                     localStorage.setItem(key,JSON.stringify(fbOrders));
                 }catch(e){}
+            },
+            refreshLinePayConfirmed:function(orderList){
+                var s=this;
+                var list=Array.isArray(orderList)?orderList:(s.myOrders||[]);
+                var targets=list.filter(function(o){
+                    if(!o||!o.id)return false;
+                    var pm=o.paymentMethod||'';
+                    var isLinePay=(pm==='linepay'||pm==='linepay_offline'||pm==='linepay_refund');
+                    return isLinePay&&o.paymentStatus!=='paid'&&o.paymentStatus!=='refunded';
+                });
+                if(!targets.length){s.lpConfirmed={};return;}
+                var confirmed={};
+                Promise.all(targets.map(function(o){
+                    return get(ref(db,'linepay_transactions/'+o.id+'/status')).then(function(snap){
+                        var st=snap.exists()?String(snap.val()||'').toLowerCase():'';
+                        if(st==='confirmed')confirmed[o.id]=true;
+                    }).catch(function(){});
+                })).then(function(){
+                    s.lpConfirmed=confirmed;
+                });
             },
             // ── 菜單操作 ──
             getQty:function(id){return this.cart.filter(function(i){return i.id===id}).reduce(function(s,i){return s+i.qty},0)},
