@@ -439,10 +439,10 @@
                             </div>
                             <div class="flex justify-between items-center mt-1 pt-1 border-t border-gray-100">
                                 <div>
-                                    <template v-if="order.paymentMethod==='linepay'||order.paymentMethod==='linepay_offline'">
-                                        <span v-if="order.paymentStatus==='refunded'" class="text-xs font-bold text-purple-500">💜 LINE Pay 已退款</span>
+                                    <template v-if="order.paymentMethod==='linepay'||order.paymentMethod==='linepay_offline'||order.paymentMethod==='linepay_refund'">
+                                        <span v-if="order.paymentStatus==='refunded'||order.paymentMethod==='linepay_refund'" class="text-xs font-bold text-purple-500">💜 LINE Pay 已退款</span>
                                         <span v-else-if="order.status==='cancelled'&&order.paymentStatus==='paid'" class="text-xs font-bold text-purple-500">💜 LINE Pay 已退款</span>
-                                        <span v-else-if="order.paymentStatus==='paid'" class="text-xs font-bold text-green-600">💚 LINE Pay 已付清</span>
+                                        <span v-else-if="order.paymentStatus==='paid'||lpConfirmed[order.id]" class="text-xs font-bold text-green-600">💚 LINE Pay 已付清</span>
                                         <span v-else-if="order.status==='cancelled'" class="text-xs font-bold text-gray-400">💰 未付款</span>
                                         <span v-else class="text-xs font-bold text-blue-400">💚 LINE Pay 處理中</span>
                                     </template>
@@ -632,7 +632,8 @@
                 storePhone: '', storeAddress: '', storeInfoExtra: '',
                 storeHours: [],
                 deviceId: '',
-                myOrders: []
+                myOrders: [],
+                lpConfirmed: {}
             };
         },
         computed: {
@@ -1169,6 +1170,18 @@
                         if (data.orderNo && data.orderNo !== order.orderNo) { order.orderNo = data.orderNo; changed = true; }
                         if (data.paymentStatus !== undefined && data.paymentStatus !== order.paymentStatus) { order.paymentStatus = data.paymentStatus; changed = true; }
                         if (data.paymentMethod && data.paymentMethod !== order.paymentMethod) { order.paymentMethod = data.paymentMethod; changed = true; }
+                        var pm = data.paymentMethod || order.paymentMethod || '';
+                        var needsLinePayCheck = (pm === 'linepay' || pm === 'linepay_offline')
+                            && data.paymentStatus !== 'paid' && data.paymentStatus !== 'refunded';
+                        if (needsLinePayCheck) {
+                            get(ref(db, 'linepay_transactions/' + order.id + '/status')).then(function(stSnap) {
+                                var isConfirmed = stSnap.exists() && stSnap.val() === 'confirmed';
+                                if (isConfirmed) self.lpConfirmed[order.id] = true;
+                                else if (self.lpConfirmed[order.id]) delete self.lpConfirmed[order.id];
+                            }).catch(function() {});
+                        } else if (self.lpConfirmed[order.id]) {
+                            delete self.lpConfirmed[order.id];
+                        }
                     }).catch(function() {});
                 });
                 setTimeout(function() {
@@ -1188,6 +1201,7 @@
                 if (self.refreshTimer) return;
                 self.refreshTimer = setInterval(function() {
                     if (!self.myOrders.length) return;
+                    if (!self.showStoreInfo || self.storeInfoTab !== 'orders') return;
                     self.tryRefreshOrderStatus();
                 }, 8000);
             },
