@@ -421,7 +421,7 @@
                     <div v-for="order in myOrders" :key="order.id" class="border border-gray-200 rounded-xl overflow-hidden">
                         <div class="bg-gray-50 px-3 py-2 flex items-center justify-between border-b border-gray-200">
                             <div class="flex items-center gap-2">
-                                <span class="text-xs font-black text-orange-600 bg-orange-50 px-2 py-0.5 rounded">No.{{ order.orderNo ? String(order.orderNo).padStart(3,'0') : '---' }}</span>
+                                <span class="text-xs font-black text-orange-600 bg-orange-50 px-2 py-0.5 rounded">#{{ order.id ? String(order.id).slice(-4).toUpperCase() : '----' }}</span>
                                 <span :class="{'text-red-500': order.status==='new','text-yellow-600': order.status==='making','text-green-600': order.status==='done','text-gray-400': order.status==='cancelled'}" class="text-xs font-bold">{{ {new:'🔴 等待接單',making:'🟡 製作中',done:'🟢 已完成',cancelled:'⚫ 已取消'}[order.status] || order.status }}</span>
                             </div>
                         </div>
@@ -440,8 +440,8 @@
                             <div class="flex justify-between items-center mt-1 pt-1 border-t border-gray-100">
                                 <div>
                                     <template v-if="order.paymentMethod==='linepay'||order.paymentMethod==='linepay_offline'||order.paymentMethod==='linepay_refund'">
-                                        <span v-if="order.paymentStatus==='refunded'||order.paymentMethod==='linepay_refund'" class="text-xs font-bold text-purple-500">💜 LINE Pay 已退款</span>
-                                        <span v-else-if="order.status==='cancelled'&&order.paymentStatus==='paid'" class="text-xs font-bold text-purple-500">💜 LINE Pay 已退款</span>
+                                        <span v-if="order.paymentStatus==='refunded'||order.paymentMethod==='linepay_refund'||lpTxnState[order.id]==='refunded'" class="text-xs font-bold text-purple-500">💜 LINE Pay 已退款</span>
+                                        <span v-else-if="(order.status==='cancelled'||order.wasCancelled)&&(order.paymentStatus==='paid'||lpConfirmed[order.id])" class="text-xs font-bold text-purple-500">💜 LINE Pay 已退款</span>
                                         <span v-else-if="order.paymentStatus==='paid'||lpConfirmed[order.id]" class="text-xs font-bold text-green-600">💚 LINE Pay 已付清</span>
                                         <span v-else-if="order.status==='cancelled'" class="text-xs font-bold text-gray-400">💰 未付款</span>
                                         <span v-else class="text-xs font-bold text-blue-400">💚 LINE Pay 處理中</span>
@@ -633,7 +633,8 @@
                 storeHours: [],
                 deviceId: '',
                 myOrders: [],
-                lpConfirmed: {}
+                lpConfirmed: {},
+                lpTxnState: {}
             };
         },
         computed: {
@@ -1171,16 +1172,20 @@
                         if (data.paymentStatus !== undefined && data.paymentStatus !== order.paymentStatus) { order.paymentStatus = data.paymentStatus; changed = true; }
                         if (data.paymentMethod && data.paymentMethod !== order.paymentMethod) { order.paymentMethod = data.paymentMethod; changed = true; }
                         var pm = data.paymentMethod || order.paymentMethod || '';
-                        var needsLinePayCheck = (pm === 'linepay' || pm === 'linepay_offline')
+                        var needsLinePayCheck = (pm === 'linepay' || pm === 'linepay_offline' || pm === 'linepay_refund')
                             && data.paymentStatus !== 'paid' && data.paymentStatus !== 'refunded';
                         if (needsLinePayCheck) {
                             get(ref(db, 'linepay_transactions/' + order.id + '/status')).then(function(stSnap) {
-                                var isConfirmed = stSnap.exists() && stSnap.val() === 'confirmed';
+                                var st = stSnap.exists() ? String(stSnap.val() || '').toLowerCase() : '';
+                                if (st) self.lpTxnState[order.id] = st;
+                                else if (self.lpTxnState[order.id]) delete self.lpTxnState[order.id];
+                                var isConfirmed = st === 'confirmed';
                                 if (isConfirmed) self.lpConfirmed[order.id] = true;
                                 else if (self.lpConfirmed[order.id]) delete self.lpConfirmed[order.id];
                             }).catch(function() {});
                         } else if (self.lpConfirmed[order.id]) {
                             delete self.lpConfirmed[order.id];
+                            if (self.lpTxnState[order.id]) delete self.lpTxnState[order.id];
                         }
                     }).catch(function() {});
                 });
