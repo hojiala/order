@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+﻿﻿﻿﻿﻿<!DOCTYPE html>
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
@@ -501,12 +501,12 @@
                                 <td class="px-4 py-3 text-center">
                                     <span class="text-xs font-bold px-2 py-0.5 rounded-full"
                                         :class="(order.paymentMethod==='linepay'||order.paymentMethod==='linepay_offline'||order.paymentMethod==='linepay_refund') ?
-                                            (order.paymentStatus==='refunded'||((order.status==='cancelled'||order.wasCancelled)&&order.paymentStatus==='paid') ? 'bg-purple-900/60 text-purple-300' :
+                                            (order.paymentStatus==='refunded'||order.paymentMethod==='linepay_refund'||lpTxnState[order.id]==='refunded'||((order.status==='cancelled'||order.wasCancelled)&&(order.paymentStatus==='paid'||lpConfirmed[order.id])) ? 'bg-purple-900/60 text-purple-300' :
                                             (order.paymentStatus==='paid'||lpConfirmed[order.id]) ? 'bg-green-900/60 text-green-300' : 'bg-blue-900/40 text-blue-300')
                                             : 'bg-slate-700 text-slate-400'">
                                         <template v-if="order.paymentMethod==='linepay'||order.paymentMethod==='linepay_offline'||order.paymentMethod==='linepay_refund'">
-                                            <template v-if="order.paymentStatus==='refunded'">💜 LINE Pay 已退款</template>
-                                            <template v-else-if="(order.status==='cancelled'||order.wasCancelled)&&order.paymentStatus==='paid'">💜 LINE Pay 已退款</template>
+                                            <template v-if="order.paymentStatus==='refunded'||order.paymentMethod==='linepay_refund'||lpTxnState[order.id]==='refunded'">💜 LINE Pay 已退款</template>
+                                            <template v-else-if="(order.status==='cancelled'||order.wasCancelled)&&(order.paymentStatus==='paid'||lpConfirmed[order.id])">💜 LINE Pay 已退款</template>
                                             <template v-else>{{ (order.paymentStatus==='paid'||lpConfirmed[order.id]) ? '💚 LINE Pay 已付清' : '💚 LINE Pay 處理中' }}</template>
                                         </template>
                                         <template v-else>⚠️ 未付款</template>
@@ -1296,6 +1296,8 @@ window._doCountUp = function() {
                 statsOrders: [], statsLoading: false, allOrdersCache: null,
                 statsSortKey: 'timestamp', statsSortDir: -1,
                 viewingOrder: null,
+                lpConfirmed: {},
+                lpTxnState: {},
                 // Settings
                 settings: {
                     isOpen: true,
@@ -1312,7 +1314,6 @@ window._doCountUp = function() {
                     ],
                     storeInfo: '',
                     storePhone: '',
-                    lpConfirmed: {},
                     storeAddress: '',
                     storeInfoExtra: '',
                     dineinPassword: '0000',
@@ -1430,13 +1431,18 @@ window._doCountUp = function() {
                     self.loadStandardDrinks();
                     // ★ 監聽 linepay_transactions 以確認付款狀態
                     onValue(ref(db,'linepay_transactions'),function(snap){
-                        if(!snap.exists()){self.lpConfirmed={};return;}
+                        if(!snap.exists()){self.lpConfirmed={};self.lpTxnState={};return;}
                         var confirmed={};
+                        var txnState={};
                         var data=snap.val();
                         for(var oid in data){
-                            if(data[oid]&&data[oid].status==='confirmed') confirmed[oid]=true;
+                            var st=(data[oid]&&data[oid].status)?String(data[oid].status).toLowerCase():'';
+                            if(!st) continue;
+                            txnState[oid]=st;
+                            if(st==='confirmed') confirmed[oid]=true;
                         }
                         self.lpConfirmed=confirmed;
+                        self.lpTxnState=txnState;
                     });
                 } else {
                     self.isLoggedIn = false;
