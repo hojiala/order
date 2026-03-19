@@ -1242,7 +1242,7 @@ window._doCountUp = function() {
 </script>
 <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
-    import { getDatabase, ref, set, get, push, update, remove, onValue } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
+    import { getDatabase, ref, set, get, push, update, remove, onValue, query, limitToLast } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
 
     const firebaseConfig = {
@@ -1430,7 +1430,7 @@ window._doCountUp = function() {
                     self.loadTemplates();
                     self.loadStandardDrinks();
                     // ★ 監聽 linepay_transactions 以確認付款狀態
-                    onValue(ref(db,'linepay_transactions'),function(snap){
+                    onValue(query(ref(db,'linepay_transactions'), limitToLast(200)),function(snap){
                         if(!snap.exists()){self.lpConfirmed={};self.lpTxnState={};return;}
                         var confirmed={};
                         var txnState={};
@@ -2072,14 +2072,16 @@ window._doCountUp = function() {
                     setTimeout(function(){ if(window._doCountUp) window._doCountUp(); }, 50);
                 };
                 if (self.allOrdersCache) { doFilter(); return; }
-                get(ref(db, 'orders')).then(function(snap) {
-                    if (snap.exists()) {
-                        self.allOrdersCache = Object.entries(snap.val())
-                            .filter(function(e) { return e[1] && e[1].status; })
-                            .map(function(e) { return Object.assign({ id: e[0] }, e[1]); });
-                    } else {
-                        self.allOrdersCache = [];
-                    }
+                Promise.all([
+                    get(ref(db, 'orders')),
+                    get(ref(db, 'orders_archive'))
+                ]).then(function(snaps) {
+                    var activeOrders = snaps[0].exists() ? snaps[0].val() : {};
+                    var archiveOrders = snaps[1].exists() ? snaps[1].val() : {};
+                    var combinedData = Object.assign({}, archiveOrders, activeOrders);
+                    self.allOrdersCache = Object.entries(combinedData)
+                        .filter(function(e) { return e[1] && e[1].status; })
+                        .map(function(e) { return Object.assign({ id: e[0] }, e[1]); });
                     doFilter();
                 }).catch(function() { self.statsLoading = false; });
             },
