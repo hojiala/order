@@ -2072,18 +2072,35 @@ window._doCountUp = function() {
                     setTimeout(function(){ if(window._doCountUp) window._doCountUp(); }, 50);
                 };
                 if (self.allOrdersCache) { doFilter(); return; }
-                Promise.all([
-                    get(ref(db, 'orders')),
-                    get(ref(db, 'orders_archive'))
-                ]).then(function(snaps) {
+                
+                var fetchPromises = [get(ref(db, 'orders'))];
+                var todayStr = new Date().toISOString().split('T')[0];
+
+                if (self.statsMode === 'single' && self.statsDate) {
+                    fetchPromises.push(get(ref(db, 'orders_archive/' + self.statsDate)));
+                } else if (self.statsMode === 'today') {
+                    fetchPromises.push(get(ref(db, 'orders_archive/' + todayStr)));
+                } else {
+                    alert("為節省資料庫流量，目前已停用大範圍全庫下載。請使用「單一日期」或「今天」來查詢歷史營業額。");
+                    self.statsLoading = false;
+                    return;
+                }
+
+                Promise.all(fetchPromises).then(function(snaps) {
                     var activeOrders = snaps[0].exists() ? snaps[0].val() : {};
-                    var archiveOrders = snaps[1].exists() ? snaps[1].val() : {};
+                    var archiveOrders = snaps[1] && snaps[1].exists() ? snaps[1].val() : {};
+                    
                     var combinedData = Object.assign({}, archiveOrders, activeOrders);
+                    
                     self.allOrdersCache = Object.entries(combinedData)
                         .filter(function(e) { return e[1] && e[1].status; })
                         .map(function(e) { return Object.assign({ id: e[0] }, e[1]); });
+                    
                     doFilter();
-                }).catch(function() { self.statsLoading = false; });
+                }).catch(function(e) { 
+                    console.error('讀取統計失敗:', e);
+                    self.statsLoading = false; 
+                });
             },
             formatTimestamp: function(ts) {
                 if (!ts) return '-';
