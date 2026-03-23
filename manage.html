@@ -2008,39 +2008,49 @@ window._doCountUp = function() {
                 }
             },
             loadStats: function() {
-                // 如果已經載入過，強制重新去資料庫抓最新的（把這行註解或刪除）
-                // if (self.allOrdersCache) { self.doFilter(); return; } 
-                self.allOrdersCache = null; // 每次重整都清空暫存，確保抓到最新歸檔
-                
+                var self = this;
+                self.statsLoading = true;
+                self.allOrdersCache = null; // 每次重整都清空暫存
+    
+                // 確保 statsDate 有預設值（如果是單日模式）
+                if (self.statsMode === 'single' && !self.statsDate) {
+                    self.statsDate = self.todayStr;
+                }
+    
                 var fetchPromises = [get(ref(db, 'orders'))];
-                
-                // 修正 1：使用台灣時區的「當地時間」，避免 UTC 導致日期少一天
-                var d = new Date();
-                var todayStr = d.getFullYear() + '-' + ('0'+(d.getMonth()+1)).slice(-2) + '-' + ('0'+d.getDate()).slice(-2);
+                var targetDateStr = '';
 
-                if (self.statsMode === 'single' && self.statsDate) {
-                    // 抓取指定日期的歷史資料夾
-                    fetchPromises.push(get(ref(db, 'orders_archive/' + self.statsDate)));
+                // 決定要抓取哪一天的歷史資料
+                if (self.statsMode === 'single') {
+                    targetDateStr = self.statsDate;
                 } else if (self.statsMode === 'today') {
-                    // 抓取今天的歷史資料夾
-                    fetchPromises.push(get(ref(db, 'orders_archive/' + todayStr)));
+                    targetDateStr = self.todayStr;
                 } else {
                     alert("為節省資料庫流量，目前已停用大範圍全庫下載。請使用「單一日期」或「今天」來查詢歷史營業額。");
                     self.statsLoading = false;
                     return;
                 }
 
+                // 將該日期的歷史資料加入下載排程
+                fetchPromises.push(get(ref(db, 'orders_archive/' + targetDateStr)));
+
                 Promise.all(fetchPromises).then(function(snaps) {
                     var activeOrders = snaps[0].exists() ? snaps[0].val() : {};
                     var archiveOrders = snaps[1] && snaps[1].exists() ? snaps[1].val() : {};
-                    
-                    var combinedData = Object.assign({}, archiveOrders, activeOrders);
-                    
-                    self.allOrdersCache = Object.entries(combinedData)
-                        .filter(function(e) { return e[1] && e[1].status; })
-                        .map(function(e) { return Object.assign({ id: e[0] }, e[1]); });
-                    
-                    // 呼叫您原本的過濾程式將資料顯示到畫面上
+        
+                    // 核心修正：將物件轉為陣列，並確保每筆資料都有 id 和 status
+                    var activeArray = Object.entries(activeOrders)
+                        .map(function(e) { return Object.assign({ id: e[0] }, e[1]); })
+                        .filter(function(o) { return o && o.status; });
+            
+                    var archiveArray = Object.entries(archiveOrders)
+                        .map(function(e) { return Object.assign({ id: e[0] }, e[1]); })
+                        .filter(function(o) { return o && o.status; });
+
+                    // 合併陣列並存入緩存
+                    self.allOrdersCache = activeArray.concat(archiveArray);
+        
+                    // 呼叫過濾器更新畫面
                     self.doFilter();
                 }).catch(function(e) { 
                     console.error('讀取統計失敗:', e);
