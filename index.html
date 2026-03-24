@@ -1349,10 +1349,12 @@
                 var orderDateKey = orderData.pickupDate || (function(){ var d=new Date(orderData.timestamp || Date.now()); return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); })();
                 orderData.orderDateKey = orderDateKey;
                 var orderId = push(ref(db, 'orders')).key;
-                var createUpdates = {};
-                createUpdates['orders/' + orderId] = orderData;
-                createUpdates['orders/' + orderDateKey + '/' + orderId] = orderData;
-                update(ref(db), createUpdates).then(function() {
+                var flatOrderRef = ref(db, 'orders/' + orderId);
+                var bucketOrderRef = ref(db, 'orders/' + orderDateKey + '/' + orderId);
+                Promise.all([
+                    set(flatOrderRef, orderData),
+                    set(bucketOrderRef, orderData)
+                ]).then(function() {
                     self.saveMyOrder(orderId, orderData);
 
                     // ★ LINE Pay 付款流程（Firebase 中介，解決 HTTPS→HTTP 問題）
@@ -1371,6 +1373,7 @@
                         set(ref(db, 'linepay_requests/' + orderId), {
                             amount: orderData.total,
                             items: orderData.items,
+                            orderDateKey: orderDateKey,
                             confirmBaseUrl: confirmBase,
                             returnPage: 'index',
                             returnDeviceId: self.deviceId || '',
@@ -1424,7 +1427,7 @@
                     self.currentView = 'menu';
                 }).catch(function(e) {
                     console.error(e);
-                    self.showAlertModal('傳送失敗', '請檢查網路連線或系統設定！');
+                    self.showAlertModal('傳送失敗', (e && e.message) ? ('送單失敗：' + e.message) : '請檢查網路連線或系統設定！');
                 }).finally(function() {
                     self.isSubmitting = false;
                 });
@@ -1480,3 +1483,4 @@
 </script>
 </body>
 </html>
+
