@@ -337,7 +337,6 @@
                                 var d = new Date(o.timestamp || Date.now());
                                 var dateKey = o.orderDateKey || o.pickupDate || (d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2));
                                 updates['orders_archive/' + dateKey + '/' + id] = o;
-                                updates['orders/' + id] = null;
                                 updates['orders/' + dateKey + '/' + id] = null;
                                 count++;
                             }
@@ -364,28 +363,8 @@
                     try { await signOut(auth); } catch (error) { console.error("登出失敗", error); }
                 },
                 listenToOrders() {
-                    const ordersRef = ref(db, 'orders');
                     const self = this;
-                    onValue(query(ordersRef, orderByChild('timestamp'), limitToLast(200)), (snapshot) => {
-                        const data = snapshot.val();
-                        const parsedOrders = [];
-                        let currentNewCount = 0;
-                        if (data) {
-                            for (let key in data) {
-                                if(data[key] && data[key].status) {
-                                    parsedOrders.push({ id: key, ...data[key] });
-                                    if (data[key].status === 'new') currentNewCount++;
-                                    // ★ 自動補流水號：偵測到無 orderNo 的訂單，由已登入的 admin 補發
-                                    if (data[key].status !== 'archived' && data[key].status !== 'cancelled' && !data[key].orderNo) {
-                                        self.autoAssignOrderNo(key);
-                                    }
-                                }
-                            }
-                        }
-                        this.orders = parsedOrders;
-                        if (currentNewCount > this.previousNewCount && this.previousNewCount !== 0) this.playAlert();
-                        this.previousNewCount = currentNewCount;
-                    });
+                    self.resetOrderBucketListeners();
                     // ★ 讀取 settings（一次性+定時，取代 onValue 節省流量）
                     const selfS = this;
                     const _loadAdminSettings = () => {
@@ -417,6 +396,59 @@
                 toggleMenu(orderId) {
                     this.activeMenu = this.activeMenu === orderId ? null : orderId;
                 },
+                dateKeyOffset(offset) {
+                    const d = new Date();
+                    d.setHours(0,0,0,0);
+                    d.setDate(d.getDate() + offset);
+                    return d.getFullYear() + '-' + ('0'+(d.getMonth()+1)).slice(-2) + '-' + ('0'+d.getDate()).slice(-2);
+                },
+                buildWatchDateKeys() {
+                    const out = [];
+                    for (let i = -1; i <= 14; i++) out.push(this.dateKeyOffset(i));
+                    return out;
+                },
+                rebuildOrdersFromBuckets() {
+                    const map = {};
+                    let currentNewCount = 0;
+                    Object.keys(this.orderBuckets || {}).forEach((dateKey) => {
+                        const bucket = this.orderBuckets[dateKey] || {};
+                        Object.keys(bucket).forEach((id) => {
+                            const o = bucket[id];
+                            if (!o || !o.status) return;
+                            if (o.status !== 'new' && o.status !== 'making' && o.status !== 'done' && o.status !== 'ready') return;
+                            const row = { id, ...o };
+                            if (!map[id] || (row.timestamp || 0) > (map[id].timestamp || 0)) map[id] = row;
+                        });
+                    });
+                    const parsedOrders = Object.values(map);
+                    parsedOrders.forEach((o) => {
+                        if (o.status === 'new') currentNewCount++;
+                        if (o.status !== 'archived' && o.status !== 'cancelled' && !o.orderNo) this.autoAssignOrderNo(o.id);
+                    });
+                    this.orders = parsedOrders;
+                    if (currentNewCount > this.previousNewCount && this.previousNewCount !== 0) this.playAlert();
+                    this.previousNewCount = currentNewCount;
+                },
+                resetOrderBucketListeners() {
+                    (this.orderBucketUnsubs || []).forEach((fn) => { try { fn && fn(); } catch(_) {} });
+                    this.orderBucketUnsubs = [];
+                    this.orderBuckets = {};
+                    this.buildWatchDateKeys().forEach((dateKey) => {
+                        const unsub = onValue(ref(db, 'orders/' + dateKey), (snapshot) => {
+                            this.orderBuckets[dateKey] = snapshot.exists() ? (snapshot.val() || {}) : {};
+                            this.rebuildOrdersFromBuckets();
+                        }, () => {
+                            this.orderBuckets[dateKey] = {};
+                            this.rebuildOrdersFromBuckets();
+                        });
+                        this.orderBucketUnsubs.push(unsub);
+                    });
+                },
+                orderBasePath(orderId, orderObj) {
+                    const o = orderObj || this.findOrderById(orderId) || { id: orderId };
+                    const dateKey = this.resolveOrderDateKey(o);
+                    return `orders/${dateKey}/${orderId}`;
+                },
                 resolveOrderDateKey(order) {
                     const d = new Date((order && order.timestamp) || Date.now());
                     return (order && (order.orderDateKey || order.pickupDate)) || `${d.getFullYear()}-${('0'+(d.getMonth()+1)).slice(-2)}-${('0'+d.getDate()).slice(-2)}`;
@@ -429,7 +461,6 @@
                     const dateKey = this.resolveOrderDateKey(o);
                     const out = [];
                     if (dateKey) out.push(`orders/${dateKey}/${orderId}`);
-                    out.push(`orders/${orderId}`);
                     return [...new Set(out)];
                 },
                 buildOrderMirrorUpdates(orderId, fields, orderObj) {
@@ -448,37 +479,27 @@
                     return this.updateOrderMirror(orderId, { print_task: task }, orderObj);
                 },
                 async autoAssignOrderNo(orderId) {
-                    // 防止重複處理同一訂單
                     if (this.assigningNos[orderId]) return;
                     this.assigningNos[orderId] = true;
                     const maxRetries = 3;
                     for (let attempt = 0; attempt < maxRetries; attempt++) {
                         try {
-                            // 先確認訂單確實沒有 orderNo
-                            const check = await get(ref(db, `orders/${orderId}/orderNo`));
+                            const orderObj = this.findOrderById(orderId) || { id: orderId };
+                            const base = this.orderBasePath(orderId, orderObj);
+                            const check = await get(ref(db, `${base}/orderNo`));
                             if (check.exists() && check.val()) {
-                                console.log(`訂單 ${orderId} 已有流水號 No.${check.val()}`);
                                 delete this.assigningNos[orderId];
                                 return;
                             }
                             const result = await runTransaction(ref(db, 'settings/orderCounter'), (cur) => (cur || 0) + 1);
-                            // ★ LINE Pay 待付款訂單：只補流水號，不設 print_task（列印由 linepay_server 確認後觸發）
-                            const paySnap = await get(ref(db, `orders/${orderId}/paymentStatus`));
+                            const paySnap = await get(ref(db, `${base}/paymentStatus`));
                             const payStatus = paySnap.exists() ? paySnap.val() : '';
                             const updateData = { orderNo: result.snapshot.val() };
-                            if (payStatus !== 'pending') {
-                                updateData.print_task = 'kitchen_' + Date.now();
-                            }
-                            await this.updateOrderMirror(orderId, updateData, this.findOrderById(orderId));
-                            if (payStatus === 'pending') {
-                                console.log(`✅ 流水號 No.${result.snapshot.val()}（LINE Pay 待付款，不列印）→ ${orderId}`);
-                            } else {
-                                console.log(`✅ 流水號 No.${result.snapshot.val()} + 列印 → ${orderId}`);
-                            }
+                            if (payStatus !== 'pending') updateData.print_task = 'kitchen_' + Date.now();
+                            await this.updateOrderMirror(orderId, updateData, orderObj);
                             delete this.assigningNos[orderId];
                             return;
                         } catch (err) {
-                            console.warn(`自動補流水號第${attempt+1}次失敗:`, err.message);
                             if (attempt < maxRetries - 1) await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
                         }
                     }
@@ -576,7 +597,7 @@
                     }
 
                     try {
-                        const psnap = await get(ref(db, `orders/${order.id}/paymentStatus`));
+                        const psnap = await get(ref(db, this.orderBasePath(order.id, order) + "/paymentStatus"));
                         if (psnap.exists() && String(psnap.val() || '').toLowerCase() === 'refunded') {
                             return { success: true, returnCode: 'LATE_REFUNDED' };
                         }
@@ -586,19 +607,20 @@
                 async cancelOrder(order) {
                     let latestOrder = { ...order };
                     try {
-                        const fullSnap = await get(ref(db, `orders/${order.id}`));
+                        const fullSnap = await get(ref(db, this.orderBasePath(order.id, order)));
                         if (fullSnap.exists()) {
                             latestOrder = { ...latestOrder, ...(fullSnap.val() || {}), id: order.id };
                         }
                     } catch (_) {}
 
+                    const orderBase = this.orderBasePath(order.id, latestOrder);
                     const isLinePay = latestOrder.paymentMethod === 'linepay' || latestOrder.paymentMethod === 'linepay_offline';
                     let linePayState = isLinePay ? this.getLinePayState(latestOrder) : 'pending';
 
                     if (isLinePay && linePayState === 'pending') {
                         try {
                             const txnSnap = await get(ref(db, `linepay_transactions/${order.id}`));
-                            const paySnap = await get(ref(db, `orders/${order.id}/paymentStatus`));
+                            const paySnap = await get(ref(db, `${orderBase}/paymentStatus`));
                             const txnData = txnSnap.exists() ? (txnSnap.val() || {}) : {};
                             const txnState = (typeof txnData === 'object') ? (txnData.status || '') : txnData;
                             const txnConfirmedAt = (typeof txnData === 'object') ? (txnData.confirmedAt || 0) : 0;
@@ -610,7 +632,6 @@
                     }
 
                     const shouldRefund = isLinePay && linePayState === 'paid';
-
                     if (shouldRefund) {
                         const choice = confirm(`此訂單已完成 LINE Pay 付款 $${latestOrder.total || order.total || 0}。\n\n確定取消？\n（點「確定」同時申請 LINE Pay 退款，點「取消」放棄操作）`);
                         if (!choice) return;
@@ -618,28 +639,24 @@
                         if (!confirm('確定要取消這筆訂單嗎？（將自動列印取消單至廚房）')) return;
                     }
 
-                    const taskRef = ref(db, `orders/${order.id}/print_task`);
+                    const taskRef = ref(db, `${orderBase}/print_task`);
                     try {
                         await remove(taskRef);
-
                         const updates = {
-                            [`orders/${order.id}/status`]: 'cancelled',
-                            [`orders/${order.id}/wasCancelled`]: true
+                            [`${orderBase}/status`]: 'cancelled',
+                            [`${orderBase}/wasCancelled`]: true
                         };
-
                         if (Array.isArray(latestOrder.items) && latestOrder.items.length) {
-                            updates[`orders/${order.id}/items`] = latestOrder.items.map(i => ({ ...i }));
-                            if (latestOrder.total !== undefined) updates[`orders/${order.id}/total`] = latestOrder.total;
+                            updates[`${orderBase}/items`] = latestOrder.items.map(i => ({ ...i }));
+                            if (latestOrder.total !== undefined) updates[`${orderBase}/total`] = latestOrder.total;
                         }
-
                         if (shouldRefund) {
-                            if ((latestOrder.paymentStatus || '') !== 'paid') updates[`orders/${order.id}/paymentStatus`] = 'paid';
-                            updates[`orders/${order.id}/paymentMethod`] = (latestOrder.paymentMethod === 'linepay_offline') ? 'linepay_offline' : 'linepay';
+                            if ((latestOrder.paymentStatus || '') !== 'paid') updates[`${orderBase}/paymentStatus`] = 'paid';
+                            updates[`${orderBase}/paymentMethod`] = (latestOrder.paymentMethod === 'linepay_offline') ? 'linepay_offline' : 'linepay';
                         } else if (isLinePay && linePayState !== 'paid' && linePayState !== 'refunded') {
-                            updates[`orders/${order.id}/paymentStatus`] = 'pending';
-                            updates[`orders/${order.id}/unpaidCancelledAt`] = Date.now();
+                            updates[`${orderBase}/paymentStatus`] = 'pending';
+                            updates[`${orderBase}/unpaidCancelledAt`] = Date.now();
                         }
-
                         await update(ref(db), updates);
 
                         if (shouldRefund) {
@@ -647,9 +664,9 @@
                             if (refund.success) {
                                 const ts = Date.now();
                                 await update(ref(db), {
-                                    [`orders/${order.id}/paymentStatus`]: 'refunded',
-                                    [`orders/${order.id}/paymentMethod`]: 'linepay_refund',
-                                    [`orders/${order.id}/refundedAt`]: ts,
+                                    [`${orderBase}/paymentStatus`]: 'refunded',
+                                    [`${orderBase}/paymentMethod`]: 'linepay_refund',
+                                    [`${orderBase}/refundedAt`]: ts,
                                     [`linepay_transactions/${order.id}/status`]: 'refunded',
                                     [`linepay_transactions/${order.id}/refundedAt`]: ts
                                 });
@@ -695,7 +712,6 @@
                             const d = new Date(o.timestamp || Date.now());
                             const dateKey = o.orderDateKey || o.pickupDate || (d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2));
                             updates['orders_archive/' + dateKey + '/' + o.id] = archivedOrder;
-                            updates['orders/' + o.id] = null;
                             updates['orders/' + dateKey + '/' + o.id] = null;
                         }
                     });
@@ -789,6 +805,12 @@
     </script>
 </body>
 </html>
+
+
+
+
+
+
 
 
 
