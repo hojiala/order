@@ -156,9 +156,17 @@ async function processPayment() {
   // ── 取消 ──
   if (action === 'cancel') {
     try {
-      await update(ref(db, `orders/${orderId}`), {
-        paymentStatus: 'pending'
-      });
+      // ★ 先從 linepay_transactions 取得 orderDateKey
+      let cancelDateKey = '';
+      try {
+        const txnSnap = await get(ref(db, `linepay_transactions/${orderId}`));
+        if (txnSnap.exists()) cancelDateKey = txnSnap.val().orderDateKey || '';
+      } catch(e) {}
+      if (cancelDateKey) {
+        await update(ref(db, `orders/${cancelDateKey}/${orderId}`), {
+          paymentStatus: 'pending'
+        });
+      }
       await update(ref(db, `linepay_transactions/${orderId}`), {
         status: 'cancelled',
         cancelledAt: Date.now()
@@ -178,6 +186,7 @@ async function processPayment() {
     // 先嘗試從 URL 取得，再從 Firebase 取
     let txnId = urlTxnId || transactionId || '';
     let amount = 0;
+    let orderDateKey = '';
 
     // 從 Firebase 取得交易資訊（最多重試 3 次）
     for (let retry = 0; retry < 3; retry++) {
@@ -187,6 +196,7 @@ async function processPayment() {
           const txnData = txnSnap.val();
           txnId = txnId || txnData.transactionId || '';
           amount = txnData.amount || 0;
+          orderDateKey = txnData.orderDateKey || '';
           break;
         }
       } catch(e) {
@@ -247,7 +257,9 @@ async function processPayment() {
 
     if (confirmed) {
       try {
-        const orderSnap = await get(ref(db, `orders/${orderId}`));
+        // ★ 使用日期分桶路徑讀取訂單
+        const orderPath = orderDateKey ? `orders/${orderDateKey}/${orderId}` : `orders/${orderId}`;
+        const orderSnap = await get(ref(db, orderPath));
         if (orderSnap.exists()) {
           const orderData = orderSnap.val();
           const dayNames = ['星期日','星期一','星期二','星期三','星期四','星期五','星期六'];
