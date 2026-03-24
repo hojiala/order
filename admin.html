@@ -276,6 +276,8 @@
                     lpStatus: {},
                     editSaving: false,
                     assigningNos: {},
+                    orderBuckets: {},
+                    orderBucketUnsubs: [],
                     linePayServerUrl: '',
                     linePayConfirmUrl: '',
                     toastMsg: '', toastTimer: null,
@@ -325,21 +327,26 @@
                     try {
                         const today = new Date(); today.setHours(0, 0, 0, 0);
                         const cutoff = today.getTime();
-                        const snap = await get(query(ref(db, 'orders'), orderByChild('timestamp'), limitToLast(2000)));
-                        if (!snap.exists()) return;
-                        const data = snap.val();
+                        // ★ 改為逐日期桶讀取（避免查詢 orders/ 根路徑被 rules 拒絕）
                         const updates = {};
                         let count = 0;
-                        for (const id in data) {
-                            const o = data[id];
-                            if (!o || !o.timestamp) continue;
-                            if (o.timestamp < cutoff && (o.status === 'done' || o.status === 'cancelled' || o.status === 'archived')) {
-                                var d = new Date(o.timestamp || Date.now());
-                                var dateKey = o.orderDateKey || o.pickupDate || (d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2));
-                                updates['orders_archive/' + dateKey + '/' + id] = o;
-                                updates['orders/' + dateKey + '/' + id] = null;
-                                count++;
-                            }
+                        for (let i = 1; i <= 7; i++) {
+                            const d = new Date(today); d.setDate(d.getDate() - i);
+                            const dateKey = d.getFullYear() + '-' + ('0'+(d.getMonth()+1)).slice(-2) + '-' + ('0'+d.getDate()).slice(-2);
+                            try {
+                                const snap = await get(ref(db, 'orders/' + dateKey));
+                                if (!snap.exists()) continue;
+                                const bucket = snap.val();
+                                for (const id in bucket) {
+                                    const o = bucket[id];
+                                    if (!o || !o.timestamp) continue;
+                                    if (o.timestamp < cutoff && (o.status === 'done' || o.status === 'cancelled' || o.status === 'archived')) {
+                                        updates['orders_archive/' + dateKey + '/' + id] = o;
+                                        updates['orders/' + dateKey + '/' + id] = null;
+                                        count++;
+                                    }
+                                }
+                            } catch(buckErr) { console.warn('歸檔讀取 ' + dateKey + ' 失敗:', buckErr.message); }
                         }
                         if (count > 0) { await update(ref(db), updates); console.log('✅ 歸檔 ' + count + ' 筆舊訂單'); }
                         // 歸檔 linepay_transactions
@@ -437,7 +444,11 @@
                         const unsub = onValue(ref(db, 'orders/' + dateKey), (snapshot) => {
                             this.orderBuckets[dateKey] = snapshot.exists() ? (snapshot.val() || {}) : {};
                             this.rebuildOrdersFromBuckets();
-                        }, () => {
+                        }, (err) => {
+                            console.error('❌ 訂單監聽失敗 [' + dateKey + ']:', err && err.message ? err.message : err);
+                            if (err && err.message && err.message.indexOf('PERMISSION_DENIED') !== -1) {
+                                this.toast('⚠️ 讀取訂單權限不足，請確認帳號 email 已驗證');
+                            }
                             this.orderBuckets[dateKey] = {};
                             this.rebuildOrdersFromBuckets();
                         });
