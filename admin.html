@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
@@ -236,7 +236,7 @@
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
-        import { getDatabase, ref, onValue, update, set, get, remove, runTransaction, query, limitToLast } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
+        import { getDatabase, ref, onValue, update, set, get, remove, runTransaction, query, orderByChild, limitToLast } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
         import { getAuth, setPersistence, browserSessionPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
 
         // ★★★ 請貼入您相同的 Firebase 配置 ★★★
@@ -325,7 +325,7 @@
                     try {
                         const today = new Date(); today.setHours(0, 0, 0, 0);
                         const cutoff = today.getTime();
-                        const snap = await get(ref(db, 'orders'));
+                        const snap = await get(query(ref(db, 'orders'), orderByChild('timestamp'), limitToLast(2000)));
                         if (!snap.exists()) return;
                         const data = snap.val();
                         const updates = {};
@@ -335,9 +335,10 @@
                             if (!o || !o.timestamp) continue;
                             if (o.timestamp < cutoff && (o.status === 'done' || o.status === 'cancelled' || o.status === 'archived')) {
                                 var d = new Date(o.timestamp || Date.now());
-                                var dateKey = d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2);
+                                var dateKey = o.orderDateKey || o.pickupDate || (d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2));
                                 updates['orders_archive/' + dateKey + '/' + id] = o;
                                 updates['orders/' + id] = null;
+                                updates['orders/' + dateKey + '/' + id] = null;
                                 count++;
                             }
                         }
@@ -365,7 +366,7 @@
                 listenToOrders() {
                     const ordersRef = ref(db, 'orders');
                     const self = this;
-                    onValue(query(ordersRef, limitToLast(200)), (snapshot) => {
+                    onValue(query(ordersRef, orderByChild('timestamp'), limitToLast(200)), (snapshot) => {
                         const data = snapshot.val();
                         const parsedOrders = [];
                         let currentNewCount = 0;
@@ -669,9 +670,10 @@
                         if (o.status !== 'archived' && o.status !== 'cancelled' && futureIds.indexOf(o.id) === -1) {
                             const archivedOrder = Object.assign({}, o, { status: 'archived' });
                             const d = new Date(o.timestamp || Date.now());
-                            const dateKey = d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2);
+                            const dateKey = o.orderDateKey || o.pickupDate || (d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2));
                             updates['orders_archive/' + dateKey + '/' + o.id] = archivedOrder;
                             updates['orders/' + o.id] = null;
+                            updates['orders/' + dateKey + '/' + o.id] = null;
                         }
                     });
                     if (!Object.keys(updates).length) { this.toast("✅ 目前沒有需要結單的訂單"); return; }
