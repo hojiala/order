@@ -1226,12 +1226,44 @@
                 this.activeMenu=null;
             },
             exitOnline:function(){this.orderMode="pos";this.editingOrder=null;this.cart=[];this.editPickupDate="";this.editPickupTime="";this.editOrderNote="";this.editShowCustomer=false;this.editShowPayment=false;this.editOrderType="takeout";this.editTableLabel="";},
+            resolveOrderDateKey:function(order){
+                var d=new Date((order&&order.timestamp)||Date.now());
+                return (order&&order.orderDateKey)|| (order&&order.pickupDate) || (d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2));
+            },
+            findOrderById:function(id){
+                if(this.editingOrder&&this.editingOrder.id===id)return this.editingOrder;
+                return (this.onlineOrders||[]).find(function(o){return o.id===id;})||null;
+            },
+            orderMirrorBases:function(id,order){
+                var o=order||this.findOrderById(id)||{id:id};
+                var dateKey=this.resolveOrderDateKey(o);
+                var arr=[];
+                if(dateKey)arr.push('orders/'+dateKey+'/'+id);
+                arr.push('orders/'+id);
+                return arr.filter(function(p,idx,self){return self.indexOf(p)===idx;});
+            },
+            buildOrderMirrorUpdates:function(id,fields,order){
+                var updates={};
+                var bases=this.orderMirrorBases(id,order);
+                bases.forEach(function(base){Object.keys(fields||{}).forEach(function(k){updates[base+'/'+k]=fields[k];});});
+                return updates;
+            },
+            updateOrderMirror:function(id,fields,order){
+                return update(ref(db),this.buildOrderMirrorUpdates(id,fields,order));
+            },
+            clearPrintTaskMirror:function(id,order){
+                return update(ref(db),this.buildOrderMirrorUpdates(id,{print_task:null},order));
+            },
+            setPrintTaskMirror:function(id,task,order){
+                return update(ref(db),this.buildOrderMirrorUpdates(id,{print_task:task},order));
+            },
             saveOrderEdit:async function(){
                 var s=this;
                 if(!s.editingOrder||!s.cart.length){s.toast('⚠ 訂單內容為空');return;}
                 s.isSubmitting=true;
                 try{
                     var id=s.editingOrder.id;
+                    var targetOrder=s.editingOrder||s.onlineOrders.find(function(o){return o.id===id;})||{id:id,pickupDate:s.editPickupDate,timestamp:Date.now()};
                     var taskRef=ref(db,'orders/'+id+'/print_task');
                     var pm=s.editPayMethod||'store';
                     var realPm=(pm==='linepay_qr')?'linepay':pm;
@@ -1260,7 +1292,7 @@
                     if(realPm==='cash'){
                         upd.paymentMethod='cash';
                         upd.paymentStatus='paid';
-                        await update(ref(db,'orders/'+id),upd);
+                        await s.updateOrderMirror(id,upd,targetOrder);
                         await remove(taskRef);
                         await set(taskRef,'kitchen_'+Date.now());
                         s.toast('✅ 已改為現金已付款，重新列印中...');
@@ -1271,7 +1303,7 @@
                     if(realPm==='store'){
                         upd.paymentMethod='store';
                         upd.paymentStatus='pending';
-                        await update(ref(db,'orders/'+id),upd);
+                        await s.updateOrderMirror(id,upd,targetOrder);
                         await remove(taskRef);
                         await set(taskRef,'kitchen_'+Date.now());
                         s.toast('✅ 已改為未付款，重新列印中...');
@@ -1282,7 +1314,7 @@
                     if(realPm==='linepay_offline'){
                         upd.paymentMethod='linepay';
                         upd.paymentStatus='pending';
-                        await update(ref(db,'orders/'+id),upd);
+                        await s.updateOrderMirror(id,upd,targetOrder);
                         await remove(taskRef);
 
                         s.offlineOrderId=id;
@@ -1303,7 +1335,7 @@
                         if(keepPaid){
                             upd.paymentMethod='linepay';
                             upd.paymentStatus='paid';
-                            await update(ref(db,'orders/'+id),upd);
+                            await s.updateOrderMirror(id,upd,targetOrder);
                             await remove(taskRef);
                             await set(taskRef,'kitchen_'+Date.now());
                             s.toast('✅ LINE Pay 已付清，重新列印中...');
@@ -1313,7 +1345,7 @@
 
                         upd.paymentMethod='linepay';
                         upd.paymentStatus='pending';
-                        await update(ref(db,'orders/'+id),upd);
+                        await s.updateOrderMirror(id,upd,targetOrder);
                         await remove(taskRef);
 
                         if(!confirmBase){
@@ -1326,6 +1358,7 @@
                         await set(ref(db,'linepay_requests/'+id),{
                             amount:upd.total||0,
                             items:upd.items||[],
+                            orderDateKey:s.resolveOrderDateKey(targetOrder),
                             confirmBaseUrl:confirmBase,
                             returnPage:'pos',
                             status:'pending',
@@ -1372,7 +1405,7 @@
                         return;
                     }
 
-                    await update(ref(db,'orders/'+id),upd);
+                    await s.updateOrderMirror(id,upd,targetOrder);
                     await remove(taskRef);
                     await set(taskRef,'kitchen_'+Date.now());
                     s.toast('✅ 修改已儲存，重新列印中...');
@@ -1393,7 +1426,7 @@
                     return;
                 }
 
-                update(ref(db,"orders/"+id),{status:status})
+                s.updateOrderMirror(id,{status:status},order)
                     .then(function(){
                         var m={new:"已還原為新訂單",making:"✅ 已接單，開始製作",done:"✅ 出餐完成",cancelled:"已取消"};
                         s.toast(m[status]||"已更新");
@@ -1408,18 +1441,16 @@
             },
             // ── 列印功能（從 admin.html 移植：remove+set 確保必然觸發 Node-RED）──
             printOrder:function(order){
-                var taskRef=ref(db,"orders/"+order.id+"/print_task");
                 var s=this;
-                remove(taskRef).then(function(){
-                    return set(taskRef,"kitchen_reprint_"+Date.now());
+                s.clearPrintTaskMirror(order.id,order).then(function(){
+                    return s.setPrintTaskMirror(order.id,"kitchen_reprint_"+Date.now(),order);
                 }).then(function(){s.toast("🖨️ 補印工單中...");})
                 .catch(function(e){alert("補印工單失敗："+e.message);});
             },
             printReceipt:function(order){
-                var taskRef=ref(db,"orders/"+order.id+"/print_task");
                 var s=this;
-                remove(taskRef).then(function(){
-                    return set(taskRef,"receipt_"+Date.now());
+                s.clearPrintTaskMirror(order.id,order).then(function(){
+                    return s.setPrintTaskMirror(order.id,"receipt_"+Date.now(),order);
                 }).then(function(){s.toast("🧾 印收據中...");})
                 .catch(function(e){alert("印收據失敗："+e.message);});
             },
@@ -1439,4 +1470,9 @@
 </script>
 </body>
 </html>
+
+
+
+
+
 
