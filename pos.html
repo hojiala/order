@@ -498,7 +498,7 @@
 
 <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
-    import { getDatabase, ref, onValue, update, push, set, get, remove, runTransaction, query, orderByChild, limitToLast } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
+    import { getDatabase, ref, onValue, onChildAdded, onChildChanged, onChildRemoved, update, push, set, get, remove, runTransaction, query, orderByChild, limitToLast } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, setPersistence, browserSessionPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
     const firebaseConfig = {
         apiKey:"AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -678,8 +678,14 @@
             },
             buildWatchDateKeys:function(){
                 var out=[];
-                for(var i=-1;i<=14;i++)out.push(this.dateKeyOffset(i));
+                // ★ 只監聽昨天～後天（4個桶），大幅降低流量
+                for(var i=-1;i<=2;i++)out.push(this.dateKeyOffset(i));
                 return out;
+            },
+            _scheduleRebuild:function(){
+                var s=this;
+                clearTimeout(s._rebuildTimer);
+                s._rebuildTimer=setTimeout(function(){s.rebuildOnlineOrders();},150);
             },
             rebuildOnlineOrders:function(){
                 var s=this;
@@ -714,18 +720,27 @@
                 s.orderBuckets={};
                 var keys=s.buildWatchDateKeys();
                 keys.forEach(function(dateKey){
-                    var unsub=onValue(ref(db,"orders/"+dateKey),function(snap){
-                        s.orderBuckets[dateKey]=snap.exists()?(snap.val()||{}):{};
-                        s.rebuildOnlineOrders();
+                    if(!s.orderBuckets[dateKey])s.orderBuckets[dateKey]={};
+                    var bucketRef=ref(db,"orders/"+dateKey);
+                    // ★ 改用 child 事件：只下載變更的那一筆
+                    var u1=onChildAdded(bucketRef,function(snap){
+                        s.orderBuckets[dateKey][snap.key]=snap.val();
+                        s._scheduleRebuild();
                     },function(err){
                         console.error("❌ POS訂單監聽失敗 ["+dateKey+"]:",err&&err.message?err.message:err);
                         if(err&&err.message&&err.message.indexOf("PERMISSION_DENIED")!==-1){
-                            s.toastMsg="⚠️ 讀取訂單權限不足，請確認帳號 email 已驗證";
+                            s.toastMsg="⚠️ 讀取訂單權限不足，請確認帳號";
                         }
-                        s.orderBuckets[dateKey]={};
-                        s.rebuildOnlineOrders();
                     });
-                    s.orderBucketUnsubs.push(unsub);
+                    var u2=onChildChanged(bucketRef,function(snap){
+                        s.orderBuckets[dateKey][snap.key]=snap.val();
+                        s._scheduleRebuild();
+                    });
+                    var u3=onChildRemoved(bucketRef,function(snap){
+                        delete s.orderBuckets[dateKey][snap.key];
+                        s._scheduleRebuild();
+                    });
+                    s.orderBucketUnsubs.push(u1,u2,u3);
                 });
             },
             startAll:function(){
@@ -908,6 +923,8 @@
 
                 if(shouldRefund){ await new Promise(function(r){setTimeout(r,900);}); }
                 await set(taskRef,'cancel_'+Date.now());
+                // ★ 寫入 print_queue 供 Node-RED
+                s.writeToPrintQueue(order.id,'cancel_'+Date.now(),latestOrder);
                 s.toast('❌ 訂單已取消，列印取消單...');
                 if(s.editingOrder&&s.editingOrder.id===order.id)s.exitOnline();
                 return true;
@@ -940,8 +957,11 @@
 
                     if(!ov.pendingPrintAt){
                         var taskRef=ref(db,base+'/print_task');
+                        var printTs='kitchen_'+ts;
                         await remove(taskRef);
-                        await set(taskRef,'kitchen_'+ts);
+                        await set(taskRef,printTs);
+                        // ★ 寫入 print_queue 供 Node-RED
+                        s.writeToPrintQueue(orderId,printTs,Object.assign({id:orderId},ov));
                         s.toast('⚠️ 付款仍在等待中，已列印未付款工單');
                     }else{
                         s.toast('⚠️ 付款仍在等待中');
@@ -1108,7 +1128,12 @@
                                 var ob='orders/'+(s.offlineOrderDateKey||s.todayStr)+'/'+s.offlineOrderId;
                                 update(ref(db,ob),{status:"making"});
                                 var taskRef=ref(db,ob+"/print_task");
-                                remove(taskRef).then(function(){return set(taskRef,"kitchen_"+Date.now());});
+                                var offPrintTask="kitchen_"+Date.now();
+                                remove(taskRef).then(function(){return set(taskRef,offPrintTask);}).then(function(){
+                                    // ★ 寫入 print_queue 供 Node-RED
+                                    var offOrder=s.findOrderById(s.offlineOrderId)||{};
+                                    s.writeToPrintQueue(s.offlineOrderId,offPrintTask,offOrder);
+                                });
                                 setTimeout(function(){s.closeOfflineModal();},2000);
                             }else if(r.status==="error"){
                                 clearInterval(poll);
@@ -1233,10 +1258,13 @@
                             });
                         }else{
                             // ★ 店內付款：立即列印
+                            var storePrintTask="kitchen_"+Date.now();
                             var taskRef=ref(db,"orders/"+(o.orderDateKey||o.pickupDate||s.todayStr)+"/"+orderId+"/print_task");
                             remove(taskRef).then(function(){
-                                return set(taskRef,"kitchen_"+Date.now());
+                                return set(taskRef,storePrintTask);
                             }).then(function(){
+                                // ★ 寫入 print_queue 供 Node-RED
+                                s.writeToPrintQueue(orderId,storePrintTask,o);
                                 s.toast("✅ 已結帳 $"+o.total+" (No."+String(o.orderNo).padStart(3,"0")+")");
                                 s.clearCart();
                             }).catch(function(e){alert("列印失敗："+e.message);})
@@ -1291,7 +1319,20 @@
                 return update(ref(db),this.buildOrderMirrorUpdates(id,{print_task:null},order));
             },
             setPrintTaskMirror:function(id,task,order){
-                return update(ref(db),this.buildOrderMirrorUpdates(id,{print_task:task},order));
+                var s=this;
+                return update(ref(db),s.buildOrderMirrorUpdates(id,{print_task:task},order)).then(function(){
+                    // ★ 同時寫入 print_queue 供 Node-RED 精準監聽
+                    s.writeToPrintQueue(id,task,order);
+                });
+            },
+            writeToPrintQueue:function(orderId,task,orderObj){
+                try{
+                    var order=orderObj||this.findOrderById(orderId)||{};
+                    var queueData=Object.assign({},order);
+                    delete queueData.id;
+                    queueData.print_task=task;
+                    set(ref(db,'print_queue/'+orderId),queueData).catch(function(e){console.warn('print_queue寫入失敗:',e.message);});
+                }catch(e){console.warn('print_queue error:',e);}
             },
             saveOrderEdit:async function(){
                 var s=this;
