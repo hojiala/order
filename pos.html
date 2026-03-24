@@ -527,7 +527,7 @@
                 posOrderType:'takeout',posTableLabel:'',posTables:[],cartDragIdx:null,
                 posPickupDate:"",posPickupTime:"",
                 orderMode:"pos",editingOrder:null,
-                onlineOrders:[],ordersLoading:false,assigningNos:{},
+                onlineOrders:[],ordersLoading:false,assigningNos:{},orderBuckets:{},orderBucketUnsubs:[],
                 orderSearch:"",
                 activeItem:null,tempQty:1,tempNote:"",tempSels:[],tempOG:{},tempPosExtras:[],
                 toastMsg:"",toastTimer:null,lastOrderId:null,
@@ -536,9 +536,9 @@
                 linePayServerUrl:"",linePayConfirmUrl:"",
                 // ★ 情境3 Offline 掃碼
                 showOfflineModal:false, offlineBarcode:"", offlineAmount:0,
-                offlineOrderId:"", offlineItems:[], offlineError:"", offlineSuccess:"",
+                offlineOrderId:"", offlineOrderDateKey:"", offlineItems:[], offlineError:"", offlineSuccess:"",
                 // ★ LINE Pay Online 付款連結彈窗
-                showLinePayLinkModal:false, pendingLinePayUrl:"", pendingLinePayOrderId:"",
+                showLinePayLinkModal:false, pendingLinePayUrl:"", pendingLinePayOrderId:"", pendingLinePayOrderDateKey:"",
                 offlineSubmitting:false
             };
         },
@@ -636,7 +636,6 @@
 
                     // 寫入「按日期分類」的歷史節點中，並同步刪除 active 節點
                     updates["orders_archive/" + dateKey + "/" + o.id] = archivedOrder;
-                    updates["orders/"+o.id]=null;
                     updates["orders/"+dateKey+"/"+o.id]=null;
                   });
                 if(!Object.keys(updates).length){s.toast("✅ 目前沒有待結單訂單");return;}
@@ -671,6 +670,60 @@
                     }).finally(function(){s.isLoggingIn=false;});
             },
             doLogout:function(){if(confirm("確定登出POS？"))signOut(auth);},
+            dateKeyOffset:function(offset){
+                var d=new Date();
+                d.setHours(0,0,0,0);
+                d.setDate(d.getDate()+offset);
+                return d.getFullYear()+"-"+("0"+(d.getMonth()+1)).slice(-2)+"-"+("0"+d.getDate()).slice(-2);
+            },
+            buildWatchDateKeys:function(){
+                var out=[];
+                for(var i=-1;i<=14;i++)out.push(this.dateKeyOffset(i));
+                return out;
+            },
+            rebuildOnlineOrders:function(){
+                var s=this;
+                var map={};
+                Object.keys(s.orderBuckets||{}).forEach(function(dateKey){
+                    var bucket=s.orderBuckets[dateKey]||{};
+                    Object.keys(bucket).forEach(function(id){
+                        var o=bucket[id];
+                        if(!o||!o.status)return;
+                        if(!(o.status==="new"||o.status==="making"||o.status==="done"))return;
+                        var row=Object.assign({id:id},o);
+                        if(!map[id]||(row.timestamp||0)>(map[id].timestamp||0))map[id]=row;
+                    });
+                });
+                s.onlineOrders=Object.values(map).sort(function(a,b){
+                    var w={new:1,making:2,done:3};
+                    if(w[a.status]!==w[b.status])return w[a.status]-w[b.status];
+                    var aNo=a.orderNo||0,bNo=b.orderNo||0;
+                    if(aNo!==bNo)return bNo-aNo;
+                    return (b.timestamp||0)-(a.timestamp||0);
+                });
+                s.ordersLoading=false;
+                if(s.editingOrder){
+                    var found=s.onlineOrders.find(function(o){return o.id===s.editingOrder.id;});
+                    if(found)s.editingOrder=found;
+                }
+            },
+            resetOrderBucketListeners:function(){
+                var s=this;
+                (s.orderBucketUnsubs||[]).forEach(function(fn){try{fn&&fn();}catch(e){}});
+                s.orderBucketUnsubs=[];
+                s.orderBuckets={};
+                var keys=s.buildWatchDateKeys();
+                keys.forEach(function(dateKey){
+                    var unsub=onValue(ref(db,"orders/"+dateKey),function(snap){
+                        s.orderBuckets[dateKey]=snap.exists()?(snap.val()||{}):{};
+                        s.rebuildOnlineOrders();
+                    },function(){
+                        s.orderBuckets[dateKey]={};
+                        s.rebuildOnlineOrders();
+                    });
+                    s.orderBucketUnsubs.push(unsub);
+                });
+            },
             startAll:function(){
                 var s=this;
                 onValue(ref(db,"menu"),function(snap){
@@ -693,28 +746,7 @@
                         s.linePayServerUrl=v.linePayServerUrl||'';s.linePayConfirmUrl=v.linePayConfirmUrl||'';s.posTables=v.posTables||[];}
                 });
                 s.ordersLoading=true;
-                onValue(query(ref(db,"orders"),orderByChild("timestamp"),limitToLast(100)),function(snap){
-                    if(!snap.exists()){s.onlineOrders=[];s.ordersLoading=false;return;}
-                    var entries=Object.entries(snap.val());
-                    // ★ 流水號統一由 admin.html 自動補發（避免與 admin 重複）
-                    s.onlineOrders=entries
-                        .filter(function(e){return e[1]&&(e[1].status==="new"||e[1].status==="making"||e[1].status==="done");})
-                        .map(function(e){return Object.assign({id:e[0]},e[1]);})
-                        .sort(function(a,b){
-                            // 新訂單最上面，已完成最下面
-                            var w={new:1,making:2,done:3};
-                            if(w[a.status]!==w[b.status])return w[a.status]-w[b.status];
-                            // 同狀態內：最新的（流水號大或時間新）排最上面
-                            var aNo=a.orderNo||0, bNo=b.orderNo||0;
-                            if(aNo!==bNo)return bNo-aNo;
-                            return(b.timestamp||0)-(a.timestamp||0);
-                        });
-                    s.ordersLoading=false;
-                    if(s.editingOrder){
-                        var found=s.onlineOrders.find(function(o){return o.id===s.editingOrder.id;});
-                        if(found)s.editingOrder=found;
-                    }
-                });
+                s.resetOrderBucketListeners();
                 // ★ 監聽 linepay_transactions（限最近100筆）
                 onValue(query(ref(db,'linepay_transactions'),limitToLast(100)),function(snap){
                     if(!snap.exists()){s.lpConfirmed={};s.lpStatus={};return;}
@@ -785,7 +817,7 @@
                     }catch(_){ }
                 }
                 try{
-                    var psnap=await get(ref(db,'orders/'+order.id+'/paymentStatus'));
+                    var psnap=await get(ref(db,'orders/'+this.resolveOrderDateKey(order)+'/'+order.id+'/paymentStatus'));
                     if(psnap.exists()&&String(psnap.val()||'').toLowerCase()==='refunded'){
                         return{success:true,returnCode:'LATE_REFUNDED'};
                     }
@@ -798,7 +830,7 @@
 
                 var latestOrder=Object.assign({},order);
                 try{
-                    var fullSnap=await get(ref(db,'orders/'+order.id));
+                    var fullSnap=await get(ref(db,'orders/'+s.resolveOrderDateKey(order)+'/'+order.id));
                     if(fullSnap.exists())latestOrder=Object.assign({},latestOrder,fullSnap.val()||{}, {id:order.id});
                 }catch(_){ }
 
@@ -807,7 +839,7 @@
                 if(isLinePay&&linePayState==='pending'){
                     try{
                         var txnSnap=await get(ref(db,'linepay_transactions/'+order.id));
-                        var paySnap=await get(ref(db,'orders/'+order.id+'/paymentStatus'));
+                        var paySnap=await get(ref(db,'orders/'+s.resolveOrderDateKey(latestOrder)+'/'+order.id+'/paymentStatus'));
                         var txnData=txnSnap.exists()?(txnSnap.val()||{}):{};
                         var txnState=(typeof txnData==='object')?(txnData.status||''):txnData;
                         var txnConfirmedAt=(typeof txnData==='object')?(txnData.confirmedAt||0):0;
@@ -825,7 +857,8 @@
                     if(!confirm('確定要取消這筆訂單嗎？（將自動列印取消單至廚房）'))return false;
                 }
 
-                var taskRef=ref(db,'orders/'+order.id+'/print_task');
+                var orderBase='orders/'+s.resolveOrderDateKey(latestOrder)+'/'+order.id;
+                var taskRef=ref(db,orderBase+'/print_task');
                 await remove(taskRef);
 
                 var updates={status:'cancelled',wasCancelled:true};
@@ -845,16 +878,16 @@
                     updates.paymentStatus='pending';
                     updates.unpaidCancelledAt=Date.now();
                 }
-                await update(ref(db,'orders/'+order.id),updates);
+                await update(ref(db,orderBase),updates);
 
                 if(shouldRefund){
                     var refund=await s.requestLinePayRefund(latestOrder);
                     if(refund.success){
                         var tsOk=Date.now();
                         await update(ref(db),{
-                            ['orders/'+order.id+'/paymentStatus']:'refunded',
-                            ['orders/'+order.id+'/paymentMethod']:'linepay_refund',
-                            ['orders/'+order.id+'/refundedAt']:tsOk,
+                            [orderBase+'/paymentStatus']:'refunded',
+                            [orderBase+'/paymentMethod']:'linepay_refund',
+                            [orderBase+'/refundedAt']:tsOk,
                             ['linepay_transactions/'+order.id+'/status']:'refunded',
                             ['linepay_transactions/'+order.id+'/refundedAt']:tsOk
                         });
@@ -878,11 +911,15 @@
                 var s=this;
                 s.showLinePayLinkModal=false;
                 var orderId=s.pendingLinePayOrderId;
+                var orderDateKey=s.pendingLinePayOrderDateKey||'';
                 s.pendingLinePayUrl='';
                 s.pendingLinePayOrderId='';
+                s.pendingLinePayOrderDateKey='';
                 if(!orderId)return;
                 try{
-                    var osnap=await get(ref(db,'orders/'+orderId));
+                    var target=s.findOrderById(orderId)||{id:orderId,pickupDate:orderDateKey,timestamp:Date.now()};
+                    var base='orders/'+s.resolveOrderDateKey(target)+'/'+orderId;
+                    var osnap=await get(ref(db,base));
                     if(!osnap.exists())return;
                     var ov=osnap.val()||{};
                     var txnState=s.lpStatus[orderId]||'';
@@ -895,10 +932,10 @@
                         paymentStatus:'pending'
                     };
                     if(!ov.pendingPrintAt)orderUpd.pendingPrintAt=ts;
-                    await update(ref(db,'orders/'+orderId),orderUpd);
+                    await update(ref(db,base),orderUpd);
 
                     if(!ov.pendingPrintAt){
-                        var taskRef=ref(db,'orders/'+orderId+'/print_task');
+                        var taskRef=ref(db,base+'/print_task');
                         await remove(taskRef);
                         await set(taskRef,'kitchen_'+ts);
                         s.toast('⚠️ 付款仍在等待中，已列印未付款工單');
@@ -1007,13 +1044,9 @@
                         o.orderNo=result.snapshot.val();
                                                 var orderDateKey=(o.pickupDate||((function(){var dd=new Date(o.timestamp||Date.now());return dd.getFullYear()+"-"+("0"+(dd.getMonth()+1)).slice(-2)+"-"+("0"+dd.getDate()).slice(-2);})()));
                         o.orderDateKey=orderDateKey;
-                        var orderId=push(ref(db,"orders")).key;
-                        var flatOrderRef=ref(db,"orders/"+orderId);
+                        var orderId=push(ref(db,"orders/"+orderDateKey)).key;
                         var bucketOrderRef=ref(db,"orders/"+orderDateKey+"/"+orderId);
-                        return Promise.all([
-                            set(flatOrderRef,o),
-                            set(bucketOrderRef,o)
-                        ]).then(function(){return {key:orderId};});
+                        return set(bucketOrderRef,o).then(function(){return {key:orderId};});
                     })
                     .then(function(snap){
                         s.offlineOrderId=snap.key;
@@ -1051,6 +1084,7 @@
                 set(ref(db,"linepay_offline_requests/"+s.offlineOrderId),{
                     amount:s.offlineAmount,
                     items:s.offlineItems,
+                    orderDateKey:s.offlineOrderDateKey||s.todayStr,
                     barcode:barcode,
                     status:"pending",
                     createdAt:Date.now()
@@ -1067,8 +1101,9 @@
                                 s.toast("✅ LINE Pay 掃碼付款成功 $"+s.offlineAmount);
                                 s.offlineSubmitting=false;
                                 // ★ 付款成功後才列印工單
-                                update(ref(db,"orders/"+s.offlineOrderId),{status:"making"});
-                                var taskRef=ref(db,"orders/"+s.offlineOrderId+"/print_task");
+                                var ob='orders/'+(s.offlineOrderDateKey||s.todayStr)+'/'+s.offlineOrderId;
+                                update(ref(db,ob),{status:"making"});
+                                var taskRef=ref(db,ob+"/print_task");
                                 remove(taskRef).then(function(){return set(taskRef,"kitchen_"+Date.now());});
                                 setTimeout(function(){s.closeOfflineModal();},2000);
                             }else if(r.status==="error"){
@@ -1129,13 +1164,9 @@
                         o.orderNo=result.snapshot.val();
                                                 var orderDateKey=(o.pickupDate||((function(){var dd=new Date(o.timestamp||Date.now());return dd.getFullYear()+"-"+("0"+(dd.getMonth()+1)).slice(-2)+"-"+("0"+dd.getDate()).slice(-2);})()));
                         o.orderDateKey=orderDateKey;
-                        var orderId=push(ref(db,"orders")).key;
-                        var flatOrderRef=ref(db,"orders/"+orderId);
+                        var orderId=push(ref(db,"orders/"+orderDateKey)).key;
                         var bucketOrderRef=ref(db,"orders/"+orderDateKey+"/"+orderId);
-                        return Promise.all([
-                            set(flatOrderRef,o),
-                            set(bucketOrderRef,o)
-                        ]).then(function(){return {key:orderId};});
+                        return set(bucketOrderRef,o).then(function(){return {key:orderId};});
                     })
                     .then(function(snap){
                         var orderId=snap.key;s.lastOrderId=orderId;
@@ -1163,6 +1194,7 @@
                                             // ★ 儲存付款 URL，顯示彈窗讓店員點擊（避免瀏覽器封鎖 popup）
                                             s.pendingLinePayUrl=r.paymentUrl;
                                             s.pendingLinePayOrderId=orderId;
+                                            s.pendingLinePayOrderDateKey=o.orderDateKey||o.pickupDate||s.todayStr;
                                             // 儲存返回 URL，付款完成後 linepay-confirm.html 會讀取
                                             try{localStorage.setItem('linepay_return_url',window.location.href);}catch(e){}
                                             s.showLinePayLinkModal=true;
@@ -1174,6 +1206,7 @@
                                                     s.showLinePayLinkModal=false;
                                                     s.pendingLinePayUrl='';
                                                     s.pendingLinePayOrderId='';
+                                        s.pendingLinePayOrderDateKey='';
                                                     s.toast('✅ LINE Pay 付款成功，工單列印中');
                                                 }
                                             });
@@ -1196,7 +1229,7 @@
                             });
                         }else{
                             // ★ 店內付款：立即列印
-                            var taskRef=ref(db,"orders/"+orderId+"/print_task");
+                            var taskRef=ref(db,"orders/"+(o.orderDateKey||o.pickupDate||s.todayStr)+"/"+orderId+"/print_task");
                             remove(taskRef).then(function(){
                                 return set(taskRef,"kitchen_"+Date.now());
                             }).then(function(){
@@ -1239,7 +1272,6 @@
                 var dateKey=this.resolveOrderDateKey(o);
                 var arr=[];
                 if(dateKey)arr.push('orders/'+dateKey+'/'+id);
-                arr.push('orders/'+id);
                 return arr.filter(function(p,idx,self){return self.indexOf(p)===idx;});
             },
             buildOrderMirrorUpdates:function(id,fields,order){
@@ -1264,7 +1296,7 @@
                 try{
                     var id=s.editingOrder.id;
                     var targetOrder=s.editingOrder||s.onlineOrders.find(function(o){return o.id===id;})||{id:id,pickupDate:s.editPickupDate,timestamp:Date.now()};
-                    var taskRef=ref(db,'orders/'+id+'/print_task');
+                    var taskRef=ref(db,'orders/'+s.resolveOrderDateKey(targetOrder)+'/'+id+'/print_task');
                     var pm=s.editPayMethod||'store';
                     var realPm=(pm==='linepay_qr')?'linepay':pm;
                     var oldPm=s.editingOrder.paymentMethod||'store';
@@ -1375,6 +1407,7 @@
                                 handled=true;
                                 s.pendingLinePayUrl=r.paymentUrl;
                                 s.pendingLinePayOrderId=id;
+                                s.pendingLinePayOrderDateKey=s.resolveOrderDateKey(targetOrder);
                                 try{localStorage.setItem('linepay_return_url',window.location.href);}catch(e){}
                                 s.showLinePayLinkModal=true;
                                 s.exitOnline();
@@ -1384,6 +1417,7 @@
                                         s.showLinePayLinkModal=false;
                                         s.pendingLinePayUrl='';
                                         s.pendingLinePayOrderId='';
+                                        s.pendingLinePayOrderDateKey='';
                                         s.toast('✅ LINE Pay 付款成功，工單列印中');
                                     }
                                 });
@@ -1470,6 +1504,14 @@
 </script>
 </body>
 </html>
+
+
+
+
+
+
+
+
 
 
 
