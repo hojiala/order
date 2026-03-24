@@ -417,6 +417,36 @@
                 toggleMenu(orderId) {
                     this.activeMenu = this.activeMenu === orderId ? null : orderId;
                 },
+                resolveOrderDateKey(order) {
+                    const d = new Date((order && order.timestamp) || Date.now());
+                    return (order && (order.orderDateKey || order.pickupDate)) || `${d.getFullYear()}-${('0'+(d.getMonth()+1)).slice(-2)}-${('0'+d.getDate()).slice(-2)}`;
+                },
+                findOrderById(orderId) {
+                    return (this.orders || []).find(o => o && o.id === orderId) || null;
+                },
+                orderMirrorBases(orderId, orderObj) {
+                    const o = orderObj || this.findOrderById(orderId) || { id: orderId };
+                    const dateKey = this.resolveOrderDateKey(o);
+                    const out = [];
+                    if (dateKey) out.push(`orders/${dateKey}/${orderId}`);
+                    out.push(`orders/${orderId}`);
+                    return [...new Set(out)];
+                },
+                buildOrderMirrorUpdates(orderId, fields, orderObj) {
+                    const updates = {};
+                    const bases = this.orderMirrorBases(orderId, orderObj);
+                    bases.forEach(base => Object.keys(fields || {}).forEach(k => { updates[`${base}/${k}`] = fields[k]; }));
+                    return updates;
+                },
+                updateOrderMirror(orderId, fields, orderObj) {
+                    return update(ref(db), this.buildOrderMirrorUpdates(orderId, fields, orderObj));
+                },
+                clearPrintTaskMirror(orderId, orderObj) {
+                    return this.updateOrderMirror(orderId, { print_task: null }, orderObj);
+                },
+                setPrintTaskMirror(orderId, task, orderObj) {
+                    return this.updateOrderMirror(orderId, { print_task: task }, orderObj);
+                },
                 async autoAssignOrderNo(orderId) {
                     // 防止重複處理同一訂單
                     if (this.assigningNos[orderId]) return;
@@ -439,7 +469,7 @@
                             if (payStatus !== 'pending') {
                                 updateData.print_task = 'kitchen_' + Date.now();
                             }
-                            await update(ref(db, `orders/${orderId}`), updateData);
+                            await this.updateOrderMirror(orderId, updateData, this.findOrderById(orderId));
                             if (payStatus === 'pending') {
                                 console.log(`✅ 流水號 No.${result.snapshot.val()}（LINE Pay 待付款，不列印）→ ${orderId}`);
                             } else {
@@ -455,30 +485,23 @@
                     delete this.assigningNos[orderId];
                 },
                 updateStatus(orderId, newStatus) {
-                    const updates = {};
-                    updates[`orders/${orderId}/status`] = newStatus;
-                    update(ref(db), updates).catch(err => this.toast("❌ 更新狀態失敗"));
+                    this.updateOrderMirror(orderId, { status: newStatus }, this.findOrderById(orderId)).catch(err => this.toast("❌ 更新狀態失敗"));
                 },
                 async printOrder(order) {
-                    // ★ 修復問題 2 & 3：先清空 print_task，再寫入新值（含時間戳記）
-                    // 即使上次已是 'kitchen'，Firebase 也會看到「null → kitchen_xxx」的變化，必然觸發事件
-                    const taskRef = ref(db, `orders/${order.id}/print_task`);
                     try {
-                        await remove(taskRef);
                         const reprintTask = `kitchen_reprint_${Date.now()}`;
-                        await set(taskRef, reprintTask);
+                        await this.clearPrintTaskMirror(order.id, order);
+                        await this.setPrintTaskMirror(order.id, reprintTask, order);
                         console.log("廚房工單補印指令發送成功");
                     } catch (err) {
                         this.toast("❌ 補印工單失敗：" + err);
                     }
                 },
                 async printReceipt(order) {
-                    // ★ 同上，確保值必然改變
-                    const taskRef = ref(db, `orders/${order.id}/print_task`);
                     try {
-                        await remove(taskRef);
                         const receiptTask = `receipt_${Date.now()}`;
-                        await set(taskRef, receiptTask);
+                        await this.clearPrintTaskMirror(order.id, order);
+                        await this.setPrintTaskMirror(order.id, receiptTask, order);
                         console.log("客戶收據列印指令發送成功");
                     } catch (err) {
                         this.toast("❌ 印收據失敗：" + err);
@@ -699,7 +722,7 @@
                     this.editSaving = true;
                     try {
                         const id = this.editModal.id;
-                        const taskRef = ref(db, `orders/${id}/print_task`);
+                        const orderForMirror = this.editModal || this.findOrderById(id) || { id, pickupDate: this.editPickupDate, timestamp: Date.now() };
                         // 付款方式對應
                         var pm = this.editPayMethod;
                         var realPm = (pm==='linepay_qr') ? 'linepay' : pm;
@@ -736,7 +759,7 @@
                             paymentMethod: realPm,
                             paymentStatus: newPayStatus
                         };
-                        await update(ref(db, `orders/${id}`), upd);
+                        await this.updateOrderMirror(id, upd, orderForMirror);
                         if (isLinePay && newPayStatus === 'pending' && confirmBase) {
                             // ★ 重新發起 LINE Pay 付款請求
                             const { set: fbSet, ref: fbRef } = { set, ref };
@@ -751,8 +774,8 @@
                             });
                             this.toast('✅ 儲存完成，已重新發起 LINE Pay 付款請求');
                         } else {
-                            await remove(taskRef);
-                            await set(taskRef, `kitchen_${Date.now()}`);
+                            await this.clearPrintTaskMirror(id, orderForMirror);
+                            await this.setPrintTaskMirror(id, `kitchen_${Date.now()}`, orderForMirror);
                         }
                         this.editModal = null;
                     } catch (err) {
@@ -766,4 +789,11 @@
     </script>
 </body>
 </html>
+
+
+
+
+
+
+
 
