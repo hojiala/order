@@ -540,7 +540,7 @@
             showPasswordDialog:false, passwordInput:'', passwordError:'',
             devicePassword:'0000',
             // ★ 情境2 QR Code 付款
-            showQRModal:false, qrAmount:0, qrOrderId:'',
+            showQRModal:false, qrAmount:0, qrOrderId:'', qrOrderDateKey:'',
             qrPolling:false, qrCountdown:120, qrPaidMsg:'', qrErrorMsg:'',
             qrPollTimer:null, qrCountdownTimer:null, qrUnsubscribe:null
         }},
@@ -785,7 +785,8 @@
                 // ★ 先從 localStorage 載入本桌訂單記錄
                 s.loadLocalOrders();
                 // ★ 嘗試從 Firebase 讀取（可能因權限失敗）
-                onValue(query(ref(db,'orders'), orderByChild('tableDevice'), equalTo(s.deviceId), limitToLast(50)),function(snap){
+                var dayKey=(function(){var d=new Date();return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);})();
+                onValue(query(ref(db,'orders/'+dayKey), orderByChild('tableDevice'), equalTo(s.deviceId), limitToLast(50)),function(snap){
                     if(!snap.exists()){s.pendingCount=0;return}
                     var all=Object.entries(snap.val()).filter(function(e){return e[1]&&e[1].status}).map(function(e){return Object.assign({id:e[0]},e[1])});
                     s.allOrders=all;
@@ -842,7 +843,8 @@
                     var deniedCount=0;
                     targets.forEach(function(order){
                         if(!order.id)return;
-                        get(ref(db,'orders/'+order.id)).then(function(snap){
+                        var dk=(order.orderDateKey||order.pickupDate||(function(){var d=new Date(order.timestamp||Date.now());return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);})());
+                        get(ref(db,'orders/'+dk+'/'+order.id)).then(function(snap){
                             if(!snap.exists())return;
                             var d=snap.val();
                             var changed=false;
@@ -1052,7 +1054,8 @@
             reprintOrder:function(order){
                 var s=this;
                 if(!confirm('重新列印工單？'))return;
-                var taskRef=ref(db,'orders/'+order.id+'/print_task');
+                var dk=(order.orderDateKey||order.pickupDate||(function(){var d=new Date(order.timestamp||Date.now());return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);})());
+                var taskRef=ref(db,'orders/'+dk+'/'+order.id+'/print_task');
                 var rpTask='kitchen_reprint_'+Date.now();
                 remove(taskRef).then(function(){
                     return set(taskRef,rpTask);
@@ -1069,10 +1072,11 @@
                     ?'此訂單已完成 LINE Pay 付款。確定取消？（需手動至 LINE Pay 商家後台退款）'
                     :'確定要取消這筆訂單嗎？（將自動列印取消單至廚房）';
                 if(!confirm(msg))return;
-                var taskRef=ref(db,'orders/'+order.id+'/print_task');
+                var dk=(order.orderDateKey||order.pickupDate||(function(){var d=new Date(order.timestamp||Date.now());return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);})());
+                var taskRef=ref(db,'orders/'+dk+'/'+order.id+'/print_task');
                 var cnTask='cancel_'+Date.now();
                 remove(taskRef).then(function(){
-                    return update(ref(db,'orders/'+order.id),{status:'cancelled',wasCancelled:true});
+                    return update(ref(db,'orders/'+dk+'/'+order.id),{status:'cancelled',wasCancelled:true});
                 }).then(function(){
                     return set(taskRef,cnTask);
                 }).then(function(){
@@ -1090,9 +1094,10 @@
                 // 先送出訂單，再取得 QR Code URL
                 s.submitOrder('linepay_qr');
             },
-            openQRModal:function(orderId, amount, qrUrl){
+            openQRModal:function(orderId, amount, qrUrl, orderDateKey){
                 var s=this;
                 s.qrOrderId=orderId;
+                s.qrOrderDateKey=orderDateKey||'';
                 s.qrAmount=amount;
                 s.qrPaidMsg='';
                 s.qrErrorMsg='';
@@ -1156,6 +1161,7 @@
                     s.showSuccess=true;
                 }
                 s.qrOrderId='';
+                s.qrOrderDateKey='';
                 s.qrPaidMsg='';
                 s.qrErrorMsg='';
             },
@@ -1164,7 +1170,8 @@
                 s.stopQRPolling();
                 // 更新 Firebase 訂單付款狀態為取消
                 if(s.qrOrderId){
-                    update(ref(db,'orders/'+s.qrOrderId),{paymentStatus:'cancelled'}).catch(function(){});
+                    var dk=s.qrOrderDateKey||(function(){var d=new Date();return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);})();
+                    update(ref(db,'orders/'+dk+'/'+s.qrOrderId),{paymentStatus:'cancelled'}).catch(function(){});
                 }
                 s.showQRModal=false;
             },
@@ -1198,13 +1205,9 @@
                 // ★ 先送出訂單（雙寫：舊結構 + 日期分桶），再嘗試取流水號
                 var orderDateKey=orderData.pickupDate||todayStr;
                 orderData.orderDateKey=orderDateKey;
-                var orderId=push(ref(db,'orders')).key;
-                var flatOrderRef=ref(db,'orders/'+orderId);
+                var orderId=push(ref(db,'orders/'+orderDateKey)).key;
                 var bucketOrderRef=ref(db,'orders/'+orderDateKey+'/'+orderId);
-                Promise.all([
-                    set(flatOrderRef,orderData),
-                    set(bucketOrderRef,orderData)
-                ]).then(function(){
+                set(bucketOrderRef,orderData).then(function(){
                     s.lastOrderIdRef=orderId;
                     s.saveLocalOrder(orderId,orderData);
                     s.lastOrderNo=null;
@@ -1236,7 +1239,7 @@
                                         clearInterval(poll);
                                         if(payMethod==='linepay_qr'){
                                             s.isSubmitting=false;
-                                            s.openQRModal(orderId, orderData.total, r.qrCodeUrl||r.paymentUrl);
+                                            s.openQRModal(orderId, orderData.total, r.qrCodeUrl||r.paymentUrl, orderDateKey);
                                         }else{
                                             try{localStorage.setItem('linepay_return_url',window.location.href)}catch(e){}
                                             // ★ 清空購物車（付款後返回時不顯示舊購物車）
@@ -1347,4 +1350,8 @@
 </script>
 </body>
 </html>
+
+
+
+
 
