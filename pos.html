@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-TW">
 <head>
   <meta charset="UTF-8">
@@ -498,7 +498,7 @@
 
 <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
-    import { getDatabase, ref, onValue, update, push, set, get, remove, runTransaction, query, limitToLast } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
+    import { getDatabase, ref, onValue, update, push, set, get, remove, runTransaction, query, orderByChild, limitToLast } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, setPersistence, browserSessionPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
     const firebaseConfig = {
         apiKey:"AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -632,11 +632,12 @@
                     var archivedOrder=Object.assign({},o,{status:"archived"});
                     // 取得訂單的實際日期作為資料夾名稱
                     var d = new Date(o.timestamp || Date.now());
-                    var dateKey = d.getFullYear() + '-' + ('0'+(d.getMonth()+1)).slice(-2) + '-' + ('0'+d.getDate()).slice(-2);
+                    var dateKey = o.orderDateKey || o.pickupDate || (d.getFullYear() + '-' + ('0'+(d.getMonth()+1)).slice(-2) + '-' + ('0'+d.getDate()).slice(-2));
 
-                    // 寫入「按日期分類」的歷史節點中
+                    // 寫入「按日期分類」的歷史節點中，並同步刪除 active 節點
                     updates["orders_archive/" + dateKey + "/" + o.id] = archivedOrder;
                     updates["orders/"+o.id]=null;
+                    updates["orders/"+dateKey+"/"+o.id]=null;
                   });
                 if(!Object.keys(updates).length){s.toast("✅ 目前沒有待結單訂單");return;}
                 update(ref(db),updates).then(function(){
@@ -692,7 +693,7 @@
                         s.linePayServerUrl=v.linePayServerUrl||'';s.linePayConfirmUrl=v.linePayConfirmUrl||'';s.posTables=v.posTables||[];}
                 });
                 s.ordersLoading=true;
-                onValue(query(ref(db,"orders"),limitToLast(100)),function(snap){
+                onValue(query(ref(db,"orders"),orderByChild("timestamp"),limitToLast(100)),function(snap){
                     if(!snap.exists()){s.onlineOrders=[];s.ordersLoading=false;return;}
                     var entries=Object.entries(snap.val());
                     // ★ 流水號統一由 admin.html 自動補發（避免與 admin 重複）
@@ -1004,7 +1005,13 @@
                 runTransaction(ref(db,"settings/orderCounter"),function(cur){return(cur||0)+1;})
                     .then(function(result){
                         o.orderNo=result.snapshot.val();
-                        return push(ref(db,"orders"),o);
+                                                var orderDateKey=(o.pickupDate||((function(){var dd=new Date(o.timestamp||Date.now());return dd.getFullYear()+"-"+("0"+(dd.getMonth()+1)).slice(-2)+"-"+("0"+dd.getDate()).slice(-2);})()));
+                        o.orderDateKey=orderDateKey;
+                        var orderId=push(ref(db,"orders")).key;
+                        var createUpdates={};
+                        createUpdates["orders/"+orderId]=o;
+                        createUpdates["orders/"+orderDateKey+"/"+orderId]=o;
+                        return update(ref(db),createUpdates).then(function(){return {key:orderId};});
                     })
                     .then(function(snap){
                         s.offlineOrderId=snap.key;
@@ -1118,7 +1125,13 @@
                 runTransaction(ref(db,"settings/orderCounter"),function(cur){return(cur||0)+1;})
                     .then(function(result){
                         o.orderNo=result.snapshot.val();
-                        return push(ref(db,"orders"),o);
+                                                var orderDateKey=(o.pickupDate||((function(){var dd=new Date(o.timestamp||Date.now());return dd.getFullYear()+"-"+("0"+(dd.getMonth()+1)).slice(-2)+"-"+("0"+dd.getDate()).slice(-2);})()));
+                        o.orderDateKey=orderDateKey;
+                        var orderId=push(ref(db,"orders")).key;
+                        var createUpdates={};
+                        createUpdates["orders/"+orderId]=o;
+                        createUpdates["orders/"+orderDateKey+"/"+orderId]=o;
+                        return update(ref(db),createUpdates).then(function(){return {key:orderId};});
                     })
                     .then(function(snap){
                         var orderId=snap.key;s.lastOrderId=orderId;
