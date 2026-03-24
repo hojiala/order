@@ -1242,7 +1242,7 @@ window._doCountUp = function() {
 </script>
 <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
-    import { getDatabase, ref, set, get, push, update, remove, onValue, query, limitToLast } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
+    import { getDatabase, ref, set, get, push, update, remove, onValue, query, orderByChild, equalTo, limitToLast } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, setPersistence, browserSessionPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
 
     const firebaseConfig = {
@@ -2106,27 +2106,46 @@ window._doCountUp = function() {
                     return;
                 }
 
-                var fetchPromises = [get(ref(db, 'orders'))];
-                datesToFetch.forEach(function(dateKey) {
-                    fetchPromises.push(get(ref(db, 'orders_archive/' + dateKey)));
+                var fetchPromises = datesToFetch.map(function(dateKey) {
+                    return Promise.all([
+                        get(ref(db, 'orders/' + dateKey)),
+                        get(ref(db, 'orders_archive/' + dateKey)),
+                        get(query(ref(db, 'orders'), orderByChild('pickupDate'), equalTo(dateKey)))
+                    ]).then(function(parts) {
+                        return {
+                            dateKey: dateKey,
+                            activeBucket: parts[0].exists() ? parts[0].val() : {},
+                            archiveBucket: parts[1].exists() ? parts[1].val() : {},
+                            legacyFlat: parts[2].exists() ? parts[2].val() : {}
+                        };
+                    });
                 });
 
-                Promise.all(fetchPromises).then(function(snaps) {
-                    var activeOrders = snaps[0].exists() ? snaps[0].val() : {};
-                    var activeArray = Object.entries(activeOrders)
-                        .map(function(e) { return Object.assign({ id: e[0] }, e[1]); })
-                        .filter(function(o) { return o && o.status; });
+                Promise.all(fetchPromises).then(function(results) {
+                    var merged = {};
 
-                    var archiveArray = [];
-                    for (var i = 1; i < snaps.length; i++) {
-                        var a = snaps[i].exists() ? snaps[i].val() : {};
-                        var arr = Object.entries(a)
-                            .map(function(e) { return Object.assign({ id: e[0] }, e[1]); })
-                            .filter(function(o) { return o && o.status; });
-                        archiveArray = archiveArray.concat(arr);
-                    }
+                    // 1) 先放 active bucket
+                    results.forEach(function(r) {
+                        Object.entries(r.activeBucket || {}).forEach(function(e) {
+                            if (e[1] && e[1].status) merged[e[0]] = Object.assign({ id: e[0] }, e[1]);
+                        });
+                    });
 
-                    self.allOrdersCache = activeArray.concat(archiveArray);
+                    // 2) 再用 legacy flat 覆蓋（確保付款/取消狀態是最新）
+                    results.forEach(function(r) {
+                        Object.entries(r.legacyFlat || {}).forEach(function(e) {
+                            if (e[1] && e[1].status) merged[e[0]] = Object.assign({ id: e[0] }, e[1]);
+                        });
+                    });
+
+                    // 3) 最後用 archive 覆蓋（若已結單，以歸檔資料為準）
+                    results.forEach(function(r) {
+                        Object.entries(r.archiveBucket || {}).forEach(function(e) {
+                            if (e[1] && e[1].status) merged[e[0]] = Object.assign({ id: e[0] }, e[1]);
+                        });
+                    });
+
+                    self.allOrdersCache = Object.values(merged);
                     self.doFilter();
                 }).catch(function(e) {
                     console.error('讀取統計失敗:', e);
