@@ -634,7 +634,8 @@
                 deviceId: '',
                 myOrders: [],
                 lpConfirmed: {},
-                lpTxnState: {}
+                lpTxnState: {},
+                refreshErrorCount: 0
             };
         },
         computed: {
@@ -1157,12 +1158,27 @@
                     }
                 } catch(e) {}
             },
+            shouldTrackOrderForRefresh: function(order) {
+                if (!order || !order.id) return false;
+                var status = String(order.status || '').toLowerCase();
+                if (status === 'new' || status === 'making') return true;
+                if (status === 'cancelled' || status === 'archived' || status === 'done' || status === 'completed') return false;
+                var pm = String(order.paymentMethod || '').toLowerCase();
+                var ps = String(order.paymentStatus || '').toLowerCase();
+                var isLinePay = (pm === 'linepay' || pm === 'linepay_offline' || pm === 'linepay_refund');
+                return isLinePay && ps !== 'paid' && ps !== 'refunded' && ps !== 'cancelled';
+            },
             // ★ 嘗試從 Firebase 讀取訂單狀態更新（可能因權限失敗）
             tryRefreshOrderStatus: function() {
                 var self = this;
                 if (!self.myOrders.length) return;
+                var targets = self.myOrders.filter(function(order) {
+                    return self.shouldTrackOrderForRefresh(order);
+                });
+                if (!targets.length) return;
                 var changed = false;
-                self.myOrders.forEach(function(order) {
+                var deniedCount = 0;
+                targets.forEach(function(order) {
                     if (!order.id) return;
                     get(ref(db, 'orders/' + order.id)).then(function(snap) {
                         if (!snap.exists()) return;
@@ -1187,7 +1203,10 @@
                             delete self.lpConfirmed[order.id];
                             if (self.lpTxnState[order.id]) delete self.lpTxnState[order.id];
                         }
-                    }).catch(function() {});
+                    }).catch(function(err) {
+                        var msg = (err && err.message) ? String(err.message).toLowerCase() : '';
+                        if (msg.indexOf('permission') !== -1 || msg.indexOf('denied') !== -1) deniedCount += 1;
+                    });
                 });
                 setTimeout(function() {
                     if (changed) {
@@ -1199,7 +1218,17 @@
                             localStorage.setItem('my_orders', JSON.stringify(saved));
                         } catch(e) {}
                     }
-                }, 2000);
+                    if (targets.length && deniedCount === targets.length) {
+                        self.refreshErrorCount = (self.refreshErrorCount || 0) + 1;
+                        if (self.refreshErrorCount >= 3 && self.refreshTimer) {
+                            clearInterval(self.refreshTimer);
+                            self.refreshTimer = null;
+                            console.warn('order status polling stopped after repeated permission denied');
+                        }
+                    } else if (deniedCount === 0) {
+                        self.refreshErrorCount = 0;
+                    }
+                }, 2200);
             },
             startAutoRefresh: function() {
                 var self = this;
@@ -1207,8 +1236,9 @@
                 self.refreshTimer = setInterval(function() {
                     if (!self.myOrders.length) return;
                     if (!self.showStoreInfo || self.storeInfoTab !== 'orders') return;
+                    if (!self.myOrders.some(function(order) { return self.shouldTrackOrderForRefresh(order); })) return;
                     self.tryRefreshOrderStatus();
-                }, 8000);
+                }, 15000);
             },
             reorderItems: function(order) {
                 var self = this;
