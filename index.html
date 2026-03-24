@@ -1175,7 +1175,9 @@
                 var deniedCount = 0;
                 targets.forEach(function(order) {
                     if (!order.id) return;
-                    get(ref(db, 'orders/' + order.id)).then(function(snap) {
+                    var dk=(order.orderDateKey||order.pickupDate||(function(){var d=new Date(order.timestamp||Date.now());return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);})());
+                    var orderPath='orders/'+dk+'/'+order.id;
+                    get(ref(db, orderPath)).then(function(snap) {
                         if (!snap.exists()) return;
                         var data = snap.val();
                         if (data.status && data.status !== order.status) { order.status = data.status; changed = true; }
@@ -1264,8 +1266,10 @@
                     if (diff <= limitMin) { self.showAlertModal('無法取消', '距離取餐時間不足 ' + limitMin + ' 分鐘，已無法線上取消訂單。\n如需取消，請直接聯繫店家，造成不便敬請見諒！'); return; }
                 }
                 if (!confirm('確定要取消此訂單嗎？')) return;
-                update(ref(db, 'orders/' + order.id), { status:'cancelled', cancelledAt:Date.now(), cancelSource:'customer', print_task:null }).then(function() {
-                    set(ref(db, 'orders/' + order.id + '/print_task'), 'cancel_' + Date.now());
+                var dk=(order.orderDateKey||order.pickupDate||(function(){var d=new Date(order.timestamp||Date.now());return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);})());
+                var orderBase='orders/'+dk+'/'+order.id;
+                update(ref(db, orderBase), { status:'cancelled', cancelledAt:Date.now(), cancelSource:'customer', print_task:null }).then(function() {
+                    set(ref(db, orderBase + '/print_task'), 'cancel_' + Date.now());
                     order.status = 'cancelled';
                     try { var sv = JSON.parse(localStorage.getItem('my_orders')||'[]'); sv.forEach(function(s){if(s.id===order.id)s.status='cancelled';}); localStorage.setItem('my_orders',JSON.stringify(sv)); } catch(e){}
                     self.showAlertModal('已取消', '訂單已取消，廚房將收到取消通知。');
@@ -1348,13 +1352,9 @@
                 // ★ 先送出訂單（雙寫：舊結構 + 日期分桶），再嘗試取得流水號
                 var orderDateKey = orderData.pickupDate || (function(){ var d=new Date(orderData.timestamp || Date.now()); return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); })();
                 orderData.orderDateKey = orderDateKey;
-                var orderId = push(ref(db, 'orders')).key;
-                var flatOrderRef = ref(db, 'orders/' + orderId);
+                var orderId = push(ref(db, 'orders/' + orderDateKey)).key;
                 var bucketOrderRef = ref(db, 'orders/' + orderDateKey + '/' + orderId);
-                Promise.all([
-                    set(flatOrderRef, orderData),
-                    set(bucketOrderRef, orderData)
-                ]).then(function() {
+                set(bucketOrderRef, orderData).then(function() {
                     self.saveMyOrder(orderId, orderData);
 
                     // ★ LINE Pay 付款流程（Firebase 中介，解決 HTTPS→HTTP 問題）
@@ -1483,4 +1483,9 @@
 </script>
 </body>
 </html>
+
+
+
+
+
 
