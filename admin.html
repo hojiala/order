@@ -236,7 +236,7 @@
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
-        import { getDatabase, ref, onValue, update, set, get, remove, runTransaction, query, orderByChild, limitToLast } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
+        import { getDatabase, ref, onValue, onChildAdded, onChildChanged, onChildRemoved, update, set, get, remove, runTransaction, query, orderByChild, limitToLast } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
         import { getAuth, setPersistence, browserSessionPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
 
         // ★★★ 請貼入您相同的 Firebase 配置 ★★★
@@ -327,7 +327,7 @@
                     try {
                         const today = new Date(); today.setHours(0, 0, 0, 0);
                         const cutoff = today.getTime();
-                        // ★ 改為逐日期桶讀取（避免查詢 orders/ 根路徑被 rules 拒絕）
+                        // ★ 逐日期桶讀取（不查詢 orders/ 根路徑）
                         const updates = {};
                         let count = 0;
                         for (let i = 1; i <= 7; i++) {
@@ -411,8 +411,15 @@
                 },
                 buildWatchDateKeys() {
                     const out = [];
-                    for (let i = -1; i <= 14; i++) out.push(this.dateKeyOffset(i));
+                    // ★ 只監聽昨天～後天（4個桶），不再監聽16個桶
+                    // 預購單在下單時已寫入對應日期桶，打開admin時 get() 一次即可
+                    for (let i = -1; i <= 2; i++) out.push(this.dateKeyOffset(i));
                     return out;
+                },
+                _scheduleRebuild() {
+                    // ★ 防抖：初次載入時 onChildAdded 會連續觸發，合併為一次重建
+                    clearTimeout(this._rebuildTimer);
+                    this._rebuildTimer = setTimeout(() => this.rebuildOrdersFromBuckets(), 150);
                 },
                 rebuildOrdersFromBuckets() {
                     const map = {};
@@ -440,19 +447,29 @@
                     (this.orderBucketUnsubs || []).forEach((fn) => { try { fn && fn(); } catch(_) {} });
                     this.orderBucketUnsubs = [];
                     this.orderBuckets = {};
+                    const self = this;
                     this.buildWatchDateKeys().forEach((dateKey) => {
-                        const unsub = onValue(ref(db, 'orders/' + dateKey), (snapshot) => {
-                            this.orderBuckets[dateKey] = snapshot.exists() ? (snapshot.val() || {}) : {};
-                            this.rebuildOrdersFromBuckets();
+                        if (!self.orderBuckets[dateKey]) self.orderBuckets[dateKey] = {};
+                        const bucketRef = ref(db, 'orders/' + dateKey);
+                        // ★ 改用 child 事件：只下載變更的那一筆，不重傳整個桶
+                        const u1 = onChildAdded(bucketRef, (snap) => {
+                            self.orderBuckets[dateKey][snap.key] = snap.val();
+                            self._scheduleRebuild();
                         }, (err) => {
                             console.error('❌ 訂單監聽失敗 [' + dateKey + ']:', err && err.message ? err.message : err);
                             if (err && err.message && err.message.indexOf('PERMISSION_DENIED') !== -1) {
-                                this.toast('⚠️ 讀取訂單權限不足，請確認帳號 email 已驗證');
+                                self.toast('⚠️ 讀取訂單權限不足，請確認登入帳號');
                             }
-                            this.orderBuckets[dateKey] = {};
-                            this.rebuildOrdersFromBuckets();
                         });
-                        this.orderBucketUnsubs.push(unsub);
+                        const u2 = onChildChanged(bucketRef, (snap) => {
+                            self.orderBuckets[dateKey][snap.key] = snap.val();
+                            self._scheduleRebuild();
+                        });
+                        const u3 = onChildRemoved(bucketRef, (snap) => {
+                            delete self.orderBuckets[dateKey][snap.key];
+                            self._scheduleRebuild();
+                        });
+                        self.orderBucketUnsubs.push(u1, u2, u3);
                     });
                 },
                 orderBasePath(orderId, orderObj) {
@@ -486,8 +503,19 @@
                 clearPrintTaskMirror(orderId, orderObj) {
                     return this.updateOrderMirror(orderId, { print_task: null }, orderObj);
                 },
-                setPrintTaskMirror(orderId, task, orderObj) {
-                    return this.updateOrderMirror(orderId, { print_task: task }, orderObj);
+                async setPrintTaskMirror(orderId, task, orderObj) {
+                    await this.updateOrderMirror(orderId, { print_task: task }, orderObj);
+                    // ★ 同時寫入 print_queue 供 Node-RED 精準監聽（不再監聽整個 orders/）
+                    this.writeToPrintQueue(orderId, task, orderObj);
+                },
+                writeToPrintQueue(orderId, task, orderObj) {
+                    try {
+                        const order = orderObj || this.findOrderById(orderId) || {};
+                        const queueData = Object.assign({}, order);
+                        delete queueData.id;
+                        queueData.print_task = task;
+                        set(ref(db, 'print_queue/' + orderId), queueData).catch(e => console.warn('print_queue 寫入失敗:', e.message));
+                    } catch(e) { console.warn('print_queue error:', e); }
                 },
                 async autoAssignOrderNo(orderId) {
                     if (this.assigningNos[orderId]) return;
@@ -508,6 +536,8 @@
                             const updateData = { orderNo: result.snapshot.val() };
                             if (payStatus !== 'pending') updateData.print_task = 'kitchen_' + Date.now();
                             await this.updateOrderMirror(orderId, updateData, orderObj);
+                            // ★ 如果有 print_task，寫入 print_queue 供 Node-RED
+                            if (updateData.print_task) this.writeToPrintQueue(orderId, updateData.print_task, orderObj);
                             delete this.assigningNos[orderId];
                             return;
                         } catch (err) {
