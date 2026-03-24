@@ -237,7 +237,7 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
         import { getDatabase, ref, onValue, update, set, get, remove, runTransaction, query, limitToLast } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
-        import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
+        import { getAuth, setPersistence, browserSessionPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
 
         // ★★★ 請貼入您相同的 Firebase 配置 ★★★
         const firebaseConfig = {
@@ -253,6 +253,9 @@
         const app = initializeApp(firebaseConfig);
         const db = getDatabase(app);
         const auth = getAuth(app);
+        const authReady = setPersistence(auth, browserSessionPersistence).catch((e) => {
+            console.warn("auth persistence fallback:", e && e.message ? e.message : e);
+        });
         const { createApp } = Vue;
 
         createApp({
@@ -303,15 +306,17 @@
                 }
             },
             created() {
-                onAuthStateChanged(auth, (user) => {
-                    if (user) {
-                        this.isLoggedIn = true;
-                        this.autoArchiveOldOrders();
-                        this.listenToOrders();
-                    } else {
-                        this.isLoggedIn = false;
-                        this.orders = [];
-                    }
+                authReady.finally(() => {
+                    onAuthStateChanged(auth, (user) => {
+                        if (user) {
+                            this.isLoggedIn = true;
+                            this.autoArchiveOldOrders();
+                            this.listenToOrders();
+                        } else {
+                            this.isLoggedIn = false;
+                            this.orders = [];
+                        }
+                    });
                 });
             },
             methods: {
@@ -351,7 +356,7 @@
                     } catch(e) { console.warn('歸檔失敗:', e.message); }
                 },
                 async login() {
-                    try { await signInWithEmailAndPassword(auth, this.email, this.password); } 
+                    try { await authReady; await signInWithEmailAndPassword(auth, this.email, this.password); } 
                     catch (error) { this.toast("❌ 登入失敗，請檢查信箱與密碼"); }
                 },
                 async logout() {
