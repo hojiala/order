@@ -1,4 +1,4 @@
-﻿﻿﻿<!DOCTYPE html>
+﻿﻿<!DOCTYPE html>
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
@@ -530,7 +530,7 @@
             lastOrderNo:0, lastPayment:'', lastOrderIdRef:null,
                 lpConfirmed:{},
             // 訂單
-            myOrders:[], allOrders:[], pollTimer:null,
+            myOrders:[], allOrders:[], pollTimer:null, pollErrorCount:0,
             pendingCount:0, nowMinute:0,
             // 密碼
             showPasswordDialog:false, passwordInput:'', passwordError:'',
@@ -812,13 +812,31 @@
                     s.startOrderPolling();
                 });
             },
+            isActiveOrderForPolling:function(order){
+                if(!order||!order.id)return false;
+                var st=String(order.status||'').toLowerCase();
+                if(st==='new'||st==='making')return true;
+                if(st==='cancelled'||st==='archived'||st==='done'||st==='completed')return false;
+                var pm=String(order.paymentMethod||'').toLowerCase();
+                var ps=String(order.paymentStatus||'').toLowerCase();
+                var isLinePay=(pm==='linepay'||pm==='linepay_offline'||pm==='linepay_refund');
+                return isLinePay&&ps!=='paid'&&ps!=='refunded'&&ps!=='cancelled';
+            },
             // ★ 定時輪詢：當 onValue 失敗時，逐筆讀取訂單狀態
             startOrderPolling:function(){
                 var s=this;
                 if(s.pollTimer)return;
                 s.pollTimer=setInterval(function(){
                     if(!s.myOrders.length)return;
-                    s.myOrders.forEach(function(order){
+                    var targets=s.myOrders.filter(function(order){return s.isActiveOrderForPolling(order)});
+                    if(!targets.length){
+                        clearInterval(s.pollTimer);
+                        s.pollTimer=null;
+                        s.pollErrorCount=0;
+                        return;
+                    }
+                    var deniedCount=0;
+                    targets.forEach(function(order){
                         if(!order.id)return;
                         get(ref(db,'orders/'+order.id)).then(function(snap){
                             if(!snap.exists())return;
@@ -838,14 +856,28 @@
                                     localStorage.setItem(key,JSON.stringify(saved));
                                 }catch(e){}
                             }
-                            // 更新 lastOrderNo
                             if(s.lastOrderIdRef===order.id&&d.orderNo&&!s.lastOrderNo){
                                 s.lastOrderNo=d.orderNo;
                             }
-                        }).catch(function(){});
+                        }).catch(function(err){
+                            var msg=(err&&err.message)?String(err.message).toLowerCase():'';
+                            if(msg.indexOf('permission')!==-1||msg.indexOf('denied')!==-1)deniedCount+=1;
+                        });
                     });
-                    s.refreshLinePayConfirmed(s.myOrders);
-                },8000);
+                    s.refreshLinePayConfirmed(targets);
+                    setTimeout(function(){
+                        if(targets.length&&deniedCount===targets.length){
+                            s.pollErrorCount=(s.pollErrorCount||0)+1;
+                            if(s.pollErrorCount>=3&&s.pollTimer){
+                                clearInterval(s.pollTimer);
+                                s.pollTimer=null;
+                                console.warn('dinein polling stopped after repeated permission denied');
+                            }
+                        }else if(deniedCount===0){
+                            s.pollErrorCount=0;
+                        }
+                    },2200);
+                },15000);
             },
             loadLocalOrders:function(){
                 try{
