@@ -1,12 +1,14 @@
-﻿﻿<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
     <title>元氣早午餐 · 桌邊點餐</title>
-    <link rel="icon" type="image/png" sizes="192x192" href="./images/logo.png">
-    <link rel="apple-touch-icon" sizes="180x180" href="./images/logo.png">
-    <link rel="shortcut icon" href="./images/logo.png">
+    <link rel="icon" type="image/png" sizes="192x192" href="./images/logo.png?v=2">
+    <link rel="icon" type="image/png" sizes="32x32" href="./images/logo.png?v=2">
+    <link rel="icon" type="image/png" sizes="16x16" href="./images/logo.png?v=2">
+    <link rel="apple-touch-icon" sizes="180x180" href="./images/logo.png?v=2">
+    <link rel="shortcut icon" href="./images/logo.png?v=2">
     <link rel="manifest" href="./manifest-dinein.json">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-title" content="元氣桌邊點餐">
@@ -1220,6 +1222,10 @@
                 .then(function(result){
                     var assignedNo=result.snapshot.val();
                     orderData.orderNo=assignedNo;
+                    // 非 LINE Pay 訂單：同時寫入 print_task 觸發列印
+                    if(payMethod!=='linepay'&&payMethod!=='linepay_qr'){
+                        orderData.print_task='kitchen_'+Date.now();
+                    }
                     return set(bucketOrderRef,orderData).then(function(){return assignedNo;});
                 })
                 .catch(function(){
@@ -1227,6 +1233,13 @@
                     return set(bucketOrderRef,orderData).then(function(){return null;});
                 })
                 .then(function(assignedNo){
+                    // ★ 非 LINE Pay 且有 print_task：寫入 print_queue 觸發 Node-RED 列印
+                    if(assignedNo&&orderData.print_task){
+                        try{
+                            var queueData=Object.assign({},orderData);
+                            set(ref(db,'print_queue/'+orderId),queueData).catch(function(e){console.warn('print_queue寫入失敗:',e.message);});
+                        }catch(e){}
+                    }
                     s.lastOrderIdRef=orderId;
                     s.saveLocalOrder(orderId,orderData);
                     s.lastOrderNo=assignedNo||null;
