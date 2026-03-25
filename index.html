@@ -6,9 +6,11 @@
     
     <title>元氣早午餐善化中山店</title>
     
-    <link rel="icon" type="image/png" sizes="192x192" href="./images/logo.png">
-    <link rel="apple-touch-icon" sizes="180x180" href="./images/logo.png">
-    <link rel="shortcut icon" href="./images/logo.png">
+    <link rel="icon" type="image/png" sizes="192x192" href="./images/logo.png?v=2">
+    <link rel="icon" type="image/png" sizes="32x32" href="./images/logo.png?v=2">
+    <link rel="icon" type="image/png" sizes="16x16" href="./images/logo.png?v=2">
+    <link rel="apple-touch-icon" sizes="180x180" href="./images/logo.png?v=2">
+    <link rel="shortcut icon" href="./images/logo.png?v=2">
     <link rel="manifest" href="./manifest.json">
     <meta name="apple-mobile-web-app-capable" content="yes">
     
@@ -564,6 +566,7 @@
 <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getDatabase, ref, push, set, get, update, onValue, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
+    import { getAuth, signInAnonymously, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
 
     const firebaseConfig = {
         apiKey: "AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -577,6 +580,11 @@
 
     const app = initializeApp(firebaseConfig);
     const db = getDatabase(app);
+    // ★ 匿名登入：用於取得流水號權限（settings/orderCounter 需要 auth）
+    const auth = getAuth(app);
+    setPersistence(auth, browserLocalPersistence).then(function() {
+        if (!auth.currentUser) return signInAnonymously(auth);
+    }).catch(function(e) { console.warn('匿名登入失敗:', e.message); });
     const { createApp } = Vue;
 
     createApp({
@@ -1350,12 +1358,34 @@
                     timestamp: Date.now(),
                     orderDateKey: this.pickupDate
                 };
-                // ★ 先送出訂單（雙寫：舊結構 + 日期分桶），再嘗試取得流水號
+                // ★ 先取流水號，再送出訂單（確保訂單一建立就有 orderNo + print_task）
                 var orderDateKey = orderData.pickupDate || (function(){ var d=new Date(orderData.timestamp || Date.now()); return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); })();
                 orderData.orderDateKey = orderDateKey;
                 var orderId = push(ref(db, 'orders/' + orderDateKey)).key;
                 var bucketOrderRef = ref(db, 'orders/' + orderDateKey + '/' + orderId);
-                set(bucketOrderRef, orderData).then(function() {
+                // ★ 先取得流水號
+                runTransaction(ref(db, 'settings/orderCounter'), function(cur) { return (cur || 0) + 1; })
+                .then(function(result) {
+                    var assignedNo = result.snapshot.val();
+                    orderData.orderNo = assignedNo;
+                    // 非 LINE Pay 訂單：同時寫入 print_task 觸發列印
+                    if (payMethod !== 'linepay') {
+                        orderData.print_task = 'kitchen_' + Date.now();
+                    }
+                    return set(bucketOrderRef, orderData).then(function() { return assignedNo; });
+                })
+                .catch(function() {
+                    // 流水號取得失敗，仍送出訂單（後台補發）
+                    return set(bucketOrderRef, orderData).then(function() { return null; });
+                })
+                .then(function(assignedNo) {
+                    // ★ 非 LINE Pay 且有 print_task：寫入 print_queue 觸發 Node-RED 列印
+                    if (assignedNo && payMethod !== 'linepay' && orderData.print_task) {
+                        try {
+                            var queueData = Object.assign({}, orderData);
+                            set(ref(db, 'print_queue/' + orderId), queueData).catch(function(e) { console.warn('print_queue 寫入失敗:', e.message); });
+                        } catch(e) {}
+                    }
                     self.saveMyOrder(orderId, orderData);
 
                     // ★ LINE Pay 付款流程（Firebase 中介，解決 HTTPS→HTTP 問題）
