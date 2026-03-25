@@ -4,9 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
     <title>元氣早午餐 · 桌邊點餐</title>
-    <link rel="icon" type="image/png" href="./images/logo.png">
-    <link rel="apple-touch-icon" href="./images/logo.png">
+    <link rel="icon" type="image/png" sizes="192x192" href="./images/logo.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="./images/logo.png">
     <link rel="shortcut icon" href="./images/logo.png">
+    <link rel="manifest" href="./manifest-dinein.json">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-title" content="元氣桌邊點餐">
     <meta name="application-name" content="元氣桌邊點餐">
@@ -32,7 +33,9 @@
         @keyframes spin{to{transform:rotate(360deg)}}.spin{animation:spin .9s linear infinite}
         @keyframes fadeIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}.fade-in{animation:fadeIn .25s ease}
         @keyframes pulse2{0%,100%{opacity:1}50%{opacity:.5}}.pulse2{animation:pulse2 1.5s infinite}
+        body { margin: 0; padding: 0; }
         body > #app { margin-top: 0 !important; padding-top: 0 !important; }
+        #app { min-height: 100vh; }
     </style>
 </head>
 <body class="bg-gray-100">
@@ -1207,15 +1210,26 @@
                     orderNote:s.orderNote||'',
                     orderDateKey:todayStr
                 };
-                // ★ 先送出訂單（雙寫：舊結構 + 日期分桶），再嘗試取流水號
+                // ★ 先取流水號，再送出訂單（確保訂單一建立就有 orderNo）
                 var orderDateKey=orderData.pickupDate||todayStr;
                 orderData.orderDateKey=orderDateKey;
                 var orderId=push(ref(db,'orders/'+orderDateKey)).key;
                 var bucketOrderRef=ref(db,'orders/'+orderDateKey+'/'+orderId);
-                set(bucketOrderRef,orderData).then(function(){
+                // ★ 先用 runTransaction 取得流水號
+                runTransaction(ref(db,'settings/orderCounter'),function(cur){return(cur||0)+1;})
+                .then(function(result){
+                    var assignedNo=result.snapshot.val();
+                    orderData.orderNo=assignedNo;
+                    return set(bucketOrderRef,orderData).then(function(){return assignedNo;});
+                })
+                .catch(function(){
+                    // 取流水號失敗（權限等），仍送出訂單但不含 orderNo（後台補發）
+                    return set(bucketOrderRef,orderData).then(function(){return null;});
+                })
+                .then(function(assignedNo){
                     s.lastOrderIdRef=orderId;
                     s.saveLocalOrder(orderId,orderData);
-                    s.lastOrderNo=null;
+                    s.lastOrderNo=assignedNo||null;
                     s.lastPayment=payMethod;
 
                     // ★ LINE Pay 付款流程（情境1 手機跳轉 / 情境2 QR Code）
