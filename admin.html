@@ -4,9 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>出餐後台 - 元氣早午餐</title>
-    <link rel="icon" type="image/png" href="./images/logo.png">
-    <link rel="apple-touch-icon" href="./images/logo.png">
+    <link rel="icon" type="image/png" sizes="192x192" href="./images/logo.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="./images/logo.png">
     <link rel="shortcut icon" href="./images/logo.png">
+    <link rel="manifest" href="./manifest-admin.json">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-title" content="元氣出餐後台">
     <meta name="application-name" content="元氣出餐後台">
@@ -244,7 +245,7 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
         import { getDatabase, ref, onValue, onChildAdded, onChildChanged, onChildRemoved, update, set, get, remove, runTransaction, query, orderByChild, limitToLast } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
-        import { getAuth, setPersistence, browserSessionPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
+        import { getAuth, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
 
         // ★★★ 請貼入您相同的 Firebase 配置 ★★★
         const firebaseConfig = {
@@ -260,7 +261,7 @@
         const app = initializeApp(firebaseConfig);
         const db = getDatabase(app);
         const auth = getAuth(app);
-        const authReady = setPersistence(auth, browserSessionPersistence).catch((e) => {
+        const authReady = setPersistence(auth, browserLocalPersistence).catch((e) => {
             console.warn("auth persistence fallback:", e && e.message ? e.message : e);
         });
         const { createApp } = Vue;
@@ -269,7 +270,7 @@
             data() {
                 return {
                     isLoggedIn: false,
-                    email: '',
+                    email: localStorage.getItem('admin_remembered_email') || '',
                     password: '',
                     orders: [],
                     previousNewCount: 0,
@@ -370,8 +371,11 @@
                     } catch(e) { console.warn('歸檔失敗:', e.message); }
                 },
                 async login() {
-                    try { await authReady; await signInWithEmailAndPassword(auth, this.email, this.password); } 
-                    catch (error) { this.toast("❌ 登入失敗，請檢查信箱與密碼"); }
+                    try {
+                        await authReady;
+                        await signInWithEmailAndPassword(auth, this.email, this.password);
+                        try { localStorage.setItem('admin_remembered_email', this.email); } catch(e) {}
+                    } catch (error) { this.toast("❌ 登入失敗，請檢查信箱與密碼"); }
                 },
                 async logout() {
                     try { await signOut(auth); } catch (error) { console.error("登出失敗", error); }
@@ -445,10 +449,14 @@
                     parsedOrders.forEach((o) => {
                         if (o.status === 'new') currentNewCount++;
                         if (o.status !== 'archived' && o.status !== 'cancelled' && !o.orderNo) this.autoAssignOrderNo(o.id);
+                        // ★ 有流水號但無 print_task 的訂單（如 dinein 直接送出），補寫 print_task 觸發列印
+                        else if (o.orderNo && !o.print_task && o.status !== 'archived' && o.status !== 'cancelled' && o.paymentStatus !== 'pending') this.triggerPrintForOrder(o);
                     });
                     this.orders = parsedOrders;
                     if (currentNewCount > this.previousNewCount && this.previousNewCount !== 0) this.playAlert();
                     this.previousNewCount = currentNewCount;
+                    // ★ 離線補印：檢查有流水號但未列印的訂單，重新寫入 print_queue
+                    this.requeueUnprintedOrders(parsedOrders);
                 },
                 resetOrderBucketListeners() {
                     (this.orderBucketUnsubs || []).forEach((fn) => { try { fn && fn(); } catch(_) {} });
@@ -552,6 +560,55 @@
                         }
                     }
                     delete this.assigningNos[orderId];
+                },
+                // ★ 有 orderNo 但無 print_task 的訂單（dinein 等前端送出），補寫 print_task 觸發列印
+                async triggerPrintForOrder(order) {
+                    const key = 'triggering_' + order.id;
+                    if (this[key]) return;
+                    this[key] = true;
+                    try {
+                        const base = this.orderBasePath(order.id, order);
+                        const ptSnap = await get(ref(db, `${base}/print_task`));
+                        if (ptSnap.exists() && ptSnap.val()) { delete this[key]; return; }
+                        const task = 'kitchen_' + Date.now();
+                        await this.updateOrderMirror(order.id, { print_task: task }, order);
+                        this.writeToPrintQueue(order.id, task, order);
+                    } catch(e) { console.warn('triggerPrint failed:', order.id, e.message); }
+                    delete this[key];
+                },
+                // ★ 離線補印：Pi 重連後，將未列印的訂單重新寫入 print_queue
+                async requeueUnprintedOrders(orders) {
+                    if (this._requeueDone) return; // 每次頁面載入只執行一次
+                    this._requeueDone = true;
+                    const unprinted = orders.filter(o => {
+                        if (!o.orderNo) return false; // 尚未分配流水號
+                        if (o.status === 'archived' || o.status === 'cancelled') return false;
+                        if (o.paymentStatus === 'pending') return false; // LINE Pay 待付款
+                        // 檢查 print_queue 中是否已有此訂單
+                        return true;
+                    });
+                    if (!unprinted.length) return;
+                    let requeueCount = 0;
+                    for (const o of unprinted) {
+                        try {
+                            // 檢查 print_queue 中是否已存在
+                            const qSnap = await get(ref(db, 'print_queue/' + o.id));
+                            if (qSnap.exists()) continue; // 已在佇列中，不重複
+                            // 檢查 order 的 print_task 是否存在（已列印過就不補印）
+                            const base = this.orderBasePath(o.id, o);
+                            const ptSnap = await get(ref(db, `${base}/print_task`));
+                            if (ptSnap.exists() && ptSnap.val()) continue; // 有 print_task 代表已觸發過列印
+                            // 寫入補印任務
+                            const task = 'kitchen_requeue_' + Date.now();
+                            await this.updateOrderMirror(o.id, { print_task: task }, o);
+                            this.writeToPrintQueue(o.id, task, o);
+                            requeueCount++;
+                        } catch(e) { console.warn('補印檢查失敗:', o.id, e.message); }
+                    }
+                    if (requeueCount > 0) {
+                        this.toast('🖨️ 已補印 ' + requeueCount + ' 筆離線期間未列印訂單');
+                        console.log('★ 離線補印:', requeueCount, '筆');
+                    }
                 },
                 updateStatus(orderId, newStatus) {
                     this.updateOrderMirror(orderId, { status: newStatus }, this.findOrderById(orderId)).catch(err => this.toast("❌ 更新狀態失敗"));
