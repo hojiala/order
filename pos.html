@@ -448,24 +448,20 @@
 
 
 
-  <!-- ★ LINE Pay QR Code 付款彈窗（顧客掃碼付款） -->
-  <div v-if="showLinePayLinkModal" class="fixed inset-0 z-[1000] flex items-center justify-center" style="background:rgba(0,0,0,0.6)">
+  <!-- ★ LINE Pay 付款彈窗（精簡版：一鍵開啟） -->
+  <div v-if="showLinePayLinkModal" class="fixed inset-0 z-[1000] flex items-center justify-center" style="background:rgba(0,0,0,0.45)">
     <div class="bg-white rounded-2xl shadow-2xl overflow-hidden" style="max-width:20rem;width:calc(100% - 2rem)">
-      <div class="px-5 py-2.5 flex items-center gap-2" style="background:linear-gradient(135deg,#06C755,#00B900)">
-        <span class="text-xl">💚</span>
-        <span class="text-white font-black text-base">LINE Pay 付款</span>
-      </div>
-      <div class="px-5 py-4 text-center">
-        <p class="text-gray-600 text-sm mb-3">請顧客用手機掃描 QR Code</p>
-        <img v-if="pendingLinePayUrl"
-          :src="'https://api.qrserver.com/v1/create-qr-code/?size=200x200&data='+encodeURIComponent(pendingLinePayUrl)"
-          style="width:200px;height:200px;margin:0 auto;border:3px solid #06C755;border-radius:12px" alt="QR Code">
-        <p class="text-amber-500 text-xs mt-3 font-medium animate-pulse">⏳ 等待顧客付款中...</p>
-        <p class="text-gray-400 text-xs mt-1">付款完成後工單將自動列印</p>
+      <div class="p-5 text-center">
+        <a :href="pendingLinePayUrl" target="_blank" rel="noopener"
+          class="block w-full text-white font-black py-4 rounded-xl text-lg transition active:scale-95 no-underline"
+          style="background:linear-gradient(135deg,#06C755,#00B900);text-decoration:none">
+          💚 開啟 LINE Pay
+        </a>
+        <p class="text-amber-500 text-xs mt-3 font-medium animate-pulse">⏳ 等待付款中... 付款後自動關閉</p>
       </div>
       <div class="px-5 pb-4">
-        <button @click="closeLinePayModal" class="w-full bg-gray-100 hover:bg-gray-200 text-gray-500 font-bold py-2.5 rounded-xl text-sm transition">
-          關閉（付款仍在等待中）
+        <button @click="closeLinePayModal" class="w-full bg-gray-100 hover:bg-gray-200 text-gray-500 font-bold py-2 rounded-xl text-sm transition">
+          關閉
         </button>
       </div>
     </div>
@@ -1225,43 +1221,56 @@
                                 returnPage:'pos',
                                 status:'pending',createdAt:Date.now()
                             }).then(function(){
-                                // ★ 使用 onValue 即時監聽（取代 setInterval 輪詢，更快更可靠）
-                                var handled=false;
-                                var unsubReq=onValue(ref(db,"linepay_requests/"+orderId),function(reqSnap){
+                                // ★ 雙保險：onValue 即時監聽 + get() 備用輪詢
+                                var handled=false,fallbackPoll=null,reqTimer=null;
+                                var _onReady=function(r){
+                                    if(handled)return;handled=true;
+                                    try{unsubReq();}catch(e){}
+                                    clearInterval(fallbackPoll);clearTimeout(reqTimer);
+                                    s.isSubmitting=false;s.clearCart();
+                                    try{localStorage.setItem('linepay_return_url',window.location.href);}catch(e){}
+                                    s.pendingLinePayUrl=r.paymentUrl;
+                                    s.pendingLinePayOrderId=orderId;
+                                    s.pendingLinePayOrderDateKey=o.orderDateKey||o.pickupDate||s.todayStr;
+                                    s.showLinePayLinkModal=true;
+                                    var unsubPay=onValue(ref(db,"linepay_transactions/"+orderId+"/status"),function(ps){
+                                        if(ps.val()==='confirmed'){
+                                            unsubPay();
+                                            s.showLinePayLinkModal=false;
+                                            s.pendingLinePayUrl='';s.pendingLinePayOrderId='';s.pendingLinePayOrderDateKey='';
+                                            s.toast('✅ LINE Pay 付款成功，工單列印中');
+                                        }
+                                    });
+                                    setTimeout(function(){unsubPay();},600000);
+                                };
+                                var _onError=function(r){
+                                    if(handled)return;handled=true;
+                                    try{unsubReq();}catch(e){}
+                                    clearInterval(fallbackPoll);clearTimeout(reqTimer);
+                                    s.isSubmitting=false;
+                                    s.toast('⚠️ LINE Pay 失敗'+(r.returnCode?' ['+r.returnCode+']':'')+'：'+(r.error||'未知錯誤'));
+                                };
+                                var _check=function(reqSnap){
                                     if(handled||!reqSnap.exists())return;
                                     var r=reqSnap.val();
-                                    if(r.status==='ready'&&r.paymentUrl){
-                                        handled=true;unsubReq();clearTimeout(reqTimer);
+                                    if(r&&r.status==='ready'&&r.paymentUrl)_onReady(r);
+                                    else if(r&&r.status==='error')_onError(r);
+                                };
+                                // 路徑 A：onValue 即時監聽
+                                var unsubReq=onValue(ref(db,"linepay_requests/"+orderId),_check);
+                                // 路徑 B：每 2 秒 get() 備用輪詢（防止 Firebase SDK 快取問題）
+                                fallbackPoll=setInterval(function(){
+                                    if(handled){clearInterval(fallbackPoll);return;}
+                                    get(ref(db,"linepay_requests/"+orderId)).then(_check).catch(function(){});
+                                },2000);
+                                // 30 秒逾時
+                                reqTimer=setTimeout(function(){
+                                    if(!handled){
+                                        handled=true;try{unsubReq();}catch(e){}
+                                        clearInterval(fallbackPoll);
                                         s.isSubmitting=false;
-                                        s.clearCart();
-                                        try{localStorage.setItem('linepay_return_url',window.location.href);}catch(e){}
-                                        // ★ 顯示 QR Code 讓顧客掃碼
-                                        s.pendingLinePayUrl=r.paymentUrl;
-                                        s.pendingLinePayOrderId=orderId;
-                                        s.pendingLinePayOrderDateKey=o.orderDateKey||o.pickupDate||s.todayStr;
-                                        s.showLinePayLinkModal=true;
-                                        // ★ 監聽付款確認
-                                        var unsubPay=onValue(ref(db,"linepay_transactions/"+orderId+"/status"),function(ps){
-                                            if(ps.val()==='confirmed'){
-                                                unsubPay();
-                                                s.showLinePayLinkModal=false;
-                                                s.pendingLinePayUrl='';
-                                                s.pendingLinePayOrderId='';
-                                                s.pendingLinePayOrderDateKey='';
-                                                s.toast('✅ LINE Pay 付款成功，工單列印中');
-                                            }
-                                        });
-                                        setTimeout(function(){unsubPay();},600000);
-                                    }else if(r.status==='error'){
-                                        handled=true;unsubReq();clearTimeout(reqTimer);
-                                        s.isSubmitting=false;
-                                        var errCode=r.returnCode?(' ['+r.returnCode+']'):'';
-                                        s.toast('⚠️ LINE Pay 失敗'+errCode+'：'+(r.error||'未知錯誤'));
+                                        s.toast('⚠️ LINE Pay 逾時，請確認樹莓派服務正常');
                                     }
-                                });
-                                // 30 秒逾時保護
-                                var reqTimer=setTimeout(function(){
-                                    if(!handled){handled=true;unsubReq();s.isSubmitting=false;s.toast('⚠️ LINE Pay 逾時，請確認樹莓派服務正常');}
                                 },30000);
                             }).catch(function(e){
                                 s.isSubmitting=false;
@@ -1456,15 +1465,16 @@
                             createdAt:Date.now()
                         });
 
-                        // ★ 使用 onValue 即時監聽（取代輪詢）
+                        // ★ 雙保險：onValue + get() 備用輪詢
                         var handled2=false;
                         s.exitOnline();
                         await new Promise(function(resolve){
-                            var unsubReq2=onValue(ref(db,'linepay_requests/'+id),function(reqSnap){
+                            var _check2=function(reqSnap){
                                 if(handled2||!reqSnap.exists())return;
                                 var r=reqSnap.val()||{};
                                 if(r.status==='ready'&&r.paymentUrl){
-                                    handled2=true;unsubReq2();clearTimeout(reqTimer2);
+                                    handled2=true;try{unsubReq2();}catch(e){}
+                                    clearInterval(fbPoll2);clearTimeout(reqTimer2);
                                     s.pendingLinePayUrl=r.paymentUrl;
                                     s.pendingLinePayOrderId=id;
                                     s.pendingLinePayOrderDateKey=s.resolveOrderDateKey(targetOrder);
@@ -1474,23 +1484,26 @@
                                         if(ps.val()==='confirmed'){
                                             unsubPay();
                                             s.showLinePayLinkModal=false;
-                                            s.pendingLinePayUrl='';
-                                            s.pendingLinePayOrderId='';
-                                            s.pendingLinePayOrderDateKey='';
+                                            s.pendingLinePayUrl='';s.pendingLinePayOrderId='';s.pendingLinePayOrderDateKey='';
                                             s.toast('✅ LINE Pay 付款成功，工單列印中');
                                         }
                                     });
                                     setTimeout(function(){unsubPay();},600000);
                                     resolve();
                                 }else if(r.status==='error'){
-                                    handled2=true;unsubReq2();clearTimeout(reqTimer2);
-                                    var errCode=r.returnCode?(' ['+r.returnCode+']'):'';
-                                    s.toast('⚠️ LINE Pay 失敗'+errCode+'：'+(r.error||'未知錯誤'));
+                                    handled2=true;try{unsubReq2();}catch(e){}
+                                    clearInterval(fbPoll2);clearTimeout(reqTimer2);
+                                    s.toast('⚠️ LINE Pay 失敗'+(r.returnCode?' ['+r.returnCode+']':'')+'：'+(r.error||'未知錯誤'));
                                     resolve();
                                 }
-                            });
+                            };
+                            var unsubReq2=onValue(ref(db,'linepay_requests/'+id),_check2);
+                            var fbPoll2=setInterval(function(){
+                                if(handled2){clearInterval(fbPoll2);return;}
+                                get(ref(db,'linepay_requests/'+id)).then(_check2).catch(function(){});
+                            },2000);
                             var reqTimer2=setTimeout(function(){
-                                if(!handled2){handled2=true;unsubReq2();s.toast('⚠️ LINE Pay 逾時，請確認樹莓派服務正常');resolve();}
+                                if(!handled2){handled2=true;try{unsubReq2();}catch(e){}clearInterval(fbPoll2);s.toast('⚠️ LINE Pay 逾時，請確認樹莓派服務正常');resolve();}
                             },30000);
                         });
                         return;
