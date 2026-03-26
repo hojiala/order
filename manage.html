@@ -1253,7 +1253,7 @@ window._doCountUp = function() {
 </script>
 <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
-    import { getDatabase, ref, set, get, push, update, remove, onValue, query, orderByChild, equalTo, limitToLast } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
+    import { getDatabase, ref, set, get, push, update, remove, onValue, onChildAdded, onChildChanged, onChildRemoved, query, orderByChild, equalTo, limitToLast } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
 
     const firebaseConfig = {
@@ -1447,21 +1447,22 @@ window._doCountUp = function() {
                     self.loadStats();
                     self.loadTemplates();
                     self.loadStandardDrinks();
-                    // ★ 監聽 linepay_transactions 以確認付款狀態
-                    onValue(query(ref(db,'linepay_transactions'), limitToLast(200)),function(snap){
-                        if(!snap.exists()){self.lpConfirmed={};self.lpTxnState={};return;}
-                        var confirmed={};
-                        var txnState={};
-                        var data=snap.val();
-                        for(var oid in data){
-                            var st=(data[oid]&&data[oid].status)?String(data[oid].status).toLowerCase():'';
-                            if(!st) continue;
-                            txnState[oid]=st;
-                            if(st==='confirmed') confirmed[oid]=true;
-                        }
-                        self.lpConfirmed=confirmed;
-                        self.lpTxnState=txnState;
-                    });
+                    // ★ 監聽 linepay_transactions — 改用 child 事件，只下載變更的單筆
+                    (function(){
+                        var txnQ=query(ref(db,'linepay_transactions'), limitToLast(200));
+                        var _confirmed={},_txnState={},_timer=null;
+                        var _flush=function(){self.lpConfirmed=Object.assign({},_confirmed);self.lpTxnState=Object.assign({},_txnState);};
+                        var _update=function(snap){
+                            var oid=snap.key,st=(snap.val()&&snap.val().status)?String(snap.val().status).toLowerCase():'';
+                            if(!st)return;
+                            _txnState[oid]=st;
+                            if(st==='confirmed')_confirmed[oid]=true;else delete _confirmed[oid];
+                            clearTimeout(_timer);_timer=setTimeout(_flush,150);
+                        };
+                        onChildAdded(txnQ,_update);
+                        onChildChanged(txnQ,_update);
+                        onChildRemoved(txnQ,function(snap){delete _txnState[snap.key];delete _confirmed[snap.key];clearTimeout(_timer);_timer=setTimeout(_flush,150);});
+                    })();
                 } else {
                     self.isLoggedIn = false;
                 }
