@@ -315,7 +315,7 @@
         <div class="flex gap-1.5 items-center" style="min-width:0">
           <span class="text-xs text-gray-500 flex-shrink-0">&#128336;</span>
           <input v-model="posPickupDate" type="date" class="bg-gray-100 rounded-lg px-1.5 py-1.5 text-sm text-gray-700 focus:outline-none" style="flex:0 0 7rem">
-          <input v-model="posPickupTime" type="time" class="bg-gray-100 rounded-lg px-1.5 py-1.5 text-sm text-gray-700 focus:outline-none" style="flex:1 1 auto;min-width:6.5rem">
+          <input v-model="posPickupTime" type="time" class="bg-gray-100 rounded-lg px-1.5 py-1.5 text-sm text-gray-700 focus:outline-none" style="flex:1 1 auto;min-width:9rem">
           <button @click="posPickupDate=todayStr;posPickupTime=''" class="px-2 py-1 rounded-lg text-xs text-white font-bold flex-shrink-0 bg-orange-400 active:bg-orange-500">現場</button>
         </div>
       </div>
@@ -1212,70 +1212,83 @@
                         var orderId=snap.key;s.lastOrderId=orderId;
 
                         if(isLinePay){
-                            // ★ LINE Pay：先取付款連結，付款成功後才列印
+                            // ★ LINE Pay：先建立監聽，再寫入請求（避免競態條件）
                             s.toast('⏳ 正在建立 LINE Pay 連結...');
+                            var handled=false,fallbackPoll=null,reqTimer=null;
+                            var _onReady=function(r){
+                                if(handled)return;handled=true;
+                                try{unsubReq();}catch(e){}
+                                clearInterval(fallbackPoll);clearTimeout(reqTimer);
+                                s.isSubmitting=false;s.clearCart();
+                                try{localStorage.setItem('linepay_return_url',window.location.href);}catch(e){}
+                                s.pendingLinePayUrl=r.paymentUrl;
+                                s.pendingLinePayOrderId=orderId;
+                                s.pendingLinePayOrderDateKey=o.orderDateKey||o.pickupDate||s.todayStr;
+                                s.showLinePayLinkModal=true;
+                                // ★ 監聽付款確認（自動關閉彈窗）— onValue + get() 雙保險
+                                var payHandled=false;
+                                var _closePay=function(){
+                                    if(payHandled)return;payHandled=true;
+                                    try{unsubPay();}catch(e){}
+                                    clearInterval(payPoll);
+                                    s.showLinePayLinkModal=false;
+                                    s.pendingLinePayUrl='';s.pendingLinePayOrderId='';s.pendingLinePayOrderDateKey='';
+                                    s.toast('✅ LINE Pay 付款成功，工單列印中');
+                                };
+                                var unsubPay=onValue(ref(db,"linepay_transactions/"+orderId+"/status"),function(ps){
+                                    var st=ps.val();
+                                    if(st==='confirmed'||st==='CAPTURED')_closePay();
+                                });
+                                var payPoll=setInterval(function(){
+                                    if(payHandled||!s.showLinePayLinkModal){clearInterval(payPoll);return;}
+                                    get(ref(db,"linepay_transactions/"+orderId+"/status")).then(function(snap){
+                                        var st=snap.val();
+                                        if(st==='confirmed'||st==='CAPTURED')_closePay();
+                                    }).catch(function(){});
+                                },3000);
+                                setTimeout(function(){try{unsubPay();}catch(e){}clearInterval(payPoll);},600000);
+                            };
+                            var _onError=function(r){
+                                if(handled)return;handled=true;
+                                try{unsubReq();}catch(e){}
+                                clearInterval(fallbackPoll);clearTimeout(reqTimer);
+                                s.isSubmitting=false;
+                                s.toast('⚠️ LINE Pay 失敗'+(r.returnCode?' ['+r.returnCode+']':'')+'：'+(r.error||'未知錯誤'));
+                            };
+                            var _check=function(reqSnap){
+                                if(handled||!reqSnap.exists())return;
+                                var r=reqSnap.val();
+                                if(r&&r.status==='ready'&&r.paymentUrl)_onReady(r);
+                                else if(r&&r.status==='error')_onError(r);
+                            };
+                            // ★ 路徑 A：先建立 onValue 監聽（在 set 之前！避免競態）
+                            var unsubReq=onValue(ref(db,"linepay_requests/"+orderId),_check);
+                            // ★ 再寫入請求到 Firebase
                             set(ref(db,"linepay_requests/"+orderId),{
                                 amount:o.total,items:o.items,
                                 orderDateKey:o.orderDateKey||o.pickupDate||"",
                                 confirmBaseUrl:confirmBase,
                                 returnPage:'pos',
                                 status:'pending',createdAt:Date.now()
-                            }).then(function(){
-                                // ★ 雙保險：onValue 即時監聽 + get() 備用輪詢
-                                var handled=false,fallbackPoll=null,reqTimer=null;
-                                var _onReady=function(r){
-                                    if(handled)return;handled=true;
-                                    try{unsubReq();}catch(e){}
-                                    clearInterval(fallbackPoll);clearTimeout(reqTimer);
-                                    s.isSubmitting=false;s.clearCart();
-                                    try{localStorage.setItem('linepay_return_url',window.location.href);}catch(e){}
-                                    s.pendingLinePayUrl=r.paymentUrl;
-                                    s.pendingLinePayOrderId=orderId;
-                                    s.pendingLinePayOrderDateKey=o.orderDateKey||o.pickupDate||s.todayStr;
-                                    s.showLinePayLinkModal=true;
-                                    var unsubPay=onValue(ref(db,"linepay_transactions/"+orderId+"/status"),function(ps){
-                                        if(ps.val()==='confirmed'){
-                                            unsubPay();
-                                            s.showLinePayLinkModal=false;
-                                            s.pendingLinePayUrl='';s.pendingLinePayOrderId='';s.pendingLinePayOrderDateKey='';
-                                            s.toast('✅ LINE Pay 付款成功，工單列印中');
-                                        }
-                                    });
-                                    setTimeout(function(){unsubPay();},600000);
-                                };
-                                var _onError=function(r){
-                                    if(handled)return;handled=true;
-                                    try{unsubReq();}catch(e){}
-                                    clearInterval(fallbackPoll);clearTimeout(reqTimer);
-                                    s.isSubmitting=false;
-                                    s.toast('⚠️ LINE Pay 失敗'+(r.returnCode?' ['+r.returnCode+']':'')+'：'+(r.error||'未知錯誤'));
-                                };
-                                var _check=function(reqSnap){
-                                    if(handled||!reqSnap.exists())return;
-                                    var r=reqSnap.val();
-                                    if(r&&r.status==='ready'&&r.paymentUrl)_onReady(r);
-                                    else if(r&&r.status==='error')_onError(r);
-                                };
-                                // 路徑 A：onValue 即時監聽
-                                var unsubReq=onValue(ref(db,"linepay_requests/"+orderId),_check);
-                                // 路徑 B：每 2 秒 get() 備用輪詢（防止 Firebase SDK 快取問題）
-                                fallbackPoll=setInterval(function(){
-                                    if(handled){clearInterval(fallbackPoll);return;}
-                                    get(ref(db,"linepay_requests/"+orderId)).then(_check).catch(function(){});
-                                },2000);
-                                // 30 秒逾時
-                                reqTimer=setTimeout(function(){
-                                    if(!handled){
-                                        handled=true;try{unsubReq();}catch(e){}
-                                        clearInterval(fallbackPoll);
-                                        s.isSubmitting=false;
-                                        s.toast('⚠️ LINE Pay 逾時，請確認樹莓派服務正常');
-                                    }
-                                },30000);
                             }).catch(function(e){
+                                if(!handled){handled=true;try{unsubReq();}catch(ex){}clearInterval(fallbackPoll);clearTimeout(reqTimer);}
                                 s.isSubmitting=false;
                                 s.toast('⚠️ 寫入失敗：'+e.message);
                             });
+                            // 路徑 B：每 2 秒 get() 備用輪詢（防止 Firebase SDK 快取問題）
+                            fallbackPoll=setInterval(function(){
+                                if(handled){clearInterval(fallbackPoll);return;}
+                                get(ref(db,"linepay_requests/"+orderId)).then(_check).catch(function(){});
+                            },2000);
+                            // 30 秒逾時
+                            reqTimer=setTimeout(function(){
+                                if(!handled){
+                                    handled=true;try{unsubReq();}catch(e){}
+                                    clearInterval(fallbackPoll);
+                                    s.isSubmitting=false;
+                                    s.toast('⚠️ LINE Pay 逾時，請確認樹莓派服務正常');
+                                }
+                            },30000);
                         }else{
                             // ★ 店內付款：立即列印
                             var storePrintTask="kitchen_"+Date.now();
@@ -1455,57 +1468,71 @@
                         }
 
                         s.toast('⏳ 正在建立 LINE Pay 連結...');
-                        await set(ref(db,'linepay_requests/'+id),{
+                        // ★ 先建立監聽，再寫入請求（避免競態條件）
+                        var handled2=false;
+                        var orderDateKey2=s.resolveOrderDateKey(targetOrder);
+                        s.exitOnline();
+                        var _check2=function(reqSnap){
+                            if(handled2||!reqSnap.exists())return;
+                            var r=reqSnap.val()||{};
+                            if(r.status==='ready'&&r.paymentUrl){
+                                handled2=true;try{unsubReq2();}catch(e){}
+                                clearInterval(fbPoll2);clearTimeout(reqTimer2);
+                                s.pendingLinePayUrl=r.paymentUrl;
+                                s.pendingLinePayOrderId=id;
+                                s.pendingLinePayOrderDateKey=orderDateKey2;
+                                try{localStorage.setItem('linepay_return_url',window.location.href);}catch(e){}
+                                s.showLinePayLinkModal=true;
+                                // ★ 監聽付款確認（自動關閉彈窗）— 雙保險
+                                var payHandled2=false;
+                                var _closePay2=function(){
+                                    if(payHandled2)return;payHandled2=true;
+                                    try{unsubPay2();}catch(e){}
+                                    clearInterval(payPoll2);
+                                    s.showLinePayLinkModal=false;
+                                    s.pendingLinePayUrl='';s.pendingLinePayOrderId='';s.pendingLinePayOrderDateKey='';
+                                    s.toast('✅ LINE Pay 付款成功，工單列印中');
+                                };
+                                var unsubPay2=onValue(ref(db,'linepay_transactions/'+id+'/status'),function(ps){
+                                    var st=ps.val();
+                                    if(st==='confirmed'||st==='CAPTURED')_closePay2();
+                                });
+                                var payPoll2=setInterval(function(){
+                                    if(payHandled2||!s.showLinePayLinkModal){clearInterval(payPoll2);return;}
+                                    get(ref(db,'linepay_transactions/'+id+'/status')).then(function(snap){
+                                        var st=snap.val();
+                                        if(st==='confirmed'||st==='CAPTURED')_closePay2();
+                                    }).catch(function(){});
+                                },3000);
+                                setTimeout(function(){try{unsubPay2();}catch(e){}clearInterval(payPoll2);},600000);
+                            }else if(r.status==='error'){
+                                handled2=true;try{unsubReq2();}catch(e){}
+                                clearInterval(fbPoll2);clearTimeout(reqTimer2);
+                                s.toast('⚠️ LINE Pay 失敗'+(r.returnCode?' ['+r.returnCode+']':'')+'：'+(r.error||'未知錯誤'));
+                            }
+                        };
+                        // ★ 先建立 onValue 監聽
+                        var unsubReq2=onValue(ref(db,'linepay_requests/'+id),_check2);
+                        // ★ 再寫入請求
+                        set(ref(db,'linepay_requests/'+id),{
                             amount:upd.total||0,
                             items:upd.items||[],
-                            orderDateKey:s.resolveOrderDateKey(targetOrder),
+                            orderDateKey:orderDateKey2,
                             confirmBaseUrl:confirmBase,
                             returnPage:'pos',
                             status:'pending',
                             createdAt:Date.now()
+                        }).catch(function(e){
+                            if(!handled2){handled2=true;try{unsubReq2();}catch(ex){}clearInterval(fbPoll2);clearTimeout(reqTimer2);}
+                            s.toast('⚠️ 寫入失敗：'+e.message);
                         });
-
-                        // ★ 雙保險：onValue + get() 備用輪詢
-                        var handled2=false;
-                        s.exitOnline();
-                        await new Promise(function(resolve){
-                            var _check2=function(reqSnap){
-                                if(handled2||!reqSnap.exists())return;
-                                var r=reqSnap.val()||{};
-                                if(r.status==='ready'&&r.paymentUrl){
-                                    handled2=true;try{unsubReq2();}catch(e){}
-                                    clearInterval(fbPoll2);clearTimeout(reqTimer2);
-                                    s.pendingLinePayUrl=r.paymentUrl;
-                                    s.pendingLinePayOrderId=id;
-                                    s.pendingLinePayOrderDateKey=s.resolveOrderDateKey(targetOrder);
-                                    try{localStorage.setItem('linepay_return_url',window.location.href);}catch(e){}
-                                    s.showLinePayLinkModal=true;
-                                    var unsubPay=onValue(ref(db,'linepay_transactions/'+id+'/status'),function(ps){
-                                        if(ps.val()==='confirmed'){
-                                            unsubPay();
-                                            s.showLinePayLinkModal=false;
-                                            s.pendingLinePayUrl='';s.pendingLinePayOrderId='';s.pendingLinePayOrderDateKey='';
-                                            s.toast('✅ LINE Pay 付款成功，工單列印中');
-                                        }
-                                    });
-                                    setTimeout(function(){unsubPay();},600000);
-                                    resolve();
-                                }else if(r.status==='error'){
-                                    handled2=true;try{unsubReq2();}catch(e){}
-                                    clearInterval(fbPoll2);clearTimeout(reqTimer2);
-                                    s.toast('⚠️ LINE Pay 失敗'+(r.returnCode?' ['+r.returnCode+']':'')+'：'+(r.error||'未知錯誤'));
-                                    resolve();
-                                }
-                            };
-                            var unsubReq2=onValue(ref(db,'linepay_requests/'+id),_check2);
-                            var fbPoll2=setInterval(function(){
-                                if(handled2){clearInterval(fbPoll2);return;}
-                                get(ref(db,'linepay_requests/'+id)).then(_check2).catch(function(){});
-                            },2000);
-                            var reqTimer2=setTimeout(function(){
-                                if(!handled2){handled2=true;try{unsubReq2();}catch(e){}clearInterval(fbPoll2);s.toast('⚠️ LINE Pay 逾時，請確認樹莓派服務正常');resolve();}
-                            },30000);
-                        });
+                        var fbPoll2=setInterval(function(){
+                            if(handled2){clearInterval(fbPoll2);return;}
+                            get(ref(db,'linepay_requests/'+id)).then(_check2).catch(function(){});
+                        },2000);
+                        var reqTimer2=setTimeout(function(){
+                            if(!handled2){handled2=true;try{unsubReq2();}catch(e){}clearInterval(fbPoll2);s.toast('⚠️ LINE Pay 逾時，請確認樹莓派服務正常');}
+                        },30000);
                         return;
                     }
 
