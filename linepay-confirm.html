@@ -68,7 +68,7 @@ body{font-family:"Helvetica Neue",Arial,"PingFang TC","Microsoft JhengHei",sans-
 <!-- Firebase SDK -->
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/11.3.0/firebase-app.js";
-import { getDatabase, ref, set, get, update } from "https://www.gstatic.com/firebasejs/11.3.0/firebase-database.js";
+import { getDatabase, ref, set, get, update, onValue } from "https://www.gstatic.com/firebasejs/11.3.0/firebase-database.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -235,25 +235,44 @@ async function processPayment() {
       return;
     }
 
-    // 等待背景 Worker 處理（最多 20 秒）
+    // 等待背景 Worker 處理（onValue 即時監聽 + get() 備用輪詢，最多 45 秒）
     let confirmed = false;
-    for (let i = 0; i < 40; i++) {
-      await new Promise(r => setTimeout(r, 500));
-      try {
-        const statusSnap = await get(ref(db, `linepay_transactions/${orderId}/status`));
-        if (statusSnap.exists() && statusSnap.val() === 'confirmed') {
-          confirmed = true;
-          break;
+    await new Promise(resolve => {
+      let done = false;
+      const statusRef = ref(db, `linepay_transactions/${orderId}/status`);
+      const _finish = (isConfirmed) => {
+        if (done) return; done = true;
+        confirmed = isConfirmed;
+        try { unsub(); } catch(e) {}
+        clearInterval(poll); clearTimeout(timer);
+        resolve();
+      };
+      const _checkStatus = (st) => {
+        if (done) return;
+        if (st === 'confirmed') { _finish(true); }
+        else if (st === 'confirm_failed') {
+          _finish(false);
+          get(ref(db, `linepay_transactions/${orderId}/error`)).then(errSnap => {
+            document.getElementById('errorMsg').textContent =
+              errSnap.exists() ? errSnap.val() : '付款確認失敗';
+            showView('error');
+          });
         }
-        if (statusSnap.exists() && statusSnap.val() === 'confirm_failed') {
-          const errSnap = await get(ref(db, `linepay_transactions/${orderId}/error`));
-          document.getElementById('errorMsg').textContent =
-            errSnap.exists() ? errSnap.val() : '付款確認失敗';
-          showView('error');
-          return;
-        }
-      } catch(e) { /* 繼續等待 */ }
-    }
+      };
+      // 路徑 A：onValue 即時監聽
+      const unsub = onValue(statusRef, snap => {
+        if (snap.exists()) _checkStatus(snap.val());
+      });
+      // 路徑 B：每 2 秒 get() 備用（防快取）
+      const poll = setInterval(() => {
+        if (done) { clearInterval(poll); return; }
+        get(statusRef).then(snap => {
+          if (snap.exists()) _checkStatus(snap.val());
+        }).catch(() => {});
+      }, 2000);
+      // 45 秒逾時
+      const timer = setTimeout(() => { _finish(false); }, 45000);
+    });
 
     if (confirmed) {
       try {
