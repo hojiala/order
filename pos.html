@@ -314,8 +314,8 @@
         </div>
         <div class="flex gap-1.5 items-center" style="min-width:0">
           <span class="text-xs text-gray-500 flex-shrink-0">&#128336;</span>
-          <input v-model="posPickupDate" type="date" class="bg-gray-100 rounded-lg px-1.5 py-1.5 text-sm text-gray-700 focus:outline-none flex-shrink-1" style="width:7.5rem;min-width:0">
-          <input v-model="posPickupTime" type="time" class="bg-gray-100 rounded-lg px-1.5 py-1.5 text-sm text-gray-700 focus:outline-none flex-shrink-1" style="width:5.5rem;min-width:0">
+          <input v-model="posPickupDate" type="date" class="bg-gray-100 rounded-lg px-1.5 py-1.5 text-sm text-gray-700 focus:outline-none" style="flex:0 1 7rem;min-width:6rem">
+          <input v-model="posPickupTime" type="time" class="bg-gray-100 rounded-lg px-1.5 py-1.5 text-sm text-gray-700 focus:outline-none" style="flex:1 1 6.5rem;min-width:5.5rem">
           <button @click="posPickupDate=todayStr;posPickupTime=''" class="px-2 py-1 rounded-lg text-xs text-white font-bold flex-shrink-0 bg-orange-400 active:bg-orange-500">現場</button>
         </div>
       </div>
@@ -1193,6 +1193,12 @@
                     s.toast('⚠️ 請先在設定中填入 LINE Pay 確認頁網址');
                     return;
                 }
+                // ★ LINE Pay：立即開啟空白視窗（必須在 click 同步階段，瀏覽器才不會封鎖）
+                var linePayWin=null;
+                if(isLinePay){
+                    linePayWin=window.open('about:blank','_blank');
+                    if(linePayWin){try{linePayWin.document.write('<html><body style="display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;background:#f0fdf4;margin:0"><div style="text-align:center"><h2 style="color:#06C755">⏳ LINE Pay 載入中...</h2><p style="color:#888">請稍候，正在建立付款連結</p></div></body></html>');}catch(e){}}
+                }
                 // LINE Pay 訂單：status 先設 new，付款確認後 linepay_server 會改 making
                 var custDisplay=(s.posOrderType==='dinein'&&s.posTableLabel)?s.posTableLabel:(s.custName||"現場");
                 var o={customer:custDisplay,phone:s.custPhone||"",pickupDate:pickDate,pickupTime:pickTime,
@@ -1237,14 +1243,18 @@
                                             clearInterval(poll);
                                             s.isSubmitting=false;
                                             s.clearCart();
-                                            s.pendingLinePayUrl=r.paymentUrl;
-                                            s.pendingLinePayOrderId=orderId;
-                                            s.pendingLinePayOrderDateKey=o.orderDateKey||o.pickupDate||s.todayStr;
                                             try{localStorage.setItem('linepay_return_url',window.location.href);}catch(e){}
-                                            // ★ 直接開啟 LINE Pay 付款頁面，若被瀏覽器封鎖則顯示彈窗
-                                            var win=window.open(r.paymentUrl,'_blank');
-                                            if(!win||win.closed){s.showLinePayLinkModal=true;}
-                                            else{s.toast('💚 LINE Pay 已開啟，等待付款中...');}
+                                            // ★ 重導已開啟的空白視窗到 LINE Pay 付款頁面
+                                            if(linePayWin&&!linePayWin.closed){
+                                                linePayWin.location.href=r.paymentUrl;
+                                                s.toast('💚 LINE Pay 已開啟，等待付款中...');
+                                            }else{
+                                                // 視窗被關閉或被封鎖 → 備用彈窗
+                                                s.pendingLinePayUrl=r.paymentUrl;
+                                                s.pendingLinePayOrderId=orderId;
+                                                s.pendingLinePayOrderDateKey=o.orderDateKey||o.pickupDate||s.todayStr;
+                                                s.showLinePayLinkModal=true;
+                                            }
                                             // ★ 監聽付款狀態
                                             var unsubPay=onValue(ref(db,"linepay_transactions/"+orderId+"/status"),function(ps){
                                                 if(ps.val()==='confirmed'){
@@ -1260,17 +1270,20 @@
                                         }else if(r.status==='error'){
                                             clearInterval(poll);
                                             s.isSubmitting=false;
+                                            if(linePayWin&&!linePayWin.closed)linePayWin.close();
                                             var errCode = r.returnCode ? ' ['+r.returnCode+']' : '';
                                             s.toast('⚠️ LINE Pay 失敗'+errCode+'：'+(r.error||'未知錯誤'));
                                         }else if(tries>=30){
                                             clearInterval(poll);
                                             s.isSubmitting=false;
+                                            if(linePayWin&&!linePayWin.closed)linePayWin.close();
                                             s.toast('⚠️ LINE Pay 逾時，請確認樹莓派服務正常');
                                         }
                                     }).catch(function(){});
                                 },1000);
                             }).catch(function(e){
                                 s.isSubmitting=false;
+                                if(linePayWin&&!linePayWin.closed)linePayWin.close();
                                 s.toast('⚠️ 寫入失敗：'+e.message);
                             });
                         }else{
@@ -1291,6 +1304,7 @@
                     .catch(function(e){
                         alert("送出失敗："+e.message);
                         s.isSubmitting=false;
+                        if(linePayWin&&!linePayWin.closed)linePayWin.close();
                     });
             },
             viewOrder:function(order){
