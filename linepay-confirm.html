@@ -105,7 +105,7 @@ function getBackUrl() {
   const deviceId   = urlParams.get('deviceId');
   const base = window.location.pathname.replace(/\/[^/]*$/, '/');
 
-  if (returnPage === 'pos') return '__close__';
+  if (returnPage === 'pos') return base + 'pos.html';
   if (returnPage === 'admin') return base + 'admin.html';
 
   if (returnPage === 'dinein') {
@@ -235,44 +235,28 @@ async function processPayment() {
       return;
     }
 
-    // 等待背景 Worker 處理（onValue 即時監聽 + get() 備用輪詢，最多 45 秒）
+    // 等待背景 Worker 處理（fetch() 直接呼叫 REST API，繞過 SDK 快取，最多 45 秒）
+    const dbRestUrl = 'https://breakfast-ai-system-default-rtdb.asia-southeast1.firebasedatabase.app';
     let confirmed = false;
-    await new Promise(resolve => {
-      let done = false;
-      const statusRef = ref(db, `linepay_transactions/${orderId}/status`);
-      const _finish = (isConfirmed) => {
-        if (done) return; done = true;
-        confirmed = isConfirmed;
-        try { unsub(); } catch(e) {}
-        clearInterval(poll); clearTimeout(timer);
-        resolve();
-      };
-      const _checkStatus = (st) => {
-        if (done) return;
-        if (st === 'confirmed') { _finish(true); }
-        else if (st === 'confirm_failed') {
-          _finish(false);
-          get(ref(db, `linepay_transactions/${orderId}/error`)).then(errSnap => {
-            document.getElementById('errorMsg').textContent =
-              errSnap.exists() ? errSnap.val() : '付款確認失敗';
-            showView('error');
-          });
+    for (let i = 0; i < 30; i++) {
+      await new Promise(r => setTimeout(r, 1500));
+      try {
+        const res = await fetch(`${dbRestUrl}/linepay_transactions/${orderId}/status.json`);
+        const st = await res.json();
+        if (st === 'confirmed') { confirmed = true; break; }
+        if (st === 'confirm_failed') {
+          try {
+            const errRes = await fetch(`${dbRestUrl}/linepay_transactions/${orderId}/error.json`);
+            const errMsg = await errRes.json();
+            document.getElementById('errorMsg').textContent = errMsg || '付款確認失敗';
+          } catch(e) {
+            document.getElementById('errorMsg').textContent = '付款確認失敗';
+          }
+          showView('error');
+          return;
         }
-      };
-      // 路徑 A：onValue 即時監聽
-      const unsub = onValue(statusRef, snap => {
-        if (snap.exists()) _checkStatus(snap.val());
-      });
-      // 路徑 B：每 2 秒 get() 備用（防快取）
-      const poll = setInterval(() => {
-        if (done) { clearInterval(poll); return; }
-        get(statusRef).then(snap => {
-          if (snap.exists()) _checkStatus(snap.val());
-        }).catch(() => {});
-      }, 2000);
-      // 45 秒逾時
-      const timer = setTimeout(() => { _finish(false); }, 45000);
-    });
+      } catch(e) { /* 繼續等待 */ }
+    }
 
     if (confirmed) {
       try {
