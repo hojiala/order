@@ -399,20 +399,23 @@
                     };
                     _loadAdminSettings();
                     setInterval(_loadAdminSettings, 300000);
-                    // ★ 監聽 linepay_transactions 以確認付款狀態（不依賴 orders/paymentStatus）
+                    // ★ 監聽 linepay_transactions — 改用 child 事件，只下載變更的單筆
                     const self2 = this;
-                    onValue(query(ref(db, 'linepay_transactions'), limitToLast(100)), (snap) => {
-                        const data = snap.val() || {};
-                        const confirmed = {};
-                        const statusMap = {};
-                        for (const oid in data) {
-                            const txn = data[oid] || {};
-                            statusMap[oid] = txn.status || '';
-                            if (txn.status === 'confirmed') confirmed[oid] = true;
-                        }
-                        self2.lpConfirmed = confirmed;
-                        self2.lpStatus = statusMap;
-                    });
+                    (() => {
+                        const txnQ = query(ref(db, 'linepay_transactions'), limitToLast(100));
+                        const _confirmed = {}, _statusMap = {};
+                        let _timer = null;
+                        const _flush = () => { self2.lpConfirmed = Object.assign({}, _confirmed); self2.lpStatus = Object.assign({}, _statusMap); };
+                        const _update = (snap) => {
+                            const oid = snap.key, txn = snap.val() || {}, st = txn.status || '';
+                            _statusMap[oid] = st;
+                            if (st === 'confirmed') _confirmed[oid] = true; else delete _confirmed[oid];
+                            clearTimeout(_timer); _timer = setTimeout(_flush, 150);
+                        };
+                        onChildAdded(txnQ, _update);
+                        onChildChanged(txnQ, _update);
+                        onChildRemoved(txnQ, (snap) => { delete _statusMap[snap.key]; delete _confirmed[snap.key]; clearTimeout(_timer); _timer = setTimeout(_flush, 150); });
+                    })();
                 },
                 toggleMenu(orderId) {
                     this.activeMenu = this.activeMenu === orderId ? null : orderId;
