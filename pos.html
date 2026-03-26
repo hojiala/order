@@ -801,12 +801,17 @@
             },
             requestLinePayRefund:async function(order){
                 var reason='店家取消訂單';
-                var reqRef=ref(db,'linepay_refund_requests/'+order.id);
                 var dbRestUrl='https://breakfast-ai-system-default-rtdb.asia-southeast1.firebasedatabase.app';
                 try{
-                    await set(reqRef,{orderId:order.id,amount:Number(order.total||0),reason:reason,status:'pending',createdAt:Date.now(),source:'pos'});
-                    // ★ 用 fetch() 輪詢退款狀態（繞過 SDK 快取）
+                    // ★ 寫入+讀取全部用 fetch() REST API（繞過 SDK WebSocket）
                     var token=await auth.currentUser.getIdToken();
+                    var authQ='?auth='+encodeURIComponent(token);
+                    var wRes=await fetch(dbRestUrl+'/linepay_refund_requests/'+order.id+'.json'+authQ,{
+                        method:'PUT',
+                        headers:{'Content-Type':'application/json'},
+                        body:JSON.stringify({orderId:order.id,amount:Number(order.total||0),reason:reason,status:'pending',createdAt:Date.now(),source:'pos'})
+                    });
+                    if(!wRes.ok)throw new Error('HTTP '+wRes.status);
                     for(var i=0;i<40;i++){
                         await new Promise(function(r){setTimeout(r,750);});
                         try{
@@ -1217,44 +1222,51 @@
                         var orderId=snap.key;s.lastOrderId=orderId;
 
                         if(isLinePay){
-                            // ★ LINE Pay：用 fetch() 直接呼叫 Firebase REST API（完全繞過 SDK 快取）
+                            // ★ LINE Pay：讀+寫全部用 fetch() REST API（完全繞過 Firebase SDK WebSocket）
                             s.toast('⏳ 正在建立 LINE Pay 連結...');
                             var handled=false,directPoll=null,reqTimer=null;
                             var dbRestUrl='https://breakfast-ai-system-default-rtdb.asia-southeast1.firebasedatabase.app';
-                            var _pollFetch=function(){
-                                if(handled)return;
-                                auth.currentUser.getIdToken().then(function(token){
-                                    return fetch(dbRestUrl+'/linepay_requests/'+orderId+'.json?auth='+encodeURIComponent(token));
-                                }).then(function(r){return r.json();}).then(function(data){
-                                    if(handled||!data)return;
-                                    if(data.status==='ready'&&data.paymentUrl){
-                                        handled=true;clearInterval(directPoll);clearTimeout(reqTimer);
-                                        s.isSubmitting=false;s.clearCart();
-                                        try{localStorage.setItem('linepay_return_url',window.location.href);}catch(e){}
-                                        // ★ 跟 index.html 一樣，直接導向 LINE Pay 付款頁
-                                        window.location.href=data.paymentUrl;
-                                    }else if(data.status==='error'){
-                                        handled=true;clearInterval(directPoll);clearTimeout(reqTimer);
-                                        s.isSubmitting=false;
-                                        s.toast('⚠️ LINE Pay 失敗：'+(data.error||'未知錯誤'));
-                                    }
-                                }).catch(function(e){console.warn('LINE Pay poll:',e);});
-                            };
-                            // 寫入請求到 Firebase
-                            set(ref(db,"linepay_requests/"+orderId),{
-                                amount:o.total,items:o.items,
-                                orderDateKey:o.orderDateKey||o.pickupDate||"",
-                                confirmBaseUrl:confirmBase,
-                                returnPage:'pos',
-                                status:'pending',createdAt:Date.now()
+                            auth.currentUser.getIdToken().then(function(token){
+                                var authQ='?auth='+encodeURIComponent(token);
+                                // ★ Step 1: 用 fetch() PUT 寫入請求（不用 SDK set）
+                                return fetch(dbRestUrl+'/linepay_requests/'+orderId+'.json'+authQ,{
+                                    method:'PUT',
+                                    headers:{'Content-Type':'application/json'},
+                                    body:JSON.stringify({
+                                        amount:o.total,items:o.items,
+                                        orderDateKey:o.orderDateKey||o.pickupDate||"",
+                                        confirmBaseUrl:confirmBase,
+                                        returnPage:'pos',
+                                        status:'pending',createdAt:Date.now()
+                                    })
+                                }).then(function(wRes){
+                                    if(!wRes.ok)throw new Error('寫入失敗 HTTP '+wRes.status);
+                                    // ★ Step 2: 用 fetch() GET 輪詢後端結果
+                                    var _pollFetch=function(){
+                                        if(handled)return;
+                                        fetch(dbRestUrl+'/linepay_requests/'+orderId+'.json'+authQ)
+                                            .then(function(r){return r.json();}).then(function(data){
+                                                if(handled||!data)return;
+                                                if(data.status==='ready'&&data.paymentUrl){
+                                                    handled=true;clearInterval(directPoll);clearTimeout(reqTimer);
+                                                    s.isSubmitting=false;s.clearCart();
+                                                    try{localStorage.setItem('linepay_return_url',window.location.href);}catch(e){}
+                                                    window.location.href=data.paymentUrl;
+                                                }else if(data.status==='error'){
+                                                    handled=true;clearInterval(directPoll);clearTimeout(reqTimer);
+                                                    s.isSubmitting=false;
+                                                    s.toast('⚠️ LINE Pay 失敗：'+(data.error||'未知錯誤'));
+                                                }
+                                            }).catch(function(){});
+                                    };
+                                    setTimeout(_pollFetch,800);
+                                    directPoll=setInterval(_pollFetch,1500);
+                                });
                             }).catch(function(e){
                                 if(!handled){handled=true;clearInterval(directPoll);clearTimeout(reqTimer);}
                                 s.isSubmitting=false;
-                                s.toast('⚠️ 寫入失敗：'+e.message);
+                                s.toast('⚠️ LINE Pay 寫入失敗：'+e.message);
                             });
-                            // ★ 用 fetch() 輪詢（完全繞過 Firebase SDK 快取）
-                            setTimeout(_pollFetch,800);
-                            directPoll=setInterval(_pollFetch,1500);
                             // 30 秒逾時
                             reqTimer=setTimeout(function(){
                                 if(!handled){
@@ -1442,37 +1454,45 @@
                         }
 
                         s.toast('⏳ 正在建立 LINE Pay 連結...');
-                        // ★ 用 fetch() 直接呼叫 Firebase REST API（繞過 SDK 快取）
+                        // ★ 讀+寫全部用 fetch() REST API（繞過 SDK WebSocket）
                         var handled2=false,directPoll2=null,reqTimer2=null;
                         var orderDateKey2=s.resolveOrderDateKey(targetOrder);
                         var dbRestUrl2='https://breakfast-ai-system-default-rtdb.asia-southeast1.firebasedatabase.app';
                         s.exitOnline();
-                        var _pollFetch2=function(){
-                            if(handled2)return;
-                            auth.currentUser.getIdToken().then(function(token){
-                                return fetch(dbRestUrl2+'/linepay_requests/'+id+'.json?auth='+encodeURIComponent(token));
-                            }).then(function(r){return r.json();}).then(function(data){
-                                if(handled2||!data)return;
-                                if(data.status==='ready'&&data.paymentUrl){
-                                    handled2=true;clearInterval(directPoll2);clearTimeout(reqTimer2);
-                                    try{localStorage.setItem('linepay_return_url',window.location.href);}catch(e){}
-                                    window.location.href=data.paymentUrl;
-                                }else if(data.status==='error'){
-                                    handled2=true;clearInterval(directPoll2);clearTimeout(reqTimer2);
-                                    s.toast('⚠️ LINE Pay 失敗：'+(data.error||'未知錯誤'));
-                                }
-                            }).catch(function(){});
-                        };
-                        set(ref(db,'linepay_requests/'+id),{
-                            amount:upd.total||0,items:upd.items||[],
-                            orderDateKey:orderDateKey2,confirmBaseUrl:confirmBase,
-                            returnPage:'pos',status:'pending',createdAt:Date.now()
+                        auth.currentUser.getIdToken().then(function(token){
+                            var authQ2='?auth='+encodeURIComponent(token);
+                            return fetch(dbRestUrl2+'/linepay_requests/'+id+'.json'+authQ2,{
+                                method:'PUT',
+                                headers:{'Content-Type':'application/json'},
+                                body:JSON.stringify({
+                                    amount:upd.total||0,items:upd.items||[],
+                                    orderDateKey:orderDateKey2,confirmBaseUrl:confirmBase,
+                                    returnPage:'pos',status:'pending',createdAt:Date.now()
+                                })
+                            }).then(function(wRes){
+                                if(!wRes.ok)throw new Error('寫入失敗 HTTP '+wRes.status);
+                                var _pollFetch2=function(){
+                                    if(handled2)return;
+                                    fetch(dbRestUrl2+'/linepay_requests/'+id+'.json'+authQ2)
+                                        .then(function(r){return r.json();}).then(function(data){
+                                            if(handled2||!data)return;
+                                            if(data.status==='ready'&&data.paymentUrl){
+                                                handled2=true;clearInterval(directPoll2);clearTimeout(reqTimer2);
+                                                try{localStorage.setItem('linepay_return_url',window.location.href);}catch(e){}
+                                                window.location.href=data.paymentUrl;
+                                            }else if(data.status==='error'){
+                                                handled2=true;clearInterval(directPoll2);clearTimeout(reqTimer2);
+                                                s.toast('⚠️ LINE Pay 失敗：'+(data.error||'未知錯誤'));
+                                            }
+                                        }).catch(function(){});
+                                };
+                                setTimeout(_pollFetch2,800);
+                                directPoll2=setInterval(_pollFetch2,1500);
+                            });
                         }).catch(function(e){
                             if(!handled2){handled2=true;clearInterval(directPoll2);clearTimeout(reqTimer2);}
-                            s.toast('⚠️ 寫入失敗：'+e.message);
+                            s.toast('⚠️ LINE Pay 寫入失敗：'+e.message);
                         });
-                        setTimeout(_pollFetch2,800);
-                        directPoll2=setInterval(_pollFetch2,1500);
                         reqTimer2=setTimeout(function(){
                             if(!handled2){handled2=true;clearInterval(directPoll2);s.toast('⚠️ LINE Pay 逾時，請確認樹莓派服務正常');}
                         },30000);
