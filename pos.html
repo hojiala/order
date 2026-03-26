@@ -1187,6 +1187,15 @@
                     s.toast('⚠️ 請先在設定中填入 LINE Pay 確認頁網址');
                     return;
                 }
+                // ★ LINE Pay：在同步點擊上下文中預先開啟分頁（不會被瀏覽器阻擋）
+                var payWindow=null;
+                if(isLinePay){
+                    payWindow=window.open('about:blank','_blank');
+                    if(payWindow){
+                        payWindow.document.write('<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>LINE Pay</title></head><body style="display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;background:#f5f5f5;margin:0"><div style="text-align:center"><div style="width:48px;height:48px;border:4px solid #e5e5e5;border-top-color:#06C755;border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 20px"></div><h2 style="color:#333;font-size:18px">⏳ 正在建立 LINE Pay 連結...</h2><style>@keyframes spin{to{transform:rotate(360deg)}}</style></div></body></html>');
+                        payWindow.document.close();
+                    }
+                }
                 // LINE Pay 訂單：status 先設 new，付款確認後 linepay_server 會改 making
                 var custDisplay=(s.posOrderType==='dinein'&&s.posTableLabel)?s.posTableLabel:(s.custName||"現場");
                 var o={customer:custDisplay,phone:s.custPhone||"",pickupDate:pickDate,pickupTime:pickTime,
@@ -1221,11 +1230,23 @@
                                 clearInterval(fallbackPoll);clearTimeout(reqTimer);
                                 s.isSubmitting=false;s.clearCart();
                                 try{localStorage.setItem('linepay_return_url',window.location.href);}catch(e){}
-                                s.pendingLinePayUrl=r.paymentUrl;
-                                s.pendingLinePayOrderId=orderId;
-                                s.pendingLinePayOrderDateKey=o.orderDateKey||o.pickupDate||s.todayStr;
-                                s.showLinePayLinkModal=true;
-                                // ★ 監聽付款確認（自動關閉彈窗）— onValue + get() 雙保險
+                                // ★ 直接導向已開啟的分頁（跟 index.html 一樣，不需額外彈窗）
+                                if(payWindow&&!payWindow.closed){
+                                    try{payWindow.location.href=r.paymentUrl;}catch(e){
+                                        // fallback：如果導向失敗，用 modal
+                                        s.pendingLinePayUrl=r.paymentUrl;
+                                        s.pendingLinePayOrderId=orderId;
+                                        s.pendingLinePayOrderDateKey=o.orderDateKey||o.pickupDate||s.todayStr;
+                                        s.showLinePayLinkModal=true;
+                                    }
+                                }else{
+                                    // 分頁被擋或被關了，fallback 到 modal
+                                    s.pendingLinePayUrl=r.paymentUrl;
+                                    s.pendingLinePayOrderId=orderId;
+                                    s.pendingLinePayOrderDateKey=o.orderDateKey||o.pickupDate||s.todayStr;
+                                    s.showLinePayLinkModal=true;
+                                }
+                                // ★ 監聽付款確認（POS 背景偵測，付款完成自動通知）
                                 var payHandled=false;
                                 var _closePay=function(){
                                     if(payHandled)return;payHandled=true;
@@ -1240,7 +1261,7 @@
                                     if(st==='confirmed'||st==='CAPTURED')_closePay();
                                 });
                                 var payPoll=setInterval(function(){
-                                    if(payHandled||!s.showLinePayLinkModal){clearInterval(payPoll);return;}
+                                    if(payHandled){clearInterval(payPoll);return;}
                                     get(ref(db,"linepay_transactions/"+orderId+"/status")).then(function(snap){
                                         var st=snap.val();
                                         if(st==='confirmed'||st==='CAPTURED')_closePay();
@@ -1253,6 +1274,8 @@
                                 try{unsubReq();}catch(e){}
                                 clearInterval(fallbackPoll);clearTimeout(reqTimer);
                                 s.isSubmitting=false;
+                                // ★ 失敗時關閉預開的分頁
+                                if(payWindow&&!payWindow.closed)try{payWindow.close();}catch(e){}
                                 s.toast('⚠️ LINE Pay 失敗'+(r.returnCode?' ['+r.returnCode+']':'')+'：'+(r.error||'未知錯誤'));
                             };
                             var _check=function(reqSnap){
@@ -1273,6 +1296,7 @@
                             }).catch(function(e){
                                 if(!handled){handled=true;try{unsubReq();}catch(ex){}clearInterval(fallbackPoll);clearTimeout(reqTimer);}
                                 s.isSubmitting=false;
+                                if(payWindow&&!payWindow.closed)try{payWindow.close();}catch(ex){}
                                 s.toast('⚠️ 寫入失敗：'+e.message);
                             });
                             // 路徑 B：每 2 秒 get() 備用輪詢（防止 Firebase SDK 快取問題）
@@ -1286,6 +1310,7 @@
                                     handled=true;try{unsubReq();}catch(e){}
                                     clearInterval(fallbackPoll);
                                     s.isSubmitting=false;
+                                    if(payWindow&&!payWindow.closed)try{payWindow.close();}catch(e){}
                                     s.toast('⚠️ LINE Pay 逾時，請確認樹莓派服務正常');
                                 }
                             },30000);
