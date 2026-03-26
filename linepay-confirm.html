@@ -156,20 +156,22 @@ async function processPayment() {
   // ── 取消 ──
   if (action === 'cancel') {
     try {
-      // ★ 先從 linepay_transactions 取得 orderDateKey
+      const _cancelDbUrl = 'https://breakfast-ai-system-default-rtdb.asia-southeast1.firebasedatabase.app';
+      // ★ 用 fetch() 取得 orderDateKey
       let cancelDateKey = '';
       try {
-        const txnSnap = await get(ref(db, `linepay_transactions/${orderId}`));
-        if (txnSnap.exists()) cancelDateKey = txnSnap.val().orderDateKey || '';
+        const txnRes = await fetch(`${_cancelDbUrl}/linepay_transactions/${orderId}.json`);
+        const txnData = await txnRes.json();
+        if (txnData) cancelDateKey = txnData.orderDateKey || '';
       } catch(e) {}
       if (cancelDateKey) {
-        await update(ref(db, `orders/${cancelDateKey}/${orderId}`), {
-          paymentStatus: 'pending'
+        await fetch(`${_cancelDbUrl}/orders/${cancelDateKey}/${orderId}/paymentStatus.json`, {
+          method: 'PUT', headers: {'Content-Type':'application/json'}, body: '"pending"'
         });
       }
-      await update(ref(db, `linepay_transactions/${orderId}`), {
-        status: 'cancelled',
-        cancelledAt: Date.now()
+      await fetch(`${_cancelDbUrl}/linepay_transactions/${orderId}.json`, {
+        method: 'PATCH', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ status: 'cancelled', cancelledAt: Date.now() })
       });
     } catch (e) {
       console.error('更新取消狀態失敗:', e);
@@ -188,12 +190,13 @@ async function processPayment() {
     let amount = 0;
     let orderDateKey = '';
 
-    // 從 Firebase 取得交易資訊（最多重試 3 次）
+    // ★ 用 fetch() GET 取得交易資訊（繞過 SDK WebSocket）
+    const _dbUrl = 'https://breakfast-ai-system-default-rtdb.asia-southeast1.firebasedatabase.app';
     for (let retry = 0; retry < 3; retry++) {
       try {
-        const txnSnap = await get(ref(db, `linepay_transactions/${orderId}`));
-        if (txnSnap.exists()) {
-          const txnData = txnSnap.val();
+        const txnRes = await fetch(`${_dbUrl}/linepay_transactions/${orderId}.json`);
+        const txnData = await txnRes.json();
+        if (txnData) {
           txnId = txnId || txnData.transactionId || '';
           amount = txnData.amount || 0;
           orderDateKey = txnData.orderDateKey || '';
@@ -211,16 +214,22 @@ async function processPayment() {
       return;
     }
 
-    // 寫入確認請求 → 背景 Worker 會自動處理（最多重試 3 次）
+    // ★ 用 fetch() PUT 寫入確認請求（繞過 SDK WebSocket，確保寫入即時到達 server）
+    const dbRestUrl = 'https://breakfast-ai-system-default-rtdb.asia-southeast1.firebasedatabase.app';
     let writeOk = false;
     for (let retry = 0; retry < 3; retry++) {
       try {
-        await set(ref(db, `linepay_confirms/${orderId}`), {
-          transactionId: String(txnId),
-          amount: Number(amount),
-          orderId: orderId,
-          timestamp: Date.now()
+        const wRes = await fetch(`${dbRestUrl}/linepay_confirms/${orderId}.json`, {
+          method: 'PUT',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            transactionId: String(txnId),
+            amount: Number(amount),
+            orderId: orderId,
+            timestamp: Date.now()
+          })
         });
+        if (!wRes.ok) throw new Error('HTTP ' + wRes.status);
         writeOk = true;
         break;
       } catch(e) {
@@ -236,7 +245,6 @@ async function processPayment() {
     }
 
     // 等待背景 Worker 處理（fetch() 直接呼叫 REST API，繞過 SDK 快取，最多 45 秒）
-    const dbRestUrl = 'https://breakfast-ai-system-default-rtdb.asia-southeast1.firebasedatabase.app';
     let confirmed = false;
     for (let i = 0; i < 30; i++) {
       await new Promise(r => setTimeout(r, 1500));
@@ -260,11 +268,11 @@ async function processPayment() {
 
     if (confirmed) {
       try {
-        // ★ 使用日期分桶路徑讀取訂單
+        // ★ 用 fetch() 讀取訂單資料
         const orderPath = orderDateKey ? `orders/${orderDateKey}/${orderId}` : `orders/${orderId}`;
-        const orderSnap = await get(ref(db, orderPath));
-        if (orderSnap.exists()) {
-          const orderData = orderSnap.val();
+        const orderRes = await fetch(`${_dbUrl}/${orderPath}.json`);
+        const orderData = await orderRes.json();
+        if (orderData) {
           const dayNames = ['星期日','星期一','星期二','星期三','星期四','星期五','星期六'];
           if (orderData.pickupDate || orderData.pickupTime) {
             let pickupStr = '';
