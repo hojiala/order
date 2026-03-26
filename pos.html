@@ -777,20 +777,21 @@
                 });
                 s.ordersLoading=true;
                 s.resetOrderBucketListeners();
-                // ★ 監聽 linepay_transactions（限最近100筆）
-                onValue(query(ref(db,'linepay_transactions'),limitToLast(100)),function(snap){
-                    if(!snap.exists()){s.lpConfirmed={};s.lpStatus={};return;}
-                    var confirmed={};
-                    var statusMap={};
-                    var data=snap.val();
-                    for(var oid in data){
-                        var txn=data[oid]||{};
-                        statusMap[oid]=txn.status||'';
-                        if(txn.status==='confirmed') confirmed[oid]=true;
-                    }
-                    s.lpConfirmed=confirmed;
-                    s.lpStatus=statusMap;
-                });
+                // ★ 監聽 linepay_transactions（限最近100筆）— 改用 child 事件，只下載變更的單筆
+                (function(){
+                    var txnQ=query(ref(db,'linepay_transactions'),limitToLast(100));
+                    var _confirmed={},_statusMap={},_timer=null;
+                    var _flush=function(){s.lpConfirmed=Object.assign({},_confirmed);s.lpStatus=Object.assign({},_statusMap);};
+                    var _update=function(snap){
+                        var oid=snap.key,txn=snap.val()||{},st=txn.status||'';
+                        _statusMap[oid]=st;
+                        if(st==='confirmed')_confirmed[oid]=true;else delete _confirmed[oid];
+                        clearTimeout(_timer);_timer=setTimeout(_flush,150);
+                    };
+                    onChildAdded(txnQ,_update);
+                    onChildChanged(txnQ,_update);
+                    onChildRemoved(txnQ,function(snap){delete _statusMap[snap.key];delete _confirmed[snap.key];clearTimeout(_timer);_timer=setTimeout(_flush,150);});
+                })();
             },
             getLinePayState:function(order){
                 if(!order)return'pending';
