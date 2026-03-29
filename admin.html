@@ -86,6 +86,7 @@
                                 <span v-if="order.status === 'new'" class="bg-red-100 text-red-600 px-2 py-1 rounded text-xs font-bold animate-pulse">新訂單</span>
                                 <span v-if="order.status === 'making'" class="bg-yellow-100 text-yellow-700 px-2 py-1 rounded text-xs font-bold">製作中</span>
                                 <span v-if="order.status === 'done'" class="bg-gray-200 text-gray-600 px-2 py-1 rounded text-xs font-bold">已完成</span>
+                                <span v-if="order.status === 'cancelled'" class="bg-red-100 text-red-600 px-2 py-1 rounded text-xs font-bold">已取消</span>
                                 <p class="text-lg font-bold text-red-500 mt-2">${{ order.total }}</p>
                                 <!-- 付款狀態 -->
                                 <template v-if="order.paymentMethod==='linepay'||order.paymentMethod==='linepay_offline'">
@@ -164,7 +165,7 @@
                                     <button @click="openEditModal(order); activeMenu = null" class="w-full text-left px-4 py-3 hover:bg-blue-50 text-blue-600 border-b text-sm font-bold">✏️ 編輯訂單</button>
                                     <button @click="printOrder(order); activeMenu = null" class="w-full text-left px-4 py-3 hover:bg-gray-100 text-gray-700 border-b text-sm font-bold">🖨️ 補印工單</button>
                                     <button @click="printReceipt(order); activeMenu = null" class="w-full text-left px-4 py-3 hover:bg-gray-100 text-gray-700 border-b text-sm font-bold">🧾 印收據</button>
-                                    <button v-if="order.status !== 'done'" @click="cancelOrder(order); activeMenu = null" class="w-full text-left px-4 py-3 hover:bg-red-50 text-red-600 text-sm font-bold">❌ 取消訂單</button>
+                                    <button v-if="order.status !== 'done' && order.status !== 'cancelled'" @click="cancelOrder(order); activeMenu = null" class="w-full text-left px-4 py-3 hover:bg-red-50 text-red-600 text-sm font-bold">❌ 取消訂單</button>
                                 </div>
                             </div>
                         </div>
@@ -302,12 +303,14 @@
                     return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);
                 },
                 sortedOrders() {
-                    const statusWeight = { 'new': 1, 'making': 2, 'done': 3 };
+                    const statusWeight = { 'new': 1, 'making': 2, 'ready': 3, 'done': 4, 'cancelled': 5 };
                     return this.orders
-                        // ★ 過濾掉已取消與「已封存(archived)」的訂單
-                        .filter(o => o.status !== 'cancelled' && o.status !== 'archived') 
+                        // ★ 只過濾掉已封存(archived)，已取消訂單也保留在列表
+                        .filter(o => o.status !== 'archived')
                         .sort((a, b) => {
-                            if (statusWeight[a.status] !== statusWeight[b.status]) return statusWeight[a.status] - statusWeight[b.status];
+                            const wa = statusWeight[a.status] || 99;
+                            const wb = statusWeight[b.status] || 99;
+                            if (wa !== wb) return wa - wb;
                             // ★ 修正：同狀態下依流水號排序（有流水號的排前面）
                             var aNo = a.orderNo || 99999;
                             var bNo = b.orderNo || 99999;
@@ -455,7 +458,7 @@
                         Object.keys(bucket).forEach((id) => {
                             const o = bucket[id];
                             if (!o || !o.status) return;
-                            if (o.status !== 'new' && o.status !== 'making' && o.status !== 'done' && o.status !== 'ready') return;
+                            if (o.status !== 'new' && o.status !== 'making' && o.status !== 'done' && o.status !== 'ready' && o.status !== 'cancelled') return;
                             const row = { id, ...o };
                             if (!map[id] || (row.timestamp || 0) > (map[id].timestamp || 0)) map[id] = row;
                         });
@@ -465,7 +468,7 @@
                         if (o.status === 'new') currentNewCount++;
                         if (o.status !== 'archived' && o.status !== 'cancelled' && !o.orderNo) this.autoAssignOrderNo(o.id);
                         // ★ 有流水號但無 print_task 的訂單（如 dinein 直接送出），補寫 print_task 觸發列印
-                        else if (o.orderNo && !o.print_task && o.status !== 'archived' && o.status !== 'cancelled' && o.paymentStatus !== 'pending') this.triggerPrintForOrder(o);
+                        else if (o.orderNo && !o.print_task && o.status !== 'archived' && o.status !== 'cancelled' && (o.paymentStatus !== 'pending' || this.lpConfirmed[o.id] || this.lpStatus[o.id] === 'confirmed')) this.triggerPrintForOrder(o);
                     });
                     this.orders = parsedOrders;
                     if (currentNewCount > this.previousNewCount && this.previousNewCount !== 0) this.playAlert();
@@ -782,15 +785,7 @@
                         if (shouldRefund) {
                             const refund = await this.requestLinePayRefund(latestOrder);
                             if (refund.success) {
-                                const ts = Date.now();
-                                await update(ref(db), {
-                                    [`${orderBase}/paymentStatus`]: 'refunded',
-                                    [`${orderBase}/paymentMethod`]: 'linepay_refund',
-                                    [`${orderBase}/refundedAt`]: ts,
-                                    [`linepay_transactions/${order.id}/status`]: 'refunded',
-                                    [`linepay_transactions/${order.id}/refundedAt`]: ts
-                                });
-                                this.toast(`✅ LINE Pay 退款 $${latestOrder.total || order.total || 0} 申請成功`);
+                                this.toast(`✅ LINE Pay 退款 $${latestOrder.total || order.total || 0} 已申請（等待狀態同步）`);
                             } else {
                                 this.toast('⚠️ 退款失敗：'+(refund.error||'服務無回應')+'，請手動退款');
                             }
