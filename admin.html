@@ -422,12 +422,6 @@
                             const oid = snap.key, txn = snap.val() || {}, st = txn.status || '';
                             _statusMap[oid] = st;
                             if (st === 'confirmed') _confirmed[oid] = true; else delete _confirmed[oid];
-                            if (st === 'confirmed') {
-                                const od = self2.findOrderById(oid);
-                                if (od && od.orderNo && !od.print_task && od.status !== 'cancelled' && od.status !== 'archived') {
-                                    self2.triggerPrintForOrder(od);
-                                }
-                            }
                             clearTimeout(_timer); _timer = setTimeout(_flush, 150);
                         };
                         onChildAdded(txnQ, _update);
@@ -474,7 +468,11 @@
                         if (o.status === 'new') currentNewCount++;
                         if (o.status !== 'archived' && o.status !== 'cancelled' && !o.orderNo) this.autoAssignOrderNo(o.id);
                         // ★ 有流水號但無 print_task 的訂單（如 dinein 直接送出），補寫 print_task 觸發列印
-                        else if (o.orderNo && !o.print_task && o.status !== 'archived' && o.status !== 'cancelled' && (o.paymentStatus !== 'pending' || this.lpConfirmed[o.id] || this.lpStatus[o.id] === 'confirmed')) this.triggerPrintForOrder(o);
+                        else {
+                            const pm = o.paymentMethod || '';
+                            const isLinePayPm = (pm === 'linepay' || pm === 'linepay_offline' || pm === 'linepay_refund');
+                            if (o.orderNo && !o.print_task && o.status !== 'archived' && o.status !== 'cancelled' && !isLinePayPm && (o.paymentStatus !== 'pending' || this.lpConfirmed[o.id] || this.lpStatus[o.id] === 'confirmed')) this.triggerPrintForOrder(o);
+                        }
                     });
                     this.orders = parsedOrders;
                     if (currentNewCount > this.previousNewCount && this.previousNewCount !== 0) this.playAlert();
@@ -842,9 +840,8 @@
                     const updates = {};
                     const futureIds = futureOrders.map(o => o.id);
                     this.orders.forEach(o => {
-                        // ★ 已取消的訂單保留 cancelled 狀態，不覆蓋成 archived
-                        if (o.status !== 'archived' && o.status !== 'cancelled' && futureIds.indexOf(o.id) === -1) {
-                            const archivedOrder = Object.assign({}, o, { status: 'archived' });
+                        if (o.status !== 'archived' && futureIds.indexOf(o.id) === -1) {
+                            const archivedOrder = Object.assign({}, o, { status: (o.status === 'cancelled' ? 'cancelled' : 'archived') });
                             const d = new Date(o.timestamp || Date.now());
                             const dateKey = o.orderDateKey || o.pickupDate || (d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2));
                             updates['orders_archive/' + dateKey + '/' + o.id] = archivedOrder;
