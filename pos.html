@@ -611,6 +611,14 @@
                     return i.qty+"x"+i.name+(parts.length?("("+parts.join(" ")+")"):"");
                 }).join("、");
             },
+            orderSig:function(items){
+                return JSON.stringify((items||[]).map(function(i){
+                    return {
+                        id:i.id||'',name:i.name||'',qty:Number(i.qty||0),itemTotal:Number(i.itemTotal||0),
+                        note:i.note||'',opts:i.options||[],ogs:i.optionGroupSelections||[],pex:i.posExtras||[]
+                    };
+                }));
+            },
             toggleOrderMenu:function(event,orderId){
                 if(this.activeMenu===orderId){this.activeMenu=null;this.menuPos=null;this.activeMenuOrder=null;return;}
                 this.activeMenu=orderId;
@@ -1197,6 +1205,23 @@
                     s.toast('⚠️ 請先在設定中填入 LINE Pay 確認頁網址');
                     return;
                 }
+                if(isLinePay){
+                    var cartSig=s.orderSig(s.cart);
+                    var dup=(s.onlineOrders||[]).find(function(or){
+                        if(!or||or.paymentMethod!=='linepay')return false;
+                        if(or.paymentStatus!=='pending')return false;
+                        if(!(or.status==='new'||or.status==='making'))return false;
+                        if((or.pickupDate||'')!==pickDate)return false;
+                        if((or.pickupTime||'')!==pickTime)return false;
+                        if(Math.round(Number(or.total||0))!==Math.round(Number(s.cartTotal||0)))return false;
+                        return s.orderSig(or.items||[])===cartSig;
+                    });
+                    if(dup){
+                        s.isSubmitting=false;
+                        s.toast('⚠️ 已有相同 LINE Pay 待付款訂單，避免重複送單');
+                        return;
+                    }
+                }
                 // LINE Pay 訂單：status 先設 new，付款確認後 linepay_server 會改 making
                 var custDisplay=(s.posOrderType==='dinein'&&s.posTableLabel)?s.posTableLabel:(s.custName||"現場");
                 var o={customer:custDisplay,phone:s.custPhone||"",pickupDate:pickDate,pickupTime:pickTime,
@@ -1274,7 +1299,7 @@
                                     s.isSubmitting=false;
                                     s.toast('⚠️ LINE Pay 逾時，請確認樹莓派服務正常');
                                 }
-                            },30000);
+                            },90000);
                         }else{
                             // ★ 店內付款：立即列印
                             var storePrintTask="kitchen_"+Date.now();
@@ -1495,7 +1520,7 @@
                         });
                         reqTimer2=setTimeout(function(){
                             if(!handled2){handled2=true;clearInterval(directPoll2);s.toast('⚠️ LINE Pay 逾時，請確認樹莓派服務正常');}
-                        },30000);
+                        },90000);
                         return;
                     }
 
@@ -1564,6 +1589,7 @@
 </script>
 </body>
 </html>
+
 
 
 
