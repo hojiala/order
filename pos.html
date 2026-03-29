@@ -530,6 +530,7 @@
                 editPayMethod:'store',
                 lpConfirmed:{},
                 lpStatus:{},
+                lpConfirmAt:{},
                 menu:[],menuLoading:true,filterCat:"",settings:{categories:[],stations:[{name:'湯麵',ip:'192.168.0.6'},{name:'麵包台',ip:'192.168.0.7'},{name:'飲料台',ip:'192.168.0.8'}]},
                 activeView:"menu",editMode:false,
                 cart:[],custName:"",custPhone:"",isSubmitting:false,
@@ -737,6 +738,13 @@
                     if(o&&o.orderNo&&!o.print_task&&o.status!=='archived'&&o.status!=='cancelled'&&paidLike&&!isLinePayPm){
                         s.triggerPrintForOrder(o);
                     }
+                    // LINE Pay 保底：若交易已 confirmed 但訂單仍未被後端寫入 print_task（少數競態），僅 POS 單補觸發一次
+                    if(o&&o.orderNo&&!o.print_task&&o.status!=='archived'&&o.status!=='cancelled'&&isLinePayPm&&o.source==='pos'){
+                        var cAt=(s.lpConfirmAt&&s.lpConfirmAt[o.id])||0;
+                        if(s.lpStatus[o.id]==='confirmed'&&cAt&&(Date.now()-cAt>12000)){
+                            s.triggerPrintForOrder(o);
+                        }
+                    }
                 });
                 s.onlineOrders=parsed.sort(function(a,b){
                     var w={new:1,making:2,done:3,cancelled:4};
@@ -807,17 +815,32 @@
                 // ★ 監聽 linepay_transactions（限最近100筆）— 改用 child 事件，只下載變更的單筆
                 (function(){
                     var txnQ=query(ref(db,'linepay_transactions'),limitToLast(100));
-                    var _confirmed={},_statusMap={},_timer=null;
-                    var _flush=function(){s.lpConfirmed=Object.assign({},_confirmed);s.lpStatus=Object.assign({},_statusMap);};
+                    var _confirmed={},_statusMap={},_confirmAt={},_timer=null;
+                    var _flush=function(){
+                        s.lpConfirmed=Object.assign({},_confirmed);
+                        s.lpStatus=Object.assign({},_statusMap);
+                        s.lpConfirmAt=Object.assign({},_confirmAt);
+                    };
                     var _update=function(snap){
                         var oid=snap.key,txn=snap.val()||{},st=txn.status||'';
                         _statusMap[oid]=st;
-                        if(st==='confirmed')_confirmed[oid]=true;else delete _confirmed[oid];
+                        if(st==='confirmed'){
+                            _confirmed[oid]=true;
+                            _confirmAt[oid]=txn.confirmedAt||Date.now();
+                        }else{
+                            delete _confirmed[oid];
+                            if(st!=='pending')delete _confirmAt[oid];
+                        }
                         clearTimeout(_timer);_timer=setTimeout(_flush,150);
                     };
                     onChildAdded(txnQ,_update);
                     onChildChanged(txnQ,_update);
-                    onChildRemoved(txnQ,function(snap){delete _statusMap[snap.key];delete _confirmed[snap.key];clearTimeout(_timer);_timer=setTimeout(_flush,150);});
+                    onChildRemoved(txnQ,function(snap){
+                        delete _statusMap[snap.key];
+                        delete _confirmed[snap.key];
+                        delete _confirmAt[snap.key];
+                        clearTimeout(_timer);_timer=setTimeout(_flush,150);
+                    });
                 })();
             },
             getLinePayState:function(order){
@@ -837,7 +860,7 @@
                     var wRes=await fetch(dbRestUrl+'/linepay_refund_requests/'+order.id+'.json'+authQ,{
                         method:'PUT',
                         headers:{'Content-Type':'application/json'},
-                        body:JSON.stringify({orderId:order.id,amount:Number(order.total||0),reason:reason,status:'pending',createdAt:Date.now(),source:'pos'})
+                        body:JSON.stringify({orderId:order.id,amount:Number(order.total||0),reason:reason,status:'pending',createdAt:Date.now(),source:'pos',orderDateKey:this.resolveOrderDateKey(order)||order.pickupDate||''})
                     });
                     if(!wRes.ok)throw new Error('HTTP '+wRes.status);
                     for(var i=0;i<40;i++){
@@ -951,9 +974,19 @@
                 if(shouldRefund){
                     var refund=await s.requestLinePayRefund(latestOrder);
                     if(refund.success){
+                        var rts=Date.now();
+                        await update(ref(db),{
+                            [orderBase+'/paymentStatus']:'refunded',
+                            [orderBase+'/paymentMethod']:'linepay_refund',
+                            [orderBase+'/refundedAt']:rts,
+                            ['linepay_transactions/'+order.id+'/status']:'refunded',
+                            ['linepay_transactions/'+order.id+'/refundedAt']:rts
+                        });
                         latestOrder.paymentStatus='refunded';
                         latestOrder.paymentMethod='linepay_refund';
-                        latestOrder.refundedAt=Date.now();
+                        latestOrder.refundedAt=rts;
+                        s.lpStatus[order.id]='refunded';
+                        delete s.lpConfirmed[order.id];
                         s.toast('✅ LINE Pay 已申請退款（等待狀態同步）');
                     }else{
                         alert('⚠️ 訂單已取消，但退款失敗：'+(refund.error||'服務無回應')+'。請手動退款。');
@@ -965,10 +998,12 @@
                     });
                 }
 
-                if(shouldRefund){ await new Promise(function(r){setTimeout(r,900);}); }
-                await set(taskRef,'cancel_'+Date.now());
+                if(shouldRefund){ await new Promise(function(r){setTimeout(r,500);}); }
+                latestOrder.status='cancelled';
+                var cancelTask='cancel_'+Date.now();
+                await set(taskRef,cancelTask);
                 // ★ 寫入 print_queue 供 Node-RED
-                s.writeToPrintQueue(order.id,'cancel_'+Date.now(),latestOrder);
+                s.writeToPrintQueue(order.id,cancelTask,latestOrder);
                 s.toast('❌ 訂單已取消，列印取消單...');
                 if(s.editingOrder&&s.editingOrder.id===order.id)s.exitOnline();
                 return true;
