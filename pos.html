@@ -648,7 +648,7 @@
                 var futureIds=[];
                 s.onlineOrders.forEach(function(o){
                     var pd=o.pickupDate||'';
-                    if(pd>todayStr)futureIds.push(o.id);
+                    if(pd>todayStr&&o.status!=='cancelled')futureIds.push(o.id);
                 });
                 var msg="確定要進行「結單」嗎？\n這會將今日及過去的訂單封存至歷史紀錄。";
                 if(futureIds.length>0)msg+="\n\n⚠️ 有 "+futureIds.length+" 筆未來預約訂單將保留在畫面上。";
@@ -656,7 +656,8 @@
                 var updates={};
                 s.onlineOrders.forEach(function(o){
                     if(futureIds.indexOf(o.id)!==-1)return;
-                    var archivedOrder=Object.assign({},o,{status:"archived"});
+                    if(o.status==="archived")return;
+                    var archivedOrder=Object.assign({},o,{status:(o.status==="cancelled"?"cancelled":"archived")});
                     // 取得訂單的實際日期作為資料夾名稱
                     var d = new Date(o.timestamp || Date.now());
                     var dateKey = o.orderDateKey || o.pickupDate || (d.getFullYear() + '-' + ('0'+(d.getMonth()+1)).slice(-2) + '-' + ('0'+d.getDate()).slice(-2));
@@ -731,7 +732,9 @@
                 var parsed=Object.values(map);
                 parsed.forEach(function(o){
                     var paidLike=((o&&o.paymentStatus)!=='pending')||(o&&s.lpConfirmed[o.id])||(o&&s.lpStatus[o.id]==='confirmed');
-                    if(o&&o.orderNo&&!o.print_task&&o.status!=='archived'&&o.status!=='cancelled'&&paidLike){
+                    var pm=(o&&o.paymentMethod)||'';
+                    var isLinePayPm=(pm==='linepay'||pm==='linepay_offline'||pm==='linepay_refund');
+                    if(o&&o.orderNo&&!o.print_task&&o.status!=='archived'&&o.status!=='cancelled'&&paidLike&&!isLinePayPm){
                         s.triggerPrintForOrder(o);
                     }
                 });
@@ -810,12 +813,6 @@
                         var oid=snap.key,txn=snap.val()||{},st=txn.status||'';
                         _statusMap[oid]=st;
                         if(st==='confirmed')_confirmed[oid]=true;else delete _confirmed[oid];
-                        if(st==='confirmed'){
-                            var od=s.findOrderById(oid);
-                            if(od&&od.orderNo&&!od.print_task&&od.status!=='cancelled'&&od.status!=='archived'){
-                                s.triggerPrintForOrder(od);
-                            }
-                        }
                         clearTimeout(_timer);_timer=setTimeout(_flush,150);
                     };
                     onChildAdded(txnQ,_update);
