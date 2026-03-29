@@ -810,6 +810,12 @@
                         var oid=snap.key,txn=snap.val()||{},st=txn.status||'';
                         _statusMap[oid]=st;
                         if(st==='confirmed')_confirmed[oid]=true;else delete _confirmed[oid];
+                        if(st==='confirmed'){
+                            var od=s.findOrderById(oid);
+                            if(od&&od.orderNo&&!od.print_task&&od.status!=='cancelled'&&od.status!=='archived'){
+                                s.triggerPrintForOrder(od);
+                            }
+                        }
                         clearTimeout(_timer);_timer=setTimeout(_flush,150);
                     };
                     onChildAdded(txnQ,_update);
@@ -948,6 +954,9 @@
                 if(shouldRefund){
                     var refund=await s.requestLinePayRefund(latestOrder);
                     if(refund.success){
+                        latestOrder.paymentStatus='refunded';
+                        latestOrder.paymentMethod='linepay_refund';
+                        latestOrder.refundedAt=Date.now();
                         s.toast('✅ LINE Pay 已申請退款（等待狀態同步）');
                     }else{
                         alert('⚠️ 訂單已取消，但退款失敗：'+(refund.error||'服務無回應')+'。請手動退款。');
@@ -1404,6 +1413,17 @@
                     var order=orderObj||this.findOrderById(orderId)||{};
                     var queueData=Object.assign({},order);
                     delete queueData.id;
+                    var pm=queueData.paymentMethod||'';
+                    var txnState=(this.lpStatus&&this.lpStatus[orderId])||'';
+                    if(pm==='linepay'||pm==='linepay_offline'||pm==='linepay_refund'){
+                        if((queueData.paymentStatus||'')==='refunded'||txnState==='refunded'){
+                            queueData.paymentStatus='refunded';
+                            queueData.paymentMethod='linepay_refund';
+                        }else if((queueData.paymentStatus||'')==='paid'||(this.lpConfirmed&&this.lpConfirmed[orderId])||txnState==='confirmed'){
+                            queueData.paymentStatus='paid';
+                            if(queueData.paymentMethod==='linepay_refund')queueData.paymentMethod='linepay';
+                        }
+                    }
                     queueData.print_task=task;
                     set(ref(db,'print_queue/'+orderId),queueData).catch(function(e){console.warn('print_queue寫入失敗:',e.message);});
                 }catch(e){console.warn('print_queue error:',e);}
