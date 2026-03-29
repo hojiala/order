@@ -163,7 +163,8 @@
                 'border-red-300 bg-red-50/50': order.status==='new',
                 'border-yellow-300 bg-yellow-50/30': order.status==='making' && order.source==='pos',
                 'border-gray-200': order.status==='making' && order.source!=='pos',
-                'border-green-200 bg-green-50/30 opacity-60': order.status==='done'
+                'border-green-200 bg-green-50/30 opacity-60': order.status==='done',
+                'border-red-200 bg-red-50/40': order.status==='cancelled'
               }"
               class="bg-white rounded-xl border-2 p-3 cursor-pointer hover:border-orange-400 transition-all active:scale-[.99]"
               @click="viewOrder(order)">
@@ -172,8 +173,8 @@
                   <div class="flex items-center gap-1.5 flex-wrap mb-1">
                     <span v-if="order.status==='new'" class="w-2 h-2 bg-red-500 rounded-full flex-shrink-0 animate-pulse"></span>
                     <span class="font-black text-gray-800 text-sm">{{ order.tableLabel || (order.customer && order.customer.name ? order.customer.name : (order.customer||"顧客")) }}</span>
-                    <span :class="{'bg-red-100 text-red-700':order.status==='new','bg-yellow-100 text-yellow-700':order.status==='making','bg-green-100 text-green-700':order.status==='done'}"
-                      class="text-xs px-2 py-0.5 rounded-full font-bold flex-shrink-0">{{ {new:"新訂單",making:"製作中",done:"已完成"}[order.status]||order.status }}</span>
+                    <span :class="{'bg-red-100 text-red-700':order.status==='new','bg-yellow-100 text-yellow-700':order.status==='making','bg-green-100 text-green-700':order.status==='done','bg-red-100 text-red-600':order.status==='cancelled'}"
+                      class="text-xs px-2 py-0.5 rounded-full font-bold flex-shrink-0">{{ {new:"新訂單",making:"製作中",done:"已完成",cancelled:"已取消"}[order.status]||order.status }}</span>
                     <span :class="{
                       'bg-orange-100 text-orange-700':order.source==='pos',
                       'bg-blue-100 text-blue-700':order.source==='dinein'&&order.tableType!=='kiosk',
@@ -242,7 +243,7 @@
         class="w-full text-left px-4 py-2.5 hover:bg-orange-50 text-gray-700 border-b border-gray-100 text-sm font-bold">&#128424; 補印工單</button>
       <button @click.stop="printReceipt(activeMenuOrder);activeMenu=null"
         class="w-full text-left px-4 py-2.5 hover:bg-blue-50 text-gray-700 border-b border-gray-100 text-sm font-bold">&#129534; 印收據</button>
-      <button v-if="activeMenuOrder && activeMenuOrder.status!=='done'" @click.stop="cancelOrder(activeMenuOrder);activeMenu=null"
+      <button v-if="activeMenuOrder && activeMenuOrder.status!=='done' && activeMenuOrder.status!=='cancelled'" @click.stop="cancelOrder(activeMenuOrder);activeMenu=null"
         class="w-full text-left px-4 py-2.5 hover:bg-red-50 text-red-600 text-sm font-bold">&#10005; 取消訂單</button>
     </div>
   </teleport>
@@ -722,13 +723,20 @@
                     Object.keys(bucket).forEach(function(id){
                         var o=bucket[id];
                         if(!o||!o.status)return;
-                        if(!(o.status==="new"||o.status==="making"||o.status==="done"))return;
+                        if(!(o.status==="new"||o.status==="making"||o.status==="done"||o.status==="cancelled"))return;
                         var row=Object.assign({id:id},o);
                         if(!map[id]||(row.timestamp||0)>(map[id].timestamp||0))map[id]=row;
                     });
                 });
-                s.onlineOrders=Object.values(map).sort(function(a,b){
-                    var w={new:1,making:2,done:3};
+                var parsed=Object.values(map);
+                parsed.forEach(function(o){
+                    var paidLike=((o&&o.paymentStatus)!=='pending')||(o&&s.lpConfirmed[o.id])||(o&&s.lpStatus[o.id]==='confirmed');
+                    if(o&&o.orderNo&&!o.print_task&&o.status!=='archived'&&o.status!=='cancelled'&&paidLike){
+                        s.triggerPrintForOrder(o);
+                    }
+                });
+                s.onlineOrders=parsed.sort(function(a,b){
+                    var w={new:1,making:2,done:3,cancelled:4};
                     if(w[a.status]!==w[b.status])return w[a.status]-w[b.status];
                     var aNo=a.orderNo||0,bNo=b.orderNo||0;
                     if(aNo!==bNo)return bNo-aNo;
@@ -940,15 +948,7 @@
                 if(shouldRefund){
                     var refund=await s.requestLinePayRefund(latestOrder);
                     if(refund.success){
-                        var tsOk=Date.now();
-                        await update(ref(db),{
-                            [orderBase+'/paymentStatus']:'refunded',
-                            [orderBase+'/paymentMethod']:'linepay_refund',
-                            [orderBase+'/refundedAt']:tsOk,
-                            ['linepay_transactions/'+order.id+'/status']:'refunded',
-                            ['linepay_transactions/'+order.id+'/refundedAt']:tsOk
-                        });
-                        s.toast('✅ LINE Pay 已申請退款');
+                        s.toast('✅ LINE Pay 已申請退款（等待狀態同步）');
                     }else{
                         alert('⚠️ 訂單已取消，但退款失敗：'+(refund.error||'服務無回應')+'。請手動退款。');
                     }
@@ -1379,6 +1379,25 @@
                     // ★ 同時寫入 print_queue 供 Node-RED 精準監聽
                     s.writeToPrintQueue(id,task,order);
                 });
+            },
+            triggerPrintForOrder:async function(order){
+                var s=this;
+                if(!order||!order.id)return;
+                var key='triggering_'+order.id;
+                if(s[key])return;
+                s[key]=true;
+                try{
+                    var base='orders/'+s.resolveOrderDateKey(order)+'/'+order.id;
+                    var ptSnap=await get(ref(db,base+'/print_task'));
+                    if(ptSnap.exists()&&ptSnap.val())return;
+                    var task='kitchen_'+Date.now();
+                    await s.updateOrderMirror(order.id,{print_task:task},order);
+                    s.writeToPrintQueue(order.id,task,order);
+                }catch(e){
+                    console.warn('POS triggerPrint failed:',order.id,e&&e.message?e.message:e);
+                }finally{
+                    delete s[key];
+                }
             },
             writeToPrintQueue:function(orderId,task,orderObj){
                 try{
