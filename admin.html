@@ -422,6 +422,12 @@
                             const oid = snap.key, txn = snap.val() || {}, st = txn.status || '';
                             _statusMap[oid] = st;
                             if (st === 'confirmed') _confirmed[oid] = true; else delete _confirmed[oid];
+                            if (st === 'confirmed') {
+                                const od = self2.findOrderById(oid);
+                                if (od && od.orderNo && !od.print_task && od.status !== 'cancelled' && od.status !== 'archived') {
+                                    self2.triggerPrintForOrder(od);
+                                }
+                            }
                             clearTimeout(_timer); _timer = setTimeout(_flush, 150);
                         };
                         onChildAdded(txnQ, _update);
@@ -546,6 +552,17 @@
                         const order = orderObj || this.findOrderById(orderId) || {};
                         const queueData = Object.assign({}, order);
                         delete queueData.id;
+                        const pm = queueData.paymentMethod || '';
+                        const txnState = (this.lpStatus && this.lpStatus[orderId]) || '';
+                        if (pm === 'linepay' || pm === 'linepay_offline' || pm === 'linepay_refund') {
+                            if ((queueData.paymentStatus || '') === 'refunded' || txnState === 'refunded') {
+                                queueData.paymentStatus = 'refunded';
+                                queueData.paymentMethod = 'linepay_refund';
+                            } else if ((queueData.paymentStatus || '') === 'paid' || (this.lpConfirmed && this.lpConfirmed[orderId]) || txnState === 'confirmed') {
+                                queueData.paymentStatus = 'paid';
+                                if (queueData.paymentMethod === 'linepay_refund') queueData.paymentMethod = 'linepay';
+                            }
+                        }
                         queueData.print_task = task;
                         set(ref(db, 'print_queue/' + orderId), queueData).catch(e => console.warn('print_queue 寫入失敗:', e.message));
                     } catch(e) { console.warn('print_queue error:', e); }
