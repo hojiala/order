@@ -688,7 +688,8 @@
                             reason,
                             status: 'pending',
                             createdAt: Date.now(),
-                            source: 'admin'
+                            source: 'admin',
+                            orderDateKey: this.resolveOrderDateKey(order)
                         });
 
                         for (let i = 0; i < 60; i++) {
@@ -804,6 +805,19 @@
                         if (shouldRefund) {
                             const refund = await this.requestLinePayRefund(latestOrder);
                             if (refund.success) {
+                                const rts = Date.now();
+                                await update(ref(db), {
+                                    [`${orderBase}/paymentStatus`]: 'refunded',
+                                    [`${orderBase}/paymentMethod`]: 'linepay_refund',
+                                    [`${orderBase}/refundedAt`]: rts,
+                                    [`linepay_transactions/${order.id}/status`]: 'refunded',
+                                    [`linepay_transactions/${order.id}/refundedAt`]: rts
+                                });
+                                latestOrder.paymentStatus = 'refunded';
+                                latestOrder.paymentMethod = 'linepay_refund';
+                                latestOrder.refundedAt = rts;
+                                this.lpStatus[order.id] = 'refunded';
+                                delete this.lpConfirmed[order.id];
                                 this.toast(`✅ LINE Pay 退款 $${latestOrder.total || order.total || 0} 已申請（等待狀態同步）`);
                             } else {
                                 this.toast('⚠️ 退款失敗：'+(refund.error||'服務無回應')+'，請手動退款');
@@ -818,8 +832,11 @@
                             this.toast('✅ 訂單已取消');
                         }
 
-                        if (shouldRefund) await new Promise(r => setTimeout(r, 900));
-                        await set(taskRef, `cancel_${Date.now()}`);
+                        if (shouldRefund) await new Promise(r => setTimeout(r, 500));
+                        latestOrder.status = 'cancelled';
+                        const cancelTask = `cancel_${Date.now()}`;
+                        await set(taskRef, cancelTask);
+                        this.writeToPrintQueue(order.id, cancelTask, latestOrder);
                     } catch (err) {
                         this.toast('❌ 取消訂單失敗：' + err);
                     }
