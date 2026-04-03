@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
@@ -55,7 +55,10 @@
                          class="bg-white rounded-xl shadow-md flex flex-col relative overflow-hidden"
                          :class="{'opacity-60': order.status === 'done'}">
                         
-                        <div v-if="order.source === 'pos'" class="text-white text-xs font-bold px-3 py-1 text-center tracking-widest" style="background:#ea580c;">
+                        <div v-if="order.source === 'phone_ai' || order.source === 'pos_local'" class="bg-cyan-500 text-white text-xs font-bold px-3 py-1 text-center tracking-widest">
+                            ☎️ AI 電話訂單
+                        </div>
+                        <div v-else-if="order.source === 'pos'" class="text-white text-xs font-bold px-3 py-1 text-center tracking-widest" style="background:#ea580c;">
                             🏪 現場 POS 訂單
                         </div>
                         <div v-else-if="order.source === 'LINE' || order.source === 'web_liff'" class="bg-green-500 text-white text-xs font-bold px-3 py-1 text-center tracking-widest">
@@ -293,6 +296,8 @@
                     orderBucketUnsubs: [],
                     linePayServerUrl: '',
                     linePayConfirmUrl: '',
+                    integrationOrdersUnsub: null,
+                    useIntegrationView: false,
                     toastMsg: '', toastTimer: null,
                     alertSound: new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg')
                 }
@@ -346,6 +351,44 @@
                     const pad = (n) => ('0' + n).slice(-2);
                     return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
                 },
+                isIntegrationReadOnlyOrder(order) {
+                    return !!(order && order._integrationReadOnly);
+                },
+                isPhoneCommandOrder(order) {
+                    return !!(order && this.isIntegrationReadOnlyOrder(order) && (order.source === 'phone_ai' || order.source === 'pos_local'));
+                },
+                resolvePhoneCommandSourceOrderId(order) {
+                    const original = (order && order._integrationOriginal) || {};
+                    const directValue = (order && order.sourceOrderId) || original.sourceOrderId || (original.audit && original.audit.originalSourceSnapshotId) || (original.phoneAi && original.phoneAi.rawJsonPath) || '';
+                    if (directValue && String(directValue).includes('/')) {
+                        return String(directValue).split('/').pop().replace('_繁體.json', '');
+                    }
+                    if (directValue) return String(directValue);
+                    const id = order && order.id ? String(order.id) : '';
+                    const prefix = order && order.source ? String(order.source) + '_' : '';
+                    return prefix && id.startsWith(prefix) ? id.slice(prefix.length) : id;
+                },
+                queuePhoneOrderCommand(order, action, extra = {}) {
+                    const original = (order && order._integrationOriginal) || {};
+                    const sourceOrderId = this.resolvePhoneCommandSourceOrderId(order);
+                    if (!sourceOrderId) return Promise.reject(new Error('找不到電話訂單來源編號'));
+                    const commandId = 'cmd_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+                    return set(ref(db, 'integration_sync/phone_order_commands/' + commandId), Object.assign({
+                        commandId,
+                        action,
+                        source: 'admin_ui',
+                        createdAt: new Date().toISOString(),
+                        orderId: order && order.id ? order.id : '',
+                        sourceType: order && order.source ? order.source : '',
+                        sourceOrderId,
+                        serialNumber: order && order.serialNumber ? String(order.serialNumber) : '',
+                        rawJsonPath: (original.phoneAi && original.phoneAi.rawJsonPath) || ''
+                    }, extra || {}));
+                },
+                resetIntegrationOrdersListener() {
+                    try { this.integrationOrdersUnsub && this.integrationOrdersUnsub(); } catch(_) {}
+                    this.integrationOrdersUnsub = null;
+                },
                 async autoArchiveOldOrders() {
                     try {
                         const today = new Date(); today.setHours(0, 0, 0, 0);
@@ -398,7 +441,7 @@
                 listenToOrders() {
                     const self = this;
                     self.resetOrderBucketListeners();
-                    // ★ 讀取 settings（一次性+定時，取代 onValue 節省流量）
+                    self.resetIntegrationOrdersListener();
                     const selfS = this;
                     const _loadAdminSettings = () => {
                         get(ref(db, 'settings')).then((snap) => {
@@ -411,7 +454,6 @@
                     };
                     _loadAdminSettings();
                     setInterval(_loadAdminSettings, 300000);
-                    // ★ 監聽 linepay_transactions — 改用 child 事件，只下載變更的單筆
                     const self2 = this;
                     (() => {
                         const txnQ = query(ref(db, 'linepay_transactions'), limitToLast(100));
@@ -428,6 +470,30 @@
                         onChildChanged(txnQ, _update);
                         onChildRemoved(txnQ, (snap) => { delete _statusMap[snap.key]; delete _confirmed[snap.key]; clearTimeout(_timer); _timer = setTimeout(_flush, 150); });
                     })();
+                    let fallbackActivated = false;
+                    const activateFallback = () => {
+                        if (fallbackActivated) return;
+                        fallbackActivated = true;
+                        self.useIntegrationView = false;
+                        self.resetOrderBucketListeners();
+                    };
+                    const integrationRef = ref(db, 'integration_views/merged_orders_history_index');
+                    self.integrationOrdersUnsub = onValue(integrationRef, (snap) => {
+                        if (!snap.exists()) {
+                            activateFallback();
+                            return;
+                        }
+                        const view = snap.val() || {};
+                        const list = Array.isArray(view.orders) ? view.orders : [];
+                        self.orders = list;
+                        self.useIntegrationView = true;
+                        const currentNewCount = list.filter(o => o.status === 'new').length;
+                        if (currentNewCount > self.previousNewCount && self.previousNewCount !== 0) self.playAlert();
+                        self.previousNewCount = currentNewCount;
+                    }, (err) => {
+                        console.error('❌ integration_views 監聽失敗:', err && err.message ? err.message : err);
+                        activateFallback();
+                    });
                 },
                 toggleMenu(orderId) {
                     this.activeMenu = this.activeMenu === orderId ? null : orderId;
@@ -648,9 +714,29 @@
                     }
                 },
                 updateStatus(orderId, newStatus) {
-                    this.updateOrderMirror(orderId, { status: newStatus }, this.findOrderById(orderId)).catch(err => this.toast("❌ 更新狀態失敗"));
+                    const order = this.findOrderById(orderId);
+                    if (this.isPhoneCommandOrder(order)) {
+                        this.queuePhoneOrderCommand(order, 'set_status', { status: newStatus })
+                            .then(() => this.toast('✅ 已送出電話訂單狀態命令'))
+                            .catch(() => this.toast('❌ 電話訂單狀態命令送出失敗'));
+                        return;
+                    }
+                    if (this.isIntegrationReadOnlyOrder(order)) {
+                        this.toast('☎️ 電話整合訂單請先在電話後台更新狀態');
+                        return;
+                    }
+                    this.updateOrderMirror(orderId, { status: newStatus }, order).catch(err => this.toast("❌ 更新狀態失敗"));
                 },
                 async printOrder(order) {
+                    if (this.isPhoneCommandOrder(order)) {
+                        await this.queuePhoneOrderCommand(order, 'print_kitchen');
+                        this.toast('🖨️ 已送出電話訂單補印命令');
+                        return;
+                    }
+                    if (this.isIntegrationReadOnlyOrder(order)) {
+                        this.toast('☎️ 電話整合訂單請先在電話後台補印');
+                        return;
+                    }
                     try {
                         const reprintTask = `kitchen_reprint_${Date.now()}`;
                         await this.clearPrintTaskMirror(order.id, order);
@@ -661,6 +747,15 @@
                     }
                 },
                 async printReceipt(order) {
+                    if (this.isPhoneCommandOrder(order)) {
+                        await this.queuePhoneOrderCommand(order, 'print_receipt');
+                        this.toast('🧾 已送出電話訂單收據命令');
+                        return;
+                    }
+                    if (this.isIntegrationReadOnlyOrder(order)) {
+                        this.toast('☎️ 電話整合訂單請先在電話後台列印收據');
+                        return;
+                    }
                     try {
                         const receiptTask = `receipt_${Date.now()}`;
                         await this.clearPrintTaskMirror(order.id, order);
@@ -749,6 +844,16 @@
                     return { success: false, error: '退款服務無回應' };
                 },
                 async cancelOrder(order) {
+                    if (this.isPhoneCommandOrder(order)) {
+                        if (!confirm('確定要取消這筆電話訂單嗎？')) return;
+                        await this.queuePhoneOrderCommand(order, 'cancel_order');
+                        this.toast('✅ 已送出電話訂單取消命令');
+                        return;
+                    }
+                    if (this.isIntegrationReadOnlyOrder(order)) {
+                        this.toast('☎️ 電話整合訂單請先在電話後台取消');
+                        return;
+                    }
                     let latestOrder = { ...order };
                     try {
                         const fullSnap = await get(ref(db, this.orderBasePath(order.id, order)));
@@ -878,6 +983,10 @@
                     this.alertSound.play().catch(err => console.log("音效被阻擋"));
                 },
                 openEditModal(order) {
+                    if (this.isIntegrationReadOnlyOrder(order)) {
+                        this.toast('☎️ 電話整合訂單目前請在電話後台編輯');
+                        return;
+                    }
                     this.editModal = JSON.parse(JSON.stringify(order));
                     this.editPickupDate = order.pickupDate || '';
                     this.editPickupTime = order.pickupTime || '';
