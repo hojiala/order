@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-TW">
 <head>
   <meta charset="UTF-8">
@@ -176,13 +176,14 @@
                     <span :class="{'bg-red-100 text-red-700':order.status==='new','bg-yellow-100 text-yellow-700':order.status==='making','bg-green-100 text-green-700':order.status==='done','bg-red-100 text-red-600':order.status==='cancelled'}"
                       class="text-xs px-2 py-0.5 rounded-full font-bold flex-shrink-0">{{ {new:"新訂單",making:"製作中",done:"已完成",cancelled:"已取消"}[order.status]||order.status }}</span>
                     <span :class="{
+                      'bg-cyan-100 text-cyan-700':order.source==='phone_ai'||order.source==='pos_local',
                       'bg-orange-100 text-orange-700':order.source==='pos',
                       'bg-blue-100 text-blue-700':order.source==='dinein'&&order.tableType!=='kiosk',
                       'bg-amber-100 text-amber-700':order.source==='dinein'&&order.tableType==='kiosk',
                       'bg-purple-100 text-purple-700':order.source==='qrcode',
                       'bg-violet-100 text-violet-700':order.source==='qr_takeout',
                       'bg-gray-100 text-gray-500':order.source!=='pos'&&order.source!=='dinein'&&order.source!=='qrcode'&&order.source!=='qr_takeout'
-                    }" class="text-xs px-1.5 py-0.5 rounded font-bold flex-shrink-0">{{ order.source==='pos' ? "POS" : order.source==='qr_takeout' ? "掃碼外帶" : order.source==='qrcode' ? "掃碼內用" : order.source==='dinein' ? (order.tableType==='kiosk' ? "外帶" : "內用") : "線上" }}</span>
+                    }" class="text-xs px-1.5 py-0.5 rounded font-bold flex-shrink-0">{{ order.source==='phone_ai' || order.source==='pos_local' ? "電話" : order.source==='pos' ? "POS" : order.source==='qr_takeout' ? "掃碼外帶" : order.source==='qrcode' ? "掃碼內用" : order.source==='dinein' ? (order.tableType==='kiosk' ? "外帶" : "內用") : "線上" }}</span>
                   </div>
                   <div class="flex items-center gap-3 mb-1">
                     <span class="text-xs text-orange-600 font-black bg-orange-50 px-2 py-0.5 rounded">No.{{ fmtNo(order.orderNo) }}</span>
@@ -540,7 +541,7 @@
                 posOrderType:'takeout',posTableLabel:'',posTables:[],cartDragIdx:null,
                 posPickupDate:"",posPickupTime:"",
                 orderMode:"pos",editingOrder:null,
-                onlineOrders:[],ordersLoading:false,assigningNos:{},orderBuckets:{},orderBucketUnsubs:[],
+                onlineOrders:[],ordersLoading:false,assigningNos:{},orderBuckets:{},orderBucketUnsubs:[],integrationOrdersUnsub:null,useIntegrationView:false,
                 orderSearch:"",
                 activeItem:null,tempQty:1,tempNote:"",tempSels:[],tempOG:{},tempPosExtras:[],
                 toastMsg:"",toastTimer:null,lastOrderId:null,
@@ -609,6 +610,102 @@
                 if(isNaN(d.getTime()))return '-';
                 var pad=function(n){return('0'+n).slice(-2);};
                 return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+' '+pad(d.getHours())+':'+pad(d.getMinutes());
+            },
+            isIntegrationReadOnlyOrder:function(order){
+                return !!(order&&order._integrationReadOnly);
+            },
+            isPhoneCommandOrder:function(order){
+                return !!(order&&this.isIntegrationReadOnlyOrder(order)&&(order.source==='phone_ai'||order.source==='pos_local'));
+            },
+            resolvePhoneCommandSourceOrderId:function(order){
+                var original=(order&&order._integrationOriginal)||{};
+                var directValue=(order&&order.sourceOrderId)||original.sourceOrderId||((original.audit&&original.audit.originalSourceSnapshotId)||'')||((original.phoneAi&&original.phoneAi.rawJsonPath)||'');
+                if(directValue&&String(directValue).indexOf('/')!==-1){
+                    return String(directValue).split('/').pop().replace('_繁體.json','');
+                }
+                if(directValue)return String(directValue);
+                var id=order&&order.id?String(order.id):'';
+                var prefix=order&&order.source?(String(order.source)+'_'):'';
+                return prefix&&id.indexOf(prefix)===0?id.slice(prefix.length):id;
+            },
+            queuePhoneOrderCommand:function(order,action,extra){
+                var original=(order&&order._integrationOriginal)||{};
+                var sourceOrderId=this.resolvePhoneCommandSourceOrderId(order);
+                if(!sourceOrderId)return Promise.reject(new Error('找不到電話訂單來源編號'));
+                var commandId='cmd_'+Date.now()+'_'+Math.random().toString(36).slice(2,8);
+                return set(ref(db,'integration_sync/phone_order_commands/'+commandId),Object.assign({
+                    commandId:commandId,
+                    action:action,
+                    source:'pos_ui',
+                    createdAt:new Date().toISOString(),
+                    orderId:order&&order.id?order.id:'',
+                    sourceType:order&&order.source?order.source:'',
+                    sourceOrderId:sourceOrderId,
+                    serialNumber:order&&order.serialNumber?String(order.serialNumber):'',
+                    rawJsonPath:(original.phoneAi&&original.phoneAi.rawJsonPath)||''
+                },extra||{}));
+            },
+            buildPhoneCommandPayment:function(realPm,oldPm,oldPaid){
+                if(realPm==='cash')return { paymentMethod:'cash', paymentStatus:'paid' };
+                if(realPm==='store')return { paymentMethod:'store', paymentStatus:'unpaid' };
+                if(realPm==='linepay_offline')return { paymentMethod:'linepay_offline', paymentStatus:oldPaid?'paid':'pending' };
+                if(realPm==='linepay')return { paymentMethod:'linepay', paymentStatus:oldPaid?'paid':'pending' };
+                return { paymentMethod:realPm||oldPm||'store', paymentStatus:oldPaid?'paid':'unpaid' };
+            },
+            buildPhoneEditCommandPayload:function(targetOrder,extra){
+                return Object.assign({
+                    items:JSON.parse(JSON.stringify(this.cart||[])),
+                    total:Number(this.cartTotal||0),
+                    orderType:this.editOrderType||'takeout',
+                    tableLabel:this.editTableLabel||'',
+                    pickupDate:this.editPickupDate||'',
+                    pickupTime:this.editPickupTime||'',
+                    orderNote:this.editOrderNote||'',
+                    status:(targetOrder&&targetOrder.status)||'new'
+                },extra||{});
+            },
+            resetIntegrationOrdersListener:function(){
+                var s=this;
+                try{if(s.integrationOrdersUnsub)s.integrationOrdersUnsub();}catch(e){}
+                s.integrationOrdersUnsub=null;
+            },
+            listenIntegratedOrders:function(){
+                var s=this;
+                s.resetIntegrationOrdersListener();
+                var fallbackActivated=false;
+                var activateFallback=function(){
+                    if(fallbackActivated)return;
+                    fallbackActivated=true;
+                    s.useIntegrationView=false;
+                    s.resetOrderBucketListeners();
+                };
+                var integrationRef=ref(db,'integration_views/merged_orders_active');
+                s.integrationOrdersUnsub=onValue(integrationRef,function(snap){
+                    if(!snap.exists()){
+                        activateFallback();
+                        return;
+                    }
+                    var view=snap.val()||{};
+                    var parsed=Array.isArray(view.orders)?view.orders.slice():[];
+                    parsed.sort(function(a,b){
+                        var w={new:1,making:2,done:3,cancelled:4};
+                        if(w[a.status]!==w[b.status])return w[a.status]-w[b.status];
+                        var aNo=a.orderNo||0,bNo=b.orderNo||0;
+                        if(aNo!==bNo)return bNo-aNo;
+                        return (b.timestamp||0)-(a.timestamp||0);
+                    });
+                    s.onlineOrders=parsed;
+                    s.useIntegrationView=true;
+                    s.ordersLoading=false;
+                    if(s.editingOrder){
+                        var found=s.onlineOrders.find(function(o){return o.id===s.editingOrder.id;});
+                        if(found)s.editingOrder=found;
+                    }
+                },function(err){
+                    console.error('❌ integration_views 監聽失敗:',err&&err.message?err.message:err);
+                    s.ordersLoading=false;
+                    activateFallback();
+                });
             },
             orderItemsSummary:function(order){
                 var items=(order&&order.items)||[];
@@ -824,7 +921,7 @@
                         s.linePayServerUrl=v.linePayServerUrl||'';s.linePayConfirmUrl=v.linePayConfirmUrl||'';s.posTables=v.posTables||[];}
                 });
                 s.ordersLoading=true;
-                s.resetOrderBucketListeners();
+                s.listenIntegratedOrders();
                 // ★ 監聽 linepay_transactions（限最近100筆）— 改用 child 事件，只下載變更的單筆
                 (function(){
                     var txnQ=query(ref(db,'linepay_transactions'),limitToLast(100));
@@ -1390,6 +1487,10 @@
                     });
             },
             viewOrder:function(order){
+                if(this.isIntegrationReadOnlyOrder(order)&&!this.isPhoneCommandOrder(order)){
+                    this.toast('☎️ 電話整合訂單目前請在電話後台修改');
+                    return;
+                }
                 this.editingOrder=order;
                 this.cart=JSON.parse(JSON.stringify(order.items||[]));
                 this.editPickupDate=order.pickupDate||'';
@@ -1516,7 +1617,17 @@
                     if(s.editPickupTime)upd.pickupTime=s.editPickupTime;
                     if(s.editOrderNote!==undefined)upd.orderNote=s.editOrderNote;
 
-                    if(realPm==='cash'){
+                    if(s.isPhoneCommandOrder(targetOrder)){
+                        var phonePayment=s.buildPhoneCommandPayment(realPm,oldPm,oldPaid);
+                        await s.queuePhoneOrderCommand(targetOrder,'replace_order',s.buildPhoneEditCommandPayload(targetOrder,{
+                            paymentMethod:phonePayment.paymentMethod,
+                            paymentStatus:phonePayment.paymentStatus
+                        }));
+                        s.toast('✅ 電話整合訂單修改命令已送出');
+                        s.exitOnline();
+                        return;
+                    }
+if(realPm==='cash'){
                         upd.paymentMethod='cash';
                         upd.paymentStatus='paid';
                         await s.updateOrderMirror(id,upd,targetOrder);
@@ -1641,6 +1752,22 @@
             setStatus:function(id,status){
                 var s=this;
                 var order=s.editingOrder&&s.editingOrder.id===id?s.editingOrder:null;
+                var targetOrder=order||s.onlineOrders.find(function(o){return o.id===id;})||null;
+                if(s.isPhoneCommandOrder(targetOrder)){
+                    s.queuePhoneOrderCommand(targetOrder,'set_status',{status:status})
+                        .then(function(){
+                            var m={new:"已送出電話訂單還原命令",making:"✅ 已送出電話訂單接單命令",done:"✅ 已送出電話訂單完成命令",cancelled:"已送出電話訂單取消命令"};
+                            s.toast(m[status]||"已送出電話訂單命令");
+                            if(s.editingOrder&&s.editingOrder.id===id){
+                                s.editingOrder=Object.assign({},s.editingOrder,{status:status});
+                            }
+                        }).catch(function(e){alert("電話訂單命令失敗："+e.message);});
+                    return;
+                }
+                if(s.isIntegrationReadOnlyOrder(targetOrder)){
+                    s.toast('☎️ 電話整合訂單請在電話後台操作');
+                    return;
+                }
 
                 if(status==='cancelled'){
                     var target=order||s.onlineOrders.find(function(o){return o.id===id;})||{id:id,paymentMethod:'store',paymentStatus:''};
@@ -1664,6 +1791,16 @@
             // ── 列印功能（從 admin.html 移植：remove+set 確保必然觸發 Node-RED）──
             printOrder:function(order){
                 var s=this;
+                if(s.isPhoneCommandOrder(order)){
+                    s.queuePhoneOrderCommand(order,'print_kitchen')
+                        .then(function(){s.toast("🖨️ 已送出電話訂單補印命令");})
+                        .catch(function(e){alert("電話訂單補印失敗："+e.message);});
+                    return;
+                }
+                if(s.isIntegrationReadOnlyOrder(order)){
+                    s.toast('☎️ 電話整合訂單請在電話後台補印');
+                    return;
+                }
                 s.clearPrintTaskMirror(order.id,order).then(function(){
                     return s.setPrintTaskMirror(order.id,"kitchen_reprint_"+Date.now(),order);
                 }).then(function(){s.toast("🖨️ 補印工單中...");})
@@ -1671,6 +1808,16 @@
             },
             printReceipt:function(order){
                 var s=this;
+                if(s.isPhoneCommandOrder(order)){
+                    s.queuePhoneOrderCommand(order,'print_receipt')
+                        .then(function(){s.toast("🧾 已送出電話訂單收據命令");})
+                        .catch(function(e){alert("電話訂單收據失敗："+e.message);});
+                    return;
+                }
+                if(s.isIntegrationReadOnlyOrder(order)){
+                    s.toast('☎️ 電話整合訂單請在電話後台列印收據');
+                    return;
+                }
                 s.clearPrintTaskMirror(order.id,order).then(function(){
                     return s.setPrintTaskMirror(order.id,"receipt_"+Date.now(),order);
                 }).then(function(){s.toast("🧾 印收據中...");})
@@ -1678,6 +1825,17 @@
             },
             cancelOrder:function(order){
                 var s=this;
+                if(s.isPhoneCommandOrder(order)){
+                    if(!confirm("確定要取消這筆電話訂單嗎？"))return;
+                    s.queuePhoneOrderCommand(order,'cancel_order')
+                        .then(function(){s.toast("✅ 已送出電話訂單取消命令");if(s.editingOrder&&s.editingOrder.id===order.id)s.exitOnline();})
+                        .catch(function(e){alert("電話訂單取消失敗："+e.message);});
+                    return;
+                }
+                if(s.isIntegrationReadOnlyOrder(order)){
+                    s.toast('☎️ 電話整合訂單請在電話後台取消');
+                    return;
+                }
                 s.cancelOrderCore(order).catch(function(e){alert("取消訂單失敗："+e.message);});
             },
 
