@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI電話點餐 管理後台</title>
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <style>
+    :root { --bg:#0f172a; --panel:#111827; --line:#334155; --text:#e5e7eb; --muted:#94a3b8; }
+    * { box-sizing: border-box; }
+    body { margin:0; background:radial-gradient(circle at top right,#1e293b 0%,#0f172a 60%); color:var(--text); font-family:"Noto Sans TC","Microsoft JhengHei",sans-serif; }
+    .wrap { max-width:1400px; margin:0 auto; padding:20px; min-height:100vh; }
+    .top { display:flex; justify-content:space-between; gap:10px; align-items:center; margin-bottom:12px; flex-wrap:wrap; }
+    .title h1 { margin:0; font-size:26px; font-weight:900; }
+    .title p { margin:4px 0 0; color:var(--muted); font-size:13px; }
+    .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    .chip { background:#0b1220; border:1px solid var(--line); color:#93c5fd; border-radius:999px; padding:6px 10px; font-size:12px; font-weight:700; }
+    .panel { background:rgba(17,24,39,.9); border:1px solid #1f2937; border-radius:14px; padding:14px; }
+    .tabs { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px; }
+    .tab { border:1px solid var(--line); background:#0b1220; color:var(--muted); padding:8px 12px; border-radius:10px; font-size:13px; font-weight:800; cursor:pointer; }
+    .tab.active { color:#fff; border-color:#0ea5e9; background:#0b2a3a; }
+    .grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+    .section-title { margin:0 0 8px; font-size:16px; font-weight:900; }
+    .hint { margin:0 0 8px; color:var(--muted); font-size:12px; line-height:1.45; }
+    .list { display:grid; gap:8px; max-height:62vh; overflow:auto; padding-right:3px; }
+    .item { border:1px solid var(--line); background:#0b1220; border-radius:12px; padding:10px; display:grid; gap:7px; }
+    .item-head { display:flex; justify-content:space-between; align-items:center; gap:8px; }
+    .item-name { font-size:14px; font-weight:800; color:#f8fafc; }
+    .item-sub { color:var(--muted); font-size:12px; }
+    .ctrl { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+    .mini { min-width:34px; height:30px; border-radius:8px; border:1px solid var(--line); background:#1f2937; color:#cbd5e1; font-weight:900; cursor:pointer; }
+    .field,textarea,select { width:100%; border-radius:10px; border:1px solid var(--line); background:#0b1220; color:var(--text); padding:9px 10px; font-size:13px; outline:none; }
+    textarea { min-height:140px; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+    .btn { border:1px solid var(--line); background:#1f2937; color:var(--text); padding:8px 12px; border-radius:10px; font-size:13px; font-weight:700; cursor:pointer; }
+    .btn:disabled { opacity:.55; cursor:not-allowed; }
+    .btn.primary { background:#0369a1; border-color:#0ea5e9; }
+    .btn.ok { background:#065f46; border-color:#10b981; }
+    .btn.warn { background:#78350f; border-color:#f59e0b; }
+    .btn.danger { background:#7f1d1d; border-color:#ef4444; }
+    .btn.ghost { background:transparent; }
+    .oktxt { color:#86efac; font-size:12px; }
+    .err { color:#fda4af; font-size:12px; }
+    .spacer { flex:1; }
+    .login-box { max-width:460px; margin:6vh auto 0; border:1px solid var(--line); background:rgba(15,23,42,.92); border-radius:16px; padding:16px; display:grid; gap:10px; }
+    .template-editor { border:1px solid var(--line); border-radius:12px; padding:10px; background:#0b1220; display:grid; gap:10px; }
+    .choice-row { display:grid; grid-template-columns:1fr 120px auto; gap:8px; align-items:center; }
+    @media (max-width:1080px){ .grid{ grid-template-columns:1fr; } }
+  </style>
+</head>
+<body>
+  <div id="app" class="wrap">
+    <div class="top">
+      <div class="title">
+        <h1>AI電話點餐 專用管理後台</h1>
+        <p>共用 Firebase 路徑：<code>menu</code>、<code>settings/categories</code>、<code>settings/optionTemplates</code></p>
+      </div>
+      <div class="row" v-if="user">
+        <span class="chip">{{ user.email }}</span>
+        <button class="btn ghost" @click="reloadAll" :disabled="loading">重新整理</button>
+        <button class="btn danger" @click="logout">登出</button>
+      </div>
+    </div>
+
+    <div v-if="!user" class="login-box">
+      <h3 style="margin:0;">登入後才能編輯</h3>
+      <input class="field" v-model.trim="loginEmail" placeholder="Email" />
+      <input class="field" type="password" v-model="loginPassword" placeholder="Password" />
+      <button class="btn primary" @click="login" :disabled="authLoading">登入</button>
+      <p class="err" v-if="authError">{{ authError }}</p>
+      <p class="hint">建議使用與 <code>manage.html</code> 相同的管理帳號。</p>
+    </div>
+
+    <div v-else class="panel">
+      <div class="tabs">
+        <button class="tab" :class="{active:tab==='categories'}" @click="tab='categories'">分類排序</button>
+        <button class="tab" :class="{active:tab==='menu'}" @click="tab='menu'">餐點排序與選項</button>
+        <button class="tab" :class="{active:tab==='templates'}" @click="tab='templates'">選項模板</button>
+      </div>
+
+      <template v-if="tab==='categories'">
+        <h3 class="section-title">分類排序（寫入 <code>settings/categories</code>）</h3>
+        <p class="hint">電話編輯 POS 與現場 POS 都會以這份分類順序為主。用 ↑↓ 微調後按儲存。</p>
+        <div class="list" style="max-height:70vh;">
+          <div class="item" v-for="(cat,idx) in categoriesDraft" :key="'cat_'+idx">
+            <div class="item-head">
+              <div class="item-name">{{ cat }}</div>
+              <div class="ctrl">
+                <button class="mini" @click="moveCategory(idx,-1)" :disabled="idx===0">▲</button>
+                <button class="mini" @click="moveCategory(idx,1)" :disabled="idx===categoriesDraft.length-1">▼</button>
+                <button class="mini" @click="removeCategory(idx)">✕</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="row" style="margin-top:10px;">
+          <input class="field" style="max-width:300px;" v-model.trim="newCategory" placeholder="新增分類名稱" />
+          <button class="btn" @click="addCategory">新增分類</button>
+          <button class="btn ok" @click="saveCategories" :disabled="saving.categories">儲存分類順序</button>
+          <span class="oktxt" v-if="savedMsg.categories">{{ savedMsg.categories }}</span>
+        </div>
+      </template>
+
+      <template v-if="tab==='menu'">
+        <div class="grid">
+          <section>
+            <h3 class="section-title">餐點排序（寫入 <code>menu/*/sortOrder</code>）</h3>
+            <p class="hint">可先選分類再調整。排序後按「儲存餐點排序」。</p>
+            <div class="row" style="margin-bottom:8px;">
+              <select class="field" style="max-width:260px;" v-model="menuFilterCategory">
+                <option value="">全部分類</option>
+                <option v-for="cat in categoryOptionsFromMenu" :key="'filter_'+cat" :value="cat">{{ cat }}</option>
+              </select>
+              <button class="btn ok" @click="saveMenuSort" :disabled="saving.menuSort">儲存餐點排序</button>
+              <span class="oktxt" v-if="savedMsg.menuSort">{{ savedMsg.menuSort }}</span>
+            </div>
+            <div class="list">
+              <div class="item" v-for="(item,idx) in filteredMenuItems" :key="item.id">
+                <div class="item-head">
+                  <div>
+                    <div class="item-name">{{ item.name || item.label }}</div>
+                    <div class="item-sub">{{ item.category }} ・ ${{ Number(item.price||0) }}</div>
+                  </div>
+                  <div class="ctrl">
+                    <button class="mini" @click="moveMenuByFilteredIndex(idx,-1)" :disabled="idx===0">▲</button>
+                    <button class="mini" @click="moveMenuByFilteredIndex(idx,1)" :disabled="idx===filteredMenuItems.length-1">▼</button>
+                    <button class="btn" @click="openMenuOptionEditor(item.id)">編輯選項</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+          <section>
+            <h3 class="section-title">餐點選項（寫入 <code>menu/*/optionGroups</code>）</h3>
+            <p class="hint">電話 POS 直接讀這份 optionGroups。可先套用模板再微調 JSON。</p>
+            <div v-if="!editingMenuItem" class="item-sub">請先在左側點「編輯選項」。</div>
+            <template v-else>
+              <div class="item" style="margin-bottom:8px;">
+                <div class="item-name">{{ editingMenuItem.name || editingMenuItem.label }}</div>
+                <div class="item-sub">{{ editingMenuItem.category }}</div>
+                <div class="row">
+                  <select class="field" style="max-width:260px;" v-model="selectedTemplateIdToApply">
+                    <option value="">選擇模板套用</option>
+                    <option v-for="tpl in templatesSorted" :key="'apply_'+tpl.id" :value="tpl.id">{{ tpl.templateName }}（{{ tpl.groupName }}）</option>
+                  </select>
+                  <button class="btn warn" @click="applyTemplateToMenuOptionGroups">套用模板到此餐點</button>
+                </div>
+              </div>
+              <textarea v-model="menuOptionGroupsDraftJson"></textarea>
+              <div class="row" style="margin-top:8px;">
+                <button class="btn" @click="formatMenuOptionGroupsJson">格式化 JSON</button>
+                <button class="btn ok" @click="saveMenuOptionGroups" :disabled="saving.menuOptionGroups">儲存餐點選項</button>
+                <span class="oktxt" v-if="savedMsg.menuOptionGroups">{{ savedMsg.menuOptionGroups }}</span>
+              </div>
+              <p class="err" v-if="menuOptionGroupsError">{{ menuOptionGroupsError }}</p>
+            </template>
+          </section>
+        </div>
+      </template>
+
+      <template v-if="tab==='templates'">
+        <div class="grid">
+          <section>
+            <h3 class="section-title">模板列表</h3>
+            <p class="hint">模板儲存在 <code>settings/optionTemplates</code>，所有前台共用。</p>
+            <div class="row" style="margin-bottom:8px;">
+              <button class="btn" @click="newTemplate">新增模板</button>
+              <button class="btn ok" @click="saveTemplateOrder" :disabled="saving.templateOrder">儲存模板排序</button>
+              <span class="oktxt" v-if="savedMsg.templateOrder">{{ savedMsg.templateOrder }}</span>
+            </div>
+            <div class="list">
+              <div class="item" v-for="(tpl,idx) in templatesSorted" :key="tpl.id">
+                <div class="item-head">
+                  <div>
+                    <div class="item-name">{{ tpl.templateName }}</div>
+                    <div class="item-sub">{{ tpl.groupName }} ・ {{ tpl.pricing }} ・ {{ tpl.type }}</div>
+                  </div>
+                  <div class="ctrl">
+                    <button class="mini" @click="moveTemplate(idx,-1)" :disabled="idx===0">▲</button>
+                    <button class="mini" @click="moveTemplate(idx,1)" :disabled="idx===templatesSorted.length-1">▼</button>
+                    <button class="btn" @click="editTemplate(tpl.id)">編輯</button>
+                    <button class="btn danger" @click="deleteTemplate(tpl.id)">刪除</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+          <section>
+            <h3 class="section-title">模板編輯器</h3>
+            <div class="template-editor">
+              <input class="field" v-model.trim="templateForm.templateName" placeholder="模板名稱（例：套餐飲料）" />
+              <input class="field" v-model.trim="templateForm.groupName" placeholder="群組名稱（例：飲料名稱）" />
+              <div class="row">
+                <select class="field" v-model="templateForm.type" style="max-width:180px;">
+                  <option value="radio">單選 radio</option>
+                  <option value="checkbox">多選 checkbox</option>
+                </select>
+                <select class="field" v-model="templateForm.pricing" style="max-width:220px;">
+                  <option value="setPrice">setPrice（完整售價）</option>
+                  <option value="addDelta">addDelta（直接加價）</option>
+                  <option value="mealUpgrade">mealUpgrade（套餐補差價）</option>
+                </select>
+                <input class="field" type="number" min="0" v-model.number="templateForm.baseValue" style="max-width:160px;" placeholder="baseValue" />
+                <input class="field" type="number" min="0" v-model.number="templateForm.defaultIdx" style="max-width:160px;" placeholder="defaultIdx" />
+              </div>
+              <div class="item-sub">選項（choices）</div>
+              <div class="choice-row" v-for="(ch,idx) in templateForm.choices" :key="'ch_'+idx">
+                <input class="field" v-model.trim="ch.name" placeholder="選項名稱" />
+                <input class="field" type="number" min="0" v-model.number="ch.price" placeholder="price" />
+                <div class="ctrl">
+                  <button class="mini" @click="moveChoice(idx,-1)" :disabled="idx===0">▲</button>
+                  <button class="mini" @click="moveChoice(idx,1)" :disabled="idx===templateForm.choices.length-1">▼</button>
+                  <button class="mini" @click="removeChoice(idx)">✕</button>
+                </div>
+              </div>
+              <div class="row">
+                <button class="btn" @click="addChoice">新增選項</button>
+                <button class="btn warn" @click="fillChoicesFromStandardDrinks">套餐飲料快速匯入</button>
+                <span class="spacer"></span>
+                <button class="btn ok" @click="saveTemplate" :disabled="saving.template">儲存模板</button>
+              </div>
+              <p class="err" v-if="templateError">{{ templateError }}</p>
+              <p class="oktxt" v-if="savedMsg.template">{{ savedMsg.template }}</p>
+            </div>
+          </section>
+        </div>
+      </template>
+    </div>
+  </div>
+
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
+    import { getDatabase, ref, get, update, push, remove } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
+    import { getAuth, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyA2yraPj4XWmZw4JvB9szGQ9T6QGMrGzqE",
+      authDomain: "breakfast-ai-system.firebaseapp.com",
+      databaseURL: "https://breakfast-ai-system-default-rtdb.asia-southeast1.firebasedatabase.app",
+      projectId: "breakfast-ai-system",
+      storageBucket: "breakfast-ai-system.firebasestorage.app",
+      messagingSenderId: "845920946742",
+      appId: "1:845920946742:web:34f9d5f2e4c1f6f16f5927"
+    };
+    const app = initializeApp(firebaseConfig);
+    const db = getDatabase(app);
+    const auth = getAuth(app);
+    setPersistence(auth, browserLocalPersistence).catch(() => {});
+    const { createApp } = Vue;
+
+    createApp({
+      data() {
+        return {
+          user: null, tab: "categories", loading: false, authLoading: false, authError: "",
+          loginEmail: localStorage.getItem("phone_manage_email") || "", loginPassword: "",
+          menuItems: [], categoriesDraft: [], newCategory: "", optionTemplates: [], standardDrinks: [],
+          menuFilterCategory: "", editingMenuItemId: "", menuOptionGroupsDraftJson: "[]", menuOptionGroupsError: "", selectedTemplateIdToApply: "",
+          templateEditingId: "", templateError: "",
+          templateForm: { templateName: "", groupName: "", type: "radio", pricing: "setPrice", baseValue: 0, defaultIdx: 0, choices: [{ name: "", price: 0 }] },
+          saving: { categories: false, menuSort: false, menuOptionGroups: false, templateOrder: false, template: false },
+          savedMsg: { categories: "", menuSort: "", menuOptionGroups: "", templateOrder: "", template: "" }
+        };
+      },
+      computed: {
+        categoryOptionsFromMenu() { return Array.from(new Set([...(this.categoriesDraft || []), ...this.menuItems.map(i => (i.category || "").trim()).filter(Boolean)])); },
+        filteredMenuItems() { return !this.menuFilterCategory ? this.menuItems.slice() : this.menuItems.filter(i => (i.category || "") === this.menuFilterCategory); },
+        editingMenuItem() { return this.menuItems.find(i => i.id === this.editingMenuItemId) || null; },
+        templatesSorted() { return this.optionTemplates.slice().sort((a,b)=> (Number.isFinite(Number(a.sortOrder))?Number(a.sortOrder):9e9) - (Number.isFinite(Number(b.sortOrder))?Number(b.sortOrder):9e9)); }
+      },
+      mounted() { onAuthStateChanged(auth, async (u) => { this.user = u || null; if (u) await this.reloadAll(); }); },
+      methods: {
+        clone(v){ return JSON.parse(JSON.stringify(v || null)); },
+        resetSaved(){ this.savedMsg = { categories:"", menuSort:"", menuOptionGroups:"", templateOrder:"", template:"" }; },
+        normalizeMenuItems(obj){ const d=(obj&&typeof obj==="object")?obj:{}; return Object.entries(d).map(([id,it])=>({id,...(it||{})})).sort((a,b)=>((Number.isFinite(Number(a.sortOrder))?Number(a.sortOrder):9e9)-(Number.isFinite(Number(b.sortOrder))?Number(b.sortOrder):9e9))||String(a.name||"").localeCompare(String(b.name||""),"zh-Hant")); },
+        normalizeTemplates(obj){ const d=(obj&&typeof obj==="object")?obj:{}; return Object.entries(d).map(([id,t])=>({id,...(t||{})})); },
+        async login(){ this.authError=""; if(!this.loginEmail||!this.loginPassword){ this.authError="請輸入帳號密碼"; return; } this.authLoading=true; try{ await signInWithEmailAndPassword(auth,this.loginEmail,this.loginPassword); localStorage.setItem("phone_manage_email",this.loginEmail); this.loginPassword=""; }catch(e){ this.authError="登入失敗："+(e&&e.message?e.message:"未知錯誤"); } finally { this.authLoading=false; } },
+        async logout(){ await signOut(auth); },
+        async reloadAll(){
+          this.loading=true; this.resetSaved();
+          try{
+            const [settingsSnap,menuSnap,tplSnap,stdDrinkSnap]=await Promise.all([get(ref(db,"settings")),get(ref(db,"menu")),get(ref(db,"settings/optionTemplates")),get(ref(db,"settings/standardDrinks"))]);
+            const settings=settingsSnap.exists()?settingsSnap.val():{};
+            this.categoriesDraft=Array.isArray(settings.categories)?settings.categories.slice():[];
+            this.menuItems=this.normalizeMenuItems(menuSnap.exists()?menuSnap.val():{});
+            this.optionTemplates=this.normalizeTemplates(tplSnap.exists()?tplSnap.val():{});
+            this.standardDrinks=Array.isArray(stdDrinkSnap.val())?stdDrinkSnap.val():[];
+            if(!this.editingMenuItemId&&this.menuItems.length) this.openMenuOptionEditor(this.menuItems[0].id);
+            else if(this.editingMenuItemId) this.openMenuOptionEditor(this.editingMenuItemId);
+          }catch(e){ alert("讀取失敗："+(e&&e.message?e.message:"未知錯誤")); } finally { this.loading=false; }
+        },
+        addCategory(){ const v=String(this.newCategory||"").trim(); if(!v||this.categoriesDraft.includes(v)) return; this.categoriesDraft.push(v); this.newCategory=""; },
+        removeCategory(idx){ this.categoriesDraft.splice(idx,1); },
+        moveCategory(idx,delta){ const n=idx+delta; if(n<0||n>=this.categoriesDraft.length) return; const arr=this.categoriesDraft; const t=arr[idx]; arr.splice(idx,1); arr.splice(n,0,t); },
+        async saveCategories(){ this.saving.categories=true; this.savedMsg.categories=""; try{ await update(ref(db,"settings"),{ categories:this.categoriesDraft.slice() }); this.savedMsg.categories="✅ 已儲存"; } catch(e){ alert("儲存分類失敗："+(e&&e.message?e.message:"未知錯誤")); } finally { this.saving.categories=false; } },
+        moveMenuByFilteredIndex(i,d){ const list=this.filteredMenuItems; const a=list[i], b=list[i+d]; if(!a||!b) return; const full=this.menuItems; const ia=full.findIndex(x=>x.id===a.id), ib=full.findIndex(x=>x.id===b.id); if(ia<0||ib<0) return; const mv=full.splice(ia,1)[0]; full.splice(ib,0,mv); },
+        async saveMenuSort(){ this.saving.menuSort=true; this.savedMsg.menuSort=""; try{ const updates={}; this.menuItems.forEach((it,idx)=>{ updates["menu/"+it.id+"/sortOrder"]=idx; }); await update(ref(db),updates); this.savedMsg.menuSort="✅ 已儲存"; await this.reloadAll(); } catch(e){ alert("儲存餐點排序失敗："+(e&&e.message?e.message:"未知錯誤")); } finally { this.saving.menuSort=false; } },
+        openMenuOptionEditor(id){ this.menuOptionGroupsError=""; this.editingMenuItemId=id; const item=this.menuItems.find(i=>i.id===id); const groups=Array.isArray(item&&item.optionGroups)?item.optionGroups:[]; this.menuOptionGroupsDraftJson=JSON.stringify(groups,null,2); },
+        formatMenuOptionGroupsJson(){ this.menuOptionGroupsError=""; try{ const p=JSON.parse(this.menuOptionGroupsDraftJson||"[]"); if(!Array.isArray(p)) throw new Error("optionGroups 必須是陣列"); this.menuOptionGroupsDraftJson=JSON.stringify(p,null,2); } catch(e){ this.menuOptionGroupsError="JSON 格式錯誤："+(e&&e.message?e.message:"未知錯誤"); } },
+        applyTemplateToMenuOptionGroups(){ this.menuOptionGroupsError=""; if(!this.selectedTemplateIdToApply) return; const tpl=this.optionTemplates.find(t=>t.id===this.selectedTemplateIdToApply); if(!tpl) return; try{ const p=JSON.parse(this.menuOptionGroupsDraftJson||"[]"); if(!Array.isArray(p)) throw new Error("optionGroups 必須是陣列"); p.push({ templateId:tpl.id, templateName:tpl.templateName||"", groupName:tpl.groupName||"", type:tpl.type||"radio", pricing:tpl.pricing||"addDelta", baseValue:Number(tpl.baseValue||0), defaultIdx:Number(tpl.defaultIdx||0), choices:this.clone(Array.isArray(tpl.choices)?tpl.choices:[]) }); this.menuOptionGroupsDraftJson=JSON.stringify(p,null,2); } catch(e){ this.menuOptionGroupsError="套用模板失敗："+(e&&e.message?e.message:"未知錯誤"); } },
+        async saveMenuOptionGroups(){ this.saving.menuOptionGroups=true; this.savedMsg.menuOptionGroups=""; this.menuOptionGroupsError=""; try{ const item=this.editingMenuItem; if(!item) throw new Error("尚未選擇餐點"); const p=JSON.parse(this.menuOptionGroupsDraftJson||"[]"); if(!Array.isArray(p)) throw new Error("optionGroups 必須是陣列"); await update(ref(db,"menu/"+item.id),{ optionGroups:p }); this.savedMsg.menuOptionGroups="✅ 已儲存"; await this.reloadAll(); } catch(e){ this.menuOptionGroupsError="儲存失敗："+(e&&e.message?e.message:"未知錯誤"); } finally { this.saving.menuOptionGroups=false; } },
+        moveTemplate(i,d){ const arr=this.templatesSorted; const n=i+d; if(n<0||n>=arr.length) return; const a=arr[i],b=arr[n]; if(!a||!b) return; const ia=this.optionTemplates.findIndex(t=>t.id===a.id), ib=this.optionTemplates.findIndex(t=>t.id===b.id); if(ia<0||ib<0) return; const sa=Number(this.optionTemplates[ia].sortOrder||0), sb=Number(this.optionTemplates[ib].sortOrder||0); this.optionTemplates[ia].sortOrder=sb; this.optionTemplates[ib].sortOrder=sa; },
+        async saveTemplateOrder(){ this.saving.templateOrder=true; this.savedMsg.templateOrder=""; try{ const updates={}; this.templatesSorted.forEach((tpl,idx)=>{ updates["settings/optionTemplates/"+tpl.id+"/sortOrder"]=idx; }); await update(ref(db),updates); this.savedMsg.templateOrder="✅ 已儲存"; await this.reloadAll(); } catch(e){ alert("儲存模板排序失敗："+(e&&e.message?e.message:"未知錯誤")); } finally { this.saving.templateOrder=false; } },
+        newTemplate(){ this.templateEditingId=""; this.templateError=""; this.templateForm={ templateName:"", groupName:"", type:"radio", pricing:"setPrice", baseValue:0, defaultIdx:0, choices:[{name:"",price:0}] }; },
+        editTemplate(id){ const tpl=this.optionTemplates.find(t=>t.id===id); if(!tpl) return; this.templateEditingId=id; this.templateError=""; this.templateForm={ templateName:tpl.templateName||"", groupName:tpl.groupName||"", type:tpl.type||"radio", pricing:tpl.pricing||"setPrice", baseValue:Number(tpl.baseValue||0), defaultIdx:Number(tpl.defaultIdx||0), choices:this.clone(Array.isArray(tpl.choices)?tpl.choices:[{name:"",price:0}]) }; },
+        async deleteTemplate(id){ if(!confirm("確定刪除此模板？")) return; try{ await remove(ref(db,"settings/optionTemplates/"+id)); await this.reloadAll(); } catch(e){ alert("刪除失敗："+(e&&e.message?e.message:"未知錯誤")); } },
+        addChoice(){ this.templateForm.choices.push({name:"",price:0}); },
+        removeChoice(i){ this.templateForm.choices.splice(i,1); },
+        moveChoice(i,d){ const arr=this.templateForm.choices; const n=i+d; if(n<0||n>=arr.length) return; const t=arr[i]; arr.splice(i,1); arr.splice(n,0,t); },
+        fillChoicesFromStandardDrinks(){ if(!Array.isArray(this.standardDrinks)||!this.standardDrinks.length) return; this.templateForm.choices=this.standardDrinks.map(d=>({name:String((d&&d.name)||"").trim(),price:Number((d&&d.price)||0)})).filter(c=>c.name); if(!this.templateForm.choices.length) this.templateForm.choices=[{name:"",price:0}]; },
+        async saveTemplate(){
+          this.saving.template=true; this.savedMsg.template=""; this.templateError="";
+          try{
+            const f=this.templateForm;
+            if(!String(f.templateName||"").trim()) throw new Error("請填模板名稱");
+            if(!String(f.groupName||"").trim()) throw new Error("請填群組名稱");
+            const choices=(Array.isArray(f.choices)?f.choices:[]).map(c=>({name:String((c&&c.name)||"").trim(),price:Number((c&&c.price)||0)})).filter(c=>c.name);
+            if(!choices.length) throw new Error("至少要有一個選項");
+            const payload={ templateName:String(f.templateName).trim(), groupName:String(f.groupName).trim(), type:String(f.type||"radio"), pricing:String(f.pricing||"setPrice"), baseValue:Number(f.baseValue||0), defaultIdx:Math.max(0,Number(f.defaultIdx||0)), choices, sortOrder:this.templateEditingId?Number((this.optionTemplates.find(t=>t.id===this.templateEditingId)||{}).sortOrder||0):this.optionTemplates.length };
+            if(this.templateEditingId) await update(ref(db,"settings/optionTemplates/"+this.templateEditingId),payload);
+            else await push(ref(db,"settings/optionTemplates"),payload);
+            this.savedMsg.template="✅ 已儲存"; await this.reloadAll();
+          } catch(e){ this.templateError=e&&e.message?e.message:"儲存模板失敗"; } finally { this.saving.template=false; }
+        }
+      }
+    }).mount("#app");
+  </script>
+</body>
+</html>
