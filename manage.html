@@ -499,9 +499,9 @@
                                     <span class="block text-gray-500 font-mono text-xs">#{{ order.id.slice(-4).toUpperCase() }}</span>
                                 </td>
                                 <td class="px-5 py-3 text-slate-300 font-mono text-xs">{{ formatTimestamp(order.timestamp) }}</td>
-                                <td class="px-4 py-3 text-white font-medium">{{ order.customer && order.customer.name ? order.customer.name : (order.customer || '顧客') }}</td>
+                                <td class="px-4 py-3 text-white font-medium">{{ getDisplayCustomerName(order) }}</td>
                                 <td class="px-4 py-3 text-slate-400 font-mono text-xs">{{ order.phone || (order.customer && order.customer.phone) || '-' }}</td>
-                                <td class="px-4 py-3 text-slate-300">{{ order.pickupDate ? order.pickupDate + ' ' : '' }}{{ order.pickupTime || '盡快' }}</td>
+                                <td class="px-4 py-3 text-slate-300">{{ order.pickupDate ? order.pickupDate + ' ' : '' }}{{ getDisplayPickupTime(order.pickupTime) }}</td>
                                 <td class="px-4 py-3 text-center">
                                     <span class="text-xs px-2 py-0.5 rounded-full font-bold"
                                         :class="order.status==='new'?'bg-blue-900/60 text-blue-300':order.status==='making'?'bg-yellow-900/60 text-yellow-300':order.status==='done'?'bg-emerald-900/60 text-emerald-300':(order.status==='cancelled'||(order.status==='archived'&&order.wasCancelled))?'bg-red-900/60 text-red-400':order.status==='archived'?'bg-emerald-900/60 text-emerald-300':'bg-gray-700 text-gray-400'">
@@ -925,7 +925,7 @@
         <div class="px-6 py-4 border-b border-slate-700 flex items-center justify-between">
             <div>
                 <p class="font-bold text-white text-base">No.{{ viewingOrder.orderNo ? String(viewingOrder.orderNo).padStart(3,"0") : "???" }} <span class="text-slate-400 font-mono text-sm">&nbsp;#{{ viewingOrder.id && viewingOrder.id.slice(-4).toUpperCase() }}</span></p>
-                <p class="text-slate-400 text-xs mt-0.5">{{ formatTimestamp(viewingOrder.timestamp) }} ・ {{ viewingOrder.customer && viewingOrder.customer.name ? viewingOrder.customer.name : (viewingOrder.customer || '顧客') }}</p>
+                <p class="text-slate-400 text-xs mt-0.5">{{ formatTimestamp(viewingOrder.timestamp) }} ・ {{ getDisplayCustomerName(viewingOrder) }}</p>
             </div>
             <button @click="viewingOrder = null" class="w-8 h-8 rounded-full bg-slate-700 hover:bg-slate-600 flex items-center justify-center text-slate-400 text-lg transition">×</button>
         </div>
@@ -939,7 +939,7 @@
                 <div v-if="item.optionGroupSelections && item.optionGroupSelections.length" class="flex flex-wrap gap-1 mt-1.5">
                     <span v-for="sel in item.optionGroupSelections" :key="sel.groupName"
                           class="text-xs bg-slate-700 text-slate-300 px-2 py-0.5 rounded-full">
-                        {{ sel.groupName }}：{{ sel.name }}<span v-if="sel.pricing==='mealUpgrade' && sel.price > sel.baseValue" class="text-orange-400 ml-0.5">+${{ sel.price - sel.baseValue }}</span>
+                        {{ getDisplayOptionGroupName(sel.groupName) }}：{{ sel.name }}<span v-if="sel.pricing==='mealUpgrade' && sel.price > sel.baseValue" class="text-orange-400 ml-0.5">+${{ sel.price - sel.baseValue }}</span>
                     </span>
                 </div>
                 <div v-if="item.mealDrink" class="text-xs text-orange-400 mt-1">🧋 {{ item.mealDrink }}</div>
@@ -956,7 +956,7 @@
         <div class="px-5 py-4 border-t border-slate-700 bg-slate-800/80">
             <div class="flex justify-between items-center mb-1">
                 <span class="text-slate-400 text-sm">取餐時間</span>
-                <span class="text-white text-sm font-medium">{{ viewingOrder.pickupTime || '盡快' }}</span>
+                <span class="text-white text-sm font-medium">{{ getDisplayPickupTime(viewingOrder.pickupTime) }}</span>
             </div>
             <div class="flex justify-between items-center">
                 <span class="text-slate-400 text-sm">訂單總額</span>
@@ -1524,6 +1524,41 @@ window._doCountUp = function() {
                 var parsed = Date.parse(order.createdAt || order.createdAtDisplay || '');
                 return isNaN(parsed) ? 0 : parsed;
             },
+            getDisplayCustomerName: function(order) {
+                if (!order || typeof order !== 'object') return '\u9867\u5ba2';
+                var c = order.customer;
+                if (typeof c === 'string') {
+                    var t = c.trim();
+                    if (t && t !== '[object Object]') return t;
+                }
+                if (c && typeof c === 'object') {
+                    var cand = [c.name, c.displayName, c.customerName, c.label, c.value];
+                    for (var i = 0; i < cand.length; i++) {
+                        if (typeof cand[i] === 'string' && cand[i].trim()) return cand[i].trim();
+                    }
+                    if (c.name && typeof c.name === 'object') {
+                        var nested = c.name.text || c.name.value || c.name.name;
+                        if (typeof nested === 'string' && nested.trim()) return nested.trim();
+                    }
+                }
+                var fallback = [order.customerName, order.name, order.tableLabel];
+                for (var j = 0; j < fallback.length; j++) {
+                    if (typeof fallback[j] === 'string' && fallback[j].trim()) return fallback[j].trim();
+                }
+                return '\u9867\u5ba2';
+            },
+            getDisplayPickupTime: function(pickupTime) {
+                var t = String(pickupTime || '').trim();
+                if (!t) return '\u76e1\u5feb';
+                if (t.toUpperCase() === 'ASAP') return '\u76e1\u5feb';
+                return t;
+            },
+            getDisplayOptionGroupName: function(groupName) {
+                var key = String(groupName || '').trim().toLowerCase();
+                if (key === 'size' || key === 'combo_drink_size') return '\u5bb9\u91cf';
+                if (key === 'temp' || key === 'combo_drink_temp') return '\u6eab\u5ea6';
+                return String(groupName || '');
+            },
             normalizeStatsOrder: function(order) {
                 if (!order || typeof order !== 'object') return order;
                 var out = Object.assign({}, order);
@@ -1533,14 +1568,54 @@ window._doCountUp = function() {
                 if (!out.paymentMethod && out.payment && out.payment.method) out.paymentMethod = out.payment.method;
                 if (!out.paymentStatus && out.payment && out.payment.status) out.paymentStatus = out.payment.status;
                 if (!out.phone && out.customer && out.customer.phone) out.phone = out.customer.phone;
+                var customerObj = (out.customer && typeof out.customer === 'object') ? out.customer : {};
+                var customerName = '';
+                if (typeof out.customer === 'string') {
+                    var rawName = out.customer.trim();
+                    if (rawName && rawName !== '[object Object]') customerName = rawName;
+                } else if (customerObj) {
+                    if (typeof customerObj.name === 'string' && customerObj.name.trim()) customerName = customerObj.name.trim();
+                    else if (customerObj.name && typeof customerObj.name === 'object') {
+                        var nestedName = customerObj.name.text || customerObj.name.value || customerObj.name.name;
+                        if (typeof nestedName === 'string' && nestedName.trim()) customerName = nestedName.trim();
+                    } else {
+                        var altName = customerObj.displayName || customerObj.customerName || customerObj.label || customerObj.value;
+                        if (typeof altName === 'string' && altName.trim()) customerName = altName.trim();
+                    }
+                }
+                if (!customerName && typeof out.customerName === 'string' && out.customerName.trim()) customerName = out.customerName.trim();
+                if (!customerName && typeof out.name === 'string' && out.name.trim()) customerName = out.name.trim();
+                if (!customerName && typeof out.tableLabel === 'string' && out.tableLabel.trim()) customerName = out.tableLabel.trim();
+                if (!customerName) customerName = '\u9867\u5ba2';
+                var customerPhone = out.phone || '';
+                if (!customerPhone && customerObj && typeof customerObj.phone === 'string') customerPhone = customerObj.phone;
+                out.phone = customerPhone || '';
+                out.customer = { name: customerName, phone: out.phone };
                 if ((out.orderNo === undefined || out.orderNo === null || out.orderNo === '') && out.serialNumber !== undefined && out.serialNumber !== null && out.serialNumber !== '') {
                     var parsedNo = Number(out.serialNumber);
                     out.orderNo = Number.isFinite(parsedNo) && parsedNo > 0 ? parsedNo : out.serialNumber;
                 }
                 if (!out.pickupTime && out.pickupTimeLabel) out.pickupTime = out.pickupTimeLabel;
+                if (typeof out.pickupTime === 'string' && out.pickupTime.trim().toUpperCase() === 'ASAP') out.pickupTime = '\u76e1\u5feb';
                 if ((out.timestamp === undefined || out.timestamp === null || out.timestamp === 0)) {
                     var ts = this.getOrderTimestamp(out);
                     if (ts) out.timestamp = ts;
+                }
+                if (Array.isArray(out.items)) {
+                    out.items = out.items.map(function(item) {
+                        if (!item || typeof item !== 'object') return item;
+                        var it = Object.assign({}, item);
+                        if (Array.isArray(it.optionGroupSelections)) {
+                            it.optionGroupSelections = it.optionGroupSelections.map(function(sel) {
+                                var mapped = Object.assign({}, sel || {});
+                                var gk = String(mapped.groupName || '').trim().toLowerCase();
+                                if (gk === 'size' || gk === 'combo_drink_size') mapped.groupName = '\u5bb9\u91cf';
+                                else if (gk === 'temp' || gk === 'combo_drink_temp') mapped.groupName = '\u6eab\u5ea6';
+                                return mapped;
+                            });
+                        }
+                        return it;
+                    });
                 }
                 return out;
             },
