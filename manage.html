@@ -508,12 +508,11 @@
                                         {{ order.status==='archived'?(order.wasCancelled?'已取消':'已完成'):({new:'新訂單',making:'製作中',done:'已完成',cancelled:'已取消'}[order.status]||order.status) }}
                                     </span>
                                 </td>
-                                <td class="px-5 py-3 text-right text-red-400 font-bold">${{ order.total }}</td>
+                                <td class="px-5 py-3 text-right text-red-400 font-bold">${{ getOrderTotalValue(order) }}</td>
                                 <td class="px-4 py-3 text-center">
                                     <span class="text-xs font-bold px-2 py-0.5 rounded-full"
-                                        :class="isLinePayOrder(order) ? linePayBadgeClass(order) : 'bg-slate-700 text-slate-400'">
-                                        <template v-if="isLinePayOrder(order)">{{ linePayBadgeText(order) }}</template>
-                                        <template v-else>⚠️ 未付款</template>
+                                        :class="statsPaymentBadgeClass(order)">
+                                        {{ statsPaymentBadgeText(order) }}
                                     </span>
                                 </td>
                                 <td class="px-3 py-3 text-center">
@@ -961,7 +960,7 @@
             </div>
             <div class="flex justify-between items-center">
                 <span class="text-slate-400 text-sm">訂單總額</span>
-                <span class="text-red-400 font-black text-xl">${{ viewingOrder.total }}</span>
+                <span class="text-red-400 font-black text-xl">${{ getOrderTotalValue(viewingOrder) }}</span>
             </div>
         </div>
     </div>
@@ -1370,7 +1369,7 @@ window._doCountUp = function() {
             statsRevenue: function() {
                 return this.statsOrders
                     .filter(function(o) { return o.status !== 'cancelled' && !o.wasCancelled; })
-                    .reduce(function(sum, o) { return sum + (Number(o.total) || 0); }, 0);
+                    .reduce(function(sum, o) { return sum + (Number(this.getOrderTotalValue(o)) || 0); }.bind(this), 0);
             },
             statsAvg: function() {
                 var valid = this.statsOrders.filter(function(o) { return o.status !== 'cancelled' && !o.wasCancelled; });
@@ -1391,18 +1390,19 @@ window._doCountUp = function() {
             },
             statsCashRevenue: function() {
                 return this.statsOrders
-                    .filter(function(o){ return o.status !== 'cancelled' && !o.wasCancelled && o.paymentMethod !== 'linepay' && o.paymentMethod !== 'linepay_offline'; })
-                    .reduce(function(s,o){ return s + (Number(o.total)||0); }, 0);
+                    .filter(function(o){ var pm=this.getOrderPaymentMethodValue(o); return o.status !== 'cancelled' && !o.wasCancelled && pm !== 'linepay' && pm !== 'linepay_offline' && pm !== 'linepay_refund'; }.bind(this))
+                    .reduce(function(s,o){ return s + (Number(this.getOrderTotalValue(o))||0); }.bind(this), 0);
             },
             statsLinePayCount: function() {
                 return this.statsOrders.filter(function(o){
-                    return o.status !== 'cancelled' && !o.wasCancelled && (o.paymentMethod === 'linepay' || o.paymentMethod === 'linepay_offline');
-                }).length;
+                    var pm=this.getOrderPaymentMethodValue(o);
+                    return o.status !== 'cancelled' && !o.wasCancelled && (pm === 'linepay' || pm === 'linepay_offline' || pm === 'linepay_refund');
+                }.bind(this)).length;
             },
             statsLinePayRevenue: function() {
                 return this.statsOrders
-                    .filter(function(o){ return o.status !== 'cancelled' && !o.wasCancelled && (o.paymentMethod === 'linepay' || o.paymentMethod === 'linepay_offline'); })
-                    .reduce(function(s,o){ return s + (Number(o.total)||0); }, 0);
+                    .filter(function(o){ var pm=this.getOrderPaymentMethodValue(o); return o.status !== 'cancelled' && !o.wasCancelled && (pm === 'linepay' || pm === 'linepay_offline' || pm === 'linepay_refund'); }.bind(this))
+                    .reduce(function(s,o){ return s + (Number(this.getOrderTotalValue(o))||0); }.bind(this), 0);
             },
             statsSortedOrders: function() {
                 var key = this.statsSortKey;
@@ -1411,21 +1411,22 @@ window._doCountUp = function() {
                 return this.statsOrders.slice().sort(function(a, b) {
                     var av, bv;
                     if (key === 'orderNo' || key === 'total') {
-                        av = Number(a[key]) || 0; bv = Number(b[key]) || 0;
+                        av = key === 'total' ? (Number(this.getOrderTotalValue(a)) || 0) : (Number(a[key]) || 0);
+                        bv = key === 'total' ? (Number(this.getOrderTotalValue(b)) || 0) : (Number(b[key]) || 0);
                     } else if (key === 'timestamp') {
-                        av = a.timestamp || 0; bv = b.timestamp || 0;
+                        av = this.getOrderTimestamp(a); bv = this.getOrderTimestamp(b);
                     } else if (key === 'customer') {
                         av = (a.customer && a.customer.name ? a.customer.name : (a.customer || '')).toString();
                         bv = (b.customer && b.customer.name ? b.customer.name : (b.customer || '')).toString();
                     } else if (key === 'paymentMethod') {
-                        av = a.paymentMethod || ''; bv = b.paymentMethod || '';
+                        av = this.getOrderPaymentMethodValue(a) || ''; bv = this.getOrderPaymentMethodValue(b) || '';
                     } else {
                         av = (a[key] || '').toString(); bv = (b[key] || '').toString();
                     }
                     if (av < bv) return -dir;
                     if (av > bv) return dir;
                     return 0;
-                });
+                }.bind(this));
             }
         },
 
@@ -1499,8 +1500,66 @@ window._doCountUp = function() {
 
             isLinePayOrder: function(order) {
                 if (!order) return false;
-                var pm = order.paymentMethod || '';
+                var pm = this.getOrderPaymentMethodValue(order);
                 return pm === 'linepay' || pm === 'linepay_offline' || pm === 'linepay_refund';
+            },
+            getOrderTotalValue: function(order) {
+                if (!order) return 0;
+                if (Number.isFinite(Number(order.total))) return Number(order.total);
+                if (order.totals && Number.isFinite(Number(order.totals.finalTotal))) return Number(order.totals.finalTotal);
+                return 0;
+            },
+            getOrderPaymentMethodValue: function(order) {
+                if (!order) return '';
+                return order.paymentMethod || (order.payment && order.payment.method) || 'store';
+            },
+            getOrderPaymentStatusValue: function(order) {
+                if (!order) return '';
+                return order.paymentStatus || (order.payment && order.payment.status) || 'unpaid';
+            },
+            getOrderTimestamp: function(order) {
+                if (!order) return 0;
+                if (typeof order.timestamp === 'number' && Number.isFinite(order.timestamp)) return order.timestamp;
+                if (typeof order.createdAt === 'number' && Number.isFinite(order.createdAt)) return order.createdAt;
+                var parsed = Date.parse(order.createdAt || order.createdAtDisplay || '');
+                return isNaN(parsed) ? 0 : parsed;
+            },
+            normalizeStatsOrder: function(order) {
+                if (!order || typeof order !== 'object') return order;
+                var out = Object.assign({}, order);
+                if ((out.total === undefined || out.total === null || out.total === '') && out.totals && Number.isFinite(Number(out.totals.finalTotal))) {
+                    out.total = Number(out.totals.finalTotal);
+                }
+                if (!out.paymentMethod && out.payment && out.payment.method) out.paymentMethod = out.payment.method;
+                if (!out.paymentStatus && out.payment && out.payment.status) out.paymentStatus = out.payment.status;
+                if (!out.phone && out.customer && out.customer.phone) out.phone = out.customer.phone;
+                if ((out.orderNo === undefined || out.orderNo === null || out.orderNo === '') && out.serialNumber !== undefined && out.serialNumber !== null && out.serialNumber !== '') {
+                    var parsedNo = Number(out.serialNumber);
+                    out.orderNo = Number.isFinite(parsedNo) && parsedNo > 0 ? parsedNo : out.serialNumber;
+                }
+                if (!out.pickupTime && out.pickupTimeLabel) out.pickupTime = out.pickupTimeLabel;
+                if ((out.timestamp === undefined || out.timestamp === null || out.timestamp === 0)) {
+                    var ts = this.getOrderTimestamp(out);
+                    if (ts) out.timestamp = ts;
+                }
+                return out;
+            },
+            statsPaymentBadgeText: function(order) {
+                var pm = this.getOrderPaymentMethodValue(order);
+                var ps = this.getOrderPaymentStatusValue(order);
+                if (this.isLinePayOrder(order)) return this.linePayBadgeText(order);
+                if ((pm === 'cash' || pm === 'store') && ps === 'paid') return '💵 現金已付';
+                if (pm === 'cash') return '💵 現金待付';
+                if (pm === 'store') return ps === 'paid' ? '🏪 店內已付' : '🏪 店內付款';
+                return ps === 'paid' ? '✅ 已付款' : '⚠️ 未付款';
+            },
+            statsPaymentBadgeClass: function(order) {
+                var pm = this.getOrderPaymentMethodValue(order);
+                var ps = this.getOrderPaymentStatusValue(order);
+                if (this.isLinePayOrder(order)) return this.linePayBadgeClass(order);
+                if ((pm === 'cash' || pm === 'store') && ps === 'paid') return 'bg-orange-900/60 text-orange-300';
+                if (ps === 'paid') return 'bg-emerald-900/60 text-emerald-300';
+                return 'bg-slate-700 text-slate-400';
             },
             isLinePayRefunded: function(order) {
                 if (!order) return false;
@@ -2037,8 +2096,9 @@ window._doCountUp = function() {
             // ★ 取得訂單的「營業日」：有 pickupDate 用 pickupDate，否則用 timestamp 日期
             getOrderDate: function(o) {
                 if (o.pickupDate) return o.pickupDate; // "2026-03-03" 格式
-                if (!o.timestamp) return '';
-                var d = new Date(o.timestamp);
+                var ts = this.getOrderTimestamp(o);
+                if (!ts) return '';
+                var d = new Date(ts);
                 return d.getFullYear() + '-' + ('0'+(d.getMonth()+1)).slice(-2) + '-' + ('0'+d.getDate()).slice(-2);
             },
             getTodayStr: function() {
@@ -2130,51 +2190,60 @@ window._doCountUp = function() {
                 self.statsLoading = true;
                 self.allOrdersCache = null;
 
-                if (self.statsMode === 'single' && !self.statsDate) {
-                    self.statsDate = self.getTodayStr();
-                }
+                get(ref(db, 'integration_views/merged_orders_history_index')).then(function(snap) {
+                    if (snap.exists()) {
+                        var view = snap.val() || {};
+                        self.allOrdersCache = (Array.isArray(view.orders) ? view.orders : []).map(function(order){ return self.normalizeStatsOrder(order); });
+                        self.doFilter();
+                        return;
+                    }
 
-                var datesToFetch = self.buildDateListForStatsMode(self.statsMode);
-                if (!datesToFetch.length) {
-                    self.allOrdersCache = [];
-                    self.statsOrders = [];
-                    self.statsLoading = false;
-                    return;
-                }
+                    if (self.statsMode === 'single' && !self.statsDate) {
+                        self.statsDate = self.getTodayStr();
+                    }
 
-                var fetchPromises = datesToFetch.map(function(dateKey) {
-                    return Promise.all([
-                        get(ref(db, 'orders/' + dateKey)),
-                        get(ref(db, 'orders_archive/' + dateKey))
-                    ]).then(function(parts) {
-                        return {
-                            dateKey: dateKey,
-                            activeBucket: parts[0].exists() ? parts[0].val() : {},
-                            archiveBucket: parts[1].exists() ? parts[1].val() : {}
-                        };
-                    });
-                });
+                    var datesToFetch = self.buildDateListForStatsMode(self.statsMode);
+                    if (!datesToFetch.length) {
+                        self.allOrdersCache = [];
+                        self.statsOrders = [];
+                        self.statsLoading = false;
+                        return;
+                    }
 
-                Promise.all(fetchPromises).then(function(results) {
-                    var merged = {};
-
-                    // 1) 先放 active bucket
-                    results.forEach(function(r) {
-                        Object.entries(r.activeBucket || {}).forEach(function(e) {
-                            if (e[1] && e[1].status) merged[e[0]] = Object.assign({ id: e[0] }, e[1]);
-                        });
-                    });
-                    // 2) 最後用 archive 覆蓋（若已結單，以歸檔資料為準）
-                    results.forEach(function(r) {
-                        Object.entries(r.archiveBucket || {}).forEach(function(e) {
-                            if (e[1] && e[1].status) merged[e[0]] = Object.assign({ id: e[0] }, e[1]);
+                    var fetchPromises = datesToFetch.map(function(dateKey) {
+                        return Promise.all([
+                            get(ref(db, 'orders/' + dateKey)),
+                            get(ref(db, 'orders_archive/' + dateKey))
+                        ]).then(function(parts) {
+                            return {
+                                dateKey: dateKey,
+                                activeBucket: parts[0].exists() ? parts[0].val() : {},
+                                archiveBucket: parts[1].exists() ? parts[1].val() : {}
+                            };
                         });
                     });
 
-                    self.allOrdersCache = Object.values(merged);
-                    self.doFilter();
+                    Promise.all(fetchPromises).then(function(results) {
+                        var merged = {};
+                        results.forEach(function(r) {
+                            Object.entries(r.activeBucket || {}).forEach(function(e) {
+                                if (e[1] && e[1].status) merged[e[0]] = Object.assign({ id: e[0] }, e[1]);
+                            });
+                        });
+                        results.forEach(function(r) {
+                            Object.entries(r.archiveBucket || {}).forEach(function(e) {
+                                if (e[1] && e[1].status) merged[e[0]] = Object.assign({ id: e[0] }, e[1]);
+                            });
+                        });
+                        self.allOrdersCache = Object.values(merged).map(function(order){ return self.normalizeStatsOrder(order); });
+                        self.doFilter();
+                    }).catch(function(e) {
+                        console.error('讀取統計失敗:', e);
+                        self.statsOrders = [];
+                        self.statsLoading = false;
+                    });
                 }).catch(function(e) {
-                    console.error('讀取統計失敗:', e);
+                    console.error('讀取 integration_views 統計失敗:', e);
                     self.statsOrders = [];
                     self.statsLoading = false;
                 });
@@ -2432,6 +2501,3 @@ window._doCountUp = function() {
 </script>
 </body>
 </html>
-
-
-
