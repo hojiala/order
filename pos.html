@@ -172,7 +172,7 @@
                 <div class="flex-1 min-w-0">
                   <div class="flex items-center gap-1.5 flex-wrap mb-1">
                     <span v-if="order.status==='new'" class="w-2 h-2 bg-red-500 rounded-full flex-shrink-0 animate-pulse"></span>
-                    <span class="font-black text-gray-800 text-sm">{{ order.tableLabel || (order.customer && order.customer.name ? order.customer.name : (order.customer||"顧客")) }}</span>
+                    <span class="font-black text-gray-800 text-sm">{{ (typeof order.tableLabel==='string' && order.tableLabel.trim()) ? order.tableLabel : getDisplayCustomerName(order) }}</span>
                     <span :class="{'bg-red-100 text-red-700':order.status==='new','bg-yellow-100 text-yellow-700':order.status==='making','bg-green-100 text-green-700':order.status==='done','bg-red-100 text-red-600':order.status==='cancelled'}"
                       class="text-xs px-2 py-0.5 rounded-full font-bold flex-shrink-0">{{ {new:"新訂單",making:"製作中",done:"已完成",cancelled:"已取消"}[order.status]||order.status }}</span>
                     <span :class="{
@@ -190,7 +190,7 @@
                     <span class="text-xs text-gray-400 font-mono bg-gray-50 px-1.5 py-0.5 rounded">&#35;{{ order.id.slice(-4).toUpperCase() }}</span>
                     <span class="text-xs text-gray-500">&#128222; {{ order.phone || (order.customer && order.customer.phone) || "未提供" }}</span>
                   </div>
-                  <p class="text-xs text-gray-400">&#128197; 取餐：{{ order.pickupDate && order.pickupDate !== todayStr ? order.pickupDate + ' ' : '' }}{{ order.tableType==='kiosk' && order.pickupTime==='內用' ? '外帶自取' : order.pickupTime }}</p>
+                  <p class="text-xs text-gray-400">&#128197; 取餐：{{ order.pickupDate && order.pickupDate !== todayStr ? order.pickupDate + ' ' : '' }}{{ order.tableType==='kiosk' && order.pickupTime==='內用' ? '外帶自取' : getDisplayPickupTime(order.pickupTime) }}</p>
                   <p class="text-xs text-gray-400 mt-0.5">&#128336; 下單：{{ formatOrderDateTime(order) }}</p>
                   <p class="text-xs text-gray-500 mt-0.5 truncate">{{ orderItemsSummary(order) }}</p>
                   <p v-if="order.orderNote" class="text-xs text-blue-500 mt-0.5 truncate">&#128221; {{ order.orderNote }}</p>
@@ -259,7 +259,7 @@
         </p>
         <p v-if="orderMode==='pos'" class="text-xs text-gray-400 mt-0.5">現場點餐</p>
         <p v-if="orderMode!=='pos' && editingOrder" class="text-xs text-gray-400 mt-0.5">
-          {{ editingOrder.customer && editingOrder.customer.name ? editingOrder.customer.name : (editingOrder.customer||"顧客") }}
+          {{ getDisplayCustomerName(editingOrder) }}
           &nbsp;｜&nbsp;{{ editingOrder.source==='pos' ? "POS訂單" : editingOrder.source==='qr_takeout' ? "掃碼外帶" : editingOrder.source==='qrcode' ? "掃碼內用" : editingOrder.source==='dinein' ? (editingOrder.tableType==='kiosk' ? "自助外帶" : "桌邊內用") : "線上訂單" }}
         </p>
       </div>
@@ -338,7 +338,7 @@
         <button @click="editShowCustomer=!editShowCustomer" class="w-full flex items-center justify-between bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg px-3 py-1.5 transition">
           <span class="text-xs font-bold text-blue-700">📋 客戶 / 時間 / 備註</span><span class="text-blue-400 text-xs">{{ editShowCustomer?'▲':'▼' }}</span></button>
         <div v-if="editShowCustomer" class="bg-blue-50 border border-blue-200 rounded-lg p-2.5 text-xs text-blue-700 space-y-1.5">
-          <p class="font-bold text-sm">{{ editingOrder.customer&&editingOrder.customer.name?editingOrder.customer.name:(editingOrder.customer||"顧客") }}</p>
+          <p class="font-bold text-sm">{{ getDisplayCustomerName(editingOrder) }}</p>
           <p>&#128222; {{ editingOrder.phone||(editingOrder.customer&&editingOrder.customer.phone)||"未提供" }}</p>
           <div class="flex items-center gap-2"><span>&#128197;</span><input v-model="editPickupDate" type="date" class="bg-white border border-blue-300 rounded px-2 py-0.5 text-sm text-gray-800" style="width:8.5rem"></div>
           <div class="flex items-center gap-2"><span>&#128336;</span><input v-model="editPickupTime" type="time" class="bg-white border border-blue-300 rounded px-2 py-0.5 text-sm text-gray-800" style="width:7rem"></div>
@@ -611,6 +611,35 @@
                 var pad=function(n){return('0'+n).slice(-2);};
                 return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+' '+pad(d.getHours())+':'+pad(d.getMinutes());
             },
+            getDisplayCustomerName:function(order){
+                if(!order||typeof order!=='object')return '\u9867\u5ba2';
+                var c=order.customer;
+                if(typeof c==='string'){
+                    var t=c.trim();
+                    if(t&&t!=='[object Object]')return t;
+                }
+                if(c&&typeof c==='object'){
+                    var cand=[c.name,c.displayName,c.customerName,c.label,c.value];
+                    for(var i=0;i<cand.length;i++){
+                        if(typeof cand[i]==='string'&&cand[i].trim())return cand[i].trim();
+                    }
+                    if(c.name&&typeof c.name==='object'){
+                        var nested=c.name.text||c.name.value||c.name.name;
+                        if(typeof nested==='string'&&nested.trim())return nested.trim();
+                    }
+                }
+                var fallback=[order.customerName,order.name,order.tableLabel];
+                for(var j=0;j<fallback.length;j++){
+                    if(typeof fallback[j]==='string'&&fallback[j].trim())return fallback[j].trim();
+                }
+                return '\u9867\u5ba2';
+            },
+            getDisplayPickupTime:function(pickupTime){
+                var t=String(pickupTime||'').trim();
+                if(!t)return '\u76e1\u5feb';
+                if(t.toUpperCase()==='ASAP')return '\u76e1\u5feb';
+                return t;
+            },
             normalizeIncomingOrder:function(order){
                 if(!order||typeof order!=='object')return order;
                 var out=Object.assign({},order);
@@ -620,17 +649,58 @@
                 if(!out.paymentMethod&&payment.method)out.paymentMethod=payment.method;
                 if(!out.paymentStatus&&payment.status)out.paymentStatus=payment.status;
                 if(!out.phone&&out.customer&&out.customer.phone)out.phone=out.customer.phone;
+                var customerObj=(out.customer&&typeof out.customer==='object')?out.customer:{};
+                var customerName='';
+                if(typeof out.customer==='string'){
+                    var rawName=out.customer.trim();
+                    if(rawName&&rawName!=='[object Object]')customerName=rawName;
+                }else if(customerObj){
+                    if(typeof customerObj.name==='string'&&customerObj.name.trim())customerName=customerObj.name.trim();
+                    else if(customerObj.name&&typeof customerObj.name==='object'){
+                        var nestedName=customerObj.name.text||customerObj.name.value||customerObj.name.name;
+                        if(typeof nestedName==='string'&&nestedName.trim())customerName=nestedName.trim();
+                    }else{
+                        var altName=customerObj.displayName||customerObj.customerName||customerObj.label||customerObj.value;
+                        if(typeof altName==='string'&&altName.trim())customerName=altName.trim();
+                    }
+                }
+                if(!customerName&&typeof out.customerName==='string'&&out.customerName.trim())customerName=out.customerName.trim();
+                if(!customerName&&typeof out.name==='string'&&out.name.trim())customerName=out.name.trim();
+                if(!customerName&&typeof out.tableLabel==='string'&&out.tableLabel.trim())customerName=out.tableLabel.trim();
+                if(!customerName)customerName='\u9867\u5ba2';
+                var customerPhone=out.phone||'';
+                if(!customerPhone&&customerObj&&typeof customerObj.phone==='string')customerPhone=customerObj.phone;
+                out.phone=customerPhone||'';
+                out.customer={name:customerName,phone:out.phone};
                 if((out.orderNo===undefined||out.orderNo===null||out.orderNo==='')&&out.serialNumber!==undefined&&out.serialNumber!==null&&out.serialNumber!==''){
                     var parsedNo=Number(out.serialNumber);
                     out.orderNo=Number.isFinite(parsedNo)&&parsedNo>0?parsedNo:out.serialNumber;
                 }
                 if(!out.pickupTime&&out.pickupTimeLabel)out.pickupTime=out.pickupTimeLabel;
+                if(typeof out.pickupTime==='string'&&out.pickupTime.trim().toUpperCase()==='ASAP')out.pickupTime='\u76e1\u5feb';
                 if((out.timestamp===undefined||out.timestamp===null||out.timestamp===0)){
                     if(typeof out.createdAt==='number'&&Number.isFinite(out.createdAt))out.timestamp=out.createdAt;
                     else if(out.createdAt){
                         var parsedTs=Date.parse(out.createdAt);
                         if(!isNaN(parsedTs))out.timestamp=parsedTs;
                     }
+                }
+                if(out.pickupTime)out.pickupTime=this.getDisplayPickupTime(out.pickupTime);
+                if(Array.isArray(out.items)){
+                    out.items=out.items.map(function(item){
+                        if(!item||typeof item!=='object')return item;
+                        var it=Object.assign({},item);
+                        if(Array.isArray(it.optionGroupSelections)){
+                            it.optionGroupSelections=it.optionGroupSelections.map(function(sel){
+                                var mapped=Object.assign({},sel||{});
+                                var gk=String(mapped.groupName||'').trim().toLowerCase();
+                                if(gk==='size'||gk==='combo_drink_size')mapped.groupName='\u5bb9\u91cf';
+                                else if(gk==='temp'||gk==='combo_drink_temp')mapped.groupName='\u6eab\u5ea6';
+                                return mapped;
+                            });
+                        }
+                        return it;
+                    });
                 }
                 if(out.integration&&out._integrationReadOnly===undefined){
                     out._integrationReadOnly=!((out.integration.capabilities||{}).editDirect);
