@@ -351,6 +351,35 @@
                     const pad = (n) => ('0' + n).slice(-2);
                     return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
                 },
+                normalizeIncomingOrder(order) {
+                    if (!order || typeof order !== 'object') return order;
+                    const out = Object.assign({}, order);
+                    const payment = out.payment || {};
+                    const totals = out.totals || {};
+                    if ((out.total === undefined || out.total === null || out.total === '') && Number.isFinite(Number(totals.finalTotal))) out.total = Number(totals.finalTotal);
+                    if (!out.paymentMethod && payment.method) out.paymentMethod = payment.method;
+                    if (!out.paymentStatus && payment.status) out.paymentStatus = payment.status;
+                    if (!out.phone && out.customer && out.customer.phone) out.phone = out.customer.phone;
+                    if ((out.orderNo === undefined || out.orderNo === null || out.orderNo === '') && out.serialNumber !== undefined && out.serialNumber !== null && out.serialNumber !== '') {
+                        const parsedNo = Number(out.serialNumber);
+                        out.orderNo = Number.isFinite(parsedNo) && parsedNo > 0 ? parsedNo : out.serialNumber;
+                    }
+                    if (!out.pickupTime && out.pickupTimeLabel) out.pickupTime = out.pickupTimeLabel;
+                    if ((out.timestamp === undefined || out.timestamp === null || out.timestamp === 0)) {
+                        if (typeof out.createdAt === 'number' && Number.isFinite(out.createdAt)) out.timestamp = out.createdAt;
+                        else if (out.createdAt) {
+                            const parsedTs = Date.parse(out.createdAt);
+                            if (!isNaN(parsedTs)) out.timestamp = parsedTs;
+                        }
+                    }
+                    if (out.integration && out._integrationReadOnly === undefined) {
+                        out._integrationReadOnly = !((out.integration.capabilities || {}).editDirect);
+                    }
+                    return out;
+                },
+                normalizeIncomingOrders(list) {
+                    return (Array.isArray(list) ? list : []).map((order) => this.normalizeIncomingOrder(order));
+                },
                 isIntegrationReadOnlyOrder(order) {
                     return !!(order && order._integrationReadOnly);
                 },
@@ -477,14 +506,14 @@
                         self.useIntegrationView = false;
                         self.resetOrderBucketListeners();
                     };
-                    const integrationRef = ref(db, 'integration_views/merged_orders_history_index');
+                    const integrationRef = ref(db, 'integration_views/merged_orders_active');
                     self.integrationOrdersUnsub = onValue(integrationRef, (snap) => {
                         if (!snap.exists()) {
                             activateFallback();
                             return;
                         }
                         const view = snap.val() || {};
-                        const list = Array.isArray(view.orders) ? view.orders : [];
+                        const list = self.normalizeIncomingOrders(Array.isArray(view.orders) ? view.orders : []);
                         self.orders = list;
                         self.useIntegrationView = true;
                         const currentNewCount = list.filter(o => o.status === 'new').length;
@@ -529,7 +558,7 @@
                             if (!map[id] || (row.timestamp || 0) > (map[id].timestamp || 0)) map[id] = row;
                         });
                     });
-                    const parsedOrders = Object.values(map);
+                    const parsedOrders = this.normalizeIncomingOrders(Object.values(map));
                     parsedOrders.forEach((o) => {
                         if (o.status === 'new') currentNewCount++;
                         if (o.status !== 'archived' && o.status !== 'cancelled' && !o.orderNo) this.autoAssignOrderNo(o.id);
