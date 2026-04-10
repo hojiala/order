@@ -611,6 +611,36 @@
                 var pad=function(n){return('0'+n).slice(-2);};
                 return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+' '+pad(d.getHours())+':'+pad(d.getMinutes());
             },
+            normalizeIncomingOrder:function(order){
+                if(!order||typeof order!=='object')return order;
+                var out=Object.assign({},order);
+                var payment=out.payment||{};
+                var totals=out.totals||{};
+                if((out.total===undefined||out.total===null||out.total==='')&&Number.isFinite(Number(totals.finalTotal)))out.total=Number(totals.finalTotal);
+                if(!out.paymentMethod&&payment.method)out.paymentMethod=payment.method;
+                if(!out.paymentStatus&&payment.status)out.paymentStatus=payment.status;
+                if(!out.phone&&out.customer&&out.customer.phone)out.phone=out.customer.phone;
+                if((out.orderNo===undefined||out.orderNo===null||out.orderNo==='')&&out.serialNumber!==undefined&&out.serialNumber!==null&&out.serialNumber!==''){
+                    var parsedNo=Number(out.serialNumber);
+                    out.orderNo=Number.isFinite(parsedNo)&&parsedNo>0?parsedNo:out.serialNumber;
+                }
+                if(!out.pickupTime&&out.pickupTimeLabel)out.pickupTime=out.pickupTimeLabel;
+                if((out.timestamp===undefined||out.timestamp===null||out.timestamp===0)){
+                    if(typeof out.createdAt==='number'&&Number.isFinite(out.createdAt))out.timestamp=out.createdAt;
+                    else if(out.createdAt){
+                        var parsedTs=Date.parse(out.createdAt);
+                        if(!isNaN(parsedTs))out.timestamp=parsedTs;
+                    }
+                }
+                if(out.integration&&out._integrationReadOnly===undefined){
+                    out._integrationReadOnly=!((out.integration.capabilities||{}).editDirect);
+                }
+                return out;
+            },
+            normalizeIncomingOrders:function(list){
+                var self=this;
+                return (Array.isArray(list)?list:[]).map(function(order){return self.normalizeIncomingOrder(order);});
+            },
             isIntegrationReadOnlyOrder:function(order){
                 return !!(order&&order._integrationReadOnly);
             },
@@ -686,7 +716,7 @@
                         return;
                     }
                     var view=snap.val()||{};
-                    var parsed=Array.isArray(view.orders)?view.orders.slice():[];
+                    var parsed=s.normalizeIncomingOrders(Array.isArray(view.orders)?view.orders.slice():[]);
                     parsed.sort(function(a,b){
                         var w={new:1,making:2,done:3,cancelled:4};
                         if(w[a.status]!==w[b.status])return w[a.status]-w[b.status];
@@ -828,7 +858,7 @@
                         if(!map[id]||(row.timestamp||0)>(map[id].timestamp||0))map[id]=row;
                     });
                 });
-                var parsed=Object.values(map);
+                var parsed=s.normalizeIncomingOrders(Object.values(map));
                 parsed.forEach(function(o){
                     var paidLike=((o&&o.paymentStatus)!=='pending')||(o&&s.lpConfirmed[o.id])||(o&&s.lpStatus[o.id]==='confirmed');
                     var pm=(o&&o.paymentMethod)||'';
