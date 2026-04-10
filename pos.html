@@ -841,7 +841,7 @@
                 if(top<8)top=rect.bottom+4;
                 this.menuPos={top:Math.max(8,top),right:Math.round(window.innerWidth-rect.right)};
             },
-            doArchiveAll:function(){
+            doArchiveAll:async function(){
                 var s=this;
                 var today=new Date();
                 var todayStr=today.getFullYear()+'-'+('0'+(today.getMonth()+1)).slice(-2)+'-'+('0'+today.getDate()).slice(-2);
@@ -855,9 +855,14 @@
                 if(futureIds.length>0)msg+="\n\n⚠️ 有 "+futureIds.length+" 筆未來預約訂單將保留在畫面上。";
                 if(!confirm(msg))return;
                 var updates={};
+                var phoneCmds=[];
                 s.onlineOrders.forEach(function(o){
                     if(futureIds.indexOf(o.id)!==-1)return;
                     if(o.status==="archived")return;
+                    if(s.isPhoneCommandOrder(o)){
+                        phoneCmds.push(s.queuePhoneOrderCommand(o,'set_status',{status:'archived'}));
+                        return;
+                    }
                     var archivedOrder=Object.assign({},o,{status:(o.status==="cancelled"?"cancelled":"archived")});
                     // 取得訂單的實際日期作為資料夾名稱
                     var d = new Date(o.timestamp || Date.now());
@@ -867,13 +872,24 @@
                     updates["orders_archive/" + dateKey + "/" + o.id] = archivedOrder;
                     updates["orders/"+dateKey+"/"+o.id]=null;
                   });
-                if(!Object.keys(updates).length){s.toast("✅ 目前沒有待結單訂單");return;}
-                update(ref(db),updates).then(function(){
+                if(!Object.keys(updates).length&&!phoneCmds.length){s.toast("✅ 目前沒有待結單訂單");return;}
+                try{
+                    if(Object.keys(updates).length){
+                        await update(ref(db),updates);
+                    }
+                    if(phoneCmds.length){
+                        var cmdResults=await Promise.allSettled(phoneCmds);
+                        var failedCount=cmdResults.filter(function(r){return r.status!=='fulfilled';}).length;
+                        if(failedCount>0){
+                            throw new Error("電話訂單結單命令失敗 "+failedCount+" 筆");
+                        }
+                    }
                     var msg="✅ 結單完成！辛苦了！";
                     if(futureIds.length>0)msg+="（"+futureIds.length+"筆未來預約已保留）";
+                    if(phoneCmds.length>0)msg+="（電話單已送出結單命令 "+phoneCmds.length+" 筆）";
                     s.toast(msg);
                     s.exitOnline();
-                }).catch(function(e){alert("結單失敗："+e.message);});
+                }catch(e){alert("結單失敗："+(e&&e.message?e.message:e));}
             },
             confirmResetCounter:function(){
                 var s=this;
