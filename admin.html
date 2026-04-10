@@ -80,9 +80,9 @@
                         <div class="p-4 border-b bg-gray-50 flex justify-between items-start">
                             <div>
                                 <p class="text-xs text-gray-500 mb-1 font-mono">No.{{ order.orderNo ? String(order.orderNo).padStart(3,"0") : "???" }} &nbsp;<span class="text-gray-400">#{{ order.id.slice(-4).toUpperCase() }}</span></p>
-                                <h2 class="text-xl font-bold text-gray-800">{{ order.customer?.name || order.customer || '顧客' }}</h2>
+                                <h2 class="text-xl font-bold text-gray-800">{{ getDisplayCustomerName(order) }}</h2>
                                 <p v-if="order.phone || order.customer?.phone" class="text-sm font-bold text-blue-600 mt-1">📞 {{ order.phone || order.customer?.phone }}</p>
-                                <p class="text-sm text-gray-500 mt-1">取餐：<span class="font-bold text-black">{{ order.pickupDate && order.pickupDate !== todayStr ? order.pickupDate + ' ' : '' }}{{ order.pickupTime || '盡快' }}</span> ({{ order.type === 'dinein' ? '內用' : '外帶' }})</p>
+                                <p class="text-sm text-gray-500 mt-1">取餐：<span class="font-bold text-black">{{ order.pickupDate && order.pickupDate !== todayStr ? order.pickupDate + ' ' : '' }}{{ getDisplayPickupTime(order.pickupTime) }}</span> ({{ order.type === 'dinein' ? '內用' : '外帶' }})</p>
                                 <p class="text-xs text-gray-500 mt-0.5">下單：<span class="font-bold text-black">{{ formatOrderDateTime(order) }}</span></p>
                             </div>
                             <div class="text-right">
@@ -132,7 +132,7 @@
                                     <div v-if="item.optionGroupSelections && item.optionGroupSelections.length" class="mt-1 flex flex-wrap gap-1">
                                         <span v-for="sel in item.optionGroupSelections" :key="sel.groupName"
                                             class="inline-flex items-center bg-orange-50 border border-orange-200 text-orange-700 text-sm font-bold px-2 py-0.5 rounded-full">
-                                            {{ sel.groupName }}：{{ sel.name }}<span v-if="sel.pricing==='mealUpgrade' && sel.price > sel.baseValue" class="text-red-500 ml-1">（補${{ sel.price - sel.baseValue }}）</span>
+                                            {{ getDisplayOptionGroupName(sel.groupName) }}：{{ sel.name }}<span v-if="sel.pricing==='mealUpgrade' && sel.price > sel.baseValue" class="text-red-500 ml-1">（補${{ sel.price - sel.baseValue }}）</span>
                                         </span>
                                     </div>
                                     <!-- 舊版套餐飲料 -->
@@ -351,6 +351,41 @@
                     const pad = (n) => ('0' + n).slice(-2);
                     return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
                 },
+                getDisplayCustomerName(order) {
+                    if (!order || typeof order !== 'object') return '\u9867\u5ba2';
+                    const c = order.customer;
+                    if (typeof c === 'string') {
+                        const t = c.trim();
+                        if (t && t !== '[object Object]') return t;
+                    }
+                    if (c && typeof c === 'object') {
+                        const cand = [c.name, c.displayName, c.customerName, c.label, c.value];
+                        for (let i = 0; i < cand.length; i++) {
+                            if (typeof cand[i] === 'string' && cand[i].trim()) return cand[i].trim();
+                        }
+                        if (c.name && typeof c.name === 'object') {
+                            const nested = c.name.text || c.name.value || c.name.name;
+                            if (typeof nested === 'string' && nested.trim()) return nested.trim();
+                        }
+                    }
+                    const fallback = [order.customerName, order.name, order.tableLabel];
+                    for (let j = 0; j < fallback.length; j++) {
+                        if (typeof fallback[j] === 'string' && fallback[j].trim()) return fallback[j].trim();
+                    }
+                    return '\u9867\u5ba2';
+                },
+                getDisplayPickupTime(pickupTime) {
+                    const t = String(pickupTime || '').trim();
+                    if (!t) return '\u76e1\u5feb';
+                    if (t.toUpperCase() === 'ASAP') return '\u76e1\u5feb';
+                    return t;
+                },
+                getDisplayOptionGroupName(groupName) {
+                    const key = String(groupName || '').trim().toLowerCase();
+                    if (key === 'size' || key === 'combo_drink_size') return '\u5bb9\u91cf';
+                    if (key === 'temp' || key === 'combo_drink_temp') return '\u6eab\u5ea6';
+                    return String(groupName || '');
+                },
                 normalizeIncomingOrder(order) {
                     if (!order || typeof order !== 'object') return order;
                     const out = Object.assign({}, order);
@@ -360,17 +395,57 @@
                     if (!out.paymentMethod && payment.method) out.paymentMethod = payment.method;
                     if (!out.paymentStatus && payment.status) out.paymentStatus = payment.status;
                     if (!out.phone && out.customer && out.customer.phone) out.phone = out.customer.phone;
+                    const customerObj = (out.customer && typeof out.customer === 'object') ? out.customer : {};
+                    let customerName = '';
+                    if (typeof out.customer === 'string') {
+                        const rawName = out.customer.trim();
+                        if (rawName && rawName !== '[object Object]') customerName = rawName;
+                    } else if (customerObj) {
+                        if (typeof customerObj.name === 'string' && customerObj.name.trim()) customerName = customerObj.name.trim();
+                        else if (customerObj.name && typeof customerObj.name === 'object') {
+                            const nestedName = customerObj.name.text || customerObj.name.value || customerObj.name.name;
+                            if (typeof nestedName === 'string' && nestedName.trim()) customerName = nestedName.trim();
+                        } else {
+                            const altName = customerObj.displayName || customerObj.customerName || customerObj.label || customerObj.value;
+                            if (typeof altName === 'string' && altName.trim()) customerName = altName.trim();
+                        }
+                    }
+                    if (!customerName && typeof out.customerName === 'string' && out.customerName.trim()) customerName = out.customerName.trim();
+                    if (!customerName && typeof out.name === 'string' && out.name.trim()) customerName = out.name.trim();
+                    if (!customerName && typeof out.tableLabel === 'string' && out.tableLabel.trim()) customerName = out.tableLabel.trim();
+                    if (!customerName) customerName = '\u9867\u5ba2';
+                    let customerPhone = out.phone || '';
+                    if (!customerPhone && customerObj && typeof customerObj.phone === 'string') customerPhone = customerObj.phone;
+                    out.phone = customerPhone || '';
+                    out.customer = { name: customerName, phone: out.phone };
                     if ((out.orderNo === undefined || out.orderNo === null || out.orderNo === '') && out.serialNumber !== undefined && out.serialNumber !== null && out.serialNumber !== '') {
                         const parsedNo = Number(out.serialNumber);
                         out.orderNo = Number.isFinite(parsedNo) && parsedNo > 0 ? parsedNo : out.serialNumber;
                     }
                     if (!out.pickupTime && out.pickupTimeLabel) out.pickupTime = out.pickupTimeLabel;
+                    if (typeof out.pickupTime === 'string' && out.pickupTime.trim().toUpperCase() === 'ASAP') out.pickupTime = '\u76e1\u5feb';
                     if ((out.timestamp === undefined || out.timestamp === null || out.timestamp === 0)) {
                         if (typeof out.createdAt === 'number' && Number.isFinite(out.createdAt)) out.timestamp = out.createdAt;
                         else if (out.createdAt) {
                             const parsedTs = Date.parse(out.createdAt);
                             if (!isNaN(parsedTs)) out.timestamp = parsedTs;
                         }
+                    }
+                    if (Array.isArray(out.items)) {
+                        out.items = out.items.map((item) => {
+                            if (!item || typeof item !== 'object') return item;
+                            const it = Object.assign({}, item);
+                            if (Array.isArray(it.optionGroupSelections)) {
+                                it.optionGroupSelections = it.optionGroupSelections.map((sel) => {
+                                    const mapped = Object.assign({}, sel || {});
+                                    const gk = String(mapped.groupName || '').trim().toLowerCase();
+                                    if (gk === 'size' || gk === 'combo_drink_size') mapped.groupName = '\u5bb9\u91cf';
+                                    else if (gk === 'temp' || gk === 'combo_drink_temp') mapped.groupName = '\u6eab\u5ea6';
+                                    return mapped;
+                                });
+                            }
+                            return it;
+                        });
                     }
                     if (out.integration && out._integrationReadOnly === undefined) {
                         out._integrationReadOnly = !((out.integration.capabilities || {}).editDirect);
