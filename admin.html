@@ -1053,7 +1053,7 @@
                         this.toast('❌ 取消訂單失敗：' + err);
                     }
                 },                // ★ 打烊結單：只封存今天及過去的訂單，保留未來預約
-                dailyClose() {
+                async dailyClose() {
                     const today = new Date();
                     const todayStr = today.getFullYear()+'-'+('0'+(today.getMonth()+1)).slice(-2)+'-'+('0'+today.getDate()).slice(-2);
                     // 找出未來訂單
@@ -1067,9 +1067,14 @@
                     if (futureCount > 0) msg += "\n\n⚠️ 有 " + futureCount + " 筆未來預約訂單將保留在畫面上。";
                     if (!confirm(msg)) return;
                     const updates = {};
+                    const phoneCmds = [];
                     const futureIds = futureOrders.map(o => o.id);
                     this.orders.forEach(o => {
                         if (o.status !== 'archived' && futureIds.indexOf(o.id) === -1) {
+                            if (this.isPhoneCommandOrder(o)) {
+                                phoneCmds.push(this.queuePhoneOrderCommand(o, 'set_status', { status: 'archived' }));
+                                return;
+                            }
                             const archivedOrder = Object.assign({}, o, { status: (o.status === 'cancelled' ? 'cancelled' : 'archived') });
                             const d = new Date(o.timestamp || Date.now());
                             const dateKey = o.orderDateKey || o.pickupDate || (d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2));
@@ -1077,12 +1082,23 @@
                             updates['orders/' + dateKey + '/' + o.id] = null;
                         }
                     });
-                    if (!Object.keys(updates).length) { this.toast("✅ 目前沒有需要結單的訂單"); return; }
-                    update(ref(db), updates).then(() => {
+                    if (!Object.keys(updates).length && !phoneCmds.length) { this.toast("✅ 目前沒有需要結單的訂單"); return; }
+                    try {
+                        if (Object.keys(updates).length) {
+                            await update(ref(db), updates);
+                        }
+                        if (phoneCmds.length) {
+                            const rs = await Promise.allSettled(phoneCmds);
+                            const failed = rs.filter(r => r.status !== 'fulfilled').length;
+                            if (failed > 0) throw new Error('電話訂單結單命令失敗 ' + failed + ' 筆');
+                        }
                         var msg = "✅ 結單完成！辛苦了！";
                         if (futureCount > 0) msg += "\n（" + futureCount + " 筆未來預約訂單已保留）";
+                        if (phoneCmds.length > 0) msg += "\n（電話單已送出結單命令 " + phoneCmds.length + " 筆）";
                         this.toast(msg);
-                    }).catch(err => this.toast("❌ 結單失敗：" + err));
+                    } catch (err) {
+                        this.toast("❌ 結單失敗：" + (err && err.message ? err.message : err));
+                    }
                 },
                 playAlert() {
                     this.alertSound.currentTime = 0;
