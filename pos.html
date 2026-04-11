@@ -687,6 +687,33 @@
                 if(key==='temp'||key==='combo_drink_temp')return '\u6eab\u5ea6';
                 return String(groupName||'');
             },
+            extractLinePayUrlFromPayload:function(data){
+                if(!data||typeof data!=='object')return '';
+                var payUrl=data.paymentUrl||data.paymentURL||data.webUrl||data.url||data.paymentPageUrl||'';
+                if(payUrl&&typeof payUrl==='object'){
+                    payUrl=payUrl.web||payUrl.app||payUrl.url||payUrl.href||'';
+                }
+                if(!payUrl&&data.payment&&typeof data.payment==='object'){
+                    var p=data.payment;
+                    payUrl=p.web||p.url||p.href||'';
+                }
+                return String(payUrl||'').trim();
+            },
+            normalizeSourceRecordPath:function(order,orderId){
+                var o=order||{};
+                var path=((o.integration&&o.integration.sourceRecordPath)||o.sourceRecordPath||'');
+                if(!path&&o._integrationOriginal&&o._integrationOriginal.integration){
+                    path=o._integrationOriginal.integration.sourceRecordPath||'';
+                }
+                path=String(path||'').trim();
+                if(path.indexOf('orders/')===0){
+                    var seg=path.split('/');
+                    if(seg.length>=3&&seg[1]&&seg[2]){
+                        return 'orders/'+seg[1]+'/'+seg[2];
+                    }
+                }
+                return '';
+            },
             normalizeIncomingOrder:function(order){
                 if(!order||typeof order!=='object')return order;
                 var out=Object.assign({},order);
@@ -979,7 +1006,7 @@
                 return items.map(function(i){
                     var qty=Number((i&&i.qty!==undefined)?i.qty:1);
                     if(!Number.isFinite(qty)||qty<=0)qty=1;
-                    var name=(i&&i.name)?String(i.name):'';
+                    var name=(i&&(i.name||i['\u54c1\u9805']))?String(i.name||i['\u54c1\u9805']):'';
                     if(!name)return '';
                     var size=(i&&i.size)?String(i.size).trim():'';
                     var temp=(i&&i.temp)?String(i.temp).trim():'';
@@ -987,7 +1014,7 @@
                     if(size)drinkParts.push(size);
                     if(temp)drinkParts.push(temp);
                     if(drinkParts.length){
-                        name=drinkParts.join('')+name;
+                        name=drinkParts.join('/')+'/'+name;
                     }
                     var parts=[];
                     if(Array.isArray(i.options)&&i.options.length){
@@ -1151,25 +1178,100 @@
                         }
                     }
                 });
+                var getPathOrderId=function(pathValue){
+                    var p=String(pathValue||'').trim();
+                    if(!p)return '';
+                    var seg=p.split('/');
+                    if(seg.length>=3&&seg[0]==='orders'&&seg[2])return String(seg[2]);
+                    return '';
+                };
+                var getMergeKey=function(order){
+                    if(!order)return '';
+                    var sourcePath=(order.integration&&order.integration.sourceRecordPath)||'';
+                    var pathId=getPathOrderId(sourcePath);
+                    if(pathId)return pathId;
+                    var original=(order&&order._integrationOriginal)||{};
+                    var direct=order.sourceOrderId||original.sourceOrderId||((original.audit&&original.audit.originalSourceSnapshotId)||'')||((original.phoneAi&&original.phoneAi.rawJsonPath)||'');
+                    if(direct){
+                        var d=String(direct);
+                        if(d.indexOf('/')!==-1)d=d.split('/').pop();
+                        d=d.replace(/_繁體\.json$/,'').replace(/\.json$/,'');
+                        if(d)return d;
+                    }
+                    return order.id?String(order.id):'';
+                };
+                var sumItems=function(items){
+                    if(!Array.isArray(items))return 0;
+                    return items.reduce(function(sum,it){
+                        var line=Number((it&&it.itemTotal!==undefined)?it.itemTotal:((it&&it.total!==undefined)?it.total:0));
+                        if(!Number.isFinite(line))line=0;
+                        return sum+line;
+                    },0);
+                };
+                var pickRicherItems=function(a,b){
+                    var aa=Array.isArray(a)?a:[];
+                    var bb=Array.isArray(b)?b:[];
+                    if(!aa.length&&!bb.length)return [];
+                    if(!aa.length)return bb;
+                    if(!bb.length)return aa;
+                    var sumA=sumItems(aa),sumB=sumItems(bb);
+                    if(sumB>sumA)return bb;
+                    if(sumA>sumB)return aa;
+                    if(bb.length>aa.length)return bb;
+                    return aa;
+                };
+                var isLocalSource=function(order){
+                    var src=String((order&&order.source)||'').toLowerCase();
+                    return src==='pos'||src==='qr_takeout'||src==='qrcode'||src==='dinein';
+                };
+                var mergeTwo=function(current,incoming){
+                    if(!current)return Object.assign({},incoming);
+                    if(!incoming)return Object.assign({},current);
+                    var incomingLocal=isLocalSource(incoming)||!incoming._integrationReadOnly;
+                    var currentLocal=isLocalSource(current)||!current._integrationReadOnly;
+                    var preferIncoming=false;
+                    if(incomingLocal&&!currentLocal)preferIncoming=true;
+                    else if(!incomingLocal&&currentLocal)preferIncoming=false;
+                    else{
+                        var inItems=pickRicherItems(current.items,incoming.items);
+                        if(inItems===incoming.items)preferIncoming=true;
+                        else{
+                            var tIn=Number(incoming.total||0),tCur=Number(current.total||0);
+                            if(Number.isFinite(tIn)&&Number.isFinite(tCur)&&tIn>tCur)preferIncoming=true;
+                        }
+                    }
+                    var merged=preferIncoming?Object.assign({},current,incoming):Object.assign({},incoming,current);
+                    var bestItems=pickRicherItems(current.items,incoming.items);
+                    if(bestItems&&bestItems.length)merged.items=bestItems.map(function(it){return Object.assign({},it);});
+                    var totals=[Number(current.total),Number(incoming.total),sumItems(merged.items)];
+                    var finiteTotals=totals.filter(function(v){return Number.isFinite(v);});
+                    if(finiteTotals.length)merged.total=Math.max.apply(null,finiteTotals);
+                    if(!merged.id)merged.id=preferIncoming?(incoming.id||current.id):(current.id||incoming.id);
+                    return merged;
+                };
+                var integrationList=Array.isArray(s.integrationOrdersCache)?s.integrationOrdersCache:[];
                 var mergedMap={};
-                (Array.isArray(s.integrationOrdersCache)?s.integrationOrdersCache:[]).forEach(function(o){
-                    if(o&&o.id)mergedMap[o.id]=Object.assign({},o);
-                });
-                parsed.forEach(function(o){
-                    if(!o||!o.id)return;
-                    var current=mergedMap[o.id];
-                    if(!current){
-                        mergedMap[o.id]=Object.assign({},o);
-                        return;
-                    }
-                    var localSource=String(o.source||'').toLowerCase();
-                    var preferLocal=(localSource==='pos'||localSource==='qr_takeout'||localSource==='qrcode'||localSource==='dinein'||!o._integrationReadOnly);
-                    if(preferLocal){
-                        mergedMap[o.id]=Object.assign({},current,o);
-                    }else{
-                        mergedMap[o.id]=Object.assign({},o,current);
-                    }
-                });
+                if(integrationList.length){
+                    // integration_views 作為主來源，避免同一張單在本地 buckets 被重覆疊加
+                    integrationList.forEach(function(o){
+                        if(!o||!o.id)return;
+                        var key=getMergeKey(o)||String(o.id);
+                        mergedMap[key]=mergeTwo(mergedMap[key],o);
+                    });
+                    parsed.forEach(function(o){
+                        if(!o||!o.id)return;
+                        var key=getMergeKey(o)||String(o.id);
+                        // integration 存在時，只覆蓋同 key 補資料，不新增額外 key，避免重複卡片
+                        if(!mergedMap[key])return;
+                        mergedMap[key]=mergeTwo(mergedMap[key],o);
+                    });
+                }else{
+                    parsed.forEach(function(o){
+                        if(!o||!o.id)return;
+                        var key=getMergeKey(o)||String(o.id);
+                        mergedMap[key]=mergeTwo(mergedMap[key],o);
+                    });
+                }
                 var mergedOrders=s.normalizeIncomingOrders(Object.values(mergedMap));
                 s.onlineOrders=mergedOrders.sort(function(a,b){
                     var w={new:1,making:2,done:3,cancelled:4};
@@ -1757,8 +1859,39 @@
                         if(isLinePay){
                             // ★ LINE Pay：讀+寫全部用 fetch() REST API（完全繞過 Firebase SDK WebSocket）
                             s.toast('⏳ 正在建立 LINE Pay 連結...');
-                            var handled=false,directPoll=null,reqTimer=null;
+                            var handled=false,directPoll=null,reqTimer=null,directFallbackTimer=null,directRequested=false;
                             var dbRestUrl='https://breakfast-ai-system-default-rtdb.asia-southeast1.firebasedatabase.app';
+                            var tryDirectLinePayRequest=function(){
+                                if(handled||directRequested)return;
+                                var base=String(s.linePayServerUrl||'').trim().replace(/\/+$/,'');
+                                if(!base)return;
+                                directRequested=true;
+                                fetch(base+'/api/linepay/request',{
+                                    method:'POST',
+                                    headers:{'Content-Type':'application/json'},
+                                    body:JSON.stringify({
+                                        orderId:orderId,
+                                        amount:o.total,
+                                        items:o.items,
+                                        orderDateKey:o.orderDateKey||o.pickupDate||"",
+                                        confirmBaseUrl:confirmBase,
+                                        returnPage:'pos'
+                                    })
+                                }).then(function(res){
+                                    return res.json().catch(function(){return {};}).then(function(body){
+                                        return {ok:res.ok,body:body||{}};
+                                    });
+                                }).then(function(ret){
+                                    if(handled)return;
+                                    var payUrl=s.extractLinePayUrlFromPayload(ret.body);
+                                    if(ret.ok&&payUrl){
+                                        handled=true;clearInterval(directPoll);clearTimeout(reqTimer);clearTimeout(directFallbackTimer);
+                                        s.isSubmitting=false;s.clearCart();
+                                        try{localStorage.setItem('linepay_return_url',window.location.href);}catch(e){}
+                                        window.location.href=payUrl;
+                                    }
+                                }).catch(function(){});
+                            };
                             auth.currentUser.getIdToken().then(function(token){
                                 var authQ='?auth='+encodeURIComponent(token);
                                 // ★ Step 1: 用 fetch() PUT 寫入請求（不用 SDK set）
@@ -1781,21 +1914,14 @@
                                             .then(function(r){return r.json();}).then(function(data){
                                                 if(handled||!data)return;
                                                 var st=String(data.status||'').toLowerCase();
-                                                var payUrl=data.paymentUrl||data.paymentURL||data.webUrl||data.url||data.paymentPageUrl||'';
-                                                if(payUrl&&typeof payUrl==='object'){
-                                                    payUrl=payUrl.web||payUrl.app||payUrl.url||payUrl.href||'';
-                                                }
-                                                if(!payUrl&&data.payment&&typeof data.payment==='object'){
-                                                    var p=data.payment;
-                                                    payUrl=p.web||p.url||p.href||'';
-                                                }
+                                                var payUrl=s.extractLinePayUrlFromPayload(data);
                                                 if(payUrl&&(st==='ready'||st==='created'||st==='ok'||st==='pending'||st==='')){
-                                                    handled=true;clearInterval(directPoll);clearTimeout(reqTimer);
+                                                    handled=true;clearInterval(directPoll);clearTimeout(reqTimer);clearTimeout(directFallbackTimer);
                                                     s.isSubmitting=false;s.clearCart();
                                                     try{localStorage.setItem('linepay_return_url',window.location.href);}catch(e){}
                                                     window.location.href=payUrl;
                                                 }else if(st==='error'||st==='failed'){
-                                                    handled=true;clearInterval(directPoll);clearTimeout(reqTimer);
+                                                    handled=true;clearInterval(directPoll);clearTimeout(reqTimer);clearTimeout(directFallbackTimer);
                                                     s.isSubmitting=false;
                                                     s.toast('⚠️ LINE Pay 失敗：'+(data.error||'未知錯誤'));
                                                 }
@@ -1803,16 +1929,17 @@
                                     };
                                     setTimeout(_pollFetch,800);
                                     directPoll=setInterval(_pollFetch,1500);
+                                    directFallbackTimer=setTimeout(tryDirectLinePayRequest,6000);
                                 });
                             }).catch(function(e){
-                                if(!handled){handled=true;clearInterval(directPoll);clearTimeout(reqTimer);}
+                                if(!handled){handled=true;clearInterval(directPoll);clearTimeout(reqTimer);clearTimeout(directFallbackTimer);}
                                 s.isSubmitting=false;
                                 s.toast('⚠️ LINE Pay 寫入失敗：'+e.message);
                             });
                             // 30 秒逾時
                             reqTimer=setTimeout(function(){
                                 if(!handled){
-                                    handled=true;clearInterval(directPoll);
+                                    handled=true;clearInterval(directPoll);clearTimeout(directFallbackTimer);
                                     s.isSubmitting=false;
                                     s.toast('⚠️ LINE Pay 逾時，請確認樹莓派服務正常');
                                 }
@@ -1880,7 +2007,12 @@
                 var o=order||this.findOrderById(id)||{id:id};
                 var dateKey=this.resolveOrderDateKey(o);
                 var arr=[];
-                if(dateKey)arr.push('orders/'+dateKey+'/'+id);
+                var sourceBase=this.normalizeSourceRecordPath(o,id);
+                if(sourceBase){
+                    arr.push(sourceBase);
+                    return arr.filter(function(p,idx,self){return self.indexOf(p)===idx;});
+                }
+                if(dateKey&&id)arr.push('orders/'+dateKey+'/'+id);
                 return arr.filter(function(p,idx,self){return self.indexOf(p)===idx;});
             },
             buildOrderMirrorUpdates:function(id,fields,order){
@@ -1909,7 +2041,8 @@
                 if(s[key])return;
                 s[key]=true;
                 try{
-                    var base='orders/'+s.resolveOrderDateKey(order)+'/'+order.id;
+                    var mirrorBases=s.orderMirrorBases(order.id,order);
+                    var base=(mirrorBases&&mirrorBases.length)?mirrorBases[0]:('orders/'+s.resolveOrderDateKey(order)+'/'+order.id);
                     var ptSnap=await get(ref(db,base+'/print_task'));
                     if(ptSnap.exists()&&ptSnap.val())return;
                     var task='kitchen_'+Date.now();
@@ -1953,7 +2086,8 @@
                 try{
                     var id=s.editingOrder.id;
                     var targetOrder=s.editingOrder||s.onlineOrders.find(function(o){return o.id===id;})||{id:id,pickupDate:s.editPickupDate,timestamp:Date.now()};
-                    var taskRef=ref(db,'orders/'+s.resolveOrderDateKey(targetOrder)+'/'+id+'/print_task');
+                    var editBases=s.orderMirrorBases(id,targetOrder);
+                    var taskRef=ref(db,((editBases&&editBases.length)?editBases[0]:('orders/'+s.resolveOrderDateKey(targetOrder)+'/'+id))+'/print_task');
                     var pm=s.editPayMethod||'store';
                     var realPm=(pm==='linepay_qr')?'linepay':pm;
                     var oldPm=s.editingOrder.paymentMethod||'store';
@@ -2056,9 +2190,39 @@ if(realPm==='cash'){
 
                         s.toast('⏳ 正在建立 LINE Pay 連結...');
                         // ★ 讀+寫全部用 fetch() REST API（繞過 SDK WebSocket）
-                        var handled2=false,directPoll2=null,reqTimer2=null;
+                        var handled2=false,directPoll2=null,reqTimer2=null,directFallbackTimer2=null,directRequested2=false;
                         var orderDateKey2=s.resolveOrderDateKey(targetOrder);
                         var dbRestUrl2='https://breakfast-ai-system-default-rtdb.asia-southeast1.firebasedatabase.app';
+                        var tryDirectLinePayRequest2=function(){
+                            if(handled2||directRequested2)return;
+                            var base2=String(s.linePayServerUrl||'').trim().replace(/\/+$/,'');
+                            if(!base2)return;
+                            directRequested2=true;
+                            fetch(base2+'/api/linepay/request',{
+                                method:'POST',
+                                headers:{'Content-Type':'application/json'},
+                                body:JSON.stringify({
+                                    orderId:id,
+                                    amount:upd.total||0,
+                                    items:upd.items||[],
+                                    orderDateKey:orderDateKey2,
+                                    confirmBaseUrl:confirmBase,
+                                    returnPage:'pos'
+                                })
+                            }).then(function(res){
+                                return res.json().catch(function(){return {};}).then(function(body){
+                                    return {ok:res.ok,body:body||{}};
+                                });
+                            }).then(function(ret){
+                                if(handled2)return;
+                                var payUrlDirect=s.extractLinePayUrlFromPayload(ret.body);
+                                if(ret.ok&&payUrlDirect){
+                                    handled2=true;clearInterval(directPoll2);clearTimeout(reqTimer2);clearTimeout(directFallbackTimer2);
+                                    try{localStorage.setItem('linepay_return_url',window.location.href);}catch(e){}
+                                    window.location.href=payUrlDirect;
+                                }
+                            }).catch(function(){});
+                        };
                         s.exitOnline();
                         auth.currentUser.getIdToken().then(function(token){
                             var authQ2='?auth='+encodeURIComponent(token);
@@ -2078,33 +2242,27 @@ if(realPm==='cash'){
                                         .then(function(r){return r.json();}).then(function(data){
                                             if(handled2||!data)return;
                                             var st2=String(data.status||'').toLowerCase();
-                                            var payUrl2=data.paymentUrl||data.paymentURL||data.webUrl||data.url||data.paymentPageUrl||'';
-                                            if(payUrl2&&typeof payUrl2==='object'){
-                                                payUrl2=payUrl2.web||payUrl2.app||payUrl2.url||payUrl2.href||'';
-                                            }
-                                            if(!payUrl2&&data.payment&&typeof data.payment==='object'){
-                                                var p2=data.payment;
-                                                payUrl2=p2.web||p2.url||p2.href||'';
-                                            }
+                                            var payUrl2=s.extractLinePayUrlFromPayload(data);
                                             if(payUrl2&&(st2==='ready'||st2==='created'||st2==='ok'||st2==='pending'||st2==='')){
-                                                handled2=true;clearInterval(directPoll2);clearTimeout(reqTimer2);
+                                                handled2=true;clearInterval(directPoll2);clearTimeout(reqTimer2);clearTimeout(directFallbackTimer2);
                                                 try{localStorage.setItem('linepay_return_url',window.location.href);}catch(e){}
                                                 window.location.href=payUrl2;
                                             }else if(st2==='error'||st2==='failed'){
-                                                handled2=true;clearInterval(directPoll2);clearTimeout(reqTimer2);
+                                                handled2=true;clearInterval(directPoll2);clearTimeout(reqTimer2);clearTimeout(directFallbackTimer2);
                                                 s.toast('⚠️ LINE Pay 失敗：'+(data.error||'未知錯誤'));
                                             }
                                         }).catch(function(){});
                                 };
                                 setTimeout(_pollFetch2,800);
                                 directPoll2=setInterval(_pollFetch2,1500);
+                                directFallbackTimer2=setTimeout(tryDirectLinePayRequest2,6000);
                             });
                         }).catch(function(e){
-                            if(!handled2){handled2=true;clearInterval(directPoll2);clearTimeout(reqTimer2);}
+                            if(!handled2){handled2=true;clearInterval(directPoll2);clearTimeout(reqTimer2);clearTimeout(directFallbackTimer2);}
                             s.toast('⚠️ LINE Pay 寫入失敗：'+e.message);
                         });
                         reqTimer2=setTimeout(function(){
-                            if(!handled2){handled2=true;clearInterval(directPoll2);s.toast('⚠️ LINE Pay 逾時，請確認樹莓派服務正常');}
+                            if(!handled2){handled2=true;clearInterval(directPoll2);clearTimeout(directFallbackTimer2);s.toast('⚠️ LINE Pay 逾時，請確認樹莓派服務正常');}
                         },90000);
                         return;
                     }
