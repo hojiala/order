@@ -125,7 +125,7 @@
                                 <li v-for="(item, idx) in order.items" :key="idx" class="border-b border-dashed pb-2 last:border-0 last:pb-0">
                                     <div class="flex justify-between items-start">
                                         <div class="font-bold text-lg">
-                                            <span class="text-red-600 mr-2">{{ item.qty }}x</span>{{ item.name }}
+                                            <span class="text-red-600 mr-2">{{ item.qty }}x</span>{{ getItemDisplayName(item) }}
                                         </div>
                                     </div>
                                     <!-- 選項群組（容量、溫度、套餐飲料）-->
@@ -218,7 +218,7 @@
                             <div v-for="(item, idx) in editModal.items" :key="idx" class="border border-gray-200 rounded-lg p-3 mb-2">
                                 <div class="flex justify-between items-start">
                                     <div>
-                                        <span class="text-red-600 font-bold">{{ item.qty }}x</span> <span class="font-bold">{{ item.name }}</span>
+                                        <span class="text-red-600 font-bold">{{ item.qty }}x</span> <span class="font-bold">{{ getItemDisplayName(item) }}</span>
                                         <div v-if="item.optionGroupSelections && item.optionGroupSelections.length" class="flex flex-wrap gap-1 mt-1">
                                             <span v-for="sel in item.optionGroupSelections" :key="sel.groupName" class="text-xs bg-orange-50 border border-orange-200 text-orange-700 px-1.5 py-0.5 rounded-full font-bold">{{ sel.name }}</span>
                                         </div>
@@ -294,6 +294,7 @@
                     assigningNos: {},
                     orderBuckets: {},
                     orderBucketUnsubs: [],
+                    integrationOrdersCache: [],
                     linePayServerUrl: '',
                     linePayConfirmUrl: '',
                     integrationOrdersUnsub: null,
@@ -386,14 +387,25 @@
                     if (key === 'temp' || key === 'combo_drink_temp') return '\u6eab\u5ea6';
                     return String(groupName || '');
                 },
+                getItemDisplayName(item) {
+                    if (!item || typeof item !== 'object') return '';
+                    const name = String(item.name || item['\u54c1\u9805'] || '').trim();
+                    if (!name) return '';
+                    const size = String(item.size || item['\u5bb9\u91cf'] || '').trim();
+                    const temp = String(item.temp || item['\u6eab\u5ea6'] || '').trim();
+                    if (!size && !temp) return name;
+                    return `${size || ''}${temp || ''}${name}`;
+                },
                 normalizeIncomingOrder(order) {
                     if (!order || typeof order !== 'object') return order;
                     const out = Object.assign({}, order);
                     const payment = out.payment || {};
                     const totals = out.totals || {};
                     if ((out.total === undefined || out.total === null || out.total === '') && Number.isFinite(Number(totals.finalTotal))) out.total = Number(totals.finalTotal);
+                    if ((out.total === undefined || out.total === null || out.total === '') && Number.isFinite(Number(out['總金額']))) out.total = Number(out['總金額']);
                     if (!out.paymentMethod && payment.method) out.paymentMethod = payment.method;
                     if (!out.paymentStatus && payment.status) out.paymentStatus = payment.status;
+                    if (!out.orderNote && typeof out['訂單備註'] === 'string') out.orderNote = out['訂單備註'];
                     if (!out.phone && out.customer && out.customer.phone) out.phone = out.customer.phone;
                     const customerObj = (out.customer && typeof out.customer === 'object') ? out.customer : {};
                     let customerName = '';
@@ -433,6 +445,8 @@
                             if (!isNaN(parsedTs)) out.timestamp = parsedTs;
                         }
                     }
+                    if (!Array.isArray(out.items) && Array.isArray(out['訂單'])) out.items = out['訂單'];
+                    if (!Array.isArray(out.items) && Array.isArray(out['\u8a02\u55ae'])) out.items = out['\u8a02\u55ae'];
                     if (Array.isArray(out.items)) {
                         out.items = out.items.map((item) => {
                             if (!item || typeof item !== 'object') return item;
@@ -448,6 +462,87 @@
                             }
                             return it;
                         });
+                    }
+                    if (Array.isArray(out.items)) {
+                        out.items = out.items.map((item) => {
+                            if (!item || typeof item !== 'object') return null;
+                            const src = Object.assign({}, item);
+                            const nameRaw = src.name || src['\u54c1\u9805'] || src.itemName || src.title || '';
+                            const qtyRaw = (src.qty !== undefined) ? src.qty : ((src['\u6578\u91cf'] !== undefined) ? src['\u6578\u91cf'] : src.quantity);
+                            let qty = Number(qtyRaw);
+                            if (!Number.isFinite(qty) || qty <= 0) qty = 1;
+                            const unitCandidates = [src.price, src['\u55ae\u50f9'], src.unitPrice, src.basePrice, src['\u539f\u50f9']];
+                            let unit = NaN;
+                            let unitAny = NaN;
+                            for (let u = 0; u < unitCandidates.length; u++) {
+                                const uv = Number(unitCandidates[u]);
+                                if (!Number.isFinite(uv)) continue;
+                                if (!Number.isFinite(unitAny)) unitAny = uv;
+                                if (uv > 0) { unit = uv; break; }
+                            }
+                            if (!Number.isFinite(unit) && Number.isFinite(unitAny)) unit = unitAny;
+                            const totalCandidates = [src.itemTotal, src.subtotal, src['\u7e3d\u50f9'], src.lineSubtotal, src.total];
+                            let lineTotal = NaN;
+                            let lineAny = NaN;
+                            for (let t = 0; t < totalCandidates.length; t++) {
+                                const tv = Number(totalCandidates[t]);
+                                if (!Number.isFinite(tv)) continue;
+                                if (!Number.isFinite(lineAny)) lineAny = tv;
+                                if (tv > 0) { lineTotal = tv; break; }
+                            }
+                            if (!Number.isFinite(lineTotal) && Number.isFinite(lineAny)) lineTotal = lineAny;
+                            if (!Number.isFinite(lineTotal) || lineTotal <= 0) {
+                                lineTotal = (Number.isFinite(unit) && unit > 0) ? (unit * qty) : 0;
+                            }
+                            if (!Number.isFinite(unit) || unit <= 0) {
+                                unit = (qty > 0 && Number.isFinite(lineTotal) && lineTotal > 0) ? (lineTotal / qty) : 0;
+                            }
+                            if ((!Number.isFinite(lineTotal) || lineTotal <= 0) && String(src['\u5099\u8a3b'] || '').indexOf('\u5957\u9910\u98f2\u6599') !== -1 && Number.isFinite(Number(src['\u539f\u50f9']))) {
+                                lineTotal = Number(src['\u539f\u50f9'] || 0) * qty;
+                                if (!Number.isFinite(unit) || unit <= 0) unit = Number(src['\u539f\u50f9'] || 0);
+                            }
+                            const mapped = Object.assign({}, src, {
+                                id: src.id || src.productId || src.sku || String(nameRaw || 'item'),
+                                name: String(nameRaw || '').trim(),
+                                qty,
+                                price: Number(unit || 0),
+                                itemTotal: Number(lineTotal || 0),
+                                note: (src.note !== undefined && src.note !== null) ? String(src.note) : (src['\u5099\u8a3b'] || ''),
+                                size: (src.size !== undefined && src.size !== null) ? String(src.size) : (src['\u5bb9\u91cf'] || ''),
+                                temp: (src.temp !== undefined && src.temp !== null) ? String(src.temp) : (src['\u6eab\u5ea6'] || ''),
+                                isComboDrink: !!(src.isComboDrink || String(src['\u5099\u8a3b'] || '').indexOf('\u5957\u9910\u98f2\u6599') !== -1),
+                                comboGroupId: src.comboGroupId || '',
+                                options: Array.isArray(src.options) ? src.options.slice() : [],
+                                posExtras: Array.isArray(src.posExtras) ? src.posExtras.slice() : [],
+                                optionGroupSelections: Array.isArray(src.optionGroupSelections) ? src.optionGroupSelections.slice() : []
+                            });
+                            const rawSelections = (src.optionSelections && typeof src.optionSelections === 'object')
+                                ? src.optionSelections
+                                : ((src.selectedOptions && typeof src.selectedOptions === 'object') ? src.selectedOptions : null);
+                            if ((!mapped.optionGroupSelections || !mapped.optionGroupSelections.length) && rawSelections) {
+                                mapped.optionGroupSelections = Object.keys(rawSelections).map((key) => ({
+                                    groupName: this.getDisplayOptionGroupName(key),
+                                    name: String(rawSelections[key] || ''),
+                                    idx: 0,
+                                    price: 0,
+                                    pricing: 'addDelta',
+                                    baseValue: 0
+                                })).filter((sel) => sel.name);
+                            }
+                            if (Array.isArray(mapped.optionGroupSelections)) {
+                                mapped.optionGroupSelections = mapped.optionGroupSelections.map((sel) => {
+                                    const outSel = Object.assign({}, sel || {});
+                                    const gk = String(outSel.groupName || '').trim().toLowerCase();
+                                    if (gk === 'size' || gk === 'combo_drink_size') outSel.groupName = '\u5bb9\u91cf';
+                                    else if (gk === 'temp' || gk === 'combo_drink_temp') outSel.groupName = '\u6eab\u5ea6';
+                                    outSel.name = String(outSel.name || outSel.value || '').trim();
+                                    if (!Number.isFinite(Number(outSel.price))) outSel.price = 0;
+                                    if (!Number.isFinite(Number(outSel.baseValue))) outSel.baseValue = 0;
+                                    return outSel;
+                                }).filter((sel) => sel && sel.groupName && sel.name);
+                            }
+                            return mapped.name ? mapped : null;
+                        }).filter((item) => !!item);
                     }
                     if (out.integration && out._integrationReadOnly === undefined) {
                         out._integrationReadOnly = !((out.integration.capabilities || {}).editDirect);
@@ -468,10 +563,15 @@
                     return (Array.isArray(list) ? list : []).map((order) => this.normalizeIncomingOrder(order));
                 },
                 isIntegrationReadOnlyOrder(order) {
-                    return !!(order && order._integrationReadOnly);
+                    if (!order) return false;
+                    const src = String(order.source || '').toLowerCase();
+                    if (src === 'phone_ai' || src === 'pos_local') return true;
+                    return false;
                 },
                 isPhoneCommandOrder(order) {
-                    return !!(order && this.isIntegrationReadOnlyOrder(order) && (order.source === 'phone_ai' || order.source === 'pos_local'));
+                    if (!order) return false;
+                    const src = String(order.source || '').toLowerCase();
+                    return src === 'phone_ai' || src === 'pos_local';
                 },
                 resolvePhoneCommandSourceOrderId(order) {
                     const original = (order && order._integrationOriginal) || {};
@@ -586,29 +686,17 @@
                         onChildChanged(txnQ, _update);
                         onChildRemoved(txnQ, (snap) => { delete _statusMap[snap.key]; delete _confirmed[snap.key]; clearTimeout(_timer); _timer = setTimeout(_flush, 150); });
                     })();
-                    let fallbackActivated = false;
-                    const activateFallback = () => {
-                        if (fallbackActivated) return;
-                        fallbackActivated = true;
-                        self.useIntegrationView = false;
-                        self.resetOrderBucketListeners();
-                    };
                     const integrationRef = ref(db, 'integration_views/merged_orders_active');
                     self.integrationOrdersUnsub = onValue(integrationRef, (snap) => {
-                        if (!snap.exists()) {
-                            activateFallback();
-                            return;
-                        }
-                        const view = snap.val() || {};
-                        const list = self.normalizeIncomingOrders(Array.isArray(view.orders) ? view.orders : []);
-                        self.orders = list;
-                        self.useIntegrationView = true;
-                        const currentNewCount = list.filter(o => o.status === 'new').length;
-                        if (currentNewCount > self.previousNewCount && self.previousNewCount !== 0) self.playAlert();
-                        self.previousNewCount = currentNewCount;
+                        const view = snap.exists() ? (snap.val() || {}) : {};
+                        self.integrationOrdersCache = self.normalizeIncomingOrders(Array.isArray(view.orders) ? view.orders : []);
+                        self.useIntegrationView = !!self.integrationOrdersCache.length;
+                        self.rebuildOrdersFromBuckets();
                     }, (err) => {
                         console.error('❌ integration_views 監聽失敗:', err && err.message ? err.message : err);
-                        activateFallback();
+                        self.integrationOrdersCache = [];
+                        self.useIntegrationView = false;
+                        self.rebuildOrdersFromBuckets();
                     });
                 },
                 toggleMenu(orderId) {
@@ -656,11 +744,29 @@
                             if (o.orderNo && !o.print_task && o.status !== 'archived' && o.status !== 'cancelled' && !isLinePayPm && (o.paymentStatus !== 'pending' || this.lpConfirmed[o.id] || this.lpStatus[o.id] === 'confirmed')) this.triggerPrintForOrder(o);
                         }
                     });
-                    this.orders = parsedOrders;
-                    if (currentNewCount > this.previousNewCount && this.previousNewCount !== 0) this.playAlert();
-                    this.previousNewCount = currentNewCount;
+                    const mergedMap = {};
+                    (Array.isArray(this.integrationOrdersCache) ? this.integrationOrdersCache : []).forEach((o) => {
+                        if (o && o.id) mergedMap[o.id] = Object.assign({}, o);
+                    });
+                    parsedOrders.forEach((o) => {
+                        if (!o || !o.id) return;
+                        const current = mergedMap[o.id];
+                        if (!current) {
+                            mergedMap[o.id] = Object.assign({}, o);
+                            return;
+                        }
+                        const localSource = String(o.source || '').toLowerCase();
+                        const preferLocal = (localSource === 'pos' || localSource === 'qr_takeout' || localSource === 'qrcode' || localSource === 'dinein' || !o._integrationReadOnly);
+                        if (preferLocal) mergedMap[o.id] = Object.assign({}, current, o);
+                        else mergedMap[o.id] = Object.assign({}, o, current);
+                    });
+                    const mergedOrders = this.normalizeIncomingOrders(Object.values(mergedMap));
+                    this.orders = mergedOrders;
+                    const mergedNewCount = mergedOrders.filter(o => o.status === 'new').length;
+                    if (mergedNewCount > this.previousNewCount && this.previousNewCount !== 0) this.playAlert();
+                    this.previousNewCount = mergedNewCount;
                     // ★ 離線補印：檢查有流水號但未列印的訂單，重新寫入 print_queue
-                    this.requeueUnprintedOrders(parsedOrders);
+                    this.requeueUnprintedOrders(mergedOrders);
                 },
                 resetOrderBucketListeners() {
                     (this.orderBucketUnsubs || []).forEach((fn) => { try { fn && fn(); } catch(_) {} });
