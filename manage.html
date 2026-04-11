@@ -931,10 +931,10 @@
         </div>
         <div class="overflow-y-auto flex-1 px-5 py-4">
             <div v-for="(item, i) in (viewingOrder.items || [])" :key="i"
-                 class="py-3 border-b border-slate-700 last:border-0">
+                class="py-3 border-b border-slate-700 last:border-0">
                 <div class="flex justify-between items-start">
-                    <p class="text-white font-bold text-sm"><span class="text-orange-400 mr-1">{{ item.qty }}x</span>{{ item.name }}</p>
-                    <p class="text-orange-400 font-bold text-sm ml-2 flex-shrink-0">${{ item.itemTotal }}</p>
+                    <p class="text-white font-bold text-sm"><span class="text-orange-400 mr-1">{{ getDetailItemQty(item) }}x</span>{{ getDetailItemName(item) }}</p>
+                    <p class="text-orange-400 font-bold text-sm ml-2 flex-shrink-0">${{ getDetailItemTotal(item, viewingOrder, i) }}</p>
                 </div>
                 <div v-if="item.optionGroupSelections && item.optionGroupSelections.length" class="flex flex-wrap gap-1 mt-1.5">
                     <span v-for="sel in item.optionGroupSelections" :key="sel.groupName"
@@ -942,7 +942,7 @@
                         {{ getDisplayOptionGroupName(sel.groupName) }}：{{ sel.name }}<span v-if="sel.pricing==='mealUpgrade' && sel.price > sel.baseValue" class="text-orange-400 ml-0.5">+${{ sel.price - sel.baseValue }}</span>
                     </span>
                 </div>
-                <div v-if="item.mealDrink" class="text-xs text-orange-400 mt-1">🧋 {{ item.mealDrink }}</div>
+                <div v-if="getDetailMealDrink(item)" class="text-xs text-orange-400 mt-1">🧋 {{ getDetailMealDrink(item) }}</div>
                 <div v-if="item.options && item.options.length" class="text-xs text-slate-400 mt-0.5">
                     <span v-for="opt in item.options" :key="opt.name" class="mr-2">+{{ opt.name }} ${{ opt.price || 0 }}</span>
                 </div>
@@ -1612,6 +1612,63 @@ window._doCountUp = function() {
                 if (key === 'size' || key === 'combo_drink_size') return '\u5bb9\u91cf';
                 if (key === 'temp' || key === 'combo_drink_temp') return '\u6eab\u5ea6';
                 return String(groupName || '');
+            },
+            getDetailItemQty: function(item) {
+                if (!item) return 1;
+                var qty = Number(item.qty !== undefined ? item.qty : item['數量']);
+                if (!Number.isFinite(qty) || qty <= 0) return 1;
+                return qty;
+            },
+            getDetailItemName: function(item) {
+                if (!item) return '';
+                return String(item.name || item['品項'] || '').trim();
+            },
+            getDetailItemTotal: function(item, order, index) {
+                if (!item) return 0;
+                var totalCandidates = [item.itemTotal, item.subtotal, item['總價'], item.lineSubtotal, item.total];
+                for (var i = 0; i < totalCandidates.length; i++) {
+                    var tv = Number(totalCandidates[i]);
+                    if (Number.isFinite(tv) && tv > 0) return tv;
+                }
+                var qty = this.getDetailItemQty(item);
+                var unitCandidates = [item.price, item['單價'], item.unitPrice, item.basePrice, item['原價']];
+                for (var j = 0; j < unitCandidates.length; j++) {
+                    var uv = Number(unitCandidates[j]);
+                    if (Number.isFinite(uv) && uv > 0) return uv * qty;
+                }
+                if (order && Array.isArray(order.items) && order.items.length === 1) {
+                    var orderTotal = Number(this.getOrderTotalValue(order));
+                    if (Number.isFinite(orderTotal) && orderTotal > 0) return orderTotal;
+                }
+                if (order && Array.isArray(order.items) && order.items.length > 1) {
+                    var total = Number(this.getOrderTotalValue(order));
+                    if (Number.isFinite(total) && total > 0 && Number(index) === order.items.length - 1) {
+                        var known = 0;
+                        for (var k = 0; k < order.items.length - 1; k++) known += Number(this.getDetailItemTotal(order.items[k], null, -1) || 0);
+                        var rest = total - known;
+                        if (rest > 0) return rest;
+                    }
+                }
+                return 0;
+            },
+            getDetailMealDrink: function(item) {
+                if (!item) return '';
+                if (item.mealDrink) return String(item.mealDrink);
+                var sels = Array.isArray(item.optionGroupSelections) ? item.optionGroupSelections : [];
+                if (!sels.length) return '';
+                var size = '';
+                var temp = '';
+                var drink = '';
+                sels.forEach(function(sel) {
+                    var g = String(sel && sel.groupName || '').toLowerCase();
+                    var n = String(sel && sel.name || '').trim();
+                    if (!n) return;
+                    if (!size && (g.indexOf('size') !== -1 || g.indexOf('容量') !== -1)) size = n;
+                    else if (!temp && (g.indexOf('temp') !== -1 || g.indexOf('溫度') !== -1)) temp = n;
+                    else if (!drink && (g.indexOf('drink') !== -1 || g.indexOf('飲料') !== -1)) drink = n;
+                });
+                var parts = [size, temp, drink].filter(Boolean);
+                return parts.join('/') || '';
             },
             normalizeStatsOrder: function(order) {
                 if (!order || typeof order !== 'object') return order;
