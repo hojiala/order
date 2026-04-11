@@ -582,7 +582,7 @@
                 posOrderType:'takeout',posTableLabel:'',posTables:[],cartDragIdx:null,
                 posPickupDate:"",posPickupTime:"",
                 orderMode:"pos",editingOrder:null,
-                onlineOrders:[],ordersLoading:false,assigningNos:{},orderBuckets:{},orderBucketUnsubs:[],integrationOrdersUnsub:null,useIntegrationView:false,
+                onlineOrders:[],ordersLoading:false,assigningNos:{},orderBuckets:{},orderBucketUnsubs:[],integrationOrdersUnsub:null,integrationOrdersCache:[],useIntegrationView:false,
                 orderSearch:"",
                 activeItem:null,tempQty:1,tempNote:"",tempSels:[],tempOG:{},tempPosExtras:[],
                 toastMsg:"",toastTimer:null,lastOrderId:null,
@@ -693,9 +693,11 @@
                 var payment=out.payment||{};
                 var totals=out.totals||{};
                 if((out.total===undefined||out.total===null||out.total==='')&&Number.isFinite(Number(totals.finalTotal)))out.total=Number(totals.finalTotal);
+                if((out.total===undefined||out.total===null||out.total==='')&&Number.isFinite(Number(out['\u7e3d\u91d1\u984d'])))out.total=Number(out['\u7e3d\u91d1\u984d']);
                 if((out.total===undefined||out.total===null||out.total==='')&&Number.isFinite(Number(out['總金額'])))out.total=Number(out['總金額']);
                 if(!out.paymentMethod&&payment.method)out.paymentMethod=payment.method;
                 if(!out.paymentStatus&&payment.status)out.paymentStatus=payment.status;
+                if(!out.orderNote&&typeof out['\u8a02\u55ae\u5099\u8a3b']==='string')out.orderNote=out['\u8a02\u55ae\u5099\u8a3b'];
                 if(!out.phone&&out.customer&&out.customer.phone)out.phone=out.customer.phone;
                 var customerObj=(out.customer&&typeof out.customer==='object')?out.customer:{};
                 var customerName='';
@@ -736,6 +738,7 @@
                     }
                 }
                 if(out.pickupTime)out.pickupTime=this.getDisplayPickupTime(out.pickupTime);
+                if(!Array.isArray(out.items)&&Array.isArray(out['\u8a02\u55ae']))out.items=out['\u8a02\u55ae'];
                 if(!Array.isArray(out.items)&&Array.isArray(out['訂單']))out.items=out['訂單'];
                 if(Array.isArray(out.items)){
                     var self=this;
@@ -748,18 +751,30 @@
                         if(!Number.isFinite(qty)||qty<=0)qty=1;
                         var unitCandidates=[src.price,src['單價'],src.unitPrice,src.basePrice,src['原價']];
                         var unit=NaN;
+                        var unitAny=NaN;
                         for(var u=0;u<unitCandidates.length;u++){
                             var uv=Number(unitCandidates[u]);
-                            if(Number.isFinite(uv)){unit=uv;break;}
+                            if(!Number.isFinite(uv))continue;
+                            if(!Number.isFinite(unitAny))unitAny=uv;
+                            if(uv>0){unit=uv;break;}
                         }
+                        if(!Number.isFinite(unit)&&Number.isFinite(unitAny))unit=unitAny;
                         var totalCandidates=[src.itemTotal,src.subtotal,src['總價'],src.lineSubtotal,src.total];
                         var lineTotal=NaN;
+                        var lineAny=NaN;
                         for(var t=0;t<totalCandidates.length;t++){
                             var tv=Number(totalCandidates[t]);
-                            if(Number.isFinite(tv)){lineTotal=tv;break;}
+                            if(!Number.isFinite(tv))continue;
+                            if(!Number.isFinite(lineAny))lineAny=tv;
+                            if(tv>0){lineTotal=tv;break;}
                         }
-                        if(!Number.isFinite(lineTotal))lineTotal=(Number.isFinite(unit)?unit:0)*qty;
-                        if(!Number.isFinite(unit))unit=qty>0?lineTotal/qty:0;
+                        if(!Number.isFinite(lineTotal)&&Number.isFinite(lineAny))lineTotal=lineAny;
+                        if(!Number.isFinite(lineTotal)||lineTotal<=0){
+                            lineTotal=(Number.isFinite(unit)&&unit>0)?unit*qty:0;
+                        }
+                        if(!Number.isFinite(unit)||unit<=0){
+                            unit=(qty>0&&Number.isFinite(lineTotal)&&lineTotal>0)?(lineTotal/qty):0;
+                        }
                         if((!Number.isFinite(lineTotal)||lineTotal<=0)&&String(src['備註']||'').indexOf('套餐飲料')!==-1&&Number.isFinite(Number(src['原價']))){
                             lineTotal=Number(src['原價']||0)*qty;
                             if(!Number.isFinite(unit)||unit<=0)unit=Number(src['原價']||0);
@@ -836,10 +851,15 @@
                 return (Array.isArray(list)?list:[]).map(function(order){return self.normalizeIncomingOrder(order);});
             },
             isIntegrationReadOnlyOrder:function(order){
-                return !!(order&&order._integrationReadOnly);
+                if(!order)return false;
+                var src=String(order.source||'').toLowerCase();
+                if(src==='phone_ai'||src==='pos_local')return true;
+                return false;
             },
             isPhoneCommandOrder:function(order){
-                return !!(order&&this.isIntegrationReadOnlyOrder(order)&&(order.source==='phone_ai'||order.source==='pos_local'));
+                if(!order)return false;
+                var src=String(order.source||'').toLowerCase();
+                return src==='phone_ai'||src==='pos_local';
             },
             resolvePhoneCommandSourceOrderId:function(order){
                 var original=(order&&order._integrationOriginal)||{};
@@ -896,21 +916,11 @@
             listenIntegratedOrders:function(){
                 var s=this;
                 s.resetIntegrationOrdersListener();
-                var fallbackActivated=false;
-                var activateFallback=function(){
-                    if(fallbackActivated)return;
-                    fallbackActivated=true;
-                    s.useIntegrationView=false;
-                    s.resetOrderBucketListeners();
-                };
                 var integrationRef=ref(db,'integration_views/merged_orders_active');
                 s.integrationOrdersUnsub=onValue(integrationRef,function(snap){
-                    if(!snap.exists()){
-                        activateFallback();
-                        return;
-                    }
-                    var view=snap.val()||{};
-                    var parsed=s.normalizeIncomingOrders(Array.isArray(view.orders)?view.orders.slice():[]);
+                    var view=snap.exists()?(snap.val()||{}):{};
+                    s.integrationOrdersCache=s.normalizeIncomingOrders(Array.isArray(view.orders)?view.orders.slice():[]);
+                    var parsed=s.integrationOrdersCache.slice();
                     parsed.sort(function(a,b){
                         var w={new:1,making:2,done:3,cancelled:4};
                         if(w[a.status]!==w[b.status])return w[a.status]-w[b.status];
@@ -918,8 +928,9 @@
                         if(aNo!==bNo)return bNo-aNo;
                         return (b.timestamp||0)-(a.timestamp||0);
                     });
-                    s.onlineOrders=parsed;
-                    s.useIntegrationView=true;
+                    s.integrationOrdersCache=parsed;
+                    s.useIntegrationView=!!parsed.length;
+                    s.rebuildOnlineOrders();
                     s.ordersLoading=false;
                     if(s.editingOrder){
                         var found=s.onlineOrders.find(function(o){return o.id===s.editingOrder.id;});
@@ -928,7 +939,9 @@
                 },function(err){
                     console.error('❌ integration_views 監聽失敗:',err&&err.message?err.message:err);
                     s.ordersLoading=false;
-                    activateFallback();
+                    s.integrationOrdersCache=[];
+                    s.useIntegrationView=false;
+                    s.rebuildOnlineOrders();
                 });
             },
             orderItemsSummary:function(order){
@@ -968,6 +981,14 @@
                     if(!Number.isFinite(qty)||qty<=0)qty=1;
                     var name=(i&&i.name)?String(i.name):'';
                     if(!name)return '';
+                    var size=(i&&i.size)?String(i.size).trim():'';
+                    var temp=(i&&i.temp)?String(i.temp).trim():'';
+                    var drinkParts=[];
+                    if(size)drinkParts.push(size);
+                    if(temp)drinkParts.push(temp);
+                    if(drinkParts.length){
+                        name=drinkParts.join('')+name;
+                    }
                     var parts=[];
                     if(Array.isArray(i.options)&&i.options.length){
                         parts.push(i.options.map(function(o){return "+"+o.name+"$"+(o.price||0);}).join(","));
@@ -1130,7 +1151,27 @@
                         }
                     }
                 });
-                s.onlineOrders=parsed.sort(function(a,b){
+                var mergedMap={};
+                (Array.isArray(s.integrationOrdersCache)?s.integrationOrdersCache:[]).forEach(function(o){
+                    if(o&&o.id)mergedMap[o.id]=Object.assign({},o);
+                });
+                parsed.forEach(function(o){
+                    if(!o||!o.id)return;
+                    var current=mergedMap[o.id];
+                    if(!current){
+                        mergedMap[o.id]=Object.assign({},o);
+                        return;
+                    }
+                    var localSource=String(o.source||'').toLowerCase();
+                    var preferLocal=(localSource==='pos'||localSource==='qr_takeout'||localSource==='qrcode'||localSource==='dinein'||!o._integrationReadOnly);
+                    if(preferLocal){
+                        mergedMap[o.id]=Object.assign({},current,o);
+                    }else{
+                        mergedMap[o.id]=Object.assign({},o,current);
+                    }
+                });
+                var mergedOrders=s.normalizeIncomingOrders(Object.values(mergedMap));
+                s.onlineOrders=mergedOrders.sort(function(a,b){
                     var w={new:1,making:2,done:3,cancelled:4};
                     if(w[a.status]!==w[b.status])return w[a.status]-w[b.status];
                     var aNo=a.orderNo||0,bNo=b.orderNo||0;
@@ -1195,6 +1236,7 @@
                         s.linePayServerUrl=v.linePayServerUrl||'';s.linePayConfirmUrl=v.linePayConfirmUrl||'';s.posTables=v.posTables||[];}
                 });
                 s.ordersLoading=true;
+                s.resetOrderBucketListeners();
                 s.listenIntegratedOrders();
                 // ★ 監聽 linepay_transactions（限最近100筆）— 改用 child 事件，只下載變更的單筆
                 (function(){
@@ -1740,6 +1782,13 @@
                                                 if(handled||!data)return;
                                                 var st=String(data.status||'').toLowerCase();
                                                 var payUrl=data.paymentUrl||data.paymentURL||data.webUrl||data.url||data.paymentPageUrl||'';
+                                                if(payUrl&&typeof payUrl==='object'){
+                                                    payUrl=payUrl.web||payUrl.app||payUrl.url||payUrl.href||'';
+                                                }
+                                                if(!payUrl&&data.payment&&typeof data.payment==='object'){
+                                                    var p=data.payment;
+                                                    payUrl=p.web||p.url||p.href||'';
+                                                }
                                                 if(payUrl&&(st==='ready'||st==='created'||st==='ok'||st==='pending'||st==='')){
                                                     handled=true;clearInterval(directPoll);clearTimeout(reqTimer);
                                                     s.isSubmitting=false;s.clearCart();
@@ -1798,7 +1847,7 @@
                     return;
                 }
                 var normalized=this.normalizeIncomingOrder(order)||order;
-                this.editingOrder=order;
+                this.editingOrder=Object.assign({},order||{},normalized||{});
                 this.cart=JSON.parse(JSON.stringify(normalized.items||[])).map(function(item){
                     var mapped=Object.assign({},item||{});
                     if(!mapped.station)mapped.station=this.getDefaultStationName();
@@ -1807,7 +1856,7 @@
                 this.editPickupDate=normalized.pickupDate||'';
                 this.editPickupTime=normalized.pickupTime||'';
                 this.editOrderNote=normalized.orderNote||normalized['訂單備註']||normalized.note||'';
-                this.editOrderNote=normalized.orderNote||normalized.note||'';
+                this.editOrderNote=this.editOrderNote||normalized.orderNote||normalized.note||'';
                 this.editPayMethod=normalized.paymentMethod||'store';
                 this.editOrderType=(normalized.type==='dinein'||normalized.pickupMode==='dinein')?'dinein':'takeout';
                 this.editTableLabel=normalized.tableLabel||'';
@@ -2030,6 +2079,13 @@ if(realPm==='cash'){
                                             if(handled2||!data)return;
                                             var st2=String(data.status||'').toLowerCase();
                                             var payUrl2=data.paymentUrl||data.paymentURL||data.webUrl||data.url||data.paymentPageUrl||'';
+                                            if(payUrl2&&typeof payUrl2==='object'){
+                                                payUrl2=payUrl2.web||payUrl2.app||payUrl2.url||payUrl2.href||'';
+                                            }
+                                            if(!payUrl2&&data.payment&&typeof data.payment==='object'){
+                                                var p2=data.payment;
+                                                payUrl2=p2.web||p2.url||p2.href||'';
+                                            }
                                             if(payUrl2&&(st2==='ready'||st2==='created'||st2==='ok'||st2==='pending'||st2==='')){
                                                 handled2=true;clearInterval(directPoll2);clearTimeout(reqTimer2);
                                                 try{localStorage.setItem('linepay_return_url',window.location.href);}catch(e){}
