@@ -394,7 +394,22 @@
                     const size = String(item.size || item['\u5bb9\u91cf'] || '').trim();
                     const temp = String(item.temp || item['\u6eab\u5ea6'] || '').trim();
                     if (!size && !temp) return name;
-                    return `${size || ''}${temp || ''}${name}`;
+                    return [size, temp, name].filter(Boolean).join('/');
+                },
+                normalizeSourceRecordPath(order, orderId) {
+                    const o = order || {};
+                    let path = (o.integration && o.integration.sourceRecordPath) || o.sourceRecordPath || '';
+                    if (!path && o._integrationOriginal && o._integrationOriginal.integration) {
+                        path = o._integrationOriginal.integration.sourceRecordPath || '';
+                    }
+                    path = String(path || '').trim();
+                    if (path.indexOf('orders/') === 0) {
+                        const seg = path.split('/');
+                        if (seg.length >= 3 && seg[1] && seg[2]) {
+                            return `orders/${seg[1]}/${seg[2]}`;
+                        }
+                    }
+                    return '';
                 },
                 normalizeIncomingOrder(order) {
                     if (!order || typeof order !== 'object') return order;
@@ -744,22 +759,99 @@
                             if (o.orderNo && !o.print_task && o.status !== 'archived' && o.status !== 'cancelled' && !isLinePayPm && (o.paymentStatus !== 'pending' || this.lpConfirmed[o.id] || this.lpStatus[o.id] === 'confirmed')) this.triggerPrintForOrder(o);
                         }
                     });
-                    const mergedMap = {};
-                    (Array.isArray(this.integrationOrdersCache) ? this.integrationOrdersCache : []).forEach((o) => {
-                        if (o && o.id) mergedMap[o.id] = Object.assign({}, o);
-                    });
-                    parsedOrders.forEach((o) => {
-                        if (!o || !o.id) return;
-                        const current = mergedMap[o.id];
-                        if (!current) {
-                            mergedMap[o.id] = Object.assign({}, o);
-                            return;
+                    const getPathOrderId = (pathValue) => {
+                        const p = String(pathValue || '').trim();
+                        if (!p) return '';
+                        const seg = p.split('/');
+                        if (seg.length >= 3 && seg[0] === 'orders' && seg[2]) return String(seg[2]);
+                        return '';
+                    };
+                    const getMergeKey = (order) => {
+                        if (!order) return '';
+                        const sourcePath = (order.integration && order.integration.sourceRecordPath) || '';
+                        const pathId = getPathOrderId(sourcePath);
+                        if (pathId) return pathId;
+                        const original = (order && order._integrationOriginal) || {};
+                        let direct = order.sourceOrderId || original.sourceOrderId || (original.audit && original.audit.originalSourceSnapshotId) || (original.phoneAi && original.phoneAi.rawJsonPath) || '';
+                        if (direct) {
+                            direct = String(direct);
+                            if (direct.includes('/')) direct = direct.split('/').pop();
+                            direct = direct.replace(/_繁體\.json$/, '').replace(/\.json$/, '');
+                            if (direct) return direct;
                         }
-                        const localSource = String(o.source || '').toLowerCase();
-                        const preferLocal = (localSource === 'pos' || localSource === 'qr_takeout' || localSource === 'qrcode' || localSource === 'dinein' || !o._integrationReadOnly);
-                        if (preferLocal) mergedMap[o.id] = Object.assign({}, current, o);
-                        else mergedMap[o.id] = Object.assign({}, o, current);
-                    });
+                        return order.id ? String(order.id) : '';
+                    };
+                    const sumItems = (items) => {
+                        if (!Array.isArray(items)) return 0;
+                        return items.reduce((sum, it) => {
+                            let line = Number((it && it.itemTotal !== undefined) ? it.itemTotal : ((it && it.total !== undefined) ? it.total : 0));
+                            if (!Number.isFinite(line)) line = 0;
+                            return sum + line;
+                        }, 0);
+                    };
+                    const pickRicherItems = (a, b) => {
+                        const aa = Array.isArray(a) ? a : [];
+                        const bb = Array.isArray(b) ? b : [];
+                        if (!aa.length && !bb.length) return [];
+                        if (!aa.length) return bb;
+                        if (!bb.length) return aa;
+                        const sumA = sumItems(aa), sumB = sumItems(bb);
+                        if (sumB > sumA) return bb;
+                        if (sumA > sumB) return aa;
+                        if (bb.length > aa.length) return bb;
+                        return aa;
+                    };
+                    const isLocalSource = (order) => {
+                        const src = String((order && order.source) || '').toLowerCase();
+                        return src === 'pos' || src === 'qr_takeout' || src === 'qrcode' || src === 'dinein';
+                    };
+                    const mergeTwo = (current, incoming) => {
+                        if (!current) return Object.assign({}, incoming);
+                        if (!incoming) return Object.assign({}, current);
+                        const incomingLocal = isLocalSource(incoming) || !incoming._integrationReadOnly;
+                        const currentLocal = isLocalSource(current) || !current._integrationReadOnly;
+                        let preferIncoming = false;
+                        if (incomingLocal && !currentLocal) preferIncoming = true;
+                        else if (!incomingLocal && currentLocal) preferIncoming = false;
+                        else {
+                            const inItems = pickRicherItems(current.items, incoming.items);
+                            if (inItems === incoming.items) preferIncoming = true;
+                            else {
+                                const tIn = Number(incoming.total || 0), tCur = Number(current.total || 0);
+                                if (Number.isFinite(tIn) && Number.isFinite(tCur) && tIn > tCur) preferIncoming = true;
+                            }
+                        }
+                        const merged = preferIncoming ? Object.assign({}, current, incoming) : Object.assign({}, incoming, current);
+                        const bestItems = pickRicherItems(current.items, incoming.items);
+                        if (bestItems && bestItems.length) merged.items = bestItems.map((it) => Object.assign({}, it));
+                        const totals = [Number(current.total), Number(incoming.total), sumItems(merged.items)];
+                        const finiteTotals = totals.filter((v) => Number.isFinite(v));
+                        if (finiteTotals.length) merged.total = Math.max(...finiteTotals);
+                        if (!merged.id) merged.id = preferIncoming ? (incoming.id || current.id) : (current.id || incoming.id);
+                        return merged;
+                    };
+                    const integrationList = Array.isArray(this.integrationOrdersCache) ? this.integrationOrdersCache : [];
+                    const mergedMap = {};
+                    if (integrationList.length) {
+                        integrationList.forEach((o) => {
+                            if (!o || !o.id) return;
+                            const key = getMergeKey(o) || String(o.id);
+                            mergedMap[key] = mergeTwo(mergedMap[key], o);
+                        });
+                        parsedOrders.forEach((o) => {
+                            if (!o || !o.id) return;
+                            const key = getMergeKey(o) || String(o.id);
+                            // integration 存在時，只補同 key 本地欄位，避免重複卡片
+                            if (!mergedMap[key]) return;
+                            mergedMap[key] = mergeTwo(mergedMap[key], o);
+                        });
+                    } else {
+                        parsedOrders.forEach((o) => {
+                            if (!o || !o.id) return;
+                            const key = getMergeKey(o) || String(o.id);
+                            mergedMap[key] = mergeTwo(mergedMap[key], o);
+                        });
+                    }
                     const mergedOrders = this.normalizeIncomingOrders(Object.values(mergedMap));
                     this.orders = mergedOrders;
                     const mergedNewCount = mergedOrders.filter(o => o.status === 'new').length;
@@ -799,6 +891,8 @@
                 },
                 orderBasePath(orderId, orderObj) {
                     const o = orderObj || this.findOrderById(orderId) || { id: orderId };
+                    const sourceBase = this.normalizeSourceRecordPath(o, orderId);
+                    if (sourceBase) return sourceBase;
                     const dateKey = this.resolveOrderDateKey(o);
                     return `orders/${dateKey}/${orderId}`;
                 },
@@ -811,6 +905,8 @@
                 },
                 orderMirrorBases(orderId, orderObj) {
                     const o = orderObj || this.findOrderById(orderId) || { id: orderId };
+                    const sourceBase = this.normalizeSourceRecordPath(o, orderId);
+                    if (sourceBase) return [sourceBase];
                     const dateKey = this.resolveOrderDateKey(o);
                     const out = [];
                     if (dateKey) out.push(`orders/${dateKey}/${orderId}`);
