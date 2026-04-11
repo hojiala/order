@@ -1521,8 +1521,62 @@ window._doCountUp = function() {
                 if (!order) return 0;
                 if (typeof order.timestamp === 'number' && Number.isFinite(order.timestamp)) return order.timestamp;
                 if (typeof order.createdAt === 'number' && Number.isFinite(order.createdAt)) return order.createdAt;
-                var parsed = Date.parse(order.createdAt || order.createdAtDisplay || '');
-                return isNaN(parsed) ? 0 : parsed;
+                var parseDateText = function(value) {
+                    if (value === undefined || value === null) return 0;
+                    var raw = String(value).trim();
+                    if (!raw || raw === '[object Object]') return 0;
+                    var normalized = raw
+                        .replace(/[.]/g, '/')
+                        .replace(/年/g, '/')
+                        .replace(/月/g, '/')
+                        .replace(/日/g, ' ')
+                        .replace(/上午/g, ' AM ')
+                        .replace(/下午/g, ' PM ')
+                        .replace(/\s+/g, ' ')
+                        .trim();
+                    var zhMatch = normalized.match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})\s*(AM|PM)?\s*(\d{1,2}):(\d{2})(?::(\d{2}))?$/i);
+                    if (zhMatch) {
+                        var year = Number(zhMatch[1]);
+                        var month = Number(zhMatch[2]);
+                        var day = Number(zhMatch[3]);
+                        var meridiem = (zhMatch[4] || '').toUpperCase();
+                        var hour = Number(zhMatch[5]);
+                        var minute = Number(zhMatch[6]);
+                        var second = Number(zhMatch[7] || 0);
+                        if (meridiem === 'PM' && hour < 12) hour += 12;
+                        if (meridiem === 'AM' && hour === 12) hour = 0;
+                        return new Date(year, month - 1, day, hour, minute, second).getTime();
+                    }
+                    var parsed = Date.parse(normalized);
+                    return isNaN(parsed) ? 0 : parsed;
+                };
+                var candidates = [
+                    order.createdAt,
+                    order.createdAtDisplay,
+                    order['日期時間'],
+                    order.dateTime,
+                    order.orderTime
+                ];
+                for (var i = 0; i < candidates.length; i++) {
+                    var ts = parseDateText(candidates[i]);
+                    if (ts) return ts;
+                }
+                var dateKey = order.pickupDate || order.orderDateKey || order._sourceDateKey || ((order.audit && order.audit.dateKey) ? String(order.audit.dateKey) : '');
+                var timeLabel = order.pickupTime || order.pickupTimeLabel || '';
+                if (String(timeLabel).trim().toUpperCase() === 'ASAP' || String(timeLabel).trim() === '盡快') timeLabel = '00:00';
+                if (dateKey) {
+                    var combined = String(dateKey).trim() + (timeLabel ? (' ' + String(timeLabel).trim()) : ' 00:00');
+                    var fallbackTs = parseDateText(combined);
+                    if (fallbackTs) return fallbackTs;
+                }
+                if (order.integration && typeof order.integration.sourceRecordPath === 'string' && order.integration.sourceRecordPath.indexOf('orders/') === 0) {
+                    var seg = order.integration.sourceRecordPath.split('/');
+                    if (seg.length >= 3 && seg[1]) {
+                        var segTs = parseDateText(seg[1] + ' 00:00');
+                        if (segTs) return segTs;
+                    }
+                }
+                return 0;
             },
             getDisplayCustomerName: function(order) {
                 if (!order || typeof order !== 'object') return '\u9867\u5ba2';
@@ -1565,9 +1619,13 @@ window._doCountUp = function() {
                 if ((out.total === undefined || out.total === null || out.total === '') && out.totals && Number.isFinite(Number(out.totals.finalTotal))) {
                     out.total = Number(out.totals.finalTotal);
                 }
+                if ((out.total === undefined || out.total === null || out.total === '') && Number.isFinite(Number(out['總金額']))) {
+                    out.total = Number(out['總金額']);
+                }
                 if (!out.paymentMethod && out.payment && out.payment.method) out.paymentMethod = out.payment.method;
                 if (!out.paymentStatus && out.payment && out.payment.status) out.paymentStatus = out.payment.status;
                 if (!out.phone && out.customer && out.customer.phone) out.phone = out.customer.phone;
+                if (!out.orderNote && typeof out['訂單備註'] === 'string') out.orderNote = out['訂單備註'];
                 var customerObj = (out.customer && typeof out.customer === 'object') ? out.customer : {};
                 var customerName = '';
                 if (typeof out.customer === 'string') {
@@ -1599,25 +1657,79 @@ window._doCountUp = function() {
                 if (typeof out.pickupTime === 'string' && out.pickupTime.trim().toUpperCase() === 'ASAP') out.pickupTime = '\u76e1\u5feb';
                 if (typeof out.pickupTime === 'string' && out.pickupTime.trim() === '[object Object]') out.pickupTime = '\u76e1\u5feb';
                 if (typeof out.tableLabel !== 'string' || !out.tableLabel.trim() || out.tableLabel.trim() === '[object Object]') out.tableLabel = '';
+                if (!Array.isArray(out.items) && Array.isArray(out['訂單'])) out.items = out['訂單'];
                 if ((out.timestamp === undefined || out.timestamp === null || out.timestamp === 0)) {
                     var ts = this.getOrderTimestamp(out);
                     if (ts) out.timestamp = ts;
                 }
                 if (Array.isArray(out.items)) {
+                    var self = this;
                     out.items = out.items.map(function(item) {
-                        if (!item || typeof item !== 'object') return item;
-                        var it = Object.assign({}, item);
-                        if (Array.isArray(it.optionGroupSelections)) {
-                            it.optionGroupSelections = it.optionGroupSelections.map(function(sel) {
-                                var mapped = Object.assign({}, sel || {});
-                                var gk = String(mapped.groupName || '').trim().toLowerCase();
-                                if (gk === 'size' || gk === 'combo_drink_size') mapped.groupName = '\u5bb9\u91cf';
-                                else if (gk === 'temp' || gk === 'combo_drink_temp') mapped.groupName = '\u6eab\u5ea6';
-                                return mapped;
-                            });
+                        if (!item || typeof item !== 'object') return null;
+                        var src = Object.assign({}, item);
+                        var nameRaw = src.name || src['品項'] || src.itemName || src.title || '';
+                        var qtyRaw = (src.qty !== undefined) ? src.qty : ((src['數量'] !== undefined) ? src['數量'] : src.quantity);
+                        var qty = Number(qtyRaw);
+                        if (!Number.isFinite(qty) || qty <= 0) qty = 1;
+
+                        var unitCandidates = [src.price, src['單價'], src.unitPrice, src.basePrice, src['原價']];
+                        var unit = NaN;
+                        for (var u = 0; u < unitCandidates.length; u++) {
+                            var uv = Number(unitCandidates[u]);
+                            if (Number.isFinite(uv)) { unit = uv; break; }
                         }
-                        return it;
-                    });
+                        var totalCandidates = [src.itemTotal, src.subtotal, src['總價'], src.lineSubtotal, src.total];
+                        var lineTotal = NaN;
+                        for (var t = 0; t < totalCandidates.length; t++) {
+                            var tv = Number(totalCandidates[t]);
+                            if (Number.isFinite(tv)) { lineTotal = tv; break; }
+                        }
+                        if (!Number.isFinite(lineTotal)) lineTotal = (Number.isFinite(unit) ? unit : 0) * qty;
+                        if (!Number.isFinite(unit)) unit = qty > 0 ? lineTotal / qty : 0;
+                        if ((!Number.isFinite(lineTotal) || lineTotal <= 0) && String(src['備註'] || '').indexOf('套餐飲料') !== -1 && Number.isFinite(Number(src['原價']))) {
+                            lineTotal = Number(src['原價'] || 0) * qty;
+                            if (!Number.isFinite(unit) || unit <= 0) unit = Number(src['原價'] || 0);
+                        }
+
+                        var mappedItem = Object.assign({}, src, {
+                            name: String(nameRaw || '').trim(),
+                            qty: qty,
+                            price: Number(unit || 0),
+                            itemTotal: Number(lineTotal || 0),
+                            note: (src.note !== undefined && src.note !== null) ? String(src.note) : (src['備註'] || ''),
+                            size: (src.size !== undefined && src.size !== null) ? String(src.size) : (src['容量'] || ''),
+                            temp: (src.temp !== undefined && src.temp !== null) ? String(src.temp) : (src['溫度'] || ''),
+                            optionGroupSelections: Array.isArray(src.optionGroupSelections) ? src.optionGroupSelections.slice() : []
+                        });
+
+                        var rawSelections = (src.optionSelections && typeof src.optionSelections === 'object')
+                            ? src.optionSelections
+                            : ((src.selectedOptions && typeof src.selectedOptions === 'object') ? src.selectedOptions : null);
+                        if ((!mappedItem.optionGroupSelections || !mappedItem.optionGroupSelections.length) && rawSelections) {
+                            mappedItem.optionGroupSelections = Object.keys(rawSelections).map(function(key) {
+                                return {
+                                    groupName: self.getDisplayOptionGroupName(key),
+                                    name: String(rawSelections[key] || ''),
+                                    idx: 0,
+                                    price: 0,
+                                    pricing: 'addDelta',
+                                    baseValue: 0
+                                };
+                            }).filter(function(sel) { return sel.name; });
+                        }
+
+                        if (Array.isArray(mappedItem.optionGroupSelections)) {
+                            mappedItem.optionGroupSelections = mappedItem.optionGroupSelections.map(function(sel) {
+                                var mapped = Object.assign({}, sel || {});
+                                mapped.groupName = self.getDisplayOptionGroupName(mapped.groupName || '');
+                                mapped.name = String(mapped.name || mapped.value || '').trim();
+                                if (!Number.isFinite(Number(mapped.price))) mapped.price = 0;
+                                if (!Number.isFinite(Number(mapped.baseValue))) mapped.baseValue = 0;
+                                return mapped;
+                            }).filter(function(sel) { return sel && sel.groupName && sel.name; });
+                        }
+                        return mappedItem.name ? mappedItem : null;
+                    }).filter(function(item) { return !!item; });
                 }
                 return out;
             },
@@ -2173,6 +2285,13 @@ window._doCountUp = function() {
             // ★ 取得訂單的「營業日」：有 pickupDate 用 pickupDate，否則用 timestamp 日期
             getOrderDate: function(o) {
                 if (o.pickupDate) return o.pickupDate; // "2026-03-03" 格式
+                if (o.orderDateKey) return String(o.orderDateKey);
+                if (o._sourceDateKey) return String(o._sourceDateKey);
+                if (o.audit && o.audit.dateKey) return String(o.audit.dateKey);
+                if (o.integration && typeof o.integration.sourceRecordPath === 'string' && o.integration.sourceRecordPath.indexOf('orders/') === 0) {
+                    var seg = o.integration.sourceRecordPath.split('/');
+                    if (seg.length >= 3 && seg[1]) return String(seg[1]);
+                }
                 var ts = this.getOrderTimestamp(o);
                 if (!ts) return '';
                 var d = new Date(ts);
