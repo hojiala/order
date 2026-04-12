@@ -516,7 +516,7 @@
                                     </span>
                                 </td>
                                 <td class="px-3 py-3 text-center">
-                                    <button @click="viewingOrder = order"
+                                    <button @click="openOrderDetail(order)"
                                         class="text-xs bg-slate-700 hover:bg-blue-700 text-slate-300 hover:text-white px-3 py-1 rounded-lg transition">
                                         查看
                                     </button>
@@ -1613,6 +1613,73 @@ window._doCountUp = function() {
                 if (key === 'temp' || key === 'combo_drink_temp') return '\u6eab\u5ea6';
                 return String(groupName || '');
             },
+            resolveStatsSourceOrderPath: function(order) {
+                if (!order || typeof order !== 'object') return '';
+                var path = (order.integration && order.integration.sourceRecordPath) || order.sourceRecordPath || '';
+                if (!path && order._integrationOriginal && order._integrationOriginal.integration) {
+                    path = order._integrationOriginal.integration.sourceRecordPath || '';
+                }
+                path = String(path || '').trim();
+                if (path.indexOf('orders/') !== 0) return '';
+                var seg = path.split('/');
+                if (seg.length >= 3 && seg[1] && seg[2]) return 'orders/' + seg[1] + '/' + seg[2];
+                return '';
+            },
+            sumStatsItemsTotal: function(items) {
+                if (!Array.isArray(items)) return 0;
+                return items.reduce(function(sum, it) {
+                    var line = Number((it && it.itemTotal !== undefined) ? it.itemTotal : ((it && it.total !== undefined) ? it.total : ((it && it['總價'] !== undefined) ? it['總價'] : 0)));
+                    if (!Number.isFinite(line)) line = 0;
+                    return sum + line;
+                }, 0);
+            },
+            pickRicherStatsItems: function(currentItems, incomingItems, orderTotal) {
+                var a = Array.isArray(currentItems) ? currentItems : [];
+                var b = Array.isArray(incomingItems) ? incomingItems : [];
+                if (!a.length && !b.length) return [];
+                if (!a.length) return b;
+                if (!b.length) return a;
+                var sumA = this.sumStatsItemsTotal(a);
+                var sumB = this.sumStatsItemsTotal(b);
+                if (Number.isFinite(orderTotal) && orderTotal > 0) {
+                    var diffA = Math.abs(orderTotal - sumA);
+                    var diffB = Math.abs(orderTotal - sumB);
+                    if (diffB + 0.01 < diffA) return b;
+                    if (diffA + 0.01 < diffB) return a;
+                }
+                if (sumB > sumA) return b;
+                if (sumA > sumB) return a;
+                if (b.length > a.length) return b;
+                return a;
+            },
+            enrichStatsOrderFromSource: async function(order) {
+                var normalized = this.normalizeStatsOrder(order || {});
+                var sourcePath = this.resolveStatsSourceOrderPath(normalized);
+                if (!sourcePath) return normalized;
+                try {
+                    var snap = await get(ref(db, sourcePath));
+                    if (!snap.exists()) return normalized;
+                    var sourceOrder = this.normalizeStatsOrder(Object.assign({ id: normalized.id }, snap.val() || {}));
+                    var picked = this.pickRicherStatsItems(normalized.items, sourceOrder.items, Number(this.getOrderTotalValue(normalized) || 0));
+                    var merged = Object.assign({}, normalized);
+                    if (picked && picked.length) merged.items = picked.map(function(it) { return Object.assign({}, it); });
+                    var totals = [Number(this.getOrderTotalValue(normalized) || 0), Number(this.getOrderTotalValue(sourceOrder) || 0), this.sumStatsItemsTotal(merged.items)];
+                    var finiteTotals = totals.filter(function(v) { return Number.isFinite(v); });
+                    if (finiteTotals.length) merged.total = Math.max.apply(null, finiteTotals);
+                    return merged;
+                } catch (e) {
+                    console.warn('enrichStatsOrderFromSource failed:', normalized && normalized.id, e && e.message ? e.message : e);
+                    return normalized;
+                }
+            },
+            openOrderDetail: async function(order) {
+                var base = this.normalizeStatsOrder(order || {});
+                this.viewingOrder = base;
+                var enriched = await this.enrichStatsOrderFromSource(base);
+                if (this.viewingOrder && base && this.viewingOrder.id === base.id) {
+                    this.viewingOrder = enriched;
+                }
+            },
             getDetailItemQty: function(item) {
                 if (!item) return 1;
                 var qty = Number(item.qty !== undefined ? item.qty : item['數量']);
@@ -1653,9 +1720,11 @@ window._doCountUp = function() {
             },
             getDetailMealDrink: function(item) {
                 if (!item) return '';
+                var note = String(item.note || item['備註'] || '');
+                var isComboContext = !!item.mealDrink || !!item.isComboDrink || note.indexOf('套餐飲料') !== -1;
+                if (!isComboContext) return '';
                 if (item.mealDrink) return String(item.mealDrink);
                 var sels = Array.isArray(item.optionGroupSelections) ? item.optionGroupSelections : [];
-                if (!sels.length) return '';
                 var size = '';
                 var temp = '';
                 var drink = '';
@@ -1667,8 +1736,30 @@ window._doCountUp = function() {
                     else if (!temp && (g.indexOf('temp') !== -1 || g.indexOf('溫度') !== -1)) temp = n;
                     else if (!drink && (g.indexOf('drink') !== -1 || g.indexOf('飲料') !== -1)) drink = n;
                 });
+                if (!drink) drink = String(item.name || item['品項'] || '').trim();
                 var parts = [size, temp, drink].filter(Boolean);
-                return parts.join('/') || '';
+                var text = parts.join('/');
+                if (!text) return '';
+                var upgrade = 0;
+                if (sels.length) {
+                    sels.forEach(function(sel) {
+                        var pricing = String(sel && sel.pricing || '');
+                        var p = Number(sel && sel.price);
+                        var b = Number(sel && sel.baseValue);
+                        if (pricing === 'mealUpgrade' && Number.isFinite(p) && Number.isFinite(b) && p > b) {
+                            upgrade = Math.max(upgrade, p - b);
+                        }
+                    });
+                }
+                if (upgrade <= 0) {
+                    var qty = this.getDetailItemQty(item);
+                    var line = Number((item && item.itemTotal !== undefined) ? item.itemTotal : ((item && item.total !== undefined) ? item.total : (item && item['總價'])));
+                    if (!Number.isFinite(line)) line = 0;
+                    if (qty > 0 && line > 0) upgrade = line / qty;
+                }
+                upgrade = Math.max(0, Math.round(upgrade));
+                if (upgrade > 0) text += '/補差價$' + upgrade;
+                return text;
             },
             normalizeStatsOrder: function(order) {
                 if (!order || typeof order !== 'object') return order;
@@ -2357,10 +2448,7 @@ window._doCountUp = function() {
                     var seg = o.integration.sourceRecordPath.split('/');
                     if (seg.length >= 3 && seg[1]) return String(seg[1]);
                 }
-                var ts = this.getOrderTimestamp(o);
-                if (!ts) return '';
-                var d = new Date(ts);
-                return d.getFullYear() + '-' + ('0'+(d.getMonth()+1)).slice(-2) + '-' + ('0'+d.getDate()).slice(-2);
+                return '';
             },
             getTodayStr: function() {
                 var d = new Date();
