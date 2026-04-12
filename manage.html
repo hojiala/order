@@ -1736,20 +1736,46 @@ window._doCountUp = function() {
                 var qty = this.getDetailItemQty(item);
                 var sels = Array.isArray(item.optionGroupSelections) ? item.optionGroupSelections : [];
                 var upgradePerUnit = 0;
+                var optionExtraPerUnit = 0;
                 sels.forEach(function(sel) {
                     var pricing = String(sel && sel.pricing || '');
                     var p = Number(sel && sel.price);
                     var b = Number(sel && sel.baseValue);
+                    var n = String(sel && sel.name || '').trim();
+                    var g = String(sel && sel.groupName || '').toLowerCase();
+                    var isDrinkGroup = g.indexOf('drink') !== -1 || g.indexOf('飲料') !== -1 || g.indexOf('套餐飲料') !== -1;
+                    var handledByName = false;
+                    var m = n.match(/\+\s*\$(\d+)/);
+                    if (m && m[1]) {
+                        var parsedUpgrade = Number(m[1] || 0);
+                        if (Number.isFinite(parsedUpgrade) && parsedUpgrade > 0) {
+                            handledByName = true;
+                            if (pricing === 'mealUpgrade' || isDrinkGroup) {
+                                upgradePerUnit = Math.max(upgradePerUnit, parsedUpgrade);
+                            } else {
+                                optionExtraPerUnit += parsedUpgrade;
+                            }
+                        }
+                    }
                     if (pricing === 'mealUpgrade' && Number.isFinite(p) && Number.isFinite(b) && p > b) {
                         upgradePerUnit = Math.max(upgradePerUnit, p - b);
+                    } else if (!handledByName && !isDrinkGroup && Number.isFinite(p) && p > 0) {
+                        if (Number.isFinite(b) && p > b) optionExtraPerUnit += (p - b);
+                        else if (!Number.isFinite(b) || b <= 0) optionExtraPerUnit += p;
                     }
                 });
                 var itemName = String(item.name || item['品項'] || '').trim();
+                var category = String(item.category || item['分類'] || '').trim();
+                var hasComboGroupId = !!String(item.comboGroupId || '').trim();
+                var hasComboSibling = false;
+                if (order && Array.isArray(order.items)) {
+                    hasComboSibling = !!this.findComboDrinkSibling(order, item, index);
+                }
                 var isComboMain = itemName.indexOf('套餐') !== -1 || !!item.mealDrink || sels.some(function(sel){
                     var pricing = String(sel && sel.pricing || '');
                     var g = String(sel && sel.groupName || '').toLowerCase();
                     return pricing === 'mealUpgrade' || g.indexOf('drink') !== -1 || g.indexOf('飲料') !== -1 || g.indexOf('套餐飲料') !== -1;
-                });
+                }) || category.indexOf('套餐') !== -1 || (hasComboGroupId && !item.isComboDrink) || hasComboSibling;
                 if (upgradePerUnit <= 0 && isComboMain && order && Array.isArray(order.items)) {
                     var drinkSibling = this.findComboDrinkSibling(order, item, index);
                     if (drinkSibling) {
@@ -1758,14 +1784,40 @@ window._doCountUp = function() {
                         var sibUnit = Number((drinkSibling.price !== undefined) ? drinkSibling.price : ((drinkSibling['單價'] !== undefined) ? drinkSibling['單價'] : 0));
                         if (Number.isFinite(sibTotal) && sibTotal > 0 && sibQty > 0) upgradePerUnit = Math.max(upgradePerUnit, sibTotal / sibQty);
                         if (upgradePerUnit <= 0 && Number.isFinite(sibUnit) && sibUnit > 0) upgradePerUnit = Math.max(upgradePerUnit, sibUnit);
+                        if (upgradePerUnit <= 0) {
+                            var sibOriginal = Number((drinkSibling.originalPrice !== undefined) ? drinkSibling.originalPrice : drinkSibling['原價']);
+                            if (Number.isFinite(sibOriginal) && sibOriginal > 30) {
+                                upgradePerUnit = Math.max(upgradePerUnit, sibOriginal - 30);
+                            }
+                        }
+                    }
+                }
+                if (isComboMain) {
+                    var options = Array.isArray(item.options) ? item.options : [];
+                    options.forEach(function(opt) {
+                        var pv = Number(opt && (opt.price !== undefined ? opt.price : opt['加價']));
+                        if (Number.isFinite(pv) && pv > 0) optionExtraPerUnit += pv;
+                    });
+                    var extras = Array.isArray(item.posExtras) ? item.posExtras : [];
+                    extras.forEach(function(ex) {
+                        var ev = Number(ex && (ex.price !== undefined ? ex.price : ex['加價']));
+                        if (Number.isFinite(ev) && ev > 0) optionExtraPerUnit += ev;
+                    });
+                }
+                if (isComboMain) {
+                    var baseCandidates = [item.basePrice, item['原價'], item.originalPrice];
+                    for (var bc = 0; bc < baseCandidates.length; bc++) {
+                        var bv = Number(baseCandidates[bc]);
+                        if (Number.isFinite(bv) && bv > 0) return bv * qty;
                     }
                 }
                 var totalCandidates = [item.itemTotal, item.subtotal, item['總價'], item.lineSubtotal, item.total];
                 for (var i = 0; i < totalCandidates.length; i++) {
                     var tv = Number(totalCandidates[i]);
                     if (Number.isFinite(tv) && tv > 0) {
-                        if (upgradePerUnit > 0 && isComboMain) {
-                            return Math.max(0, tv - (upgradePerUnit * qty));
+                        if (isComboMain) {
+                            var minusPerUnit = Math.max(0, upgradePerUnit) + Math.max(0, optionExtraPerUnit);
+                            if (minusPerUnit > 0) return Math.max(0, tv - (minusPerUnit * qty));
                         }
                         return tv;
                     }
@@ -1794,6 +1846,8 @@ window._doCountUp = function() {
                 if (!item) return '';
                 var note = String(item.note || item['備註'] || '');
                 var itemName = String(item.name || item['品項'] || '').trim();
+                var category = String(item.category || item['分類'] || '').trim();
+                var hasComboGroupId = !!String(item.comboGroupId || '').trim();
                 var isComboLine = !!item.isComboDrink || note.indexOf('套餐飲料') !== -1;
                 var sels = Array.isArray(item.optionGroupSelections) ? item.optionGroupSelections : [];
                 var hasDrinkSelection = sels.some(function(sel){
@@ -1805,7 +1859,7 @@ window._doCountUp = function() {
                     var pricing = String(sel && sel.pricing || '');
                     var g = String(sel && sel.groupName || '').toLowerCase();
                     return pricing === 'mealUpgrade' || g.indexOf('drink') !== -1 || g.indexOf('飲料') !== -1 || g.indexOf('套餐飲料') !== -1;
-                });
+                }) || category.indexOf('套餐') !== -1 || (hasComboGroupId && !item.isComboDrink);
                 var isComboContext = !!item.mealDrink || isComboLine || isComboMain;
                 if (!isComboContext) return '';
                 if (isComboLine && !isComboMain) return '';
@@ -2659,17 +2713,56 @@ window._doCountUp = function() {
                         var seg = path.split('/');
                         if (seg.length >= 3 && seg[2]) return String(seg[2]);
                     }
+                    var original = (order && order._integrationOriginal) || {};
+                    var direct = order.sourceOrderId || original.sourceOrderId || ((original.audit && original.audit.originalSourceSnapshotId) || '') || ((original.phoneAi && original.phoneAi.rawJsonPath) || '');
+                    if (direct) {
+                        var d = String(direct);
+                        if (d.indexOf('/') !== -1) d = d.split('/').pop();
+                        d = d.replace(/_蝜?\.json$/, '').replace(/\.json$/, '');
+                        if (d) return d;
+                    }
                     if (order.id) return String(order.id);
                     return '';
+                };
+                var resolveDayKey = function(order) {
+                    if (!order || typeof order !== 'object') return '';
+                    var pickupDate = String(order.pickupDate || order.orderDateKey || '').trim();
+                    if (/^\d{4}-\d{2}-\d{2}$/.test(pickupDate)) return pickupDate;
+                    var path = (order.integration && order.integration.sourceRecordPath) || order.sourceRecordPath || '';
+                    var m = String(path || '').match(/^orders\/(\d{4}-\d{2}-\d{2})\//);
+                    if (m && m[1]) return m[1];
+                    var ts = Number(order.timestamp || order.createdAt || order.updatedAt || 0);
+                    if (Number.isFinite(ts) && ts > 0) {
+                        var d = new Date(ts);
+                        if (!Number.isNaN(d.getTime())) return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+                    }
+                    return '';
+                };
+                var resolveFallbackDedupKey = function(order) {
+                    if (!order || typeof order !== 'object') return '';
+                    var no = String(order.orderNo || order.serialNumber || '').trim();
+                    if (!no) return '';
+                    var day = resolveDayKey(order);
+                    if (!day) return '';
+                    var src = String(order.source || '').toLowerCase().trim();
+                    return ['no', day, no, src].join('|');
                 };
                 var mergeOrderById = function(map, rawOrder) {
                     if (!rawOrder || typeof rawOrder !== 'object') return;
                     var incoming = self.normalizeStatsOrder(rawOrder);
                     var mergeKey = resolveMergeKey(incoming);
-                    if (!incoming || !mergeKey || !incoming.status) return;
-                    var current = map[mergeKey];
+                    var fallbackKey = resolveFallbackDedupKey(incoming);
+                    var aliases = [mergeKey, fallbackKey, incoming && incoming.id ? String(incoming.id) : ''].filter(function(v, i, arr) {
+                        return !!v && arr.indexOf(v) === i;
+                    });
+                    if (!incoming || !aliases.length || !incoming.status) return;
+                    var keepKey = aliases[0];
+                    for (var ai = 0; ai < aliases.length; ai++) {
+                        if (map[aliases[ai]]) { keepKey = aliases[ai]; break; }
+                    }
+                    var current = map[keepKey];
                     if (!current) {
-                        map[mergeKey] = incoming;
+                        map[keepKey] = incoming;
                         return;
                     }
                     var merged = Object.assign({}, current, incoming);
@@ -2678,7 +2771,10 @@ window._doCountUp = function() {
                     var totals = [Number(self.getOrderTotalValue(current) || 0), Number(self.getOrderTotalValue(incoming) || 0), self.sumStatsItemsTotal(merged.items)];
                     var finiteTotals = totals.filter(function(v){ return Number.isFinite(v); });
                     if (finiteTotals.length) merged.total = Math.max.apply(null, finiteTotals);
-                    map[mergeKey] = self.normalizeStatsOrder(merged);
+                    map[keepKey] = self.normalizeStatsOrder(merged);
+                    aliases.forEach(function(k) {
+                        if (k !== keepKey && map[k]) delete map[k];
+                    });
                 };
 
                 var integrationPromise = get(ref(db, 'integration_views/merged_orders_history_index'))

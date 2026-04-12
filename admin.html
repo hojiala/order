@@ -832,12 +832,36 @@
                         if (seg.length >= 3 && seg[0] === 'orders' && seg[2]) return String(seg[2]);
                         return '';
                     };
+                    const getOrderDayKey = (order) => {
+                        if (!order || typeof order !== 'object') return '';
+                        const pickupDate = String(order.pickupDate || order.orderDateKey || '').trim();
+                        if (/^\d{4}-\d{2}-\d{2}$/.test(pickupDate)) return pickupDate;
+                        let sourcePath = (order.integration && order.integration.sourceRecordPath) || order.sourceRecordPath || '';
+                        const m = String(sourcePath || '').match(/^orders\/(\d{4}-\d{2}-\d{2})\//);
+                        if (m && m[1]) return m[1];
+                        const ts = Number(order.timestamp || order.createdAt || order.updatedAt || 0);
+                        if (Number.isFinite(ts) && ts > 0) {
+                            const d = new Date(ts);
+                            if (!Number.isNaN(d.getTime())) {
+                                return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+                            }
+                        }
+                        return '';
+                    };
+                    const getFallbackDedupKey = (order) => {
+                        if (!order || typeof order !== 'object') return '';
+                        const no = String(order.orderNo || order.serialNumber || '').trim();
+                        if (!no) return '';
+                        const day = getOrderDayKey(order);
+                        if (!day) return '';
+                        const src = String(order.source || '').toLowerCase().trim();
+                        return ['no', day, no, src].join('|');
+                    };
                     const getMergeKey = (order) => {
                         if (!order) return '';
                         const sourcePath = (order.integration && order.integration.sourceRecordPath) || '';
                         const pathId = getPathOrderId(sourcePath);
                         if (pathId) return pathId;
-                        if (order.id) return String(order.id);
                         const original = (order && order._integrationOriginal) || {};
                         let direct = order.sourceOrderId || original.sourceOrderId || (original.audit && original.audit.originalSourceSnapshotId) || (original.phoneAi && original.phoneAi.rawJsonPath) || '';
                         if (direct) {
@@ -846,6 +870,7 @@
                             direct = direct.replace(/_繁體\.json$/, '').replace(/\.json$/, '');
                             if (direct) return direct;
                         }
+                        if (order.id) return String(order.id);
                         return '';
                     };
                     const sumItems = (items) => {
@@ -925,25 +950,37 @@
                         if (!merged.id) merged.id = preferIncoming ? (incoming.id || current.id) : (current.id || incoming.id);
                         return merged;
                     };
+                    const upsertMerged = (map, order) => {
+                        if (!order || !order.id) return;
+                        const primary = getMergeKey(order) || String(order.id);
+                        const fallbackKey = getFallbackDedupKey(order);
+                        const aliases = Array.from(new Set([primary, fallbackKey, String(order.id)].filter(Boolean)));
+                        let keepKey = aliases.find((k) => !!map[k]) || aliases[0];
+                        let merged = Object.assign({}, order);
+                        aliases.forEach((k) => {
+                            if (!map[k]) return;
+                            merged = mergeTwo(map[k], merged);
+                            if (k !== keepKey) delete map[k];
+                        });
+                        map[keepKey] = merged;
+                    };
                     const integrationList = Array.isArray(this.integrationOrdersCache) ? this.integrationOrdersCache : [];
                     const mergedMap = {};
                     if (integrationList.length) {
                         integrationList.forEach((o) => {
-                            if (!o || !o.id) return;
-                            const key = getMergeKey(o) || String(o.id);
-                            mergedMap[key] = mergeTwo(mergedMap[key], o);
+                            upsertMerged(mergedMap, o);
                         });
                         parsedOrders.forEach((o) => {
                             if (!o || !o.id) return;
-                            const key = getMergeKey(o) || String(o.id);
+                            upsertMerged(mergedMap, o);
                             // integration 存在時也保留本地 key，避免不同來源互相覆蓋造成訂單消失
-                            mergedMap[key] = mergeTwo(mergedMap[key], o);
+                            // handled by upsertMerged
                         });
                     } else {
                         parsedOrders.forEach((o) => {
                             if (!o || !o.id) return;
-                            const key = getMergeKey(o) || String(o.id);
-                            mergedMap[key] = mergeTwo(mergedMap[key], o);
+                            upsertMerged(mergedMap, o);
+                            // handled by upsertMerged
                         });
                     }
                     const mergedOrders = this.normalizeIncomingOrders(Object.values(mergedMap));

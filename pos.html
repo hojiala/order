@@ -1514,12 +1514,36 @@
                     if(seg.length>=3&&seg[0]==='orders'&&seg[2])return String(seg[2]);
                     return '';
                 };
+                var getOrderDayKey=function(order){
+                    if(!order||typeof order!=='object')return '';
+                    var pd=String(order.pickupDate||order.orderDateKey||'').trim();
+                    if(/^\d{4}-\d{2}-\d{2}$/.test(pd))return pd;
+                    var sourcePath=(order.integration&&order.integration.sourceRecordPath)||order.sourceRecordPath||'';
+                    var m=String(sourcePath||'').match(/^orders\/(\d{4}-\d{2}-\d{2})\//);
+                    if(m&&m[1])return m[1];
+                    var ts=Number(order.timestamp||order.createdAt||order.updatedAt||0);
+                    if(Number.isFinite(ts)&&ts>0){
+                        var d=new Date(ts);
+                        if(!Number.isNaN(d.getTime())){
+                            return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+                        }
+                    }
+                    return '';
+                };
+                var getFallbackDedupKey=function(order){
+                    if(!order||typeof order!=='object')return '';
+                    var no=String(order.orderNo||order.serialNumber||'').trim();
+                    if(!no)return '';
+                    var day=getOrderDayKey(order);
+                    if(!day)return '';
+                    var src=String(order.source||'').toLowerCase().trim();
+                    return ['no',day,no,src].join('|');
+                };
                 var getMergeKey=function(order){
                     if(!order)return '';
                     var sourcePath=(order.integration&&order.integration.sourceRecordPath)||'';
                     var pathId=getPathOrderId(sourcePath);
-                    if(pathId)return pathId;
-                    if(order.id)return String(order.id);
+                    if(pathId)return String(pathId);
                     var original=(order&&order._integrationOriginal)||{};
                     var direct=order.sourceOrderId||original.sourceOrderId||((original.audit&&original.audit.originalSourceSnapshotId)||'')||((original.phoneAi&&original.phoneAi.rawJsonPath)||'');
                     if(direct){
@@ -1528,7 +1552,7 @@
                         d=d.replace(/_繁體\.json$/,'').replace(/\.json$/,'');
                         if(d)return d;
                     }
-                    return '';
+                    return order.id?String(order.id):'';
                 };
                 var sumItems=function(items){
                     if(!Array.isArray(items))return 0;
@@ -1609,26 +1633,46 @@
                     if(!merged.id)merged.id=preferIncoming?(incoming.id||current.id):(current.id||incoming.id);
                     return merged;
                 };
+                var upsertMerged=function(map,o){
+                    if(!o||!o.id)return;
+                    var keys=[];
+                    var primary=getMergeKey(o);
+                    if(primary)keys.push(String(primary));
+                    var fallbackKey=getFallbackDedupKey(o);
+                    if(fallbackKey)keys.push(String(fallbackKey));
+                    if(o.id)keys.push(String(o.id));
+                    var uniq={};
+                    keys=keys.filter(function(k){
+                        if(!k)return false;
+                        if(uniq[k])return false;
+                        uniq[k]=true;
+                        return true;
+                    });
+                    if(!keys.length)keys=[String(o.id)];
+                    var hit=keys.filter(function(k){return !!map[k];});
+                    var merged=Object.assign({},o);
+                    hit.forEach(function(k){merged=mergeTwo(map[k],merged);});
+                    var keep=hit.length?hit[0]:keys[0];
+                    map[keep]=merged;
+                    hit.forEach(function(k){if(k!==keep)delete map[k];});
+                };
                 var integrationList=Array.isArray(s.integrationOrdersCache)?s.integrationOrdersCache:[];
                 var mergedMap={};
                 if(integrationList.length){
                     // integration_views 作為主來源，避免同一張單在本地 buckets 被重覆疊加
                     integrationList.forEach(function(o){
-                        if(!o||!o.id)return;
-                        var key=getMergeKey(o)||String(o.id);
-                        mergedMap[key]=mergeTwo(mergedMap[key],o);
+                        upsertMerged(mergedMap,o);
                     });
                     parsed.forEach(function(o){
                         if(!o||!o.id)return;
-                        var key=getMergeKey(o)||String(o.id);
+                        upsertMerged(mergedMap,o);
                         // integration 存在時也要保留本地 key，避免不同來源互相覆蓋造成訂單消失
-                        mergedMap[key]=mergeTwo(mergedMap[key],o);
+                        // handled by upsertMerged
                     });
                 }else{
                     parsed.forEach(function(o){
                         if(!o||!o.id)return;
-                        var key=getMergeKey(o)||String(o.id);
-                        mergedMap[key]=mergeTwo(mergedMap[key],o);
+                        upsertMerged(mergedMap,o);
                     });
                 }
                 var mergedOrders=s.normalizeIncomingOrders(Object.values(mergedMap));
