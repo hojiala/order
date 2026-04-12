@@ -1716,6 +1716,7 @@ window._doCountUp = function() {
                 if (!order || !Array.isArray(order.items)) return null;
                 var comboId = String((item && item.comboGroupId) || '').trim();
                 var pool = order.items;
+                var candidates = [];
                 for (var i = 0; i < pool.length; i++) {
                     if (Number(i) === Number(index)) continue;
                     var it = pool[i];
@@ -1723,17 +1724,11 @@ window._doCountUp = function() {
                     var note = String(it.note || it['備註'] || '');
                     var isComboDrink = !!it.isComboDrink || note.indexOf('套餐飲料') !== -1;
                     if (!isComboDrink) continue;
+                    candidates.push(it);
                     var gid = String(it.comboGroupId || '').trim();
                     if (comboId && gid && comboId === gid) return it;
                 }
-                for (var j = 0; j < pool.length; j++) {
-                    if (Number(j) === Number(index)) continue;
-                    var it2 = pool[j];
-                    if (!it2 || typeof it2 !== 'object') continue;
-                    var note2 = String(it2.note || it2['備註'] || '');
-                    var isComboDrink2 = !!it2.isComboDrink || note2.indexOf('套餐飲料') !== -1;
-                    if (isComboDrink2) return it2;
-                }
+                if (candidates.length === 1) return candidates[0];
                 return null;
             },
             getDetailItemTotal: function(item, order, index) {
@@ -1801,6 +1796,11 @@ window._doCountUp = function() {
                 var itemName = String(item.name || item['品項'] || '').trim();
                 var isComboLine = !!item.isComboDrink || note.indexOf('套餐飲料') !== -1;
                 var sels = Array.isArray(item.optionGroupSelections) ? item.optionGroupSelections : [];
+                var hasDrinkSelection = sels.some(function(sel){
+                    var g = String(sel && sel.groupName || '').toLowerCase();
+                    var n = String(sel && sel.name || '').trim();
+                    return !!n && (g.indexOf('drink') !== -1 || g.indexOf('飲料') !== -1 || g.indexOf('套餐飲料') !== -1);
+                });
                 var isComboMain = itemName.indexOf('套餐') !== -1 || !!item.mealDrink || sels.some(function(sel){
                     var pricing = String(sel && sel.pricing || '');
                     var g = String(sel && sel.groupName || '').toLowerCase();
@@ -1809,6 +1809,7 @@ window._doCountUp = function() {
                 var isComboContext = !!item.mealDrink || isComboLine || isComboMain;
                 if (!isComboContext) return '';
                 if (isComboLine && !isComboMain) return '';
+                if (hasDrinkSelection) return '';
                 if (item.mealDrink) return String(item.mealDrink);
                 var size = '';
                 var temp = '';
@@ -1846,11 +1847,7 @@ window._doCountUp = function() {
                     });
                 }
                 if (upgrade <= 0) {
-                    var qty = this.getDetailItemQty(item);
-                    var line = Number((item && item.itemTotal !== undefined) ? item.itemTotal : ((item && item.total !== undefined) ? item.total : (item && item['總價'])));
-                    if (!Number.isFinite(line)) line = 0;
-                    if (qty > 0 && line > 0) upgrade = line / qty;
-                    if (upgrade <= 0 && this.viewingOrder && Array.isArray(this.viewingOrder.items)) {
+                    if (this.viewingOrder && Array.isArray(this.viewingOrder.items)) {
                         var idx2 = this.viewingOrder.items.indexOf(item);
                         var sibling2 = this.findComboDrinkSibling(this.viewingOrder, item, idx2);
                         if (sibling2) {
@@ -2651,13 +2648,28 @@ window._doCountUp = function() {
                 }
                 var datesToFetch = self.buildDateListForStatsMode(self.statsMode);
 
+                var resolveMergeKey = function(order) {
+                    if (!order || typeof order !== 'object') return '';
+                    var path = (order.integration && order.integration.sourceRecordPath) || order.sourceRecordPath || '';
+                    if (!path && order._integrationOriginal && order._integrationOriginal.integration) {
+                        path = order._integrationOriginal.integration.sourceRecordPath || '';
+                    }
+                    path = String(path || '').trim();
+                    if (path.indexOf('orders/') === 0) {
+                        var seg = path.split('/');
+                        if (seg.length >= 3 && seg[2]) return String(seg[2]);
+                    }
+                    if (order.id) return String(order.id);
+                    return '';
+                };
                 var mergeOrderById = function(map, rawOrder) {
                     if (!rawOrder || typeof rawOrder !== 'object') return;
                     var incoming = self.normalizeStatsOrder(rawOrder);
-                    if (!incoming || !incoming.id || !incoming.status) return;
-                    var current = map[incoming.id];
+                    var mergeKey = resolveMergeKey(incoming);
+                    if (!incoming || !mergeKey || !incoming.status) return;
+                    var current = map[mergeKey];
                     if (!current) {
-                        map[incoming.id] = incoming;
+                        map[mergeKey] = incoming;
                         return;
                     }
                     var merged = Object.assign({}, current, incoming);
@@ -2666,7 +2678,7 @@ window._doCountUp = function() {
                     var totals = [Number(self.getOrderTotalValue(current) || 0), Number(self.getOrderTotalValue(incoming) || 0), self.sumStatsItemsTotal(merged.items)];
                     var finiteTotals = totals.filter(function(v){ return Number.isFinite(v); });
                     if (finiteTotals.length) merged.total = Math.max.apply(null, finiteTotals);
-                    map[incoming.id] = self.normalizeStatsOrder(merged);
+                    map[mergeKey] = self.normalizeStatsOrder(merged);
                 };
 
                 var integrationPromise = get(ref(db, 'integration_views/merged_orders_history_index'))
