@@ -1580,6 +1580,8 @@ window._doCountUp = function() {
             },
             getDisplayCustomerName: function(order) {
                 if (!order || typeof order !== 'object') return '\u9867\u5ba2';
+                var src0 = String(order.source || '').toLowerCase();
+                var defaultName = (src0 === 'phone_ai' || src0 === 'pos_local') ? '\u96fb\u8a71\u9867\u5ba2' : '\u9867\u5ba2';
                 var c = order.customer;
                 if (typeof c === 'string') {
                     var t = c.trim();
@@ -1599,7 +1601,7 @@ window._doCountUp = function() {
                 for (var j = 0; j < fallback.length; j++) {
                     if (typeof fallback[j] === 'string' && fallback[j].trim() && fallback[j].trim() !== '[object Object]') return fallback[j].trim();
                 }
-                return '\u9867\u5ba2';
+                return defaultName;
             },
             getDisplayPickupTime: function(pickupTime) {
                 var t = String(pickupTime || '').trim();
@@ -1633,6 +1635,22 @@ window._doCountUp = function() {
                     return sum + line;
                 }, 0);
             },
+            scoreStatsItemsDetail: function(items) {
+                if (!Array.isArray(items)) return 0;
+                return items.reduce(function(score, it) {
+                    if (!it || typeof it !== 'object') return score;
+                    var local = 0;
+                    if (Array.isArray(it.optionGroupSelections) && it.optionGroupSelections.length) local += it.optionGroupSelections.length * 4;
+                    if (Array.isArray(it.options) && it.options.length) local += it.options.length * 3;
+                    if (Array.isArray(it.posExtras) && it.posExtras.length) local += it.posExtras.length * 2;
+                    if (it.mealDrink && String(it.mealDrink).trim()) local += 6;
+                    if (it.size && String(it.size).trim()) local += 2;
+                    if (it.temp && String(it.temp).trim()) local += 2;
+                    if (it.note && String(it.note).trim()) local += 1;
+                    if (it.isComboDrink) local += 2;
+                    return score + local;
+                }, 0);
+            },
             pickRicherStatsItems: function(currentItems, incomingItems, orderTotal) {
                 var a = Array.isArray(currentItems) ? currentItems : [];
                 var b = Array.isArray(incomingItems) ? incomingItems : [];
@@ -1649,6 +1667,10 @@ window._doCountUp = function() {
                 }
                 if (sumB > sumA) return b;
                 if (sumA > sumB) return a;
+                var detailA = this.scoreStatsItemsDetail(a);
+                var detailB = this.scoreStatsItemsDetail(b);
+                if (detailB > detailA) return b;
+                if (detailA > detailB) return a;
                 if (b.length > a.length) return b;
                 return a;
             },
@@ -1690,14 +1712,69 @@ window._doCountUp = function() {
                 if (!item) return '';
                 return String(item.name || item['品項'] || '').trim();
             },
+            findComboDrinkSibling: function(order, item, index) {
+                if (!order || !Array.isArray(order.items)) return null;
+                var comboId = String((item && item.comboGroupId) || '').trim();
+                var pool = order.items;
+                for (var i = 0; i < pool.length; i++) {
+                    if (Number(i) === Number(index)) continue;
+                    var it = pool[i];
+                    if (!it || typeof it !== 'object') continue;
+                    var note = String(it.note || it['備註'] || '');
+                    var isComboDrink = !!it.isComboDrink || note.indexOf('套餐飲料') !== -1;
+                    if (!isComboDrink) continue;
+                    var gid = String(it.comboGroupId || '').trim();
+                    if (comboId && gid && comboId === gid) return it;
+                }
+                for (var j = 0; j < pool.length; j++) {
+                    if (Number(j) === Number(index)) continue;
+                    var it2 = pool[j];
+                    if (!it2 || typeof it2 !== 'object') continue;
+                    var note2 = String(it2.note || it2['備註'] || '');
+                    var isComboDrink2 = !!it2.isComboDrink || note2.indexOf('套餐飲料') !== -1;
+                    if (isComboDrink2) return it2;
+                }
+                return null;
+            },
             getDetailItemTotal: function(item, order, index) {
                 if (!item) return 0;
+                var qty = this.getDetailItemQty(item);
+                var sels = Array.isArray(item.optionGroupSelections) ? item.optionGroupSelections : [];
+                var upgradePerUnit = 0;
+                sels.forEach(function(sel) {
+                    var pricing = String(sel && sel.pricing || '');
+                    var p = Number(sel && sel.price);
+                    var b = Number(sel && sel.baseValue);
+                    if (pricing === 'mealUpgrade' && Number.isFinite(p) && Number.isFinite(b) && p > b) {
+                        upgradePerUnit = Math.max(upgradePerUnit, p - b);
+                    }
+                });
+                var itemName = String(item.name || item['品項'] || '').trim();
+                var isComboMain = itemName.indexOf('套餐') !== -1 || !!item.mealDrink || sels.some(function(sel){
+                    var pricing = String(sel && sel.pricing || '');
+                    var g = String(sel && sel.groupName || '').toLowerCase();
+                    return pricing === 'mealUpgrade' || g.indexOf('drink') !== -1 || g.indexOf('飲料') !== -1 || g.indexOf('套餐飲料') !== -1;
+                });
+                if (upgradePerUnit <= 0 && isComboMain && order && Array.isArray(order.items)) {
+                    var drinkSibling = this.findComboDrinkSibling(order, item, index);
+                    if (drinkSibling) {
+                        var sibQty = this.getDetailItemQty(drinkSibling);
+                        var sibTotal = Number((drinkSibling.itemTotal !== undefined) ? drinkSibling.itemTotal : ((drinkSibling.total !== undefined) ? drinkSibling.total : drinkSibling['總價']));
+                        var sibUnit = Number((drinkSibling.price !== undefined) ? drinkSibling.price : ((drinkSibling['單價'] !== undefined) ? drinkSibling['單價'] : 0));
+                        if (Number.isFinite(sibTotal) && sibTotal > 0 && sibQty > 0) upgradePerUnit = Math.max(upgradePerUnit, sibTotal / sibQty);
+                        if (upgradePerUnit <= 0 && Number.isFinite(sibUnit) && sibUnit > 0) upgradePerUnit = Math.max(upgradePerUnit, sibUnit);
+                    }
+                }
                 var totalCandidates = [item.itemTotal, item.subtotal, item['總價'], item.lineSubtotal, item.total];
                 for (var i = 0; i < totalCandidates.length; i++) {
                     var tv = Number(totalCandidates[i]);
-                    if (Number.isFinite(tv) && tv > 0) return tv;
+                    if (Number.isFinite(tv) && tv > 0) {
+                        if (upgradePerUnit > 0 && isComboMain) {
+                            return Math.max(0, tv - (upgradePerUnit * qty));
+                        }
+                        return tv;
+                    }
                 }
-                var qty = this.getDetailItemQty(item);
                 var unitCandidates = [item.price, item['單價'], item.unitPrice, item.basePrice, item['原價']];
                 for (var j = 0; j < unitCandidates.length; j++) {
                     var uv = Number(unitCandidates[j]);
@@ -1721,10 +1798,18 @@ window._doCountUp = function() {
             getDetailMealDrink: function(item) {
                 if (!item) return '';
                 var note = String(item.note || item['備註'] || '');
-                var isComboContext = !!item.mealDrink || !!item.isComboDrink || note.indexOf('套餐飲料') !== -1;
-                if (!isComboContext) return '';
-                if (item.mealDrink) return String(item.mealDrink);
+                var itemName = String(item.name || item['品項'] || '').trim();
+                var isComboLine = !!item.isComboDrink || note.indexOf('套餐飲料') !== -1;
                 var sels = Array.isArray(item.optionGroupSelections) ? item.optionGroupSelections : [];
+                var isComboMain = itemName.indexOf('套餐') !== -1 || !!item.mealDrink || sels.some(function(sel){
+                    var pricing = String(sel && sel.pricing || '');
+                    var g = String(sel && sel.groupName || '').toLowerCase();
+                    return pricing === 'mealUpgrade' || g.indexOf('drink') !== -1 || g.indexOf('飲料') !== -1 || g.indexOf('套餐飲料') !== -1;
+                });
+                var isComboContext = !!item.mealDrink || isComboLine || isComboMain;
+                if (!isComboContext) return '';
+                if (isComboLine && !isComboMain) return '';
+                if (item.mealDrink) return String(item.mealDrink);
                 var size = '';
                 var temp = '';
                 var drink = '';
@@ -1736,7 +1821,16 @@ window._doCountUp = function() {
                     else if (!temp && (g.indexOf('temp') !== -1 || g.indexOf('溫度') !== -1)) temp = n;
                     else if (!drink && (g.indexOf('drink') !== -1 || g.indexOf('飲料') !== -1)) drink = n;
                 });
-                if (!drink) drink = String(item.name || item['品項'] || '').trim();
+                if ((!drink || !size || !temp) && this.viewingOrder && Array.isArray(this.viewingOrder.items)) {
+                    var idx = this.viewingOrder.items.indexOf(item);
+                    var sibling = this.findComboDrinkSibling(this.viewingOrder, item, idx);
+                    if (sibling) {
+                        if (!drink) drink = String(sibling.name || sibling['品項'] || '').trim();
+                        if (!size) size = String(sibling.size || sibling['容量'] || '').trim();
+                        if (!temp) temp = String(sibling.temp || sibling['溫度'] || '').trim();
+                    }
+                }
+                if (!drink) return '';
                 var parts = [size, temp, drink].filter(Boolean);
                 var text = parts.join('/');
                 if (!text) return '';
@@ -1756,6 +1850,17 @@ window._doCountUp = function() {
                     var line = Number((item && item.itemTotal !== undefined) ? item.itemTotal : ((item && item.total !== undefined) ? item.total : (item && item['總價'])));
                     if (!Number.isFinite(line)) line = 0;
                     if (qty > 0 && line > 0) upgrade = line / qty;
+                    if (upgrade <= 0 && this.viewingOrder && Array.isArray(this.viewingOrder.items)) {
+                        var idx2 = this.viewingOrder.items.indexOf(item);
+                        var sibling2 = this.findComboDrinkSibling(this.viewingOrder, item, idx2);
+                        if (sibling2) {
+                            var sibQty = this.getDetailItemQty(sibling2);
+                            var sibLine = Number((sibling2.itemTotal !== undefined) ? sibling2.itemTotal : ((sibling2.total !== undefined) ? sibling2.total : sibling2['總價']));
+                            var sibUnit = Number((sibling2.price !== undefined) ? sibling2.price : ((sibling2['單價'] !== undefined) ? sibling2['單價'] : 0));
+                            if (Number.isFinite(sibLine) && sibLine > 0 && sibQty > 0) upgrade = Math.max(upgrade, sibLine / sibQty);
+                            if (upgrade <= 0 && Number.isFinite(sibUnit) && sibUnit > 0) upgrade = Math.max(upgrade, sibUnit);
+                        }
+                    }
                 }
                 upgrade = Math.max(0, Math.round(upgrade));
                 if (upgrade > 0) text += '/補差價$' + upgrade;
@@ -1792,7 +1897,10 @@ window._doCountUp = function() {
                 if (!customerName && typeof out.customerName === 'string' && out.customerName.trim() && out.customerName.trim() !== '[object Object]') customerName = out.customerName.trim();
                 if (!customerName && typeof out.name === 'string' && out.name.trim() && out.name.trim() !== '[object Object]') customerName = out.name.trim();
                 if (!customerName && typeof out.tableLabel === 'string' && out.tableLabel.trim() && out.tableLabel.trim() !== '[object Object]') customerName = out.tableLabel.trim();
-                if (!customerName) customerName = '\u9867\u5ba2';
+                if (!customerName) {
+                    var srcName = String(out.source || '').toLowerCase();
+                    customerName = (srcName === 'phone_ai' || srcName === 'pos_local') ? '\u96fb\u8a71\u9867\u5ba2' : '\u9867\u5ba2';
+                }
                 var customerPhone = out.phone || '';
                 if (!customerPhone && customerObj && typeof customerObj.phone === 'string') customerPhone = customerObj.phone;
                 out.phone = customerPhone || '';
@@ -2538,61 +2646,80 @@ window._doCountUp = function() {
                 var self = this;
                 self.statsLoading = true;
                 self.allOrdersCache = null;
+                if (self.statsMode === 'single' && !self.statsDate) {
+                    self.statsDate = self.getTodayStr();
+                }
+                var datesToFetch = self.buildDateListForStatsMode(self.statsMode);
 
-                get(ref(db, 'integration_views/merged_orders_history_index')).then(function(snap) {
-                    if (snap.exists()) {
+                var mergeOrderById = function(map, rawOrder) {
+                    if (!rawOrder || typeof rawOrder !== 'object') return;
+                    var incoming = self.normalizeStatsOrder(rawOrder);
+                    if (!incoming || !incoming.id || !incoming.status) return;
+                    var current = map[incoming.id];
+                    if (!current) {
+                        map[incoming.id] = incoming;
+                        return;
+                    }
+                    var merged = Object.assign({}, current, incoming);
+                    var bestItems = self.pickRicherStatsItems(current.items, incoming.items, Number(self.getOrderTotalValue(incoming) || self.getOrderTotalValue(current) || 0));
+                    if (bestItems && bestItems.length) merged.items = bestItems.map(function(it){ return Object.assign({}, it); });
+                    var totals = [Number(self.getOrderTotalValue(current) || 0), Number(self.getOrderTotalValue(incoming) || 0), self.sumStatsItemsTotal(merged.items)];
+                    var finiteTotals = totals.filter(function(v){ return Number.isFinite(v); });
+                    if (finiteTotals.length) merged.total = Math.max.apply(null, finiteTotals);
+                    map[incoming.id] = self.normalizeStatsOrder(merged);
+                };
+
+                var integrationPromise = get(ref(db, 'integration_views/merged_orders_history_index'))
+                    .then(function(snap) {
+                        if (!snap.exists()) return [];
                         var view = snap.val() || {};
-                        self.allOrdersCache = (Array.isArray(view.orders) ? view.orders : []).map(function(order){ return self.normalizeStatsOrder(order); });
-                        self.doFilter();
-                        return;
-                    }
+                        return Array.isArray(view.orders) ? view.orders : [];
+                    })
+                    .catch(function(e) {
+                        console.error('讀取 integration_views 統計失敗:', e);
+                        return [];
+                    });
 
-                    if (self.statsMode === 'single' && !self.statsDate) {
-                        self.statsDate = self.getTodayStr();
-                    }
-
-                    var datesToFetch = self.buildDateListForStatsMode(self.statsMode);
-                    if (!datesToFetch.length) {
-                        self.allOrdersCache = [];
-                        self.statsOrders = [];
-                        self.statsLoading = false;
-                        return;
-                    }
-
+                var bucketPromise = (function() {
+                    if (!datesToFetch.length) return Promise.resolve([]);
                     var fetchPromises = datesToFetch.map(function(dateKey) {
                         return Promise.all([
                             get(ref(db, 'orders/' + dateKey)),
                             get(ref(db, 'orders_archive/' + dateKey))
                         ]).then(function(parts) {
                             return {
-                                dateKey: dateKey,
                                 activeBucket: parts[0].exists() ? parts[0].val() : {},
                                 archiveBucket: parts[1].exists() ? parts[1].val() : {}
                             };
                         });
                     });
-
-                    Promise.all(fetchPromises).then(function(results) {
-                        var merged = {};
+                    return Promise.all(fetchPromises).then(function(results) {
+                        var out = [];
                         results.forEach(function(r) {
                             Object.entries(r.activeBucket || {}).forEach(function(e) {
-                                if (e[1] && e[1].status) merged[e[0]] = Object.assign({ id: e[0] }, e[1]);
+                                if (e[1] && e[1].status) out.push(Object.assign({ id: e[0] }, e[1]));
                             });
-                        });
-                        results.forEach(function(r) {
                             Object.entries(r.archiveBucket || {}).forEach(function(e) {
-                                if (e[1] && e[1].status) merged[e[0]] = Object.assign({ id: e[0] }, e[1]);
+                                if (e[1] && e[1].status) out.push(Object.assign({ id: e[0] }, e[1]));
                             });
                         });
-                        self.allOrdersCache = Object.values(merged).map(function(order){ return self.normalizeStatsOrder(order); });
-                        self.doFilter();
+                        return out;
                     }).catch(function(e) {
-                        console.error('讀取統計失敗:', e);
-                        self.statsOrders = [];
-                        self.statsLoading = false;
+                        console.error('讀取日期桶統計失敗:', e);
+                        return [];
                     });
+                })();
+
+                Promise.all([integrationPromise, bucketPromise]).then(function(parts) {
+                    var integrationOrders = Array.isArray(parts[0]) ? parts[0] : [];
+                    var bucketOrders = Array.isArray(parts[1]) ? parts[1] : [];
+                    var mergedMap = {};
+                    integrationOrders.forEach(function(o){ mergeOrderById(mergedMap, o); });
+                    bucketOrders.forEach(function(o){ mergeOrderById(mergedMap, o); });
+                    self.allOrdersCache = Object.values(mergedMap);
+                    self.doFilter();
                 }).catch(function(e) {
-                    console.error('讀取 integration_views 統計失敗:', e);
+                    console.error('讀取統計失敗:', e);
                     self.statsOrders = [];
                     self.statsLoading = false;
                 });
