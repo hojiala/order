@@ -136,8 +136,8 @@
                                         </span>
                                     </div>
                                     <!-- 舊版套餐飲料 -->
-                                    <div v-if="item.mealDrink" class="text-sm text-orange-600 font-bold mt-1">
-                                        🧋 套餐飲料：{{ item.mealDrink }}
+                                    <div v-if="getItemMealDrinkText(item)" class="text-sm text-orange-600 font-bold mt-1">
+                                        🧋 套餐飲料：{{ getItemMealDrinkText(item) }}
                                     </div>
                                     <!-- 加料選項 -->
                                     <div v-if="item.options && item.options.length" class="text-sm text-gray-500 mt-1">
@@ -354,6 +354,8 @@
                 },
                 getDisplayCustomerName(order) {
                     if (!order || typeof order !== 'object') return '\u9867\u5ba2';
+                    const src0 = String(order.source || '').toLowerCase();
+                    const defaultName = (src0 === 'phone_ai' || src0 === 'pos_local') ? '\u96fb\u8a71\u9867\u5ba2' : '\u9867\u5ba2';
                     const c = order.customer;
                     if (typeof c === 'string') {
                         const t = c.trim();
@@ -373,7 +375,7 @@
                     for (let j = 0; j < fallback.length; j++) {
                         if (typeof fallback[j] === 'string' && fallback[j].trim() && fallback[j].trim() !== '[object Object]') return fallback[j].trim();
                     }
-                    return '\u9867\u5ba2';
+                    return defaultName;
                 },
                 getDisplayPickupTime(pickupTime) {
                     const t = String(pickupTime || '').trim();
@@ -391,6 +393,65 @@
                     if (!item || typeof item !== 'object') return '';
                     const name = String(item.name || item['\u54c1\u9805'] || '').trim();
                     return name || '';
+                },
+                getItemMealDrinkText(item) {
+                    if (!item || typeof item !== 'object') return '';
+                    const itemName = String(item.name || item['\u54c1\u9805'] || '').trim();
+                    const note = String(item.note || item['\u5099\u8a3b'] || '').trim();
+                    const isComboLine = !!item.isComboDrink || note.indexOf('\u5957\u9910\u98f2\u6599') !== -1;
+                    const sels = Array.isArray(item.optionGroupSelections) ? item.optionGroupSelections : [];
+                    const hasUpgradeSel = sels.some((sel) => String(sel && sel.pricing || '') === 'mealUpgrade');
+                    const hasDrinkGroup = sels.some((sel) => {
+                        const g = String(sel && sel.groupName || '').toLowerCase();
+                        return g.indexOf('drink') !== -1 || g.indexOf('\u98f2\u6599') !== -1 || g.indexOf('\u5957\u9910\u98f2\u6599') !== -1;
+                    });
+                    const isComboMain = itemName.indexOf('\u5957\u9910') !== -1 || hasUpgradeSel || hasDrinkGroup || (!!item.mealDrink && String(item.mealDrink).trim());
+                    if (!isComboMain || (isComboLine && itemName.indexOf('\u5957\u9910') === -1)) return '';
+
+                    let size = String(item.size || '').trim();
+                    let temp = String(item.temp || '').trim();
+                    let drinkName = '';
+                    let upgrade = 0;
+
+                    sels.forEach((sel) => {
+                        const g = String(sel && sel.groupName || '').toLowerCase();
+                        let n = String(sel && sel.name || '').trim();
+                        if (!n) return;
+                        const mm = n.match(/\+\s*\$(\d+)/);
+                        if (mm && mm[1]) {
+                            const vv = Number(mm[1] || 0);
+                            if (Number.isFinite(vv) && vv > 0) upgrade = Math.max(upgrade, vv);
+                            n = n.replace(/\s*\+\s*\$\d+\s*$/, '').trim();
+                        }
+                        if (!size && (g.indexOf('size') !== -1 || g.indexOf('\u5bb9\u91cf') !== -1)) size = n;
+                        else if (!temp && (g.indexOf('temp') !== -1 || g.indexOf('\u6eab\u5ea6') !== -1)) temp = n;
+                        else if (!drinkName && (g.indexOf('drink') !== -1 || g.indexOf('\u98f2\u6599') !== -1)) drinkName = n;
+                        const pricing = String(sel && sel.pricing || '');
+                        const p = Number(sel && sel.price);
+                        const b = Number(sel && sel.baseValue);
+                        if (pricing === 'mealUpgrade' && Number.isFinite(p) && Number.isFinite(b) && p > b) {
+                            upgrade = Math.max(upgrade, p - b);
+                        }
+                    });
+
+                    if (!drinkName && item.mealDrink) {
+                        const md = String(item.mealDrink).trim();
+                        if (md) {
+                            const parts = md.split(/[\/\u3001,]+/).map((v) => String(v || '').trim()).filter(Boolean);
+                            if (parts.length >= 3) {
+                                size = size || parts[0];
+                                temp = temp || parts[1];
+                                drinkName = parts.slice(2).join('/');
+                            } else {
+                                drinkName = md;
+                            }
+                        }
+                    }
+
+                    const out = [size, temp, drinkName].filter(Boolean).join('/');
+                    if (!out) return '';
+                    const u = Math.max(0, Math.round(upgrade));
+                    return u > 0 ? (out + '/\u88dc\u5dee\u50f9$' + u) : out;
                 },
                 normalizeSourceRecordPath(order, orderId) {
                     const o = order || {};
@@ -436,7 +497,10 @@
                     if (!customerName && typeof out.customerName === 'string' && out.customerName.trim() && out.customerName.trim() !== '[object Object]') customerName = out.customerName.trim();
                     if (!customerName && typeof out.name === 'string' && out.name.trim() && out.name.trim() !== '[object Object]') customerName = out.name.trim();
                     if (!customerName && typeof out.tableLabel === 'string' && out.tableLabel.trim() && out.tableLabel.trim() !== '[object Object]') customerName = out.tableLabel.trim();
-                    if (!customerName) customerName = '\u9867\u5ba2';
+                    if (!customerName) {
+                        const srcName = String(out.source || '').toLowerCase();
+                        customerName = (srcName === 'phone_ai' || srcName === 'pos_local') ? '\u96fb\u8a71\u9867\u5ba2' : '\u9867\u5ba2';
+                    }
                     let customerPhone = out.phone || '';
                     if (!customerPhone && customerObj && typeof customerObj.phone === 'string') customerPhone = customerObj.phone;
                     out.phone = customerPhone || '';
@@ -785,6 +849,22 @@
                             return sum + line;
                         }, 0);
                     };
+                    const scoreItemsDetail = (items) => {
+                        if (!Array.isArray(items)) return 0;
+                        return items.reduce((score, it) => {
+                            if (!it || typeof it !== 'object') return score;
+                            let local = 0;
+                            if (Array.isArray(it.optionGroupSelections) && it.optionGroupSelections.length) local += it.optionGroupSelections.length * 4;
+                            if (Array.isArray(it.options) && it.options.length) local += it.options.length * 3;
+                            if (Array.isArray(it.posExtras) && it.posExtras.length) local += it.posExtras.length * 2;
+                            if (it.mealDrink && String(it.mealDrink).trim()) local += 6;
+                            if (it.size && String(it.size).trim()) local += 2;
+                            if (it.temp && String(it.temp).trim()) local += 2;
+                            if (it.note && String(it.note).trim()) local += 1;
+                            if (it.isComboDrink) local += 2;
+                            return score + local;
+                        }, 0);
+                    };
                     const pickRicherItems = (a, b) => {
                         const aa = Array.isArray(a) ? a : [];
                         const bb = Array.isArray(b) ? b : [];
@@ -794,6 +874,9 @@
                         const sumA = sumItems(aa), sumB = sumItems(bb);
                         if (sumB > sumA) return bb;
                         if (sumA > sumB) return aa;
+                        const scoreA = scoreItemsDetail(aa), scoreB = scoreItemsDetail(bb);
+                        if (scoreB > scoreA) return bb;
+                        if (scoreA > scoreB) return aa;
                         if (bb.length > aa.length) return bb;
                         return aa;
                     };
@@ -801,13 +884,22 @@
                         const src = String((order && order.source) || '').toLowerCase();
                         return src === 'pos' || src === 'qr_takeout' || src === 'qrcode' || src === 'dinein';
                     };
+                    const statusRank = (status) => {
+                        const s = String(status || '').toLowerCase();
+                        if (s === 'new' || s === 'making' || s === 'done' || s === 'ready' || s === 'cancelled') return 2;
+                        if (s === 'archived') return 1;
+                        return 0;
+                    };
                     const mergeTwo = (current, incoming) => {
                         if (!current) return Object.assign({}, incoming);
                         if (!incoming) return Object.assign({}, current);
                         const incomingLocal = isLocalSource(incoming) || !incoming._integrationReadOnly;
                         const currentLocal = isLocalSource(current) || !current._integrationReadOnly;
                         let preferIncoming = false;
-                        if (incomingLocal && !currentLocal) preferIncoming = true;
+                        const currentStatus = statusRank(current.status);
+                        const incomingStatus = statusRank(incoming.status);
+                        if (incomingStatus !== currentStatus) preferIncoming = incomingStatus > currentStatus;
+                        else if (incomingLocal && !currentLocal) preferIncoming = true;
                         else if (!incomingLocal && currentLocal) preferIncoming = false;
                         else {
                             const inItems = pickRicherItems(current.items, incoming.items);
@@ -837,8 +929,7 @@
                         parsedOrders.forEach((o) => {
                             if (!o || !o.id) return;
                             const key = getMergeKey(o) || String(o.id);
-                            // integration 存在時，只補同 key 本地欄位，避免重複卡片
-                            if (!mergedMap[key]) return;
+                            // integration 存在時也保留本地 key，避免不同來源互相覆蓋造成訂單消失
                             mergedMap[key] = mergeTwo(mergedMap[key], o);
                         });
                     } else {
