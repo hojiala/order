@@ -120,6 +120,7 @@
                 <button @click="menuSubTab='items'" :class="menuSubTab==='items'?'bg-emerald-600 text-white':'text-slate-400 hover:text-white'" class="px-4 py-2 rounded-lg text-sm font-bold transition">🍽️ 餐點</button>
                 <button @click="menuSubTab='categories'" :class="menuSubTab==='categories'?'bg-blue-600 text-white':'text-slate-400 hover:text-white'" class="px-4 py-2 rounded-lg text-sm font-bold transition">🏷️ 分類管理</button>
                 <button @click="menuSubTab='drinks'" :class="menuSubTab==='drinks'?'bg-blue-600 text-white':'text-slate-400 hover:text-white'" class="px-4 py-2 rounded-lg text-sm font-bold transition">🧋 飲料清單</button>
+                <button @click="menuSubTab='aliases'" :class="menuSubTab==='aliases'?'bg-cyan-600 text-white':'text-slate-400 hover:text-white'" class="px-4 py-2 rounded-lg text-sm font-bold transition">🔤 別名字典</button>
                 <button @click="menuSubTab='templates'" :class="menuSubTab==='templates'?'bg-amber-600 text-white':'text-slate-400 hover:text-white'" class="px-4 py-2 rounded-lg text-sm font-bold transition">📋 選項模板</button>
             </div>
 
@@ -266,6 +267,72 @@
                     <button @click="saveStandardDrinks" :disabled="standardDrinksSaving" class="mt-4 bg-blue-700 hover:bg-blue-600 disabled:opacity-50 text-white font-bold px-6 py-2 rounded-lg text-sm transition">
                         <span v-if="standardDrinksSaving">儲存中...</span><span v-else-if="standardDrinksSaved">✅ 已儲存</span><span v-else>儲存飲料清單</span>
                     </button>
+                </div>
+            </div>
+
+            <!-- ▸ 菜單別名字典 (single-control) -->
+            <div v-if="menuSubTab==='aliases'" class="max-w-4xl">
+                <div class="bg-slate-800 rounded-xl border border-cyan-800/50 p-5">
+                    <div class="flex items-center justify-between gap-3 mb-2 flex-wrap">
+                        <p class="font-bold text-cyan-400">🔤 菜單別名字典（單一總控）</p>
+                        <div class="flex gap-2">
+                            <button @click="loadMenuAliases" :disabled="menuAliasLoading" class="bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-white font-bold px-3 py-1.5 rounded-lg text-xs transition">🔄 重新載入</button>
+                            <button @click="saveMenuAliases" :disabled="menuAliasSaving || !menuAliasDirty" class="bg-cyan-700 hover:bg-cyan-600 disabled:opacity-50 text-white font-bold px-3 py-1.5 rounded-lg text-xs transition">
+                                <span v-if="menuAliasSaving">儲存中...</span>
+                                <span v-else-if="menuAliasSaved">✅ 已儲存</span>
+                                <span v-else>💾 儲存到 Firebase</span>
+                            </button>
+                        </div>
+                    </div>
+                    <p class="text-slate-400 text-xs mb-4">資料路徑：<code class="text-cyan-300">settings/menu_alias</code>。Pi 的 <code class="text-cyan-300">/menu-alias</code> 已改唯讀，只做顯示。</p>
+
+                    <div class="bg-slate-700/50 border border-slate-600 rounded-lg p-3 mb-4">
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
+                            <input v-model.trim="menuAliasForm.alias" type="text" placeholder="別名（例如：紅茶）" class="bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm placeholder-slate-400 focus:outline-none focus:border-cyan-500">
+                            <input v-model.trim="menuAliasForm.official" type="text" placeholder="正式名稱（例如：錫蘭紅茶）" class="bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm placeholder-slate-400 focus:outline-none focus:border-cyan-500">
+                        </div>
+                        <div class="flex gap-2 mt-2">
+                            <button @click="submitMenuAliasForm" class="bg-cyan-600 hover:bg-cyan-500 text-white font-bold px-4 py-1.5 rounded-lg text-xs transition">{{ menuAliasEditIdx >= 0 ? '更新映射' : '新增映射' }}</button>
+                            <button v-if="menuAliasEditIdx >= 0" @click="cancelMenuAliasEdit" class="bg-slate-600 hover:bg-slate-500 text-white font-bold px-4 py-1.5 rounded-lg text-xs transition">取消編輯</button>
+                        </div>
+                    </div>
+
+                    <div class="flex items-center justify-between mb-2 gap-2 flex-wrap">
+                        <p class="text-slate-400 text-xs">共 {{ filteredMenuAliasRows.length }} 筆（總計 {{ menuAliasRows.length }} 筆）</p>
+                        <input v-model.trim="menuAliasSearch" type="text" placeholder="搜尋別名或正式名稱..." class="w-full md:w-72 bg-slate-700 border border-slate-600 rounded-lg px-3 py-1.5 text-white text-sm placeholder-slate-400 focus:outline-none focus:border-cyan-500">
+                    </div>
+
+                    <div class="max-h-[420px] overflow-auto border border-slate-700 rounded-lg">
+                        <table class="w-full text-sm">
+                            <thead class="bg-slate-900/80 sticky top-0">
+                                <tr class="text-slate-300">
+                                    <th class="text-left px-3 py-2 w-14">#</th>
+                                    <th class="text-left px-3 py-2">別名</th>
+                                    <th class="text-left px-3 py-2">正式名稱</th>
+                                    <th class="text-left px-3 py-2 w-36">操作</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr v-if="menuAliasLoading">
+                                    <td colspan="4" class="px-3 py-6 text-center text-slate-400">載入中...</td>
+                                </tr>
+                                <tr v-else-if="filteredMenuAliasRows.length===0">
+                                    <td colspan="4" class="px-3 py-6 text-center text-slate-500">尚無資料</td>
+                                </tr>
+                                <tr v-for="(row, i) in filteredMenuAliasRows" :key="row.alias + '::' + row.official + '::' + i" class="border-t border-slate-700 hover:bg-slate-700/40">
+                                    <td class="px-3 py-2 text-slate-500">{{ i + 1 }}</td>
+                                    <td class="px-3 py-2 text-cyan-300 font-medium">{{ row.alias }}</td>
+                                    <td class="px-3 py-2 text-white">{{ row.official }}</td>
+                                    <td class="px-3 py-2">
+                                        <div class="flex gap-1">
+                                            <button @click="beginMenuAliasEdit(row)" class="bg-slate-700 hover:bg-slate-600 text-white px-2 py-1 rounded text-xs">編輯</button>
+                                            <button @click="removeMenuAliasRow(row)" class="bg-red-900/70 hover:bg-red-800 text-red-100 px-2 py-1 rounded text-xs">刪除</button>
+                                        </div>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
             </div>
 
@@ -1338,6 +1405,16 @@ window._doCountUp = function() {
                 standardDrinksSaving: false,
                 standardDrinksSaved: false,
                 editingDrinkIdx: -1,
+                // menu alias (single-control)
+                menuAliasRows: [],
+                menuAliasSearch: '',
+                menuAliasLoading: false,
+                menuAliasSaving: false,
+                menuAliasSaved: false,
+                menuAliasDirty: false,
+                menuAliasLoaded: false,
+                menuAliasEditIdx: -1,
+                menuAliasForm: { alias: '', official: '' },
                 newCategoryName: '',
                 newPosTable: '',
                 newStationName: '',
@@ -1365,6 +1442,16 @@ window._doCountUp = function() {
                     return this.menuItems;
                 }
                 return this.menuItems.filter(function(i) { return i.category === this.filterCat; }.bind(this));
+            },
+            filteredMenuAliasRows: function() {
+                var list = Array.isArray(this.menuAliasRows) ? this.menuAliasRows : [];
+                var kw = String(this.menuAliasSearch || '').trim().toLowerCase();
+                if (!kw) return list;
+                return list.filter(function(row) {
+                    var alias = String((row && row.alias) || '').toLowerCase();
+                    var official = String((row && row.official) || '').toLowerCase();
+                    return alias.indexOf(kw) !== -1 || official.indexOf(kw) !== -1;
+                });
             },
             statsRevenue: function() {
                 return this.statsOrders
@@ -1471,6 +1558,7 @@ window._doCountUp = function() {
             menuSubTab: function(newSub) {
                 if (newSub === 'templates' && this.optionTemplates.length === 0) this.loadTemplates();
                 if (newSub === 'drinks' && this.standardDrinks.length === 0) this.loadStandardDrinks();
+                if (newSub === 'aliases' && !this.menuAliasLoaded) this.loadMenuAliases();
             }
         },
 
@@ -2458,6 +2546,122 @@ window._doCountUp = function() {
                 var j = i + dir;
                 if (j < 0 || j >= arr.length) return;
                 var tmp = arr[i]; arr.splice(i, 1); arr.splice(j, 0, tmp);
+            },
+
+            // ── MENU ALIAS (single-control) ──
+            normalizeMenuAliasRows: function(raw) {
+                var rows = [];
+                if (Array.isArray(raw)) {
+                    rows = raw.map(function(row) {
+                        if (!row || typeof row !== 'object') return null;
+                        var alias = String(row.alias || row.key || row.name || '').trim();
+                        var official = String(row.official || row.canonical || row.value || '').trim();
+                        if (!alias || !official) return null;
+                        return { alias: alias, official: official };
+                    }).filter(Boolean);
+                } else if (raw && typeof raw === 'object') {
+                    rows = Object.entries(raw).map(function(entry) {
+                        var alias = String(entry[0] || '').trim();
+                        var v = entry[1];
+                        var official = '';
+                        if (v && typeof v === 'object') official = String(v.official || v.canonical || '').trim();
+                        else official = String(v || '').trim();
+                        if (!alias || !official) return null;
+                        return { alias: alias, official: official };
+                    }).filter(Boolean);
+                }
+                var seen = {};
+                return rows.filter(function(row) {
+                    var k = row.alias.toLowerCase();
+                    if (seen[k]) return false;
+                    seen[k] = true;
+                    return true;
+                });
+            },
+            loadMenuAliases: function() {
+                var self = this;
+                self.menuAliasLoading = true;
+                get(ref(db, 'settings/menu_alias'))
+                    .then(function(snap) {
+                        var rows = self.normalizeMenuAliasRows(snap.exists() ? snap.val() : []);
+                        self.menuAliasRows = rows;
+                        self.menuAliasLoaded = true;
+                        self.menuAliasDirty = false;
+                    })
+                    .catch(function(e) {
+                        console.warn('load menu_alias failed:', e && e.message ? e.message : e);
+                        alert('載入 menu_alias 失敗：' + (e && e.message ? e.message : e));
+                    })
+                    .finally(function() { self.menuAliasLoading = false; });
+            },
+            submitMenuAliasForm: function() {
+                var alias = String((this.menuAliasForm && this.menuAliasForm.alias) || '').trim();
+                var official = String((this.menuAliasForm && this.menuAliasForm.official) || '').trim();
+                if (!alias || !official) { alert('請填入「別名」與「正式名稱」'); return; }
+
+                var existsAt = this.menuAliasRows.findIndex(function(row) { return String(row.alias || '').toLowerCase() === alias.toLowerCase(); });
+                if (this.menuAliasEditIdx < 0 && existsAt >= 0) { alert('此別名已存在，請改用編輯'); return; }
+                if (this.menuAliasEditIdx >= 0 && existsAt >= 0 && existsAt !== this.menuAliasEditIdx) { alert('此別名已存在，請使用其他名稱'); return; }
+
+                var row = { alias: alias, official: official };
+                if (this.menuAliasEditIdx >= 0) this.menuAliasRows.splice(this.menuAliasEditIdx, 1, row);
+                else this.menuAliasRows.push(row);
+
+                this.menuAliasDirty = true;
+                this.cancelMenuAliasEdit();
+            },
+            beginMenuAliasEdit: function(row) {
+                if (!row) return;
+                var idx = this.menuAliasRows.findIndex(function(r) {
+                    return r && r.alias === row.alias && r.official === row.official;
+                });
+                if (idx < 0) return;
+                this.menuAliasEditIdx = idx;
+                this.menuAliasForm.alias = String(row.alias || '');
+                this.menuAliasForm.official = String(row.official || '');
+            },
+            cancelMenuAliasEdit: function() {
+                this.menuAliasEditIdx = -1;
+                this.menuAliasForm = { alias: '', official: '' };
+            },
+            removeMenuAliasRow: function(row) {
+                if (!row) return;
+                if (!confirm('確定刪除此別名？\\n' + row.alias + ' → ' + row.official)) return;
+                var idx = this.menuAliasRows.findIndex(function(r) {
+                    return r && r.alias === row.alias && r.official === row.official;
+                });
+                if (idx >= 0) {
+                    this.menuAliasRows.splice(idx, 1);
+                    this.menuAliasDirty = true;
+                    if (this.menuAliasEditIdx === idx) this.cancelMenuAliasEdit();
+                }
+            },
+            saveMenuAliases: function() {
+                var self = this;
+                var normalized = self.normalizeMenuAliasRows(self.menuAliasRows || []);
+                self.menuAliasSaving = true;
+                var nowIso = new Date().toISOString();
+                var actor = (auth && auth.currentUser && auth.currentUser.email) ? auth.currentUser.email : 'manage';
+                var updates = {
+                    'settings/menu_alias': normalized.map(function(row, idx) {
+                        return { alias: row.alias, official: row.official, sortOrder: idx };
+                    }),
+                    'settings/menu_alias_meta/updatedAt': nowIso,
+                    'settings/menu_alias_meta/updatedBy': actor,
+                    'settings/menu_alias_meta/count': normalized.length,
+                    'settings/menu_alias_version': Date.now()
+                };
+                update(ref(db), updates)
+                    .then(function() {
+                        self.menuAliasRows = normalized;
+                        self.menuAliasDirty = false;
+                        self.menuAliasSaved = true;
+                        setTimeout(function(){ self.menuAliasSaved = false; }, 3000);
+                    })
+                    .catch(function(e) {
+                        alert('儲存 menu_alias 失敗：' + (e && e.message ? e.message : e));
+                    })
+                    .finally(function() { self.menuAliasSaving = false; });
             },
 
             // ── TEMPLATE METHODS ──
