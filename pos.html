@@ -582,7 +582,7 @@
                 posOrderType:'takeout',posTableLabel:'',posTables:[],cartDragIdx:null,
                 posPickupDate:"",posPickupTime:"",
                 orderMode:"pos",editingOrder:null,
-                onlineOrders:[],ordersLoading:false,assigningNos:{},orderBuckets:{},orderBucketUnsubs:[],integrationOrdersUnsub:null,integrationOrdersCache:[],useIntegrationView:false,
+                onlineOrders:[],ordersLoading:false,assigningNos:{},orderBuckets:{},orderBucketUnsubs:[],integrationOrdersUnsub:null,integrationOrdersCache:[],useIntegrationView:false,orderHydrateInFlight:{},orderHydrateDone:{},
                 orderSearch:"",
                 activeItem:null,tempQty:1,tempNote:"",tempSels:[],tempOG:{},tempPosExtras:[],
                 toastMsg:"",toastTimer:null,lastOrderId:null,
@@ -686,6 +686,111 @@
                 if(key==='size'||key==='combo_drink_size')return '\u5bb9\u91cf';
                 if(key==='temp'||key==='combo_drink_temp')return '\u6eab\u5ea6';
                 return String(groupName||'');
+            },
+            normalizeMenuNameForMatch:function(name){
+                var s=String(name||'').trim();
+                if(!s)return '';
+                s=s.replace(/[（）()]/g,'');
+                s=s.replace(/[\/、,，]/g,'');
+                s=s.replace(/\s+/g,'');
+                return s.toLowerCase();
+            },
+            isMenuNameEquivalent:function(a,b){
+                var na=this.normalizeMenuNameForMatch(a);
+                var nb=this.normalizeMenuNameForMatch(b);
+                if(!na||!nb)return false;
+                if(na===nb)return true;
+                var strip=function(v){return v.indexOf('錫蘭')===0?v.slice(2):v;};
+                if(strip(na)===strip(nb))return true;
+                if((na.indexOf(nb)!==-1||nb.indexOf(na)!==-1)&&Math.min(na.length,nb.length)>=2)return true;
+                return false;
+            },
+            sumOrderItemsTotal:function(items){
+                if(!Array.isArray(items))return 0;
+                return items.reduce(function(sum,it){
+                    var line=Number((it&&it.itemTotal!==undefined)?it.itemTotal:((it&&it.total!==undefined)?it.total:((it&&it['\u7e3d\u50f9']!==undefined)?it['\u7e3d\u50f9']:0)));
+                    if(!Number.isFinite(line))line=0;
+                    return sum+line;
+                },0);
+            },
+            pickRicherItemsForOrder:function(currentItems,incomingItems,orderTotal){
+                var a=Array.isArray(currentItems)?currentItems:[];
+                var b=Array.isArray(incomingItems)?incomingItems:[];
+                if(!a.length&&!b.length)return [];
+                if(!a.length)return b;
+                if(!b.length)return a;
+                var sumA=this.sumOrderItemsTotal(a);
+                var sumB=this.sumOrderItemsTotal(b);
+                if(Number.isFinite(orderTotal)&&orderTotal>0){
+                    var diffA=Math.abs(orderTotal-sumA);
+                    var diffB=Math.abs(orderTotal-sumB);
+                    if(diffB+0.01<diffA)return b;
+                    if(diffA+0.01<diffB)return a;
+                }
+                if(sumB>sumA)return b;
+                if(sumA>sumB)return a;
+                if(b.length>a.length)return b;
+                return a;
+            },
+            shouldHydrateOrderFromSource:function(order){
+                if(!order||!order.id)return false;
+                if(this.orderHydrateDone&&this.orderHydrateDone[order.id])return false;
+                if(this.orderHydrateInFlight&&this.orderHydrateInFlight[order.id])return false;
+                var sourcePath=this.normalizeSourceRecordPath(order,order.id);
+                if(!sourcePath)return false;
+                var items=Array.isArray(order.items)?order.items:[];
+                if(!items.length)return true;
+                var total=Number(order.total||0);
+                var sum=this.sumOrderItemsTotal(items);
+                if(Number.isFinite(total)&&total>0&&sum+0.5<total)return true;
+                var hasComboMain=items.some(function(it){
+                    var nm=String((it&&it.name)||'');
+                    return nm.indexOf('\u5957\u9910')!==-1;
+                });
+                var hasComboDrink=items.some(function(it){
+                    var note=String((it&&it.note)||'');
+                    return !!(it&&it.isComboDrink)||note.indexOf('\u5957\u9910\u98f2\u6599')!==-1;
+                });
+                return hasComboMain&&!hasComboDrink;
+            },
+            hydrateOrderFromSource:async function(order){
+                var s=this;
+                if(!s.shouldHydrateOrderFromSource(order))return;
+                var orderId=order.id;
+                s.orderHydrateInFlight[orderId]=true;
+                try{
+                    var sourcePath=s.normalizeSourceRecordPath(order,orderId);
+                    if(!sourcePath)return;
+                    var snap=await get(ref(db,sourcePath));
+                    if(!snap.exists())return;
+                    var sourceNorm=s.normalizeIncomingOrder(Object.assign({id:orderId},snap.val()||{}));
+                    var incomingItems=Array.isArray(sourceNorm&&sourceNorm.items)?sourceNorm.items:[];
+                    if(!incomingItems.length)return;
+                    var baseOrder=s.findOrderById(orderId)||order;
+                    var picked=s.pickRicherItemsForOrder(baseOrder&&baseOrder.items,incomingItems,Number((baseOrder&&baseOrder.total)||0));
+                    if(!picked.length)return;
+                    var target=s.onlineOrders.find(function(o){return o&&o.id===orderId;});
+                    if(target){
+                        target.items=picked.map(function(it){return Object.assign({},it);});
+                        var totals=[Number(target.total||0),Number(sourceNorm.total||0),s.sumOrderItemsTotal(target.items)];
+                        var finiteTotals=totals.filter(function(v){return Number.isFinite(v);});
+                        if(finiteTotals.length)target.total=Math.max.apply(null,finiteTotals);
+                    }
+                    if(s.editingOrder&&s.editingOrder.id===orderId){
+                        var nextEditing=Object.assign({},s.editingOrder);
+                        nextEditing.items=picked.map(function(it){return Object.assign({},it);});
+                        if(target&&Number.isFinite(Number(target.total)))nextEditing.total=Number(target.total);
+                        s.editingOrder=nextEditing;
+                        if(s.orderMode!=='pos'){
+                            s.cart=JSON.parse(JSON.stringify(nextEditing.items||[]));
+                        }
+                    }
+                }catch(e){
+                    console.warn('hydrateOrderFromSource failed:',orderId,e&&e.message?e.message:e);
+                }finally{
+                    delete s.orderHydrateInFlight[orderId];
+                    s.orderHydrateDone[orderId]=true;
+                }
             },
             extractLinePayUrlFromPayload:function(data){
                 if(!data||typeof data!=='object')return '';
@@ -1010,11 +1115,13 @@
                     if(!name)return '';
                     var size=(i&&i.size)?String(i.size).trim():'';
                     var temp=(i&&i.temp)?String(i.temp).trim():'';
-                    var drinkParts=[];
-                    if(size)drinkParts.push(size);
-                    if(temp)drinkParts.push(temp);
-                    if(drinkParts.length){
-                        name=drinkParts.join('/')+'/'+name;
+                    var isDrinkLike=!!(i&&i.isComboDrink)||!!size||!!temp||(String((i&&i.note)||'').indexOf('\u5957\u9910\u98f2\u6599')!==-1);
+                    if(isDrinkLike){
+                        var drinkParts=[];
+                        if(size)drinkParts.push(size);
+                        if(temp)drinkParts.push(temp);
+                        drinkParts.push(name);
+                        name=drinkParts.filter(function(v){return !!v;}).join('/');
                     }
                     var parts=[];
                     if(Array.isArray(i.options)&&i.options.length){
@@ -1280,11 +1387,20 @@
                     if(aNo!==bNo)return bNo-aNo;
                     return (b.timestamp||0)-(a.timestamp||0);
                 });
+                var keepHydrate={};
+                s.onlineOrders.forEach(function(o){if(o&&o.id)keepHydrate[o.id]=true;});
+                Object.keys(s.orderHydrateDone||{}).forEach(function(k){if(!keepHydrate[k])delete s.orderHydrateDone[k];});
+                Object.keys(s.orderHydrateInFlight||{}).forEach(function(k){if(!keepHydrate[k])delete s.orderHydrateInFlight[k];});
                 s.ordersLoading=false;
                 if(s.editingOrder){
                     var found=s.onlineOrders.find(function(o){return o.id===s.editingOrder.id;});
                     if(found)s.editingOrder=found;
                 }
+                s.onlineOrders.forEach(function(o){
+                    if(s.shouldHydrateOrderFromSource(o)){
+                        s.hydrateOrderFromSource(o);
+                    }
+                });
             },
             resetOrderBucketListeners:function(){
                 var s=this;
@@ -1614,6 +1730,11 @@
                 // 找到原始菜單項目
                 var menuItem=null;
                 for(var i=0;i<this.menu.length;i++){if(this.menu[i].id===cartItem.id){menuItem=this.menu[i];break;}}
+                if(!menuItem&&cartItem&&cartItem.name){
+                    for(var j=0;j<this.menu.length;j++){
+                        if(this.isMenuNameEquivalent(this.menu[j].name,cartItem.name)){menuItem=this.menu[j];break;}
+                    }
+                }
                 if(!menuItem){this.toast("⚠ 找不到此餐點");return;}
                 this.activeItem=menuItem;
                 this.tempQty=cartItem.qty;
@@ -1968,28 +2089,30 @@
                         s.isSubmitting=false;
                     });
             },
-            viewOrder:function(order){
+            viewOrder:async function(order){
                 if(this.isIntegrationReadOnlyOrder(order)&&!this.isPhoneCommandOrder(order)){
                     this.toast('☎️ 電話整合訂單目前請在電話後台修改');
                     return;
                 }
                 var normalized=this.normalizeIncomingOrder(order)||order;
-                this.editingOrder=Object.assign({},order||{},normalized||{});
-                this.cart=JSON.parse(JSON.stringify(normalized.items||[])).map(function(item){
+                await this.hydrateOrderFromSource(normalized);
+                var latest=this.findOrderById(normalized.id)||normalized;
+                this.editingOrder=Object.assign({},order||{},normalized||{},latest||{});
+                this.cart=JSON.parse(JSON.stringify((latest&&latest.items)||normalized.items||[])).map(function(item){
                     var mapped=Object.assign({},item||{});
                     if(!mapped.station)mapped.station=this.getDefaultStationName();
                     return mapped;
                 }.bind(this));
-                this.editPickupDate=normalized.pickupDate||'';
-                this.editPickupTime=normalized.pickupTime||'';
-                this.editOrderNote=normalized.orderNote||normalized['訂單備註']||normalized.note||'';
-                this.editOrderNote=this.editOrderNote||normalized.orderNote||normalized.note||'';
-                this.editPayMethod=normalized.paymentMethod||'store';
-                this.editOrderType=(normalized.type==='dinein'||normalized.pickupMode==='dinein')?'dinein':'takeout';
-                this.editTableLabel=normalized.tableLabel||'';
+                this.editPickupDate=(latest&&latest.pickupDate)||normalized.pickupDate||'';
+                this.editPickupTime=(latest&&latest.pickupTime)||normalized.pickupTime||'';
+                this.editOrderNote=(latest&&latest.orderNote)||normalized.orderNote||normalized['訂單備註']||normalized.note||'';
+                this.editOrderNote=this.editOrderNote||(latest&&latest.orderNote)||normalized.orderNote||normalized.note||'';
+                this.editPayMethod=(latest&&latest.paymentMethod)||normalized.paymentMethod||'store';
+                this.editOrderType=(((latest&&latest.type)||normalized.type)==='dinein'||((latest&&latest.pickupMode)||normalized.pickupMode)==='dinein')?'dinein':'takeout';
+                this.editTableLabel=(latest&&latest.tableLabel)||normalized.tableLabel||'';
                 this.editShowCustomer=false;this.editShowPayment=false;
                 // ★ 偵測 LINE Pay 已付清，禁止修改餐點與金額
-                this.editingLinePayPaid=(normalized.paymentMethod==='linepay'&&(normalized.paymentStatus==='paid'||this.lpConfirmed[normalized.id]||this.lpStatus[normalized.id]==='confirmed'));
+                this.editingLinePayPaid=(this.editingOrder.paymentMethod==='linepay'&&(this.editingOrder.paymentStatus==='paid'||this.lpConfirmed[this.editingOrder.id]||this.lpStatus[this.editingOrder.id]==='confirmed'));
                 this.orderMode="online";
                 this.activeView="menu";
                 this.activeMenu=null;
