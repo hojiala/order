@@ -847,11 +847,36 @@
                 var out=Object.assign({},order);
                 var payment=out.payment||{};
                 var totals=out.totals||{};
+                var sourcePath=this.normalizeSourceRecordPath(out,out.id||'');
+                var sourceRaw=String(out.source||'').toLowerCase();
+                var sourceLabelRaw=String(out.sourceLabel||'').toLowerCase();
+                if(sourcePath.indexOf('phone_ai/orders/')===0||sourceRaw.indexOf('phone')>=0||sourceLabelRaw.indexOf('電話')>=0){
+                    out.source='phone_ai';
+                    out.sourceLabel='電話點餐';
+                }else if(!sourceRaw||sourceRaw==='unknown'){
+                    if(sourcePath.indexOf('orders/')===0||sourcePath.indexOf('orders_archive/')===0){
+                        out.source='web';
+                    }
+                }
                 if((out.total===undefined||out.total===null||out.total==='')&&Number.isFinite(Number(totals.finalTotal)))out.total=Number(totals.finalTotal);
                 if((out.total===undefined||out.total===null||out.total==='')&&Number.isFinite(Number(out['\u7e3d\u91d1\u984d'])))out.total=Number(out['\u7e3d\u91d1\u984d']);
                 if((out.total===undefined||out.total===null||out.total==='')&&Number.isFinite(Number(out['總金額'])))out.total=Number(out['總金額']);
                 if(!out.paymentMethod&&payment.method)out.paymentMethod=payment.method;
                 if(!out.paymentStatus&&payment.status)out.paymentStatus=payment.status;
+                var pmRaw=String(out.paymentMethod||out['付款方式']||payment.method||'').toLowerCase();
+                if((!out.paymentMethod||out.paymentMethod==='store')&&/line.?pay/.test(pmRaw)){
+                    out.paymentMethod=pmRaw.indexOf('offline')>=0?'linepay_offline':'linepay';
+                }
+                var psRaw=String(out.paymentStatus||out['付款狀態']||payment.status||'').toLowerCase();
+                var psText=String(out['付款狀態']||out.paymentStatusText||'').toLowerCase();
+                var hasPaidHints=!!(
+                    out.paymentConfirmedAt||out.linePayConfirmedAt||out.linepayConfirmedAt||out.paidAt||
+                    out.linepayTransactionId||out.linePayTransactionId||out.transactionId||
+                    psText.indexOf('已付')>=0||psText.indexOf('paid')>=0||psText.indexOf('confirmed')>=0
+                );
+                if((out.paymentMethod==='linepay'||out.paymentMethod==='linepay_offline')&&(psRaw==='pending'||psRaw==='unpaid'||!psRaw)&&hasPaidHints){
+                    out.paymentStatus='paid';
+                }
                 if(!out.orderNote&&typeof out['\u8a02\u55ae\u5099\u8a3b']==='string')out.orderNote=out['\u8a02\u55ae\u5099\u8a3b'];
                 if(!out.phone&&out.customer&&out.customer.phone)out.phone=out.customer.phone;
                 var customerObj=(out.customer&&typeof out.customer==='object')?out.customer:{};
@@ -960,6 +985,17 @@
                                     price:Number(addon.price||addon['加價']||0)
                                 };
                             }).filter(function(addon){return addon&&addon.name;});
+                        }
+                        if(mapped.isComboDrink&&mapped.comboGroupId){
+                            var mQty=Math.max(1,Number(mapped.qty||1));
+                            var mUnit=Number(mapped.price||0);
+                            var mLine=Number(mapped.itemTotal||0);
+                            var fullUnit=(mUnit>=30)?mUnit:((mLine>=30&&mQty>0)?(mLine/mQty):mUnit);
+                            if(Number.isFinite(fullUnit)&&fullUnit>=30){
+                                var surcharge=Math.max(0,fullUnit-30);
+                                mapped.price=surcharge;
+                                mapped.itemTotal=surcharge*mQty;
+                            }
                         }
                         var rawSelections = (src.optionSelections && typeof src.optionSelections==='object')
                             ? src.optionSelections
