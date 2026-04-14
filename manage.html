@@ -2008,6 +2008,15 @@ window._doCountUp = function() {
             normalizeStatsOrder: function(order) {
                 if (!order || typeof order !== 'object') return order;
                 var out = Object.assign({}, order);
+                var sourcePath = String((out.integration && out.integration.sourceRecordPath) || out.sourceRecordPath || '').trim();
+                var sourceRaw = String(out.source || '').toLowerCase();
+                var sourceLabelRaw = String(out.sourceLabel || '').toLowerCase();
+                if (sourcePath.indexOf('phone_ai/orders/') === 0 || sourceRaw.indexOf('phone') >= 0 || sourceLabelRaw.indexOf('電話') >= 0) {
+                    out.source = 'phone_ai';
+                    out.sourceLabel = '電話點餐';
+                } else if (!sourceRaw || sourceRaw === 'unknown') {
+                    if (sourcePath.indexOf('orders/') === 0 || sourcePath.indexOf('orders_archive/') === 0) out.source = 'web';
+                }
                 if ((out.total === undefined || out.total === null || out.total === '') && out.totals && Number.isFinite(Number(out.totals.finalTotal))) {
                     out.total = Number(out.totals.finalTotal);
                 }
@@ -2016,6 +2025,20 @@ window._doCountUp = function() {
                 }
                 if (!out.paymentMethod && out.payment && out.payment.method) out.paymentMethod = out.payment.method;
                 if (!out.paymentStatus && out.payment && out.payment.status) out.paymentStatus = out.payment.status;
+                var pmRaw = String(out.paymentMethod || out['付款方式'] || (out.payment && out.payment.method) || '').toLowerCase();
+                if ((!out.paymentMethod || out.paymentMethod === 'store') && /line.?pay/.test(pmRaw)) {
+                    out.paymentMethod = pmRaw.indexOf('offline') >= 0 ? 'linepay_offline' : 'linepay';
+                }
+                var psRaw = String(out.paymentStatus || out['付款狀態'] || (out.payment && out.payment.status) || '').toLowerCase();
+                var psText = String(out['付款狀態'] || out.paymentStatusText || '').toLowerCase();
+                var hasPaidHints = !!(
+                    out.paymentConfirmedAt || out.linePayConfirmedAt || out.linepayConfirmedAt || out.paidAt ||
+                    out.linepayTransactionId || out.linePayTransactionId || out.transactionId ||
+                    psText.indexOf('已付') >= 0 || psText.indexOf('paid') >= 0 || psText.indexOf('confirmed') >= 0
+                );
+                if ((out.paymentMethod === 'linepay' || out.paymentMethod === 'linepay_offline') && (psRaw === 'pending' || psRaw === 'unpaid' || !psRaw) && hasPaidHints) {
+                    out.paymentStatus = 'paid';
+                }
                 if (!out.phone && out.customer && out.customer.phone) out.phone = out.customer.phone;
                 if (!out.orderNote && typeof out['訂單備註'] === 'string') out.orderNote = out['訂單備註'];
                 var customerObj = (out.customer && typeof out.customer === 'object') ? out.customer : {};
@@ -2105,6 +2128,17 @@ window._doCountUp = function() {
                             optionGroupSelections: Array.isArray(src.optionGroupSelections) ? src.optionGroupSelections.slice() : []
                         });
 
+                        if (mappedItem.isComboDrink && mappedItem.comboGroupId) {
+                            var mQty = Math.max(1, Number(mappedItem.qty || 1));
+                            var mUnit = Number(mappedItem.price || 0);
+                            var mLine = Number(mappedItem.itemTotal || 0);
+                            var fullUnit = (mUnit >= 30) ? mUnit : ((mLine >= 30 && mQty > 0) ? (mLine / mQty) : mUnit);
+                            if (Number.isFinite(fullUnit) && fullUnit >= 30) {
+                                var surcharge = Math.max(0, fullUnit - 30);
+                                mappedItem.price = surcharge;
+                                mappedItem.itemTotal = surcharge * mQty;
+                            }
+                        }
                         var rawSelections = (src.optionSelections && typeof src.optionSelections === 'object')
                             ? src.optionSelections
                             : ((src.selectedOptions && typeof src.selectedOptions === 'object') ? src.selectedOptions : null);
