@@ -1472,7 +1472,7 @@ window._doCountUp = function() {
             },
             statsCashCount: function() {
                 return this.statsOrders.filter(function(o){
-                    return o.status !== 'cancelled' && !o.wasCancelled && o.paymentMethod !== 'linepay' && o.paymentMethod !== 'linepay_offline';
+                    var pm=this.getOrderPaymentMethodValue(o); return o.status !== 'cancelled' && !o.wasCancelled && pm !== 'linepay' && pm !== 'linepay_offline' && pm !== 'linepay_refund';
                 }).length;
             },
             statsCashRevenue: function() {
@@ -1588,8 +1588,14 @@ window._doCountUp = function() {
 
             isLinePayOrder: function(order) {
                 if (!order) return false;
-                var pm = this.getOrderPaymentMethodValue(order);
-                return pm === 'linepay' || pm === 'linepay_offline' || pm === 'linepay_refund';
+                var pm = String(order.paymentMethod || order['\u4ed8\u6b3e\u65b9\u5f0f'] || (order.payment && order.payment.method) || '').toLowerCase();
+                if (pm === 'linepay' || pm === 'linepay_offline' || pm === 'linepay_refund') return true;
+                var oid = order.id || '';
+                var txnState = (this.lpTxnState && this.lpTxnState[oid]) ? String(this.lpTxnState[oid]).toLowerCase() : '';
+                if (txnState === 'confirmed' || txnState === 'refunded') return true;
+                if (oid && this.lpConfirmed && this.lpConfirmed[oid]) return true;
+                if (order.linepayTransactionId || order.linePayTransactionId || order.paymentConfirmedAt || order.linePayConfirmedAt || order.linepayConfirmedAt || order.transactionId) return true;
+                return false;
             },
             getOrderTotalValue: function(order) {
                 if (!order) return 0;
@@ -1599,11 +1605,20 @@ window._doCountUp = function() {
             },
             getOrderPaymentMethodValue: function(order) {
                 if (!order) return '';
-                return order.paymentMethod || (order.payment && order.payment.method) || 'store';
+                var pm = String(order.paymentMethod || order['\u4ed8\u6b3e\u65b9\u5f0f'] || (order.payment && order.payment.method) || 'store').toLowerCase();
+                if (this.isLinePayOrder(order)) {
+                    if (this.isLinePayRefunded(order)) return 'linepay_refund';
+                    return pm === 'linepay_offline' ? 'linepay_offline' : 'linepay';
+                }
+                return pm || 'store';
             },
             getOrderPaymentStatusValue: function(order) {
                 if (!order) return '';
-                return order.paymentStatus || (order.payment && order.payment.status) || 'unpaid';
+                var ps = String(order.paymentStatus || order['\u4ed8\u6b3e\u72c0\u614b'] || (order.payment && order.payment.status) || 'unpaid').toLowerCase();
+                if (this.isLinePayOrder(order) && (ps === 'pending' || ps === 'unpaid' || !ps) && this.isLinePayPaid(order)) {
+                    return 'paid';
+                }
+                return ps || 'unpaid';
             },
             getOrderTimestamp: function(order) {
                 if (!order) return 0;
@@ -1669,25 +1684,35 @@ window._doCountUp = function() {
             getDisplayCustomerName: function(order) {
                 if (!order || typeof order !== 'object') return '\u9867\u5ba2';
                 var src0 = String(order.source || '').toLowerCase();
-                var defaultName = (src0 === 'phone_ai' || src0 === 'pos_local') ? '\u96fb\u8a71\u9867\u5ba2' : '\u9867\u5ba2';
+                var isPhoneSource = (src0 === 'phone_ai' || src0 === 'pos_local');
+                var defaultName = isPhoneSource ? '\u96fb\u8a71\u9867\u5ba2' : '\u9867\u5ba2';
+                var pickName = function(value) {
+                    if (typeof value !== 'string') return '';
+                    var t = value.trim();
+                    if (!t || t === '[object Object]') return '';
+                    if (isPhoneSource && (t === '\u9867\u5ba2' || t.toLowerCase() === 'customer')) return '';
+                    return t;
+                };
                 var c = order.customer;
                 if (typeof c === 'string') {
-                    var t = c.trim();
-                    if (t && t !== '[object Object]') return t;
+                    var t0 = pickName(c);
+                    if (t0) return t0;
                 }
                 if (c && typeof c === 'object') {
                     var cand = [c.name, c.displayName, c.customerName, c.label, c.value];
                     for (var i = 0; i < cand.length; i++) {
-                        if (typeof cand[i] === 'string' && cand[i].trim() && cand[i].trim() !== '[object Object]') return cand[i].trim();
+                        var t1 = pickName(cand[i]);
+                        if (t1) return t1;
                     }
                     if (c.name && typeof c.name === 'object') {
-                        var nested = c.name.text || c.name.value || c.name.name;
-                        if (typeof nested === 'string' && nested.trim() && nested.trim() !== '[object Object]') return nested.trim();
+                        var nested = pickName(c.name.text || c.name.value || c.name.name);
+                        if (nested) return nested;
                     }
                 }
                 var fallback = [order.customerName, order.name, order.tableLabel];
                 for (var j = 0; j < fallback.length; j++) {
-                    if (typeof fallback[j] === 'string' && fallback[j].trim() && fallback[j].trim() !== '[object Object]') return fallback[j].trim();
+                    var t2 = pickName(fallback[j]);
+                    if (t2) return t2;
                 }
                 return defaultName;
             },
@@ -1710,9 +1735,14 @@ window._doCountUp = function() {
                     path = order._integrationOriginal.integration.sourceRecordPath || '';
                 }
                 path = String(path || '').trim();
-                if (path.indexOf('orders/') !== 0) return '';
-                var seg = path.split('/');
-                if (seg.length >= 3 && seg[1] && seg[2]) return 'orders/' + seg[1] + '/' + seg[2];
+                if (path.indexOf('orders/') === 0) {
+                    var seg = path.split('/');
+                    if (seg.length >= 3 && seg[1] && seg[2]) return 'orders/' + seg[1] + '/' + seg[2];
+                }
+                if (path.indexOf('phone_ai/orders/') === 0) {
+                    var seg2 = path.split('/');
+                    if (seg2.length >= 3 && seg2[2]) return 'phone_ai/orders/' + seg2[2];
+                }
                 return '';
             },
             sumStatsItemsTotal: function(items) {
@@ -2008,10 +2038,22 @@ window._doCountUp = function() {
             normalizeStatsOrder: function(order) {
                 if (!order || typeof order !== 'object') return order;
                 var out = Object.assign({}, order);
-                var sourcePath = String((out.integration && out.integration.sourceRecordPath) || out.sourceRecordPath || '').trim();
+                var sourcePath = String((out.integration && out.integration.sourceRecordPath) || out.sourceRecordPath || ((out._integrationOriginal && out._integrationOriginal.integration && out._integrationOriginal.integration.sourceRecordPath) || '')).trim();
                 var sourceRaw = String(out.source || '').toLowerCase();
                 var sourceLabelRaw = String(out.sourceLabel || '').toLowerCase();
-                if (sourcePath.indexOf('phone_ai/orders/') === 0 || sourceRaw.indexOf('phone') >= 0 || sourceLabelRaw.indexOf('電話') >= 0) {
+                var sourceTypeRaw = String(out.sourceType || ((out.integration && out.integration.sourceType) || '')).toLowerCase();
+                var rawJsonPath = String((out._integrationOriginal && out._integrationOriginal.phoneAi && out._integrationOriginal.phoneAi.rawJsonPath) || out.rawJsonPath || '').toLowerCase();
+                var sourceOrderIdRaw = String(out.sourceOrderId || (out._integrationOriginal && out._integrationOriginal.sourceOrderId) || '').toLowerCase();
+                var hasPhoneHints = (
+                    sourcePath.indexOf('phone_ai/orders/') === 0 ||
+                    sourceRaw.indexOf('phone') >= 0 ||
+                    sourceTypeRaw.indexOf('phone') >= 0 ||
+                    sourceLabelRaw.indexOf('電話') >= 0 ||
+                    rawJsonPath.indexOf('phone') >= 0 ||
+                    sourceOrderIdRaw.indexOf('phone') === 0 ||
+                    !!(out._integrationOriginal && out._integrationOriginal.phoneAi)
+                );
+                if (hasPhoneHints) {
                     out.source = 'phone_ai';
                     out.sourceLabel = '電話點餐';
                 } else if (!sourceRaw || sourceRaw === 'unknown') {
@@ -2026,39 +2068,52 @@ window._doCountUp = function() {
                 if (!out.paymentMethod && out.payment && out.payment.method) out.paymentMethod = out.payment.method;
                 if (!out.paymentStatus && out.payment && out.payment.status) out.paymentStatus = out.payment.status;
                 var pmRaw = String(out.paymentMethod || out['付款方式'] || (out.payment && out.payment.method) || '').toLowerCase();
-                if ((!out.paymentMethod || out.paymentMethod === 'store') && /line.?pay/.test(pmRaw)) {
+                if ((!out.paymentMethod || out.paymentMethod === 'store' || out.paymentMethod === 'cash') && /line.?pay/.test(pmRaw)) {
                     out.paymentMethod = pmRaw.indexOf('offline') >= 0 ? 'linepay_offline' : 'linepay';
                 }
                 var psRaw = String(out.paymentStatus || out['付款狀態'] || (out.payment && out.payment.status) || '').toLowerCase();
                 var psText = String(out['付款狀態'] || out.paymentStatusText || '').toLowerCase();
-                var hasPaidHints = !!(
+                var hasLinePayHints = !!(
                     out.paymentConfirmedAt || out.linePayConfirmedAt || out.linepayConfirmedAt || out.paidAt ||
-                    out.linepayTransactionId || out.linePayTransactionId || out.transactionId ||
+                    out.linepayTransactionId || out.linePayTransactionId || out.transactionId
+                );
+                if (hasLinePayHints && (!out.paymentMethod || out.paymentMethod === 'store' || out.paymentMethod === 'cash')) {
+                    out.paymentMethod = pmRaw.indexOf('offline') >= 0 ? 'linepay_offline' : 'linepay';
+                }
+                var hasPaidHints = !!(
+                    hasLinePayHints ||
                     psText.indexOf('已付') >= 0 || psText.indexOf('paid') >= 0 || psText.indexOf('confirmed') >= 0
                 );
                 if ((out.paymentMethod === 'linepay' || out.paymentMethod === 'linepay_offline') && (psRaw === 'pending' || psRaw === 'unpaid' || !psRaw) && hasPaidHints) {
                     out.paymentStatus = 'paid';
                 }
+                if (out.paymentMethod === 'linepay_refund') out.paymentStatus = 'refunded';
                 if (!out.phone && out.customer && out.customer.phone) out.phone = out.customer.phone;
                 if (!out.orderNote && typeof out['訂單備註'] === 'string') out.orderNote = out['訂單備註'];
                 var customerObj = (out.customer && typeof out.customer === 'object') ? out.customer : {};
+                var isPhoneSource = (String(out.source || '').toLowerCase() === 'phone_ai' || String(out.source || '').toLowerCase() === 'pos_local');
+                var pickName = function(value) {
+                    if (typeof value !== 'string') return '';
+                    var t = value.trim();
+                    if (!t || t === '[object Object]') return '';
+                    if (isPhoneSource && (t === '\u9867\u5ba2' || t.toLowerCase() === 'customer')) return '';
+                    return t;
+                };
                 var customerName = '';
                 if (typeof out.customer === 'string') {
-                    var rawName = out.customer.trim();
-                    if (rawName && rawName !== '[object Object]') customerName = rawName;
+                    customerName = pickName(out.customer);
                 } else if (customerObj) {
-                    if (typeof customerObj.name === 'string' && customerObj.name.trim() && customerObj.name.trim() !== '[object Object]') customerName = customerObj.name.trim();
-                    else if (customerObj.name && typeof customerObj.name === 'object') {
-                        var nestedName = customerObj.name.text || customerObj.name.value || customerObj.name.name;
-                        if (typeof nestedName === 'string' && nestedName.trim() && nestedName.trim() !== '[object Object]') customerName = nestedName.trim();
-                    } else {
-                        var altName = customerObj.displayName || customerObj.customerName || customerObj.label || customerObj.value;
-                        if (typeof altName === 'string' && altName.trim() && altName.trim() !== '[object Object]') customerName = altName.trim();
+                    customerName = pickName(customerObj.name);
+                    if (!customerName && customerObj.name && typeof customerObj.name === 'object') {
+                        customerName = pickName(customerObj.name.text || customerObj.name.value || customerObj.name.name);
+                    }
+                    if (!customerName) {
+                        customerName = pickName(customerObj.displayName || customerObj.customerName || customerObj.label || customerObj.value);
                     }
                 }
-                if (!customerName && typeof out.customerName === 'string' && out.customerName.trim() && out.customerName.trim() !== '[object Object]') customerName = out.customerName.trim();
-                if (!customerName && typeof out.name === 'string' && out.name.trim() && out.name.trim() !== '[object Object]') customerName = out.name.trim();
-                if (!customerName && typeof out.tableLabel === 'string' && out.tableLabel.trim() && out.tableLabel.trim() !== '[object Object]') customerName = out.tableLabel.trim();
+                if (!customerName) customerName = pickName(out.customerName);
+                if (!customerName) customerName = pickName(out.name);
+                if (!customerName) customerName = pickName(out.tableLabel);
                 if (!customerName) {
                     var srcName = String(out.source || '').toLowerCase();
                     customerName = (srcName === 'phone_ai' || srcName === 'pos_local') ? '\u96fb\u8a71\u9867\u5ba2' : '\u9867\u5ba2';
@@ -2118,6 +2173,7 @@ window._doCountUp = function() {
                         }
 
                         var mappedItem = Object.assign({}, src, {
+                            id: src.id || src.productId || src.sku || String(nameRaw || 'item'),
                             name: String(nameRaw || '').trim(),
                             qty: qty,
                             price: Number(unit || 0),
@@ -2125,9 +2181,13 @@ window._doCountUp = function() {
                             note: (src.note !== undefined && src.note !== null) ? String(src.note) : (src['備註'] || ''),
                             size: (src.size !== undefined && src.size !== null) ? String(src.size) : (src['容量'] || ''),
                             temp: (src.temp !== undefined && src.temp !== null) ? String(src.temp) : (src['溫度'] || ''),
+                            isComboDrink: !!(src.isComboDrink || String(src['備註'] || '').indexOf('套餐飲料') !== -1),
+                            comboGroupId: src.comboGroupId || '',
+                            mealDrink: src.mealDrink || '',
+                            options: Array.isArray(src.options) ? src.options.slice() : [],
+                            posExtras: Array.isArray(src.posExtras) ? src.posExtras.slice() : [],
                             optionGroupSelections: Array.isArray(src.optionGroupSelections) ? src.optionGroupSelections.slice() : []
                         });
-
                         if (mappedItem.isComboDrink && mappedItem.comboGroupId) {
                             var mQty = Math.max(1, Number(mappedItem.qty || 1));
                             var mUnit = Number(mappedItem.price || 0);
@@ -2142,19 +2202,32 @@ window._doCountUp = function() {
                         var rawSelections = (src.optionSelections && typeof src.optionSelections === 'object')
                             ? src.optionSelections
                             : ((src.selectedOptions && typeof src.selectedOptions === 'object') ? src.selectedOptions : null);
-                        if ((!mappedItem.optionGroupSelections || !mappedItem.optionGroupSelections.length) && rawSelections) {
-                            mappedItem.optionGroupSelections = Object.keys(rawSelections).map(function(key) {
-                                return {
-                                    groupName: self.getDisplayOptionGroupName(key),
-                                    name: String(rawSelections[key] || ''),
+                        if (rawSelections) {
+                            var existing = {};
+                            var baseSelections = Array.isArray(mappedItem.optionGroupSelections) ? mappedItem.optionGroupSelections.slice() : [];
+                            baseSelections.forEach(function(sel) {
+                                var g = self.getDisplayOptionGroupName((sel && sel.groupName) || '');
+                                var n = String((sel && (sel.name || sel.value)) || '').trim();
+                                if (g && n) existing[(g + '|' + n).toLowerCase()] = true;
+                            });
+                            Object.keys(rawSelections).forEach(function(key) {
+                                var name = String(rawSelections[key] || '').trim();
+                                if (!name) return;
+                                var groupName = self.getDisplayOptionGroupName(key);
+                                var ek = (groupName + '|' + name).toLowerCase();
+                                if (existing[ek]) return;
+                                baseSelections.push({
+                                    groupName: groupName,
+                                    name: name,
                                     idx: 0,
                                     price: 0,
                                     pricing: 'addDelta',
                                     baseValue: 0
-                                };
-                            }).filter(function(sel) { return sel.name; });
+                                });
+                                existing[ek] = true;
+                            });
+                            mappedItem.optionGroupSelections = baseSelections;
                         }
-
                         if (Array.isArray(mappedItem.optionGroupSelections)) {
                             mappedItem.optionGroupSelections = mappedItem.optionGroupSelections.map(function(sel) {
                                 var mapped = Object.assign({}, sel || {});
@@ -2167,6 +2240,62 @@ window._doCountUp = function() {
                         }
                         return mappedItem.name ? mappedItem : null;
                     }).filter(function(item) { return !!item; });
+                }
+                if (Array.isArray(out.items) && out.items.length > 1) {
+                    var isComboDrinkLine = function(it) {
+                        if (!it || typeof it !== 'object') return false;
+                        var note = String(it.note || it['備註'] || '');
+                        return !!it.isComboDrink || note.indexOf('套餐飲料') !== -1;
+                    };
+                    var isComboMainLine = function(it) {
+                        if (!it || typeof it !== 'object' || isComboDrinkLine(it)) return false;
+                        var name = String(it.name || it['品項'] || '');
+                        var note = String(it.note || it['備註'] || '');
+                        var sels = Array.isArray(it.optionGroupSelections) ? it.optionGroupSelections : [];
+                        var hasUpgrade = sels.some(function(sel){ return String(sel && sel.pricing || '') === 'mealUpgrade'; });
+                        return name.indexOf('套餐') !== -1 || note.indexOf('套餐') !== -1 || !!it.mealDrink || hasUpgrade || !!it.comboGroupId;
+                    };
+                    var readLine = function(it) {
+                        var v = Number((it && it.itemTotal !== undefined) ? it.itemTotal : ((it && it.total !== undefined) ? it.total : 0));
+                        if (Number.isFinite(v) && v > 0) return v;
+                        var q = Math.max(1, Number((it && it.qty !== undefined) ? it.qty : 1));
+                        var p = Number((it && it.price !== undefined) ? it.price : 0);
+                        return (Number.isFinite(p) && p > 0) ? (p * q) : 0;
+                    };
+                    var usedDrink = {};
+                    for (var mi = 0; mi < out.items.length; mi++) {
+                        var main = out.items[mi];
+                        if (!isComboMainLine(main)) continue;
+                        var gid = String(main.comboGroupId || '').trim();
+                        var pairIdx = -1;
+                        if (gid) {
+                            for (var di = 0; di < out.items.length; di++) {
+                                if (di === mi || usedDrink[di]) continue;
+                                var d0 = out.items[di];
+                                if (!isComboDrinkLine(d0)) continue;
+                                if (String(d0.comboGroupId || '').trim() === gid) { pairIdx = di; break; }
+                            }
+                        }
+                        if (pairIdx < 0) {
+                            for (var di2 = mi + 1; di2 < out.items.length; di2++) {
+                                if (usedDrink[di2]) continue;
+                                if (isComboDrinkLine(out.items[di2])) { pairIdx = di2; break; }
+                            }
+                        }
+                        if (pairIdx < 0) continue;
+                        usedDrink[pairIdx] = true;
+                        var pair = out.items[pairIdx] || {};
+                        var mergedTotal = readLine(main) + readLine(pair);
+                        if (Number.isFinite(mergedTotal) && mergedTotal > 0) main.itemTotal = mergedTotal;
+                        if (!main.mealDrink) {
+                            var size = String(main.size || pair.size || '').trim();
+                            var temp = String(main.temp || pair.temp || '').trim();
+                            var drinkName = String(pair.name || pair['品項'] || '').trim();
+                            var mealParts = [size, temp, drinkName].filter(function(v){ return !!v; });
+                            if (mealParts.length) main.mealDrink = mealParts.join('/');
+                        }
+                    }
+                    out.items = out.items.filter(function(_, idx){ return !usedDrink[idx]; });
                 }
                 return out;
             },
@@ -3323,3 +3452,4 @@ window._doCountUp = function() {
 </script>
 </body>
 </html>
+
