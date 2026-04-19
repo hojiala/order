@@ -1294,6 +1294,99 @@
                     return qty+"x"+name+(parts.length?("("+parts.join(" ")+")"):"");
                 }).filter(function(x){return !!x;}).join(", ");
             },
+            // 從 item.note / 備註 解析「蛋更換為XX蛋」等關鍵字，補成 optionGroupSelections 的蛋選項，
+            // 讓電話系統寫入 Firebase 的訂單在 POS 編輯畫面能顯示蛋熟度（對齊 pos.html 店內 POS）。
+            enrichPhoneCartItemsFromNote:function(){
+                var cart=Array.isArray(this.cart)?this.cart:[];
+                if(!cart.length)return;
+                var eggKeywords=['\u534a\u719f\u86cb','\u592a\u967d\u86cb','\u5168\u719f\u86cb','\u6563\u86cb','\u7092\u86cb','\u8377\u5305\u86cb'];
+                for(var i=0;i<cart.length;i++){
+                    var it=cart[i];
+                    if(!it||typeof it!=='object')continue;
+                    var note=String(it.note||it['\u5099\u8a3b']||'');
+                    if(!note)continue;
+                    var found='';
+                    for(var k=0;k<eggKeywords.length;k++){
+                        if(note.indexOf(eggKeywords[k])>=0){found=eggKeywords[k];break;}
+                    }
+                    if(!found)continue;
+                    var sels=Array.isArray(it.optionGroupSelections)?it.optionGroupSelections.slice():[];
+                    var hasEgg=sels.some(function(s){
+                        var g=String(s&&s.groupName||'').toLowerCase();
+                        var n=String(s&&s.name||'');
+                        return g.indexOf('egg')!==-1||g.indexOf('\u86cb')!==-1||(!!n&&eggKeywords.indexOf(n)>=0);
+                    });
+                    if(hasEgg)continue;
+                    sels.push({groupName:'\u86cb',name:found,idx:0,price:0,pricing:'addDelta',baseValue:0});
+                    cart.splice(i,1,Object.assign({},it,{optionGroupSelections:sels}));
+                }
+                this.cart=cart;
+            },
+            // 把電話系統匯入的「套餐主餐 + 套餐飲料 sibling」兩筆合併成單筆主餐（對齊 pos.html 店內 POS 的 confirmAdd 結構）：
+            // 1) 飲料的容量/溫度/品項寫回主餐 optionGroupSelections（若尚未存在）
+            // 2) 飲料 itemTotal 併入主餐 itemTotal（差價已由 normalizeIncomingOrder 處理好）
+            // 3) 移除飲料 sibling，使 cart 顯示「共 1 件」並顯示正確合計
+            collapseCartComboPairs:function(){
+                var cart=Array.isArray(this.cart)?this.cart.slice():[];
+                if(cart.length<2){this.cart=cart;return;}
+                var removeIdx={};
+                for(var i=0;i<cart.length;i++){
+                    if(removeIdx[i])continue;
+                    var main=cart[i];
+                    if(!main||typeof main!=='object')continue;
+                    if(main.isComboDrink||String(main.note||'').indexOf('\u5957\u9910\u98f2\u6599')!==-1)continue;
+                    var mainName=String(main.name||'').trim();
+                    var mainSels=Array.isArray(main.optionGroupSelections)?main.optionGroupSelections:[];
+                    var mainHasUpgrade=mainSels.some(function(s){return String(s&&s.pricing||'')==='mealUpgrade';});
+                    var isCombo=mainName.indexOf('\u5957\u9910')!==-1||mainHasUpgrade;
+                    if(!isCombo)continue;
+                    var gid=String(main.comboGroupId||'').trim();
+                    var sibIdx=-1;var looseIdx=-1;
+                    for(var j=0;j<cart.length;j++){
+                        if(j===i||removeIdx[j])continue;
+                        var cand=cart[j];if(!cand||typeof cand!=='object')continue;
+                        var isDrink=!!cand.isComboDrink||String(cand.note||'').indexOf('\u5957\u9910\u98f2\u6599')!==-1;
+                        if(!isDrink)continue;
+                        var cgid=String(cand.comboGroupId||'').trim();
+                        if(gid&&cgid&&gid===cgid){sibIdx=j;break;}
+                        if(looseIdx<0)looseIdx=j;
+                    }
+                    if(sibIdx<0)sibIdx=looseIdx;
+                    if(sibIdx<0)continue;
+                    var sib=cart[sibIdx];
+                    var sibSize=String(sib.size||sib['\u5bb9\u91cf']||'').trim();
+                    var sibTemp=String(sib.temp||sib['\u6eab\u5ea6']||'').trim();
+                    var sibName=String(sib.name||sib['\u54c1\u9805']||'').trim();
+                    var sibQty=Math.max(1,Number(sib.qty||1));
+                    var sibUnit=Number(sib.price||0);
+                    var sibTotal=Number(sib.itemTotal||(sibUnit*sibQty)||0);
+                    var surchargeUnit=Number.isFinite(sibUnit)?sibUnit:0;
+                    if(surchargeUnit<=0&&sibQty>0&&Number.isFinite(sibTotal)&&sibTotal>0)surchargeUnit=Math.round(sibTotal/sibQty);
+                    var hasSize=mainSels.some(function(s){var g=String(s&&s.groupName||'').toLowerCase();return g.indexOf('size')!==-1||g.indexOf('\u5bb9\u91cf')!==-1;});
+                    var hasTemp=mainSels.some(function(s){var g=String(s&&s.groupName||'').toLowerCase();return g.indexOf('temp')!==-1||g.indexOf('\u6eab\u5ea6')!==-1;});
+                    var hasDrink=mainSels.some(function(s){
+                        var g=String(s&&s.groupName||'').toLowerCase();
+                        var n=String(s&&s.name||'').trim();
+                        return !!n&&(g.indexOf('drink')!==-1||g.indexOf('\u98f2\u6599')!==-1);
+                    });
+                    var newSels=mainSels.slice();
+                    if(sibSize&&!hasSize)newSels.push({groupName:'\u5bb9\u91cf',name:sibSize,idx:0,price:0,pricing:'addDelta',baseValue:0});
+                    if(sibTemp&&!hasTemp)newSels.push({groupName:'\u6eab\u5ea6',name:sibTemp,idx:0,price:0,pricing:'addDelta',baseValue:0});
+                    if(sibName&&!hasDrink){
+                        var upgrade=Math.max(0,Math.round(surchargeUnit));
+                        newSels.push({groupName:'\u5957\u9910\u98f2\u6599',name:sibName,idx:0,price:upgrade,pricing:'mealUpgrade',baseValue:0});
+                    }
+                    var mainTotal=Number(main.itemTotal||0);
+                    if(!Number.isFinite(mainTotal))mainTotal=0;
+                    if(!Number.isFinite(sibTotal))sibTotal=0;
+                    var absorbed=Object.assign({},main,{optionGroupSelections:newSels,itemTotal:mainTotal+sibTotal});
+                    cart.splice(i,1,absorbed);
+                    removeIdx[sibIdx]=true;
+                }
+                var keys=Object.keys(removeIdx).map(Number).sort(function(a,b){return b-a;});
+                for(var r=0;r<keys.length;r++){cart.splice(keys[r],1);}
+                this.cart=cart;
+            },
             findCartComboDrinkSibling:function(item,idx){
                 var list=Array.isArray(this.cart)?this.cart:[];
                 if(!list.length)return null;
@@ -1320,16 +1413,14 @@
                 var isComboLine=!!item.isComboDrink||note.indexOf('\u5957\u9910\u98f2\u6599')!==-1;
                 var sels=Array.isArray(item.optionGroupSelections)?item.optionGroupSelections:[];
                 var hasUpgradeSel=sels.some(function(sel){return String(sel&&sel.pricing||'')==='mealUpgrade';});
-                var hasDrinkGroup=sels.some(function(sel){
-                    var g=String(sel&&sel.groupName||'').toLowerCase();
-                    return g.indexOf('drink')!==-1||g.indexOf('\u98f2\u6599')!==-1||g.indexOf('\u5957\u9910\u98f2\u6599')!==-1;
-                });
                 var hasDrinkSelection=sels.some(function(sel){
                     var g=String(sel&&sel.groupName||'').toLowerCase();
                     var n=String(sel&&sel.name||'').trim();
                     return !!n&&(g.indexOf('drink')!==-1||g.indexOf('\u98f2\u6599')!==-1||g.indexOf('\u5957\u9910\u98f2\u6599')!==-1);
                 });
-                var isComboMain=name.indexOf('\u5957\u9910')!==-1||hasUpgradeSel||hasDrinkGroup||!!item.mealDrink;
+                // isComboMain 只認「名稱含套餐」或「有 mealUpgrade 加價選項」；
+                // 不再把 mealDrink 欄位或 groupName 含「飲料」當套餐主餐，避免單品飲料被當套餐。
+                var isComboMain=name.indexOf('\u5957\u9910')!==-1||hasUpgradeSel;
                 if(!isComboMain||(isComboLine&&name.indexOf('\u5957\u9910')===-1))return '';
                 if(hasDrinkSelection)return '';
                 var size=String(item.size||'').trim();
@@ -2437,6 +2528,8 @@
                     if(!mapped.station)mapped.station=this.getDefaultStationName();
                     return mapped;
                 }.bind(this));
+                this.enrichPhoneCartItemsFromNote();
+                this.collapseCartComboPairs();
                 this.editPickupDate=(latest&&latest.pickupDate)||normalized.pickupDate||'';
                 this.editPickupTime=(latest&&latest.pickupTime)||normalized.pickupTime||'';
                 this.editOrderNote=(latest&&latest.orderNote)||normalized.orderNote||normalized['訂單備註']||normalized.note||'';
