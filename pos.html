@@ -925,6 +925,29 @@
                 if(!Array.isArray(out.items)&&Array.isArray(out['訂單']))out.items=out['訂單'];
                 if(Array.isArray(out.items)){
                     var self=this;
+                    // 預先建立 comboGroupId -> 主餐名稱 的索引，讓套餐飲料 sibling 能依主餐分類決定折扣：
+                    //   - 拼盤 / 分享 / 鐵板麵 / 烏龍麵 系列：任何飲料折 $5
+                    //   - 1~9 號套餐：預設 $30 大杯去冰奶茶已含，換其他飲料補差價（飲料售價 - $30）
+                    var comboMainNameByGid={};
+                    out.items.forEach(function(it){
+                        if(!it||typeof it!=='object')return;
+                        var gid=String(it.comboGroupId||'').trim();
+                        if(!gid)return;
+                        var nm=String(it.name||it['\u54c1\u9805']||'').trim();
+                        if(!nm)return;
+                        var note=String(it.note||it['\u5099\u8a3b']||'');
+                        var isDrinkLine=!!it.isComboDrink||note.indexOf('\u5957\u9910\u98f2\u6599')!==-1;
+                        if(isDrinkLine)return;
+                        if(!comboMainNameByGid[gid])comboMainNameByGid[gid]=nm;
+                    });
+                    var getComboDrinkBaseline=function(mainName){
+                        var s=String(mainName||'');
+                        if(!s)return 30;
+                        // 拼盤/分享/鐵板麵/烏龍麵系列：$5 折扣（只能折到 $5，不是整杯免費）
+                        if(/\u62fc\u76e4|\u5206\u4eab|\u9435\u677f\u9eb5|\u70cf\u9f8d\u9eb5/.test(s))return 5;
+                        // 其他 (含 1~9 號套餐)：預設含 $30 飲料
+                        return 30;
+                    };
                     out.items=out.items.map(function(item){
                         if(!item||typeof item!=='object')return null;
                         var src=Object.assign({},item);
@@ -990,9 +1013,14 @@
                             var mQty=Math.max(1,Number(mapped.qty||1));
                             var mUnit=Number(mapped.price||0);
                             var mLine=Number(mapped.itemTotal||0);
-                            var fullUnit=(mUnit>=30)?mUnit:((mLine>=30&&mQty>0)?(mLine/mQty):mUnit);
-                            if(Number.isFinite(fullUnit)&&fullUnit>=30){
-                                var surcharge=Math.max(0,fullUnit-30);
+                            // fullUnit = 該飲料原始單價（尚未扣差價前）。若電話系統已經把單價算成差價，
+                            // 還原原價需要加回 baseline；但只有在 sibling.price 看起來像未扣差價時才切換規則。
+                            var gidKey=String(mapped.comboGroupId||'').trim();
+                            var mainNm=comboMainNameByGid[gidKey]||'';
+                            var baseline=getComboDrinkBaseline(mainNm);
+                            var fullUnit=(mUnit>=baseline)?mUnit:((mLine>=baseline&&mQty>0)?(mLine/mQty):mUnit);
+                            if(Number.isFinite(fullUnit)&&fullUnit>=baseline){
+                                var surcharge=Math.max(0,fullUnit-baseline);
                                 mapped.price=surcharge;
                                 mapped.itemTotal=surcharge*mQty;
                             }
@@ -1013,6 +1041,9 @@
                             }).filter(function(sel){return sel.name;});
                         }
                         if(Array.isArray(mapped.optionGroupSelections)){
+                            // 過濾純分類字樣（phone 系統有時會把「套餐 / 飲料 / 主餐」當成 chip 寫入，
+                            // 造成 pos 編輯畫面出現重複「套餐」chip）。凡是 name 僅為純分類詞就丟棄。
+                            var CATEGORY_NOISE={'\u5957\u9910':1,'\u98f2\u6599':1,'\u4e3b\u9910':1,'\u9910\u9ede':1,'\u5206\u985e':1,'\u985e\u5225':1};
                             mapped.optionGroupSelections=mapped.optionGroupSelections.map(function(sel){
                                 var mappedSel=Object.assign({},sel||{});
                                 mappedSel.groupName=self.getDisplayOptionGroupName(mappedSel.groupName||'');
@@ -1020,7 +1051,11 @@
                                 if(!Number.isFinite(Number(mappedSel.price)))mappedSel.price=0;
                                 if(!Number.isFinite(Number(mappedSel.baseValue)))mappedSel.baseValue=0;
                                 return mappedSel;
-                            }).filter(function(sel){return sel&&sel.groupName&&sel.name;});
+                            }).filter(function(sel){
+                                if(!sel||!sel.groupName||!sel.name)return false;
+                                if(CATEGORY_NOISE[sel.name])return false;
+                                return true;
+                            });
                         }
                         return mapped.name?mapped:null;
                     }).filter(function(item){return !!item;});
