@@ -122,7 +122,7 @@
                                 📝 備註：{{ order.orderNote }}
                             </div>
                             <ul class="space-y-3">
-                                <li v-for="(item, idx) in order.items" :key="idx" class="border-b border-dashed pb-2 last:border-0 last:pb-0">
+                                <li v-for="(item, idx) in getDisplayOrderItems(order)" :key="idx" class="border-b border-dashed pb-2 last:border-0 last:pb-0">
                                     <div class="flex justify-between items-start">
                                         <div class="font-bold text-lg">
                                             <span class="text-red-600 mr-2">{{ item.qty }}x</span>{{ getItemDisplayName(item) }}
@@ -136,8 +136,8 @@
                                         </span>
                                     </div>
                                     <!-- 舊版套餐飲料 -->
-                                    <div v-if="getItemMealDrinkText(item)" class="text-sm text-orange-600 font-bold mt-1">
-                                        🧋 套餐飲料：{{ getItemMealDrinkText(item) }}
+                                    <div v-if="getItemMealDrinkText(item, order)" class="text-sm text-orange-600 font-bold mt-1">
+                                        🧋 套餐飲料：{{ getItemMealDrinkText(item, order) }}
                                     </div>
                                     <!-- 加料選項 -->
                                     <div v-if="item.options && item.options.length" class="text-sm text-gray-500 mt-1">
@@ -394,74 +394,177 @@
                     const name = String(item.name || item['\u54c1\u9805'] || '').trim();
                     return name || '';
                 },
-                getItemMealDrinkText(item) {
-                    if (!item || typeof item !== 'object') return '';
-                    const itemName = String(item.name || item['\u54c1\u9805'] || '').trim();
+                isComboDrinkLineForDisplay(item) {
+                    if (!item || typeof item !== 'object') return false;
                     const note = String(item.note || item['\u5099\u8a3b'] || '').trim();
-                    const isComboLine = !!item.isComboDrink || note.indexOf('\u5957\u9910\u98f2\u6599') !== -1;
+                    return !!item.isComboDrink || note.indexOf('\u5957\u9910\u98f2\u6599') !== -1;
+                },
+                isComboMainLineForDisplay(item) {
+                    if (!item || typeof item !== 'object') return false;
+                    if (this.isComboDrinkLineForDisplay(item)) return false;
+                    const name = String(item.name || item['\u54c1\u9805'] || '').trim();
                     const sels = Array.isArray(item.optionGroupSelections) ? item.optionGroupSelections : [];
-                    const hasUpgradeSel = sels.some((sel) => String(sel && sel.pricing || '') === 'mealUpgrade');
                     const hasDrinkGroup = sels.some((sel) => {
+                        const pricing = String(sel && sel.pricing || '');
                         const g = String(sel && sel.groupName || '').toLowerCase();
-                        return g.indexOf('drink') !== -1 || g.indexOf('\u98f2\u6599') !== -1 || g.indexOf('\u5957\u9910\u98f2\u6599') !== -1;
+                        return pricing === 'mealUpgrade'
+                            || g.indexOf('drink') !== -1
+                            || g.indexOf('\u98f2\u6599') !== -1
+                            || g.indexOf('\u5957\u9910\u98f2\u6599') !== -1;
                     });
-                    const hasDrinkSelection = sels.some((sel) => {
-                        const g = String(sel && sel.groupName || '').toLowerCase();
-                        const n = String(sel && sel.name || '').trim();
-                        return !!n && (g.indexOf('drink') !== -1 || g.indexOf('\u98f2\u6599') !== -1 || g.indexOf('\u5957\u9910\u98f2\u6599') !== -1);
+                    return !!item.isCombo
+                        || !!String(item.mealDrink || item.comboDrinkText || '').trim()
+                        || name.indexOf('\u5957\u9910') !== -1
+                        || name.indexOf('\u62fc\u76e4') !== -1
+                        || hasDrinkGroup
+                        || (!!String(item.comboGroupId || '').trim() && !this.isComboDrinkLineForDisplay(item));
+                },
+                getDisplayOrderItems(order) {
+                    const items = (order && Array.isArray(order.items)) ? order.items : [];
+                    const mainGroups = {};
+                    let hasMain = false;
+                    items.forEach((it) => {
+                        if (!this.isComboMainLineForDisplay(it)) return;
+                        hasMain = true;
+                        const gid = String(it.comboGroupId || '').trim();
+                        if (gid) mainGroups[gid] = true;
                     });
-                    const isComboMain = itemName.indexOf('\u5957\u9910') !== -1 || hasUpgradeSel || hasDrinkGroup || (!!item.mealDrink && String(item.mealDrink).trim());
-                    if (!isComboMain || (isComboLine && itemName.indexOf('\u5957\u9910') === -1)) return '';
-                    if (hasDrinkSelection) return '';
-
-                    let size = String(item.size || '').trim();
-                    let temp = String(item.temp || '').trim();
-                    let drinkName = '';
+                    return items.filter((it) => {
+                        if (!this.isComboDrinkLineForDisplay(it)) return true;
+                        const gid = String(it.comboGroupId || '').trim();
+                        if (gid && mainGroups[gid]) return false;
+                        return !hasMain;
+                    });
+                },
+                findComboDrinkSiblingForDisplay(item, order) {
+                    const items = (order && Array.isArray(order.items)) ? order.items : [];
+                    const selfIndex = items.indexOf(item);
+                    const comboId = String((item && item.comboGroupId) || '').trim();
+                    let first = null;
+                    for (let i = 0; i < items.length; i++) {
+                        if (i === selfIndex) continue;
+                        const candidate = items[i];
+                        if (!this.isComboDrinkLineForDisplay(candidate)) continue;
+                        if (!first) first = candidate;
+                        const gid = String(candidate.comboGroupId || '').trim();
+                        if (comboId && gid && comboId === gid) return candidate;
+                    }
+                    return first;
+                },
+                getDisplayQty(item) {
+                    const qty = Number(item && (item.qty !== undefined ? item.qty : (item['\u6578\u91cf'] !== undefined ? item['\u6578\u91cf'] : item.quantity)));
+                    return Number.isFinite(qty) && qty > 0 ? qty : 1;
+                },
+                getDisplayLineTotal(item) {
+                    if (!item) return 0;
+                    const candidates = [item.itemTotal, item.subtotal, item['\u7e3d\u50f9'], item.lineSubtotal, item.total];
+                    for (let i = 0; i < candidates.length; i++) {
+                        const v = Number(candidates[i]);
+                        if (Number.isFinite(v) && v > 0) return v;
+                    }
+                    const unit = Number(item.price || item.unitPrice || item['\u55ae\u50f9'] || 0);
+                    return Number.isFinite(unit) && unit > 0 ? unit * this.getDisplayQty(item) : 0;
+                },
+                getDisplayBaseUnit(item) {
+                    if (!item) return 0;
+                    const candidates = [item.basePrice, item.originalPrice, item['\u539f\u50f9']];
+                    for (let i = 0; i < candidates.length; i++) {
+                        const v = Number(candidates[i]);
+                        if (Number.isFinite(v) && v > 0) return v;
+                    }
+                    return 0;
+                },
+                getComboUpgradeForDisplay(item, order) {
+                    if (!item || typeof item !== 'object') return 0;
                     let upgrade = 0;
-
+                    const sels = Array.isArray(item.optionGroupSelections) ? item.optionGroupSelections : [];
+                    sels.forEach((sel) => {
+                        let name = String(sel && sel.name || '').trim();
+                        const match = name.match(/\+\s*\$?(\d+)/);
+                        if (match && match[1]) upgrade = Math.max(upgrade, Number(match[1] || 0));
+                        const pricing = String(sel && sel.pricing || '');
+                        const price = Number(sel && sel.price);
+                        const base = Number(sel && sel.baseValue);
+                        if (pricing === 'mealUpgrade' && Number.isFinite(price) && Number.isFinite(base) && price > base) {
+                            upgrade = Math.max(upgrade, price - base);
+                        }
+                    });
+                    const explicit = Number(item.comboDrinkSurcharge || 0);
+                    if (Number.isFinite(explicit) && explicit > 0) upgrade = Math.max(upgrade, explicit);
+                    const full = Number(item.comboDrinkFullPrice || 0);
+                    const credit = Number(item.comboDrinkCredit || 0);
+                    if (Number.isFinite(full) && full > 0 && Number.isFinite(credit)) upgrade = Math.max(upgrade, full - credit);
+                    const sibling = this.findComboDrinkSiblingForDisplay(item, order);
+                    if (sibling) {
+                        const sibExplicit = Number(sibling.comboDrinkSurcharge || 0);
+                        if (Number.isFinite(sibExplicit) && sibExplicit > 0) upgrade = Math.max(upgrade, sibExplicit);
+                        const sibFull = Number(sibling.comboDrinkFullPrice || 0);
+                        const sibCredit = Number(sibling.comboDrinkCredit || 0);
+                        if (Number.isFinite(sibFull) && sibFull > 0 && Number.isFinite(sibCredit)) upgrade = Math.max(upgrade, sibFull - sibCredit);
+                        const sibUnit = Number(sibling.price || sibling.unitPrice || sibling['\u55ae\u50f9'] || 0);
+                        const sibLine = this.getDisplayLineTotal(sibling);
+                        const sibQty = this.getDisplayQty(sibling);
+                        if (Number.isFinite(sibUnit) && sibUnit > 0) upgrade = Math.max(upgrade, sibUnit);
+                        if (sibLine > 0 && sibQty > 0) upgrade = Math.max(upgrade, sibLine / sibQty);
+                    }
+                    const base = this.getDisplayBaseUnit(item);
+                    const line = this.getDisplayLineTotal(item);
+                    const qty = this.getDisplayQty(item);
+                    if (line > 0 && base > 0 && qty > 0) upgrade = Math.max(upgrade, (line / qty) - base);
+                    return Math.max(0, Math.round(upgrade));
+                },
+                normalizeDisplayDrinkName(name, state) {
+                    let text = String(name || '').trim();
+                    if (!text) return '';
+                    const sizeMatch = text.match(/[（(](\u5927\u676f|\u4e2d\u676f)[）)]/);
+                    if (sizeMatch && sizeMatch[1] && state && !state.size) state.size = sizeMatch[1];
+                    text = text.replace(/[（(](\u5927\u676f|\u4e2d\u676f)[）)]/g, '').trim();
+                    text = text.replace(/\s*\+\s*\$?\d+\s*$/, '').trim();
+                    return text;
+                },
+                getItemMealDrinkText(item, order) {
+                    if (!this.isComboMainLineForDisplay(item)) return '';
+                    const state = {
+                        size: String(item.size || item['\u5bb9\u91cf'] || '').trim(),
+                        temp: String(item.temp || item['\u6eab\u5ea6'] || '').trim()
+                    };
+                    let drinkName = '';
+                    let upgrade = this.getComboUpgradeForDisplay(item, order);
+                    const sels = Array.isArray(item.optionGroupSelections) ? item.optionGroupSelections : [];
                     sels.forEach((sel) => {
                         const g = String(sel && sel.groupName || '').toLowerCase();
                         let n = String(sel && sel.name || '').trim();
                         if (!n) return;
-                        const mm = n.match(/\+\s*\$(\d+)/);
-                        if (mm && mm[1]) {
-                            const vv = Number(mm[1] || 0);
-                            if (Number.isFinite(vv) && vv > 0) upgrade = Math.max(upgrade, vv);
-                            n = n.replace(/\s*\+\s*\$\d+\s*$/, '').trim();
-                        }
-                        if (!size && (g.indexOf('size') !== -1 || g.indexOf('\u5bb9\u91cf') !== -1)) size = n;
-                        else if (!temp && (g.indexOf('temp') !== -1 || g.indexOf('\u6eab\u5ea6') !== -1)) temp = n;
-                        else if (!drinkName && (g.indexOf('drink') !== -1 || g.indexOf('\u98f2\u6599') !== -1)) drinkName = n;
-                        const pricing = String(sel && sel.pricing || '');
-                        const p = Number(sel && sel.price);
-                        const b = Number(sel && sel.baseValue);
-                        if (pricing === 'mealUpgrade' && Number.isFinite(p) && Number.isFinite(b) && p > b) {
-                            upgrade = Math.max(upgrade, p - b);
+                        if (!state.size && (g.indexOf('size') !== -1 || g.indexOf('\u5bb9\u91cf') !== -1)) state.size = n;
+                        else if (!state.temp && (g.indexOf('temp') !== -1 || g.indexOf('\u6eab\u5ea6') !== -1)) state.temp = n;
+                        else if (!drinkName && (g.indexOf('drink') !== -1 || g.indexOf('\u98f2\u6599') !== -1 || g.indexOf('\u5957\u9910\u98f2\u6599') !== -1)) {
+                            drinkName = this.normalizeDisplayDrinkName(n, state);
                         }
                     });
-                    if (upgrade <= 0) {
-                        const explicitSurcharge = Number((item && item.comboDrinkSurcharge) || 0);
-                        if (Number.isFinite(explicitSurcharge) && explicitSurcharge > 0) upgrade = explicitSurcharge;
-                    }
-
-                    if (!drinkName && item.mealDrink) {
-                        const md = String(item.mealDrink).trim();
-                        if (md) {
-                            const parts = md.split(/[\/\u3001,]+/).map((v) => String(v || '').trim()).filter(Boolean);
-                            if (parts.length >= 3) {
-                                size = size || parts[0];
-                                temp = temp || parts[1];
-                                drinkName = parts.slice(2).join('/');
-                            } else {
-                                drinkName = md;
+                    const mealDrink = String(item.mealDrink || item.comboDrinkText || '').trim();
+                    if (mealDrink && (!drinkName || !state.size || !state.temp)) {
+                        mealDrink.split(/[\/\u3001,]+/).forEach((part) => {
+                            const text = String(part || '').trim();
+                            if (!text) return;
+                            const amount = text.match(/\$?(\d+)/);
+                            if (text.indexOf('\u88dc\u5dee\u50f9') !== -1 && amount && amount[1]) {
+                                upgrade = Math.max(upgrade, Number(amount[1] || 0));
+                                return;
                             }
-                        }
+                            if (!state.size && (text === '\u5927\u676f' || text === '\u4e2d\u676f')) state.size = text;
+                            else if (!state.temp && /\u51b0|\u71b1|\u6eab/.test(text)) state.temp = text;
+                            else if (!drinkName) drinkName = this.normalizeDisplayDrinkName(text, state);
+                        });
                     }
-
-                    const out = [size, temp, drinkName].filter(Boolean).join('/');
+                    const sibling = this.findComboDrinkSiblingForDisplay(item, order);
+                    if (sibling && (!drinkName || !state.size || !state.temp)) {
+                        drinkName = drinkName || this.normalizeDisplayDrinkName(sibling.name || sibling['\u54c1\u9805'] || '', state);
+                        state.size = state.size || String(sibling.size || sibling['\u5bb9\u91cf'] || '').trim();
+                        state.temp = state.temp || String(sibling.temp || sibling['\u6eab\u5ea6'] || '').trim();
+                    }
+                    const out = [state.size, state.temp, drinkName].filter(Boolean).join('/');
                     if (!out) return '';
-                    const u = Math.max(0, Math.round(upgrade));
-                    return u > 0 ? (out + '/\u88dc\u5dee\u50f9$' + u) : out;
+                    return upgrade > 0 ? (out + '/\u88dc\u5dee\u50f9$' + upgrade) : out;
                 },
                 normalizeSourceRecordPath(order, orderId) {
                     const o = order || {};
@@ -1640,7 +1743,6 @@
     </script>
 </body>
 </html>
-
 
 
 

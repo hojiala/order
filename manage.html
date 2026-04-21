@@ -997,11 +997,11 @@
             <button @click="viewingOrder = null" class="w-8 h-8 rounded-full bg-slate-700 hover:bg-slate-600 flex items-center justify-center text-slate-400 text-lg transition">×</button>
         </div>
         <div class="overflow-y-auto flex-1 px-5 py-4">
-            <div v-for="(item, i) in (viewingOrder.items || [])" :key="i"
+            <div v-for="(item, i) in getDisplayDetailItems(viewingOrder)" :key="i"
                 class="py-3 border-b border-slate-700 last:border-0">
                 <div class="flex justify-between items-start">
                     <p class="text-white font-bold text-sm"><span class="text-orange-400 mr-1">{{ getDetailItemQty(item) }}x</span>{{ getDetailItemName(item) }}</p>
-                    <p class="text-orange-400 font-bold text-sm ml-2 flex-shrink-0">${{ getDetailItemTotal(item, viewingOrder, i) }}</p>
+                    <p class="text-orange-400 font-bold text-sm ml-2 flex-shrink-0">${{ getDetailItemTotal(item, viewingOrder, getOriginalDetailItemIndex(viewingOrder, item)) }}</p>
                 </div>
                 <div v-if="item.optionGroupSelections && item.optionGroupSelections.length" class="flex flex-wrap gap-1 mt-1.5">
                     <span v-for="sel in item.optionGroupSelections" :key="sel.groupName"
@@ -1016,7 +1016,7 @@
                 <div v-if="item.posExtras && item.posExtras.length" class="text-xs text-purple-400 mt-0.5">
                     <span v-for="ex in item.posExtras" :key="ex.name" class="mr-2">🔧 {{ ex.name }} ${{ ex.price || 0 }}</span>
                 </div>
-                <div v-if="item.note" class="text-xs text-blue-400 mt-0.5 bg-blue-900/20 px-2 py-1 rounded">📝 {{ item.note }}</div>
+                <div v-if="getDetailItemNote(item, viewingOrder, getOriginalDetailItemIndex(viewingOrder, item))" class="text-xs text-blue-400 mt-0.5 bg-blue-900/20 px-2 py-1 rounded">📝 {{ getDetailItemNote(item, viewingOrder, getOriginalDetailItemIndex(viewingOrder, item)) }}</div>
             </div>
             <div v-if="viewingOrder.orderNote" class="py-3 border-t border-slate-700"><p class="text-xs text-purple-400 bg-purple-900/20 px-3 py-2 rounded-lg">📋 訂單備註：{{ viewingOrder.orderNote }}</p></div>
         </div>
@@ -1800,210 +1800,237 @@ window._doCountUp = function() {
                 if (!item) return '';
                 return String(item.name || item['品項'] || '').trim();
             },
+            isDetailComboDrinkLine: function(item) {
+                if (!item || typeof item !== 'object') return false;
+                var note = String(item.note || item['\u5099\u8a3b'] || '').trim();
+                return !!item.isComboDrink || note.indexOf('\u5957\u9910\u98f2\u6599') !== -1;
+            },
+            isDetailComboMainLine: function(item) {
+                if (!item || typeof item !== 'object') return false;
+                if (this.isDetailComboDrinkLine(item)) return false;
+                var name = String(item.name || item['\u54c1\u9805'] || '').trim();
+                var category = String(item.category || item['\u985e\u5225'] || '').trim();
+                var sels = Array.isArray(item.optionGroupSelections) ? item.optionGroupSelections : [];
+                var hasDrinkSelection = sels.some(function(sel) {
+                    var pricing = String(sel && sel.pricing || '');
+                    var group = String(sel && sel.groupName || '').toLowerCase();
+                    return pricing === 'mealUpgrade'
+                        || group.indexOf('drink') !== -1
+                        || group.indexOf('\u98f2\u6599') !== -1
+                        || group.indexOf('\u5957\u9910\u98f2\u6599') !== -1;
+                });
+                return !!item.isCombo
+                    || !!String(item.mealDrink || item.comboDrinkText || '').trim()
+                    || name.indexOf('\u5957\u9910') !== -1
+                    || name.indexOf('\u62fc\u76e4') !== -1
+                    || category.indexOf('\u5957\u9910') !== -1
+                    || hasDrinkSelection
+                    || (!!String(item.comboGroupId || '').trim() && !this.isDetailComboDrinkLine(item));
+            },
+            getOriginalDetailItemIndex: function(order, item) {
+                if (!order || !Array.isArray(order.items)) return -1;
+                return order.items.indexOf(item);
+            },
+            getDisplayDetailItems: function(order) {
+                var items = (order && Array.isArray(order.items)) ? order.items : [];
+                var mainGroups = {};
+                var hasComboMain = false;
+                items.forEach(function(it) {
+                    if (!this.isDetailComboMainLine(it)) return;
+                    hasComboMain = true;
+                    var gid = String(it.comboGroupId || '').trim();
+                    if (gid) mainGroups[gid] = true;
+                }.bind(this));
+                return items.filter(function(it) {
+                    if (!this.isDetailComboDrinkLine(it)) return true;
+                    var gid = String(it.comboGroupId || '').trim();
+                    if (gid && mainGroups[gid]) return false;
+                    return !hasComboMain;
+                }.bind(this));
+            },
             findComboDrinkSibling: function(order, item, index) {
                 if (!order || !Array.isArray(order.items)) return null;
+                var items = order.items;
                 var comboId = String((item && item.comboGroupId) || '').trim();
-                var pool = order.items;
-                var candidates = [];
-                for (var i = 0; i < pool.length; i++) {
-                    if (Number(i) === Number(index)) continue;
-                    var it = pool[i];
-                    if (!it || typeof it !== 'object') continue;
-                    var note = String(it.note || it['備註'] || '');
-                    var isComboDrink = !!it.isComboDrink || note.indexOf('套餐飲料') !== -1;
-                    if (!isComboDrink) continue;
-                    candidates.push(it);
-                    var gid = String(it.comboGroupId || '').trim();
-                    if (comboId && gid && comboId === gid) return it;
+                var selfIndex = items.indexOf(item);
+                var first = null;
+                for (var i = 0; i < items.length; i++) {
+                    if (i === index || (selfIndex >= 0 && i === selfIndex)) continue;
+                    var candidate = items[i];
+                    if (!this.isDetailComboDrinkLine(candidate)) continue;
+                    if (!first) first = candidate;
+                    var gid = String(candidate.comboGroupId || '').trim();
+                    if (comboId && gid && comboId === gid) return candidate;
                 }
-                if (candidates.length === 1) return candidates[0];
-                return null;
+                return first;
+            },
+            getDetailNumber: function(value, fallback) {
+                var n = Number(value);
+                return Number.isFinite(n) ? n : (fallback || 0);
+            },
+            getDetailItemQty: function(item) {
+                if (!item) return 1;
+                var qty = Number(item.qty !== undefined ? item.qty : (item.quantity !== undefined ? item.quantity : item['\u6578\u91cf']));
+                if (!Number.isFinite(qty) || qty <= 0) return 1;
+                return qty;
+            },
+            getDetailItemName: function(item) {
+                if (!item) return '';
+                return String(item.name || item['\u54c1\u9805'] || '').trim();
+            },
+            getDetailLineTotal: function(item) {
+                if (!item) return 0;
+                var candidates = [item.itemTotal, item.subtotal, item['\u7e3d\u50f9'], item.lineSubtotal, item.total];
+                for (var i = 0; i < candidates.length; i++) {
+                    var n = Number(candidates[i]);
+                    if (Number.isFinite(n) && n > 0) return n;
+                }
+                var unit = this.getDetailUnitPrice(item);
+                return unit * this.getDetailItemQty(item);
+            },
+            getDetailUnitPrice: function(item) {
+                if (!item) return 0;
+                var candidates = [item.price, item.unitPrice, item['\u55ae\u50f9']];
+                for (var i = 0; i < candidates.length; i++) {
+                    var n = Number(candidates[i]);
+                    if (Number.isFinite(n) && n > 0) return n;
+                }
+                return 0;
+            },
+            getDetailBaseUnit: function(item, order, index) {
+                if (!item) return 0;
+                var candidates = [item.basePrice, item.originalPrice, item['\u539f\u50f9']];
+                for (var i = 0; i < candidates.length; i++) {
+                    var n = Number(candidates[i]);
+                    if (Number.isFinite(n) && n > 0) return n;
+                }
+                var line = this.getDetailLineTotal(item);
+                var qty = this.getDetailItemQty(item);
+                var upgrade = this.getDetailComboUpgrade(item, order, index, true);
+                if (line > 0 && qty > 0 && upgrade > 0) return Math.max(0, (line / qty) - upgrade);
+                return this.getDetailUnitPrice(item);
+            },
+            getDetailComboUpgrade: function(item, order, index, skipOwnLineFallback) {
+                if (!item || typeof item !== 'object') return 0;
+                var upgrade = 0;
+                var sels = Array.isArray(item.optionGroupSelections) ? item.optionGroupSelections : [];
+                sels.forEach(function(sel) {
+                    var name = String(sel && sel.name || '').trim();
+                    var match = name.match(/\+\s*\$?(\d+)/);
+                    if (match && match[1]) upgrade = Math.max(upgrade, Number(match[1] || 0));
+                    var pricing = String(sel && sel.pricing || '');
+                    var price = Number(sel && sel.price);
+                    var base = Number(sel && sel.baseValue);
+                    if (pricing === 'mealUpgrade' && Number.isFinite(price) && Number.isFinite(base) && price > base) {
+                        upgrade = Math.max(upgrade, price - base);
+                    }
+                });
+                var explicit = Number(item.comboDrinkSurcharge || 0);
+                if (Number.isFinite(explicit) && explicit > 0) upgrade = Math.max(upgrade, explicit);
+                var full = Number(item.comboDrinkFullPrice || 0);
+                var credit = Number(item.comboDrinkCredit || 0);
+                if (Number.isFinite(full) && full > 0 && Number.isFinite(credit)) upgrade = Math.max(upgrade, full - credit);
+                var sibling = this.findComboDrinkSibling(order, item, index);
+                if (sibling) {
+                    var sibExplicit = Number(sibling.comboDrinkSurcharge || 0);
+                    if (Number.isFinite(sibExplicit) && sibExplicit > 0) upgrade = Math.max(upgrade, sibExplicit);
+                    var sibFull = Number(sibling.comboDrinkFullPrice || 0);
+                    var sibCredit = Number(sibling.comboDrinkCredit || 0);
+                    if (Number.isFinite(sibFull) && sibFull > 0 && Number.isFinite(sibCredit)) upgrade = Math.max(upgrade, sibFull - sibCredit);
+                    var sibUnit = this.getDetailUnitPrice(sibling);
+                    var sibLine = this.getDetailLineTotal(sibling);
+                    var sibQty = this.getDetailItemQty(sibling);
+                    if (sibUnit > 0) upgrade = Math.max(upgrade, sibUnit);
+                    if (sibLine > 0 && sibQty > 0) upgrade = Math.max(upgrade, sibLine / sibQty);
+                }
+                if (!skipOwnLineFallback) {
+                    var baseUnit = 0;
+                    var baseCandidates = [item.basePrice, item.originalPrice, item['\u539f\u50f9']];
+                    for (var i = 0; i < baseCandidates.length; i++) {
+                        var base = Number(baseCandidates[i]);
+                        if (Number.isFinite(base) && base > 0) { baseUnit = base; break; }
+                    }
+                    var line = this.getDetailLineTotal(item);
+                    var qty = this.getDetailItemQty(item);
+                    if (line > 0 && baseUnit > 0 && qty > 0) upgrade = Math.max(upgrade, (line / qty) - baseUnit);
+                }
+                return Math.max(0, Math.round(upgrade));
             },
             getDetailItemTotal: function(item, order, index) {
                 if (!item) return 0;
                 var qty = this.getDetailItemQty(item);
-                var sels = Array.isArray(item.optionGroupSelections) ? item.optionGroupSelections : [];
-                var upgradePerUnit = 0;
-                var optionExtraPerUnit = 0;
-                sels.forEach(function(sel) {
-                    var pricing = String(sel && sel.pricing || '');
-                    var p = Number(sel && sel.price);
-                    var b = Number(sel && sel.baseValue);
-                    var n = String(sel && sel.name || '').trim();
-                    var g = String(sel && sel.groupName || '').toLowerCase();
-                    var isDrinkGroup = g.indexOf('drink') !== -1 || g.indexOf('飲料') !== -1 || g.indexOf('套餐飲料') !== -1;
-                    var handledByName = false;
-                    var m = n.match(/\+\s*\$(\d+)/);
-                    if (m && m[1]) {
-                        var parsedUpgrade = Number(m[1] || 0);
-                        if (Number.isFinite(parsedUpgrade) && parsedUpgrade > 0) {
-                            handledByName = true;
-                            if (pricing === 'mealUpgrade' || isDrinkGroup) {
-                                upgradePerUnit = Math.max(upgradePerUnit, parsedUpgrade);
-                            } else {
-                                optionExtraPerUnit += parsedUpgrade;
-                            }
-                        }
-                    }
-                    if (pricing === 'mealUpgrade' && Number.isFinite(p) && Number.isFinite(b) && p > b) {
-                        upgradePerUnit = Math.max(upgradePerUnit, p - b);
-                    } else if (!handledByName && !isDrinkGroup && Number.isFinite(p) && p > 0) {
-                        if (Number.isFinite(b) && p > b) optionExtraPerUnit += (p - b);
-                        else if (!Number.isFinite(b) || b <= 0) optionExtraPerUnit += p;
-                    }
-                });
-                var itemName = String(item.name || item['品項'] || '').trim();
-                var category = String(item.category || item['分類'] || '').trim();
-                var hasComboGroupId = !!String(item.comboGroupId || '').trim();
-                var hasComboSibling = false;
-                if (order && Array.isArray(order.items)) {
-                    hasComboSibling = !!this.findComboDrinkSibling(order, item, index);
-                }
-                var isComboMain = itemName.indexOf('套餐') !== -1 || !!item.mealDrink || sels.some(function(sel){
-                    var pricing = String(sel && sel.pricing || '');
-                    var g = String(sel && sel.groupName || '').toLowerCase();
-                    return pricing === 'mealUpgrade' || g.indexOf('drink') !== -1 || g.indexOf('飲料') !== -1 || g.indexOf('套餐飲料') !== -1;
-                }) || category.indexOf('套餐') !== -1 || (hasComboGroupId && !item.isComboDrink) || hasComboSibling;
-                if (upgradePerUnit <= 0 && isComboMain && order && Array.isArray(order.items)) {
-                    var drinkSibling = this.findComboDrinkSibling(order, item, index);
-                    if (drinkSibling) {
-                        var sibQty = this.getDetailItemQty(drinkSibling);
-                        var sibTotal = Number((drinkSibling.itemTotal !== undefined) ? drinkSibling.itemTotal : ((drinkSibling.total !== undefined) ? drinkSibling.total : drinkSibling['總價']));
-                        var sibUnit = Number((drinkSibling.price !== undefined) ? drinkSibling.price : ((drinkSibling['單價'] !== undefined) ? drinkSibling['單價'] : 0));
-                        if (Number.isFinite(sibTotal) && sibTotal > 0 && sibQty > 0) upgradePerUnit = Math.max(upgradePerUnit, sibTotal / sibQty);
-                        if (upgradePerUnit <= 0 && Number.isFinite(sibUnit) && sibUnit > 0) upgradePerUnit = Math.max(upgradePerUnit, sibUnit);
-                        if (upgradePerUnit <= 0) {
-                            var sibOriginal = Number((drinkSibling.originalPrice !== undefined) ? drinkSibling.originalPrice : drinkSibling['原價']);
-                            if (Number.isFinite(sibOriginal) && sibOriginal > 30) {
-                                upgradePerUnit = Math.max(upgradePerUnit, sibOriginal - 30);
-                            }
-                        }
-                    }
-                }
-                if (isComboMain) {
-                    var options = Array.isArray(item.options) ? item.options : [];
-                    options.forEach(function(opt) {
-                        var pv = Number(opt && (opt.price !== undefined ? opt.price : opt['加價']));
-                        if (Number.isFinite(pv) && pv > 0) optionExtraPerUnit += pv;
-                    });
-                    var extras = Array.isArray(item.posExtras) ? item.posExtras : [];
-                    extras.forEach(function(ex) {
-                        var ev = Number(ex && (ex.price !== undefined ? ex.price : ex['加價']));
-                        if (Number.isFinite(ev) && ev > 0) optionExtraPerUnit += ev;
-                    });
-                }
-                if (isComboMain) {
-                    var baseCandidates = [item.basePrice, item['原價'], item.originalPrice];
-                    for (var bc = 0; bc < baseCandidates.length; bc++) {
-                        var bv = Number(baseCandidates[bc]);
-                        if (Number.isFinite(bv) && bv > 0) return bv * qty;
-                    }
-                }
-                var totalCandidates = [item.itemTotal, item.subtotal, item['總價'], item.lineSubtotal, item.total];
-                for (var i = 0; i < totalCandidates.length; i++) {
-                    var tv = Number(totalCandidates[i]);
-                    if (Number.isFinite(tv) && tv > 0) {
-                        if (isComboMain) {
-                            var minusPerUnit = Math.max(0, upgradePerUnit) + Math.max(0, optionExtraPerUnit);
-                            if (minusPerUnit > 0) return Math.max(0, tv - (minusPerUnit * qty));
-                        }
-                        return tv;
-                    }
-                }
-                var unitCandidates = [item.price, item['單價'], item.unitPrice, item.basePrice, item['原價']];
-                for (var j = 0; j < unitCandidates.length; j++) {
-                    var uv = Number(unitCandidates[j]);
-                    if (Number.isFinite(uv) && uv > 0) return uv * qty;
-                }
-                if (order && Array.isArray(order.items) && order.items.length === 1) {
-                    var orderTotal = Number(this.getOrderTotalValue(order));
-                    if (Number.isFinite(orderTotal) && orderTotal > 0) return orderTotal;
-                }
-                if (order && Array.isArray(order.items) && order.items.length > 1) {
-                    var total = Number(this.getOrderTotalValue(order));
-                    if (Number.isFinite(total) && total > 0 && Number(index) === order.items.length - 1) {
-                        var known = 0;
-                        for (var k = 0; k < order.items.length - 1; k++) known += Number(this.getDetailItemTotal(order.items[k], null, -1) || 0);
-                        var rest = total - known;
-                        if (rest > 0) return rest;
-                    }
-                }
-                return 0;
+                if (this.isDetailComboDrinkLine(item)) return 0;
+                if (this.isDetailComboMainLine(item)) return Math.round(this.getDetailBaseUnit(item, order, index) * qty);
+                var line = this.getDetailLineTotal(item);
+                if (line > 0) return Math.round(line);
+                return Math.round(this.getDetailUnitPrice(item) * qty);
+            },
+            normalizeDetailDrinkName: function(name, state) {
+                var text = String(name || '').trim();
+                if (!text) return '';
+                var sizeMatch = text.match(/[（(](\u5927\u676f|\u4e2d\u676f)[）)]/);
+                if (sizeMatch && sizeMatch[1] && state && !state.size) state.size = sizeMatch[1];
+                text = text.replace(/[（(](\u5927\u676f|\u4e2d\u676f)[）)]/g, '').trim();
+                text = text.replace(/\s*\+\s*\$?\d+\s*$/, '').trim();
+                return text;
             },
             getDetailMealDrink: function(item) {
-                if (!item) return '';
-                var note = String(item.note || item['備註'] || '');
-                var itemName = String(item.name || item['品項'] || '').trim();
-                var category = String(item.category || item['分類'] || '').trim();
-                var hasComboGroupId = !!String(item.comboGroupId || '').trim();
-                var isComboLine = !!item.isComboDrink || note.indexOf('套餐飲料') !== -1;
-                var sels = Array.isArray(item.optionGroupSelections) ? item.optionGroupSelections : [];
-                var hasDrinkSelection = sels.some(function(sel){
-                    var g = String(sel && sel.groupName || '').toLowerCase();
-                    var n = String(sel && sel.name || '').trim();
-                    return !!n && (g.indexOf('drink') !== -1 || g.indexOf('飲料') !== -1 || g.indexOf('套餐飲料') !== -1);
-                });
-                var isComboMain = itemName.indexOf('套餐') !== -1 || !!item.mealDrink || sels.some(function(sel){
-                    var pricing = String(sel && sel.pricing || '');
-                    var g = String(sel && sel.groupName || '').toLowerCase();
-                    return pricing === 'mealUpgrade' || g.indexOf('drink') !== -1 || g.indexOf('飲料') !== -1 || g.indexOf('套餐飲料') !== -1;
-                }) || category.indexOf('套餐') !== -1 || (hasComboGroupId && !item.isComboDrink);
-                var isComboContext = !!item.mealDrink || isComboLine || isComboMain;
-                if (!isComboContext) return '';
-                if (isComboLine && !isComboMain) return '';
-                if (hasDrinkSelection) return '';
-                if (item.mealDrink) return String(item.mealDrink);
-                var size = '';
-                var temp = '';
+                if (!this.isDetailComboMainLine(item)) return '';
+                var order = this.viewingOrder || null;
+                var index = order && Array.isArray(order.items) ? order.items.indexOf(item) : -1;
+                var state = {
+                    size: String(item.size || item['\u5bb9\u91cf'] || '').trim(),
+                    temp: String(item.temp || item['\u6eab\u5ea6'] || '').trim()
+                };
                 var drink = '';
+                var upgrade = this.getDetailComboUpgrade(item, order, index);
+                var sels = Array.isArray(item.optionGroupSelections) ? item.optionGroupSelections : [];
                 sels.forEach(function(sel) {
-                    var g = String(sel && sel.groupName || '').toLowerCase();
-                    var n = String(sel && sel.name || '').trim();
-                    if (!n) return;
-                    if (!size && (g.indexOf('size') !== -1 || g.indexOf('容量') !== -1)) size = n;
-                    else if (!temp && (g.indexOf('temp') !== -1 || g.indexOf('溫度') !== -1)) temp = n;
-                    else if (!drink && (g.indexOf('drink') !== -1 || g.indexOf('飲料') !== -1)) drink = n;
-                });
-                if ((!drink || !size || !temp) && this.viewingOrder && Array.isArray(this.viewingOrder.items)) {
-                    var idx = this.viewingOrder.items.indexOf(item);
-                    var sibling = this.findComboDrinkSibling(this.viewingOrder, item, idx);
-                    if (sibling) {
-                        if (!drink) drink = String(sibling.name || sibling['品項'] || '').trim();
-                        if (!size) size = String(sibling.size || sibling['容量'] || '').trim();
-                        if (!temp) temp = String(sibling.temp || sibling['溫度'] || '').trim();
-                    }
+                    var group = String(sel && sel.groupName || '').toLowerCase();
+                    var name = String(sel && sel.name || '').trim();
+                    if (!name) return;
+                    if (!state.size && (group.indexOf('size') !== -1 || group.indexOf('\u5bb9\u91cf') !== -1)) state.size = name;
+                    else if (!state.temp && (group.indexOf('temp') !== -1 || group.indexOf('\u6eab\u5ea6') !== -1)) state.temp = name;
+                    else if (!drink && (group.indexOf('drink') !== -1 || group.indexOf('\u98f2\u6599') !== -1 || group.indexOf('\u5957\u9910\u98f2\u6599') !== -1)) drink = this.normalizeDetailDrinkName(name, state);
+                }.bind(this));
+                var mealDrink = String(item.mealDrink || item.comboDrinkText || '').trim();
+                if (mealDrink && (!drink || !state.size || !state.temp)) {
+                    mealDrink.split(/[\/\u3001,]+/).forEach(function(part) {
+                        var text = String(part || '').trim();
+                        if (!text) return;
+                        var m = text.match(/\$?(\d+)/);
+                        if (text.indexOf('\u88dc\u5dee\u50f9') !== -1 && m && m[1]) {
+                            upgrade = Math.max(upgrade, Number(m[1] || 0));
+                            return;
+                        }
+                        if (!state.size && (text === '\u5927\u676f' || text === '\u4e2d\u676f')) state.size = text;
+                        else if (!state.temp && /\u51b0|\u71b1|\u6eab/.test(text)) state.temp = text;
+                        else if (!drink) drink = this.normalizeDetailDrinkName(text, state);
+                    }.bind(this));
                 }
-                if (!drink) return '';
-                var parts = [size, temp, drink].filter(Boolean);
+                var sibling = this.findComboDrinkSibling(order, item, index);
+                if (sibling && (!drink || !state.size || !state.temp)) {
+                    drink = drink || this.normalizeDetailDrinkName(sibling.name || sibling['\u54c1\u9805'] || '', state);
+                    state.size = state.size || String(sibling.size || sibling['\u5bb9\u91cf'] || '').trim();
+                    state.temp = state.temp || String(sibling.temp || sibling['\u6eab\u5ea6'] || '').trim();
+                }
+                var parts = [state.size, state.temp, drink].filter(function(v) { return !!String(v || '').trim(); });
+                if (!parts.length) return '';
                 var text = parts.join('/');
-                if (!text) return '';
-                var upgrade = 0;
-                if (sels.length) {
-                    sels.forEach(function(sel) {
-                        var pricing = String(sel && sel.pricing || '');
-                        var p = Number(sel && sel.price);
-                        var b = Number(sel && sel.baseValue);
-                        if (pricing === 'mealUpgrade' && Number.isFinite(p) && Number.isFinite(b) && p > b) {
-                            upgrade = Math.max(upgrade, p - b);
-                        }
-                    });
-                }
-                if (upgrade <= 0) {
-                    if (this.viewingOrder && Array.isArray(this.viewingOrder.items)) {
-                        var idx2 = this.viewingOrder.items.indexOf(item);
-                        var sibling2 = this.findComboDrinkSibling(this.viewingOrder, item, idx2);
-                        if (sibling2) {
-                            var sibQty = this.getDetailItemQty(sibling2);
-                            var sibLine = Number((sibling2.itemTotal !== undefined) ? sibling2.itemTotal : ((sibling2.total !== undefined) ? sibling2.total : sibling2['總價']));
-                            var sibUnit = Number((sibling2.price !== undefined) ? sibling2.price : ((sibling2['單價'] !== undefined) ? sibling2['單價'] : 0));
-                            if (Number.isFinite(sibLine) && sibLine > 0 && sibQty > 0) upgrade = Math.max(upgrade, sibLine / sibQty);
-                            if (upgrade <= 0 && Number.isFinite(sibUnit) && sibUnit > 0) upgrade = Math.max(upgrade, sibUnit);
-                        }
-                    }
-                }
-                upgrade = Math.max(0, Math.round(upgrade));
-                if (upgrade > 0) text += '/補差價$' + upgrade;
+                if (upgrade > 0) text += '/+$' + upgrade;
                 return text;
+            },
+            getDetailItemNote: function(item, order, index) {
+                if (!item || this.isDetailComboDrinkLine(item)) return '';
+                var notes = [];
+                var own = String(item.note || item['\u5099\u8a3b'] || '').trim();
+                if (own) notes.push(own);
+                if (this.isDetailComboMainLine(item)) {
+                    var sibling = this.findComboDrinkSibling(order, item, index);
+                    var sib = String((sibling && (sibling.note || sibling['\u5099\u8a3b'])) || '').trim();
+                    if (sib && notes.indexOf(sib) === -1) notes.push(sib);
+                }
+                return notes.join(' / ');
             },
             normalizeStatsOrder: function(order) {
                 if (!order || typeof order !== 'object') return order;
