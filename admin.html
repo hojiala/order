@@ -469,12 +469,12 @@
                     if (!path && o._integrationOriginal && o._integrationOriginal.integration) {
                         path = o._integrationOriginal.integration.sourceRecordPath || '';
                     }
-                    path = String(path || '').trim();
-                    if (path.indexOf('orders/') === 0) {
-                        const seg = path.split('/');
-                        if (seg.length >= 3 && seg[1] && seg[2]) {
-                            return `orders/${seg[1]}/${seg[2]}`;
-                        }
+                    path = String(path || '').trim().replace(/^\/+/, '');
+                    const phoneMatch = path.match(/^(phone_ai\/orders)\/([^\/?#]+)/);
+                    if (phoneMatch && phoneMatch[2]) return 'phone_ai/orders/' + phoneMatch[2];
+                    const orderMatch = path.match(/^(orders|orders_archive)\/(\d{4}-\d{2}-\d{2})\/([^\/?#]+)/);
+                    if (orderMatch && orderMatch[1] && orderMatch[2] && orderMatch[3]) {
+                        return orderMatch[1] + '/' + orderMatch[2] + '/' + orderMatch[3];
                     }
                     return '';
                 },
@@ -486,9 +486,26 @@
                     const sourcePath = this.normalizeSourceRecordPath(out, out.id || '');
                     const sourceRaw = String(out.source || '').toLowerCase();
                     const sourceLabelRaw = String(out.sourceLabel || '').toLowerCase();
-                    if (sourcePath.indexOf('phone_ai/orders/') === 0 || sourceRaw.indexOf('phone') >= 0 || sourceLabelRaw.indexOf('電話') >= 0) {
+                    const sourceRecordPathRaw = String((out.integration && out.integration.sourceRecordPath) || out.sourceRecordPath || '').trim();
+                    const sourceIdentityRaw = [
+                        out.id,
+                        out.sourceOrderId,
+                        out.orderId,
+                        out.audit && out.audit.originalSourceSnapshotId,
+                        out.audit && out.audit.sourceRoot,
+                        out.phoneAi && out.phoneAi.rawJsonPath,
+                        sourceRecordPathRaw
+                    ].map((v) => String(v || '')).join(' ').toLowerCase();
+                    if (sourcePath.indexOf('phone_ai/orders/') === 0
+                        || sourceRecordPathRaw.indexOf('phone_ai/orders/') === 0
+                        || sourceRaw === 'phone_ai'
+                        || sourceRaw === 'pos_local'
+                        || sourceRaw.indexOf('phone') >= 0
+                        || sourceRaw.indexOf('call') >= 0
+                        || sourceLabelRaw.indexOf('phone') >= 0
+                        || sourceLabelRaw.indexOf('\u96fb\u8a71') >= 0) {
                         out.source = 'phone_ai';
-                        out.sourceLabel = '電話點餐';
+                        out.sourceLabel = '\u96fb\u8a71\u9ede\u9910';
                     } else if (!sourceRaw || sourceRaw === 'unknown') {
                         if (sourcePath.indexOf('orders/') === 0 || sourcePath.indexOf('orders_archive/') === 0) out.source = 'web';
                     }
@@ -689,16 +706,34 @@
                 normalizeIncomingOrders(list) {
                     return (Array.isArray(list) ? list : []).map((order) => this.normalizeIncomingOrder(order));
                 },
+                isPhoneSourceOrder(order) {
+                    if (!order) return false;
+                    const src = String(order.source || '').toLowerCase();
+                    const label = String(order.sourceLabel || order._integrationSourceLabel || '').toLowerCase();
+                    const path = String((order.integration && order.integration.sourceRecordPath) || order.sourceRecordPath || '').trim();
+                    const identity = [
+                        order.id,
+                        order.sourceOrderId,
+                        order.orderId,
+                        order.audit && order.audit.originalSourceSnapshotId,
+                        order.audit && order.audit.sourceRoot,
+                        order.phoneAi && order.phoneAi.rawJsonPath,
+                        path
+                    ].map((v) => String(v || '')).join(' ').toLowerCase();
+                    return src === 'phone_ai'
+                        || src === 'pos_local'
+                        || path.indexOf('phone_ai/orders/') === 0
+                        || label.indexOf('phone') >= 0
+                        || label.indexOf('\u96fb\u8a71') >= 0
+                        || identity.indexOf('phone_ai') >= 0;
+                },
                 isIntegrationReadOnlyOrder(order) {
                     if (!order) return false;
-                    const src = String(order.source || '').toLowerCase();
-                    if (src === 'phone_ai' || src === 'pos_local') return true;
-                    return false;
+                    if (this.isPhoneSourceOrder(order)) return true;
+                    return !!(order.integration && order.integration.capabilities && order.integration.capabilities.editDirect === false);
                 },
                 isPhoneCommandOrder(order) {
-                    if (!order) return false;
-                    const src = String(order.source || '').toLowerCase();
-                    return src === 'phone_ai' || src === 'pos_local';
+                    return this.isPhoneSourceOrder(order);
                 },
                 resolvePhoneCommandSourceOrderId(order) {
                     const original = (order && order._integrationOriginal) || {};
@@ -863,17 +898,19 @@
                     const parsedOrders = this.normalizeIncomingOrders(Object.values(map));
                     parsedOrders.forEach((o) => {
                         if (o.status === 'new') currentNewCount++;
-                        if (o.status !== 'archived' && o.status !== 'cancelled' && !o.orderNo) this.autoAssignOrderNo(o.id);
+                        if (o.status !== 'archived' && o.status !== 'cancelled' && !o.orderNo && !this.isPhoneSourceOrder(o) && !this.isIntegrationReadOnlyOrder(o)) this.autoAssignOrderNo(o.id);
                         // ★ 有流水號但無 print_task 的訂單（如 dinein 直接送出），補寫 print_task 觸發列印
                         else {
                             const pm = o.paymentMethod || '';
                             const isLinePayPm = (pm === 'linepay' || pm === 'linepay_offline' || pm === 'linepay_refund');
-                            if (o.orderNo && !o.print_task && o.status !== 'archived' && o.status !== 'cancelled' && !isLinePayPm && (o.paymentStatus !== 'pending' || this.lpConfirmed[o.id] || this.lpStatus[o.id] === 'confirmed')) this.triggerPrintForOrder(o);
+                            if (o.orderNo && !o.print_task && o.status !== 'archived' && o.status !== 'cancelled' && !isLinePayPm && !this.isPhoneSourceOrder(o) && !this.isIntegrationReadOnlyOrder(o) && (o.paymentStatus !== 'pending' || this.lpConfirmed[o.id] || this.lpStatus[o.id] === 'confirmed')) this.triggerPrintForOrder(o);
                         }
                     });
                     const getPathOrderId = (pathValue) => {
                         const p = String(pathValue || '').trim();
                         if (!p) return '';
+                        const phonePath = p.match(/(?:^|\/)phone_ai\/orders\/([^\/?#]+)/);
+                        if (phonePath && phonePath[1]) return String(phonePath[1]);
                         const m = p.match(/(?:^|\/)(orders|orders_archive)\/(\d{4}-\d{2}-\d{2})\/([^\/?#]+)/);
                         if (m && m[3]) return String(m[3]);
                         const seg = p.replace(/^\/+/, '').split('/');
@@ -970,9 +1007,26 @@
                         if (s === 'archived') return 1;
                         return 0;
                     };
+                    const isPhoneLikeForMerge = (order) => {
+                        if (!order) return false;
+                        const src = String(order.source || '').toLowerCase();
+                        const path = String((order.integration && order.integration.sourceRecordPath) || order.sourceRecordPath || '').trim();
+                        const sourceRoot = String(order.audit && order.audit.sourceRoot || '').toLowerCase();
+                        const label = String(order.sourceLabel || order._integrationSourceLabel || '').toLowerCase();
+                        return src === 'phone_ai' || src === 'pos_local' || path.indexOf('phone_ai/orders/') === 0 || sourceRoot.indexOf('phone_ai') === 0 || label.indexOf('phone') >= 0 || label.indexOf('\u96fb\u8a71') >= 0;
+                    };
+                    const isWeakPhoneShadowForMerge = (order) => {
+                        if (!order || isPhoneLikeForMerge(order)) return false;
+                        const total = Number(order.total || (order.totals && order.totals.finalTotal) || 0);
+                        const items = Array.isArray(order.items) ? order.items : [];
+                        const identity = [order.id, order.sourceOrderId, order.sourceRecordPath, order.integration && order.integration.sourceRecordPath].map((v) => String(v || '')).join(' ').toLowerCase();
+                        return Number.isFinite(total) && total <= 0 && items.length === 0 && identity.indexOf('phone_ai') >= 0;
+                    };
                     const mergeTwo = (current, incoming) => {
                         if (!current) return Object.assign({}, incoming);
                         if (!incoming) return Object.assign({}, current);
+                        if (isPhoneLikeForMerge(current) && isWeakPhoneShadowForMerge(incoming)) return Object.assign({}, incoming, current);
+                        if (isPhoneLikeForMerge(incoming) && isWeakPhoneShadowForMerge(current)) return Object.assign({}, current, incoming);
                         const incomingLocal = isLocalSource(incoming) || !incoming._integrationReadOnly;
                         const currentLocal = isLocalSource(current) || !current._integrationReadOnly;
                         let preferIncoming = false;
@@ -1139,6 +1193,10 @@
                     for (let attempt = 0; attempt < maxRetries; attempt++) {
                         try {
                             const orderObj = this.findOrderById(orderId) || { id: orderId };
+                            if (this.isPhoneSourceOrder(orderObj) || this.isIntegrationReadOnlyOrder(orderObj)) {
+                                delete this.assigningNos[orderId];
+                                return;
+                            }
                             const base = this.orderBasePath(orderId, orderObj);
                             const check = await get(ref(db, `${base}/orderNo`));
                             if (check.exists() && check.val()) {
@@ -1167,6 +1225,7 @@
                     if (this[key]) return;
                     this[key] = true;
                     try {
+                        if (this.isPhoneSourceOrder(order) || this.isIntegrationReadOnlyOrder(order)) { delete this[key]; return; }
                         const base = this.orderBasePath(order.id, order);
                         const ptSnap = await get(ref(db, `${base}/print_task`));
                         if (ptSnap.exists() && ptSnap.val()) { delete this[key]; return; }
@@ -1181,7 +1240,8 @@
                     if (this._requeueDone) return; // 每次頁面載入只執行一次
                     this._requeueDone = true;
                     const unprinted = orders.filter(o => {
-                        if (!o.orderNo) return false; // 尚未分配流水號
+                        if (!o.orderNo) return false;
+                        if (this.isPhoneSourceOrder(o) || this.isIntegrationReadOnlyOrder(o)) return false; // 尚未分配流水號
                         if (o.status === 'archived' || o.status === 'cancelled') return false;
                         if (o.paymentStatus === 'pending') return false; // LINE Pay 待付款
                         // 檢查 print_queue 中是否已有此訂單
