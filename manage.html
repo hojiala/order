@@ -2110,22 +2110,22 @@ window._doCountUp = function() {
             cleanDetailNoteText: function(note) {
                 var text = String(note || '').trim();
                 if (!text) return '';
+                text = text.replace(/^\s*(?:\u5099\u8a3b|note)\s*[:\uFF1A]\s*/i, '');
                 var eggWords = this.eggDonenessWords();
                 eggWords.forEach(function(word) {
                     text = text.split(word).join('');
                 });
-                var parts = text.split(/[\uFF0C\u3001,\/]+/).map(function(v) { return String(v || '').trim(); }).filter(Boolean);
+                var parts = text.split(/[\uFF0C\u3001,\/]+/).map(function(v) {
+                    return String(v || '').trim().replace(/^[:\uFF1A\s]+|[:\uFF1A\s]+$/g, '');
+                }).filter(Boolean);
                 parts = parts.filter(function(part) {
                     if (part === '\u5957\u9910\u98f2\u6599') return false;
-                    if (part === '\u73fe\u5834\u55ae') return false;
+                    if (part === '\u73fe\u5834\u55AE' || part === '\u73fe\u5834\u55ae') return false;
                     if (part === '\u96fb\u8a71\u8a02\u55ae') return false;
                     if (part === '\u96fb\u8a71\u8a02\u55ae\u7de8\u8f2f POS') return false;
                     if (part.indexOf('\u4fee\u6539\u539f\u6d41\u6c34\u865f\u78bc') !== -1) return false;
-                    for (var i = 0; i < eggWords.length; i++) {
-                        if (part === eggWords[i]) return false;
-                    }
-                    return true;
-                });
+                    return !this.extractEggDonenessFromText(part);
+                }.bind(this));
                 return parts.join('\uFF0C');
             },
             eggDonenessWords: function() {
@@ -2139,17 +2139,80 @@ window._doCountUp = function() {
                 }
                 return '';
             },
+            collectDetailTextValuesForEgg: function(value, texts, depth) {
+                if (depth > 4 || value === null || value === undefined) return;
+                if (typeof value === 'string' || typeof value === 'number') {
+                    var scalar = String(value || '').trim();
+                    if (scalar) texts.push(scalar);
+                    return;
+                }
+                if (Array.isArray(value)) {
+                    value.forEach(function(v) { this.collectDetailTextValuesForEgg(v, texts, depth + 1); }.bind(this));
+                    return;
+                }
+                if (typeof value !== 'object') return;
+                Object.keys(value).forEach(function(key) {
+                    var v = value[key];
+                    if (typeof v === 'string' || typeof v === 'number') {
+                        var s = String(v || '').trim();
+                        if (s) texts.push(String(key || '') + ':' + s);
+                    } else if (v && typeof v === 'object') {
+                        this.collectDetailTextValuesForEgg(v, texts, depth + 1);
+                    }
+                }.bind(this));
+            },
+            flattenDetailMenuItems: function(value) {
+                var out = [];
+                var seen = {};
+                var walk = function(node, idHint) {
+                    if (!node || typeof node !== 'object') return;
+                    if (Array.isArray(node)) {
+                        node.forEach(function(child, idx) { walk(child, idHint ? idHint + '_' + idx : String(idx)); });
+                        return;
+                    }
+                    var name = String(node.name || node['\u54c1\u9805'] || node.itemName || node.title || '').trim();
+                    var hasMenuShape = !!(Array.isArray(node.optionGroups) || node.price !== undefined || node.category !== undefined || node.active !== undefined || node.desc !== undefined || node.img !== undefined);
+                    if (name && hasMenuShape) {
+                        var id = String(node.id || idHint || name);
+                        var key = id + '|' + name;
+                        if (!seen[key]) {
+                            seen[key] = true;
+                            out.push(Object.assign({ id: id }, node));
+                        }
+                    }
+                    Object.keys(node).forEach(function(key) {
+                        if (['optionGroups','choices','options','posExtras'].indexOf(key) !== -1) return;
+                        walk(node[key], idHint ? idHint + '_' + key : key);
+                    });
+                };
+                walk(value, '');
+                return out;
+            },
             normalizeDetailNameForMatch: function(name) {
-                return String(name || '').replace(/[\s\u3000]+/g, '').trim();
+                return String(name || '').replace(/[\s\u3000]+/g, '').replace(/[()\uFF08\uFF09\[\]\u3010\u3011\u300C\u300D\u300E\u300F]/g, '').trim();
             },
             findDetailMenuItemByName: function(name) {
-                var menu = Array.isArray(this.menuItems) ? this.menuItems : [];
+                var menu = this.flattenDetailMenuItems(Array.isArray(this.menuItems) ? this.menuItems : []);
                 var target = this.normalizeDetailNameForMatch(name);
                 if (!target) return null;
+                var namesOf = function(m) {
+                    return [m && m.name, m && m['\u54c1\u9805'], m && m.itemName, m && m.title, m && m.label]
+                        .map(function(v) { return this.normalizeDetailNameForMatch(v); }.bind(this))
+                        .filter(Boolean);
+                }.bind(this);
                 for (var i = 0; i < menu.length; i++) {
-                    if (this.normalizeDetailNameForMatch(menu[i] && menu[i].name) === target) return menu[i];
+                    if (namesOf(menu[i]).some(function(candidate) { return candidate === target; })) return menu[i];
+                }
+                if (target.length >= 4) {
+                    for (var j = 0; j < menu.length; j++) {
+                        if (namesOf(menu[j]).some(function(candidate) { return candidate.indexOf(target) !== -1 || target.indexOf(candidate) !== -1; })) return menu[j];
+                    }
                 }
                 return null;
+            },
+            getDetailEggChoicesFromGroup: function(group) {
+                if (!group || typeof group !== 'object') return [];
+                return Array.isArray(group.choices) ? group.choices : (Array.isArray(group.options) ? group.options : (Array.isArray(group.values) ? group.values : []));
             },
             getDetailMenuDefaultEggDoneness: function(item) {
                 var menuItem = this.findDetailMenuItemByName(item && (item.name || item['\u54c1\u9805']));
@@ -2157,15 +2220,18 @@ window._doCountUp = function() {
                 for (var i = 0; i < groups.length; i++) {
                     var group = groups[i] || {};
                     var groupName = String(group.groupName || group.name || '').trim();
-                    var choices = Array.isArray(group.choices) ? group.choices : [];
-                    var hasEggGroup = groupName.indexOf('\u86cb') !== -1 || choices.some(function(ch) { return this.extractEggDonenessFromText(ch && (ch.name || ch.value)); }.bind(this));
-                    if (!hasEggGroup || !choices.length) continue;
+                    var choices = this.getDetailEggChoicesFromGroup(group);
+                    var hasEggGroup = groupName.indexOf('\u86cb') !== -1 || choices.some(function(ch) { return this.extractEggDonenessFromText(ch && (ch.name || ch.value || ch.label)); }.bind(this));
+                    if (!hasEggGroup) continue;
+                    var directDefault = this.extractEggDonenessFromText(group.defaultValue || group.default || group.selected || group.selectedName);
+                    if (directDefault) return directDefault;
                     var idx = Number(group.defaultIdx);
+                    if (!Number.isFinite(idx)) idx = Number(group.defaultIndex);
                     if (!Number.isFinite(idx) || idx < 0 || idx >= choices.length) idx = 0;
-                    var preferred = this.extractEggDonenessFromText(choices[idx] && (choices[idx].name || choices[idx].value));
+                    var preferred = choices.length ? this.extractEggDonenessFromText(choices[idx] && (choices[idx].name || choices[idx].value || choices[idx].label)) : '';
                     if (preferred) return preferred;
                     for (var ci = 0; ci < choices.length; ci++) {
-                        var egg = this.extractEggDonenessFromText(choices[ci] && (choices[ci].name || choices[ci].value));
+                        var egg = this.extractEggDonenessFromText(choices[ci] && (choices[ci].name || choices[ci].value || choices[ci].label));
                         if (egg) return egg;
                     }
                 }
@@ -2173,22 +2239,9 @@ window._doCountUp = function() {
             },
             collectDetailEggTexts: function(item, order, index) {
                 var texts = [];
-                var add = function(v) { var s = String(v || '').trim(); if (s) texts.push(s); };
-                var addObj = function(obj) {
-                    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return;
-                    Object.keys(obj).forEach(function(k) { add(k + ':' + obj[k]); });
-                };
-                var addItem = function(it) {
-                    if (!it || typeof it !== 'object') return;
-                    add(it.note || it['\u5099\u8a3b']);
-                    addObj(it.optionSelections);
-                    addObj(it.selectedOptions);
-                    (Array.isArray(it.optionGroupSelections) ? it.optionGroupSelections : []).forEach(function(sel) {
-                        add((sel && sel.groupName) + ':' + (sel && (sel.name || sel.value)));
-                    });
-                };
-                addItem(item);
-                addItem(this.findComboDrinkSibling(order, item, index));
+                this.collectDetailTextValuesForEgg(item, texts, 0);
+                var sibling = this.findComboDrinkSibling(order, item, index);
+                if (sibling) this.collectDetailTextValuesForEgg(sibling, texts, 0);
                 return texts;
             },
             getDetailEggDoneness: function(item, order, index) {
@@ -2198,45 +2251,6 @@ window._doCountUp = function() {
                     if (egg) return egg;
                 }
                 return this.getDetailMenuDefaultEggDoneness(item);
-            },
-            eggDonenessWords: function() {
-                return ['\u534a\u719f\u86cb','\u592a\u967d\u86cb','\u5168\u719f\u86cb','\u6563\u86cb','\u7092\u86cb','\u8377\u5305\u86cb'];
-            },
-            extractEggDonenessFromText: function(raw) {
-                var text = String(raw || '');
-                var words = this.eggDonenessWords();
-                for (var i = 0; i < words.length; i++) {
-                    if (text.indexOf(words[i]) !== -1) return words[i];
-                }
-                return '';
-            },
-            collectDetailEggTexts: function(item, order, index) {
-                var texts = [];
-                var add = function(v) { var s = String(v || '').trim(); if (s) texts.push(s); };
-                var addObj = function(obj) {
-                    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return;
-                    Object.keys(obj).forEach(function(k) { add(k + ':' + obj[k]); });
-                };
-                var addItem = function(it) {
-                    if (!it || typeof it !== 'object') return;
-                    add(it.note || it['\u5099\u8a3b']);
-                    addObj(it.optionSelections);
-                    addObj(it.selectedOptions);
-                    (Array.isArray(it.optionGroupSelections) ? it.optionGroupSelections : []).forEach(function(sel) {
-                        add((sel && sel.groupName) + ':' + (sel && (sel.name || sel.value)));
-                    });
-                };
-                addItem(item);
-                addItem(this.findComboDrinkSibling(order, item, index));
-                return texts;
-            },
-            getDetailEggDoneness: function(item, order, index) {
-                var texts = this.collectDetailEggTexts(item, order, index);
-                for (var i = 0; i < texts.length; i++) {
-                    var egg = this.extractEggDonenessFromText(texts[i]);
-                    if (egg) return egg;
-                }
-                return '';
             },
             getDetailItemNote: function(item, order, index) {
                 if (!item || this.isDetailComboDrinkLine(item)) return '';
@@ -2248,7 +2262,7 @@ window._doCountUp = function() {
                     var sib = this.cleanDetailNoteText((sibling && (sibling.note || sibling['\u5099\u8a3b'])) || '');
                     if (sib && notes.indexOf(sib) === -1) notes.push(sib);
                 }
-                return notes.join('，');
+                return notes.join('\uFF0C');
             },
             getDetailOrderNote: function(order) {
                 if (!order) return '';
@@ -2476,8 +2490,9 @@ window._doCountUp = function() {
                 onValue(ref(db, 'menu'), function(snapshot) {
                     var data = snapshot.val();
                     if (data) {
-                        self.menuItems = Object.entries(data)
-                            .map(function(e) { return Object.assign({ id: e[0] }, e[1]); })
+                        var flattenedMenu = self.flattenDetailMenuItems(data);
+                        self.menuItems = (flattenedMenu.length ? flattenedMenu : Object.entries(data)
+                            .map(function(e) { return Object.assign({ id: e[0] }, e[1]); }))
                             .sort(function(a,b) {
                                 // Sort by sortOrder if set, else by category
                                 if (a.sortOrder !== undefined && b.sortOrder !== undefined) return a.sortOrder - b.sortOrder;
