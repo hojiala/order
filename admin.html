@@ -127,8 +127,8 @@
                                         </div>
                                     </div>
                                     <!-- 選項群組（容量、溫度、套餐飲料）-->
-                                    <div v-if="getDisplayOptionSelections(item).length" class="mt-1 flex flex-wrap gap-1">
-                                        <span v-for="sel in getDisplayOptionSelections(item)" :key="sel.groupName"
+                                    <div v-if="getDisplayOptionSelections(item, order).length" class="mt-1 flex flex-wrap gap-1">
+                                        <span v-for="sel in getDisplayOptionSelections(item, order)" :key="sel.groupName"
                                             class="inline-flex items-center bg-orange-50 border border-orange-200 text-orange-700 text-sm font-bold px-2 py-0.5 rounded-full">
                                             {{ getDisplayOptionGroupName(sel.groupName) }}：{{ sel.name }}
                                         </span>
@@ -280,6 +280,8 @@
                     password: '',
                     orders: [],
                     localStatusOverrides: {},
+                    remoteStatusOverrides: {},
+                    remoteStatusOverridesUnsub: null,
                     menuItems: [],
                     previousNewCount: 0,
                     activeMenu: null,
@@ -336,6 +338,7 @@
                             this.isLoggedIn = true;
                             this.autoArchiveOldOrders();
                             this.loadLocalStatusOverrides();
+                            this.listenRemoteStatusOverrides();
                             this.listenMenuForDisplay();
                             this.listenToOrders();
                         } else {
@@ -366,16 +369,38 @@
                         console.warn('status override save failed', e && e.message ? e.message : e);
                     }
                 },
-                statusOverrideKey(order) {
+                listenRemoteStatusOverrides() {
+                    const self = this;
+                    try { if (this.remoteStatusOverridesUnsub) this.remoteStatusOverridesUnsub(); } catch (e) {}
+                    this.remoteStatusOverridesUnsub = onValue(ref(db, 'integration_sync/display_status_overrides'), (snap) => {
+                        self.remoteStatusOverrides = snap.exists() ? (snap.val() || {}) : {};
+                        self.rebuildOrdersFromBuckets();
+                    }, (err) => {
+                        console.warn('display status override listener failed', err && err.message ? err.message : err);
+                    });
+                },
+                statusOverrideRawKey(order) {
                     if (!order) return '';
                     const original = order._integrationOriginal || {};
                     const integration = order.integration || original.integration || {};
                     const path = String(integration.sourceRecordPath || order.sourceRecordPath || original.sourceRecordPath || '').trim();
-                    const direct = String(order.sourceOrderId || original.sourceOrderId || order.orderId || original.orderId || (original.audit && original.audit.originalSourceSnapshotId) || (order.audit && order.audit.originalSourceSnapshotId) || (original.phoneAi && original.phoneAi.rawJsonPath) || '').trim();
+                    const direct = String(order.sourceOrderId || original.sourceOrderId || order.orderId || original.orderId || (original.audit && original.audit.originalSourceSnapshotId) || (order.audit && order.audit.originalSourceSnapshotId) || (original.phoneAi && original.phoneAi.rawJsonPath) || (order.phoneAi && order.phoneAi.rawJsonPath) || '').trim();
                     return path || direct || String(order.id || '').trim();
+                },
+                statusOverrideKey(order) {
+                    const raw = this.statusOverrideRawKey(order);
+                    return raw ? encodeURIComponent(raw).replace(/[.#$\[\]]/g, '_') : '';
+                },
+                getRemoteStatusOverride(order) {
+                    const key = this.statusOverrideKey(order);
+                    const entry = key ? (this.remoteStatusOverrides || {})[key] : null;
+                    if (!entry) return '';
+                    return String((entry && typeof entry === 'object') ? (entry.status || '') : entry).trim();
                 },
                 getDisplayStatus(order) {
                     if (!order) return 'new';
+                    const remote = this.getRemoteStatusOverride(order);
+                    if (remote) return remote;
                     const key = this.statusOverrideKey(order);
                     const overrides = this.localStatusOverrides || {};
                     if (key && overrides[key]) return String(overrides[key]);
@@ -396,6 +421,24 @@
                     this.orders = (this.orders || []).map((o) => {
                         if (!o || o.id !== id) return o;
                         return Object.assign({}, o, { status, _localStatusOverride: status });
+                    });
+                },
+                applyRemoteStatusOverrideToOrder(order) {
+                    if (!order || typeof order !== 'object') return order;
+                    const remote = this.getRemoteStatusOverride(order);
+                    if (!remote) return order;
+                    return Object.assign({}, order, { status: remote, _remoteStatusOverride: remote });
+                },
+                writeRemoteStatusOverride(order, status) {
+                    const key = this.statusOverrideKey(order);
+                    if (!key) return Promise.resolve();
+                    const rawKey = this.statusOverrideRawKey(order);
+                    return set(ref(db, 'integration_sync/display_status_overrides/' + key), {
+                        status,
+                        rawKey,
+                        orderId: order && order.id ? String(order.id) : '',
+                        source: 'admin_ui',
+                        updatedAt: Date.now()
                     });
                 },
                 cleanDisplayNoteText(note) {
@@ -514,10 +557,20 @@
                         return !hasMain;
                     });
                 },
-                getDisplayOptionSelections(item) {
+                getDisplayOptionSelections(item, order) {
                     const sels = Array.isArray(item && item.optionGroupSelections) ? item.optionGroupSelections : [];
                     const isCombo = this.isComboMainLineForDisplay(item);
                     const out = [];
+                    const pushSelection = (group, name, src) => {
+                        group = String(group || '').trim();
+                        name = String(name || '').trim();
+                        if (!group || !name) return;
+                        if (isCombo) {
+                            const g = group.toLowerCase();
+                            if (g.indexOf('drink') !== -1 || g.indexOf('\u98f2\u6599') !== -1 || g.indexOf('\u5957\u9910\u98f2\u6599') !== -1 || g.indexOf('temp') !== -1 || g.indexOf('\u6eab\u5ea6') !== -1 || g.indexOf('size') !== -1 || g.indexOf('\u5bb9\u91cf') !== -1) return;
+                        }
+                        out.push(Object.assign({ groupName: group, name, price: 0, baseValue: 0, pricing: 'addDelta' }, src || {}));
+                    };
                     sels.forEach((sel) => {
                         if (!sel) return;
                         const group = String(sel.groupName || '').trim();
@@ -533,12 +586,34 @@
                         }
                         out.push(Object.assign({}, sel, { groupName: group, name }));
                     });
+                    const optionObjects = [item && item.optionSelections, item && item.selectedOptions].filter((obj) => obj && typeof obj === 'object' && !Array.isArray(obj));
+                    optionObjects.forEach((obj) => {
+                        Object.keys(obj).forEach((group) => pushSelection(group, obj[group], { price: 0, baseValue: 0 }));
+                    });
                     if (isCombo && !out.some((sel) => String(sel.groupName || '').indexOf('\u86cb') !== -1)) {
-                        const raw = String((item && (item.note || item['\u5099\u8a3b'])) || '').trim();
+                        const rawPieces = [];
+                        const addRaw = (v) => { const s = String(v || '').trim(); if (s) rawPieces.push(s); };
+                        addRaw(item && (item.note || item['\u5099\u8a3b']));
+                        const sibling = this.findComboDrinkSiblingForDisplay(item, order);
+                        addRaw(sibling && (sibling.note || sibling['\u5099\u8a3b']));
+                        [item, sibling].forEach((it) => {
+                            if (!it) return;
+                            [it.optionSelections, it.selectedOptions].forEach((obj) => {
+                                if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return;
+                                Object.keys(obj).forEach((k) => addRaw(k + ':' + obj[k]));
+                            });
+                        });
+                        const raw = rawPieces.join('\uFF0C');
                         const egg = ['\u534a\u719f\u86cb','\u592a\u967d\u86cb','\u5168\u719f\u86cb','\u6563\u86cb','\u7092\u86cb','\u8377\u5305\u86cb'].find((word) => raw.indexOf(word) !== -1);
                         if (egg) out.unshift({ groupName: '\u86cb\u719f\u6210\u5ea6', name: egg, price: 0, baseValue: 0, pricing: 'addDelta' });
                     }
-                    return out;
+                    const seen = {};
+                    return out.filter((sel) => {
+                        const key = String(sel.groupName || '') + '|' + String(sel.name || '');
+                        if (seen[key]) return false;
+                        seen[key] = true;
+                        return true;
+                    });
                 },
                 findComboDrinkSiblingForDisplay(item, order) {
                     const items = (order && Array.isArray(order.items)) ? order.items : [];
@@ -1294,9 +1369,9 @@
                             // handled by upsertMerged
                         });
                     }
-                    const mergedOrders = this.normalizeIncomingOrders(Object.values(mergedMap));
+                    const mergedOrders = this.normalizeIncomingOrders(Object.values(mergedMap)).map((o) => this.applyRemoteStatusOverrideToOrder(o));
                     this.orders = mergedOrders;
-                    const mergedNewCount = mergedOrders.filter(o => o.status === 'new').length;
+                    const mergedNewCount = mergedOrders.filter(o => this.getDisplayStatus(o) === 'new').length;
                     if (mergedNewCount > this.previousNewCount && this.previousNewCount !== 0) this.playAlert();
                     this.previousNewCount = mergedNewCount;
                     // ★ 離線補印：檢查有流水號但未列印的訂單，重新寫入 print_queue
@@ -1482,17 +1557,23 @@
                 updateStatus(orderId, newStatus) {
                     const order = this.findOrderById(orderId);
                     if (!order) return;
-                    if (this.isPhoneSourceOrder(order) || this.isPhoneCommandOrder(order)) {
-                        this.applyLocalStatusOverride(order, newStatus);
-                        this.toast(newStatus === 'done' ? '\u5df2\u6a19\u8a18\u5b8c\u6210\u51fa\u9910\uff08\u4e0d\u5217\u5370\uff09' : '\u5df2\u66f4\u65b0\u72c0\u614b\uff08\u4e0d\u5217\u5370\uff09');
-                        return;
-                    }
                     this.applyLocalStatusOverride(order, newStatus);
-                    if (this.isIntegrationReadOnlyOrder(order)) {
-                        this.toast('\u5df2\u5728\u672c\u6a5f\u66f4\u65b0\u986f\u793a\u72c0\u614b');
+                    const remotePromise = this.writeRemoteStatusOverride(order, newStatus).catch((err) => {
+                        console.warn('display status override write failed', err && err.message ? err.message : err);
+                        this.toast('\u26a0\ufe0f \u72c0\u614b\u540c\u6b65\u5931\u6557\uff0c\u672c\u9801\u5df2\u5148\u66f4\u65b0');
+                    });
+                    if (this.isPhoneSourceOrder(order) || this.isPhoneCommandOrder(order)) {
+                        remotePromise.then(() => this.toast(newStatus === 'done' ? '\u5df2\u6a19\u8a18\u5b8c\u6210\u51fa\u9910\uff08\u4e0d\u5217\u5370\uff09' : '\u5df2\u66f4\u65b0\u72c0\u614b\uff08\u4e0d\u5217\u5370\uff09'));
                         return;
                     }
-                    this.updateOrderMirror(orderId, { status: newStatus }, order).catch(err => this.toast("\u274c \u66f4\u65b0\u72c0\u614b\u5931\u6557"));
+                    if (this.isIntegrationReadOnlyOrder(order)) {
+                        remotePromise.then(() => this.toast('\u5df2\u540c\u6b65\u986f\u793a\u72c0\u614b'));
+                        return;
+                    }
+                    Promise.all([
+                        remotePromise,
+                        this.updateOrderMirror(orderId, { status: newStatus }, order)
+                    ]).catch(err => this.toast("\u274c \u66f4\u65b0\u72c0\u614b\u5931\u6557"));
                 },
                 async printOrder(order) {
                     if (this.isPhoneCommandOrder(order)) {

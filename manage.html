@@ -1003,8 +1003,8 @@
                     <p class="text-white font-bold text-sm"><span class="text-orange-400 mr-1">{{ getDetailItemQty(item) }}x</span>{{ getDetailItemName(item) }}</p>
                     <p class="text-orange-400 font-bold text-sm ml-2 flex-shrink-0">${{ getDetailItemTotal(item, viewingOrder, getOriginalDetailItemIndex(viewingOrder, item)) }}</p>
                 </div>
-                <div v-if="getDetailOptionSelections(item).length" class="flex flex-wrap gap-1 mt-1.5">
-                    <span v-for="sel in getDetailOptionSelections(item)" :key="sel.groupName"
+                <div v-if="getDetailOptionSelections(item, viewingOrder, getOriginalDetailItemIndex(viewingOrder, item)).length" class="flex flex-wrap gap-1 mt-1.5">
+                    <span v-for="sel in getDetailOptionSelections(item, viewingOrder, getOriginalDetailItemIndex(viewingOrder, item))" :key="sel.groupName"
                           class="text-xs bg-slate-700 text-slate-300 px-2 py-0.5 rounded-full">
                         {{ getDisplayOptionGroupName(sel.groupName) }}：{{ sel.name }}
                     </span>
@@ -1370,6 +1370,7 @@ window._doCountUp = function() {
                 })(),
                 statsStart: '', statsEnd: '',
                 statsOrders: [], statsLoading: false, allOrdersCache: null,
+                remoteStatusOverrides: {},
                 statsSortKey: 'timestamp', statsSortDir: -1,
                 viewingOrder: null,
                 lpConfirmed: {},
@@ -1800,7 +1801,7 @@ window._doCountUp = function() {
                 if (!item) return '';
                 return String(item.name || item['品項'] || '').trim();
             },
-            getDetailOptionSelections: function(item) {
+            getDetailOptionSelections: function(item, order, index) {
                 var sels = Array.isArray(item && item.optionGroupSelections) ? item.optionGroupSelections : [];
                 var isCombo = this.isDetailComboMainLine(item);
                 var out = sels.map(function(sel) {
@@ -1817,12 +1818,44 @@ window._doCountUp = function() {
                     }
                     return Object.assign({}, sel, { groupName: group, name: name });
                 }).filter(function(sel) { return !!sel; });
+                var addSelection = function(group, name) {
+                    group = String(group || '').trim();
+                    name = String(name || '').trim();
+                    if (!group || !name) return;
+                    if (isCombo) {
+                        var g = group.toLowerCase();
+                        if (g.indexOf('drink') !== -1 || g.indexOf('\u98f2\u6599') !== -1 || g.indexOf('\u5957\u9910\u98f2\u6599') !== -1 || g.indexOf('size') !== -1 || g.indexOf('\u5bb9\u91cf') !== -1 || g.indexOf('temp') !== -1 || g.indexOf('\u6eab\u5ea6') !== -1) return;
+                    }
+                    out.push({ groupName: group, name: name, price: 0, baseValue: 0, pricing: 'addDelta' });
+                };
+                [item && item.optionSelections, item && item.selectedOptions].forEach(function(obj) {
+                    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return;
+                    Object.keys(obj).forEach(function(group) { addSelection(group, obj[group]); });
+                });
                 if (isCombo && !out.some(function(sel) { return String(sel.groupName || '').indexOf('\u86cb') !== -1; })) {
-                    var raw = String((item && (item.note || item['\u5099\u8a3b'])) || '').trim();
+                    var sibling = this.findComboDrinkSibling(order, item, index);
+                    var rawPieces = [];
+                    var addRaw = function(v) { var s = String(v || '').trim(); if (s) rawPieces.push(s); };
+                    addRaw(item && (item.note || item['\u5099\u8a3b']));
+                    addRaw(sibling && (sibling.note || sibling['\u5099\u8a3b']));
+                    [item, sibling].forEach(function(it) {
+                        if (!it) return;
+                        [it.optionSelections, it.selectedOptions].forEach(function(obj) {
+                            if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return;
+                            Object.keys(obj).forEach(function(k) { addRaw(k + ':' + obj[k]); });
+                        });
+                    });
+                    var raw = rawPieces.join('\uFF0C');
                     var egg = ['\u534a\u719f\u86cb','\u592a\u967d\u86cb','\u5168\u719f\u86cb','\u6563\u86cb','\u7092\u86cb','\u8377\u5305\u86cb'].find(function(word) { return raw.indexOf(word) !== -1; });
                     if (egg) out.unshift({ groupName: '\u86cb\u719f\u6210\u5ea6', name: egg, price: 0, baseValue: 0, pricing: 'addDelta' });
                 }
-                return out;
+                var seen = {};
+                return out.filter(function(sel) {
+                    var key = String(sel.groupName || '') + '|' + String(sel.name || '');
+                    if (seen[key]) return false;
+                    seen[key] = true;
+                    return true;
+                });
             },
             isDetailComboDrinkLine: function(item) {
                 if (!item || typeof item !== 'object') return false;
@@ -2950,6 +2983,30 @@ window._doCountUp = function() {
                 }
                 return '';
             },
+            statusOverrideRawKey: function(order) {
+                if (!order) return '';
+                var original = (order && order._integrationOriginal) || {};
+                var integration = (order && order.integration) || original.integration || {};
+                var path = String((integration && integration.sourceRecordPath) || order.sourceRecordPath || original.sourceRecordPath || '').trim();
+                var direct = String(order.sourceOrderId || original.sourceOrderId || order.orderId || original.orderId || ((original.audit && original.audit.originalSourceSnapshotId) || '') || ((order.audit && order.audit.originalSourceSnapshotId) || '') || ((original.phoneAi && original.phoneAi.rawJsonPath) || '') || ((order.phoneAi && order.phoneAi.rawJsonPath) || '')).trim();
+                return path || direct || String(order.id || '').trim();
+            },
+            statusOverrideKey: function(order) {
+                var raw = this.statusOverrideRawKey(order);
+                return raw ? encodeURIComponent(raw).replace(/[.#$\[\]]/g, '_') : '';
+            },
+            getRemoteStatusOverride: function(order) {
+                var key = this.statusOverrideKey(order);
+                var entry = key ? (this.remoteStatusOverrides || {})[key] : null;
+                if (!entry) return '';
+                return String((entry && typeof entry === 'object') ? (entry.status || '') : entry).trim();
+            },
+            applyStatusOverrideToOrder: function(order) {
+                if (!order || typeof order !== 'object') return order;
+                var status = this.getRemoteStatusOverride(order);
+                if (!status) return order;
+                return Object.assign({}, order, { status: status, _remoteStatusOverride: status });
+            },
             getTodayStr: function() {
                 var d = new Date();
                 return d.getFullYear() + '-' + ('0'+(d.getMonth()+1)).slice(-2) + '-' + ('0'+d.getDate()).slice(-2);
@@ -3129,6 +3186,13 @@ window._doCountUp = function() {
                         return [];
                     });
 
+                var overridesPromise = get(ref(db, 'integration_sync/display_status_overrides'))
+                    .then(function(snap) { return snap.exists() ? (snap.val() || {}) : {}; })
+                    .catch(function(e) {
+                        console.warn('讀取顯示狀態覆寫失敗:', e && e.message ? e.message : e);
+                        return {};
+                    });
+
                 var bucketPromise = (function() {
                     if (!datesToFetch.length) return Promise.resolve([]);
                     var fetchPromises = datesToFetch.map(function(dateKey) {
@@ -3159,13 +3223,14 @@ window._doCountUp = function() {
                     });
                 })();
 
-                Promise.all([integrationPromise, bucketPromise]).then(function(parts) {
+                Promise.all([integrationPromise, bucketPromise, overridesPromise]).then(function(parts) {
                     var integrationOrders = Array.isArray(parts[0]) ? parts[0] : [];
                     var bucketOrders = Array.isArray(parts[1]) ? parts[1] : [];
+                    self.remoteStatusOverrides = parts[2] || {};
                     var mergedMap = {};
                     integrationOrders.forEach(function(o){ mergeOrderById(mergedMap, o); });
                     bucketOrders.forEach(function(o){ mergeOrderById(mergedMap, o); });
-                    self.allOrdersCache = Object.values(mergedMap);
+                    self.allOrdersCache = Object.values(mergedMap).map(function(o) { return self.applyStatusOverrideToOrder(o); });
                     self.doFilter();
                 }).catch(function(e) {
                     console.error('讀取統計失敗:', e);

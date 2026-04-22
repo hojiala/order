@@ -583,7 +583,7 @@
                 posOrderType:'takeout',posTableLabel:'',posTables:[],cartDragIdx:null,
                 posPickupDate:"",posPickupTime:"",
                 orderMode:"pos",editingOrder:null,
-                onlineOrders:[],ordersLoading:false,assigningNos:{},orderBuckets:{},orderBucketUnsubs:[],integrationOrdersUnsub:null,integrationOrdersCache:[],useIntegrationView:false,orderHydrateInFlight:{},orderHydrateDone:{},
+                onlineOrders:[],ordersLoading:false,assigningNos:{},orderBuckets:{},orderBucketUnsubs:[],integrationOrdersUnsub:null,integrationOrdersCache:[],useIntegrationView:false,remoteStatusOverrides:{},remoteStatusOverridesUnsub:null,orderHydrateInFlight:{},orderHydrateDone:{},
                 orderSearch:"",
                 activeItem:null,tempQty:1,tempNote:"",tempSels:[],tempOG:{},tempPosExtras:[],
                 toastMsg:"",toastTimer:null,lastOrderId:null,
@@ -1108,6 +1108,51 @@
             isPhoneCommandOrder:function(order){
                 return this.isPhoneSourceOrder(order);
             },
+            statusOverrideRawKey:function(order){
+                if(!order)return '';
+                var original=(order&&order._integrationOriginal)||{};
+                var integration=(order&&order.integration)||original.integration||{};
+                var path=String((integration&&integration.sourceRecordPath)||order.sourceRecordPath||original.sourceRecordPath||'').trim();
+                var direct=String(order.sourceOrderId||original.sourceOrderId||order.orderId||original.orderId||((original.audit&&original.audit.originalSourceSnapshotId)||'')||((order.audit&&order.audit.originalSourceSnapshotId)||'')||((original.phoneAi&&original.phoneAi.rawJsonPath)||'')||((order.phoneAi&&order.phoneAi.rawJsonPath)||'')).trim();
+                return path||direct||String(order.id||'').trim();
+            },
+            statusOverrideKey:function(order){
+                var raw=this.statusOverrideRawKey(order);
+                return raw?encodeURIComponent(raw).replace(/[.#$\[\]]/g,'_'):'';
+            },
+            getRemoteStatusOverride:function(order){
+                var key=this.statusOverrideKey(order);
+                var entry=key?(this.remoteStatusOverrides||{})[key]:null;
+                if(!entry)return '';
+                return String((entry&&typeof entry==='object')?(entry.status||''):entry).trim();
+            },
+            applyStatusOverrideToOrder:function(order){
+                if(!order||typeof order!=='object')return order;
+                var status=this.getRemoteStatusOverride(order);
+                if(!status)return order;
+                return Object.assign({},order,{status:status,_remoteStatusOverride:status});
+            },
+            writeRemoteStatusOverride:function(order,status){
+                var key=this.statusOverrideKey(order);
+                if(!key)return Promise.resolve();
+                return set(ref(db,'integration_sync/display_status_overrides/'+key),{
+                    status:status,
+                    rawKey:this.statusOverrideRawKey(order),
+                    orderId:order&&order.id?String(order.id):'',
+                    source:'pos_ui',
+                    updatedAt:Date.now()
+                });
+            },
+            listenRemoteStatusOverrides:function(){
+                var s=this;
+                try{if(s.remoteStatusOverridesUnsub)s.remoteStatusOverridesUnsub();}catch(e){}
+                s.remoteStatusOverridesUnsub=onValue(ref(db,'integration_sync/display_status_overrides'),function(snap){
+                    s.remoteStatusOverrides=snap.exists()?(snap.val()||{}):{};
+                    s.rebuildOnlineOrders();
+                },function(err){
+                    console.warn('display status override listener failed',err&&err.message?err.message:err);
+                });
+            },
             resolvePhoneCommandSourceOrderId:function(order){
                 var original=(order&&order._integrationOriginal)||{};
                 var directValue=(order&&order.sourceOrderId)||original.sourceOrderId||((original.audit&&original.audit.originalSourceSnapshotId)||'')||((original.phoneAi&&original.phoneAi.rawJsonPath)||'');
@@ -1166,7 +1211,7 @@
                 var integrationRef=ref(db,'integration_views/merged_orders_active');
                 s.integrationOrdersUnsub=onValue(integrationRef,function(snap){
                     var view=snap.exists()?(snap.val()||{}):{};
-                    s.integrationOrdersCache=s.normalizeIncomingOrders(Array.isArray(view.orders)?view.orders.slice():[]);
+                    s.integrationOrdersCache=s.normalizeIncomingOrders(Array.isArray(view.orders)?view.orders.slice():[]).map(function(o){return s.applyStatusOverrideToOrder(o);});
                     var parsed=s.integrationOrdersCache.slice();
                     parsed.sort(function(a,b){
                         var w={new:1,making:2,done:3,cancelled:4};
@@ -1861,7 +1906,7 @@
                         upsertMerged(mergedMap,o);
                     });
                 }
-                var mergedOrders=s.normalizeIncomingOrders(Object.values(mergedMap));
+                var mergedOrders=s.normalizeIncomingOrders(Object.values(mergedMap)).map(function(o){return s.applyStatusOverrideToOrder(o);});
                 s.onlineOrders=mergedOrders.sort(function(a,b){
                     var w={new:1,making:2,done:3,cancelled:4};
                     if(w[a.status]!==w[b.status])return w[a.status]-w[b.status];
@@ -1938,6 +1983,7 @@
                 s.ordersLoading=true;
                 s.resetOrderBucketListeners();
                 s.listenIntegratedOrders();
+                s.listenRemoteStatusOverrides();
                 // ★ 監聽 linepay_transactions（限最近100筆）— 改用 child 事件，只下載變更的單筆
                 (function(){
                     var txnQ=query(ref(db,'linepay_transactions'),limitToLast(100));
@@ -2889,36 +2935,32 @@ if(realPm==='cash'){
                 var s=this;
                 var order=s.editingOrder&&s.editingOrder.id===id?s.editingOrder:null;
                 var targetOrder=order||s.onlineOrders.find(function(o){return o.id===id;})||null;
-                if(s.isPhoneCommandOrder(targetOrder)){
-                    s.queuePhoneOrderCommand(targetOrder,'set_status',{status:status})
-                        .then(function(){
-                            var m={new:"已送出電話訂單還原命令",making:"✅ 已送出電話訂單接單命令",done:"✅ 已送出電話訂單完成命令",cancelled:"已送出電話訂單取消命令"};
-                            s.toast(m[status]||"已送出電話訂單命令");
-                            if(s.editingOrder&&s.editingOrder.id===id){
-                                s.editingOrder=Object.assign({},s.editingOrder,{status:status});
-                            }
-                        }).catch(function(e){alert("電話訂單命令失敗："+e.message);});
+                if(!targetOrder)return;
+                var remotePromise=s.writeRemoteStatusOverride(targetOrder,status).catch(function(e){
+                    console.warn('display status override write failed',e&&e.message?e.message:e);
+                    s.toast('\u26a0\ufe0f \u72c0\u614b\u540c\u6b65\u5931\u6557\uff0c\u672c\u9801\u5df2\u5148\u66f4\u65b0');
+                });
+                if(s.editingOrder&&s.editingOrder.id===id){
+                    s.editingOrder=Object.assign({},s.editingOrder,{status:status});
+                }
+                s.onlineOrders=(s.onlineOrders||[]).map(function(o){return o&&o.id===id?Object.assign({},o,{status:status,_remoteStatusOverride:status}):o;});
+                if(s.isPhoneCommandOrder(targetOrder)||s.isIntegrationReadOnlyOrder(targetOrder)){
+                    remotePromise.then(function(){
+                        var m={new:'\u5df2\u9084\u539f\u70ba\u65b0\u8a02\u55ae\uff08\u4e0d\u5217\u5370\uff09',making:'\u2705 \u5df2\u63a5\u55ae\uff08\u4e0d\u5217\u5370\uff09',done:'\u2705 \u51fa\u9910\u5b8c\u6210\uff08\u4e0d\u5217\u5370\uff09',cancelled:'\u5df2\u53d6\u6d88\u986f\u793a\u72c0\u614b'};
+                        s.toast(m[status]||'\u5df2\u66f4\u65b0\u72c0\u614b');
+                    });
                     return;
                 }
-                if(s.isIntegrationReadOnlyOrder(targetOrder)){
-                    s.toast('☎️ 電話整合訂單請在電話後台操作');
-                    return;
-                }
-
                 if(status==='cancelled'){
                     var target=order||s.onlineOrders.find(function(o){return o.id===id;})||{id:id,paymentMethod:'store',paymentStatus:''};
-                    s.cancelOrderCore(target).catch(function(e){alert("取消訂單失敗："+e.message);});
+                    s.cancelOrderCore(target).catch(function(e){alert("\u53d6\u6d88\u8a02\u55ae\u5931\u6557\uff1a"+e.message);});
                     return;
                 }
-
-                s.updateOrderMirror(id,{status:status},order)
+                Promise.all([remotePromise,s.updateOrderMirror(id,{status:status},targetOrder)])
                     .then(function(){
-                        var m={new:"已還原為新訂單",making:"✅ 已接單，開始製作",done:"✅ 出餐完成",cancelled:"已取消"};
-                        s.toast(m[status]||"已更新");
-                        if(s.editingOrder){
-                            s.editingOrder=Object.assign({},s.editingOrder,{status:status});
-                        }
-                    }).catch(function(e){alert("更新失敗："+e.message);});
+                        var m={new:'\u5df2\u9084\u539f\u70ba\u65b0\u8a02\u55ae',making:'\u2705 \u5df2\u63a5\u55ae\uff0c\u958b\u59cb\u88fd\u4f5c',done:'\u2705 \u51fa\u9910\u5b8c\u6210',cancelled:'\u5df2\u53d6\u6d88'};
+                        s.toast(m[status]||'\u5df2\u66f4\u65b0');
+                    }).catch(function(e){alert("\u66f4\u65b0\u5931\u6557\uff1a"+e.message);});
             },
             toggleActive:function(item){
                 update(ref(db,"menu/"+item.id),{active:!item.active})
