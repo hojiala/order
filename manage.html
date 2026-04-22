@@ -1016,9 +1016,9 @@
                 <div v-if="item.posExtras && item.posExtras.length" class="text-xs text-purple-400 mt-0.5">
                     <span v-for="ex in item.posExtras" :key="ex.name" class="mr-2">🔧 {{ ex.name }} ${{ ex.price || 0 }}</span>
                 </div>
-                <div v-if="getDetailItemNote(item, viewingOrder, getOriginalDetailItemIndex(viewingOrder, item))" class="text-xs text-blue-400 mt-0.5 bg-blue-900/20 px-2 py-1 rounded">📝 {{ getDetailItemNote(item, viewingOrder, getOriginalDetailItemIndex(viewingOrder, item)) }}</div>
+                <div v-if="getDetailItemNote(item, viewingOrder, getOriginalDetailItemIndex(viewingOrder, item))" class="text-xs text-blue-400 mt-0.5 bg-blue-900/20 px-2 py-1 rounded">📋 備註：{{ getDetailItemNote(item, viewingOrder, getOriginalDetailItemIndex(viewingOrder, item)) }}</div>
             </div>
-            <div v-if="viewingOrder.orderNote" class="py-3 border-t border-slate-700"><p class="text-xs text-purple-400 bg-purple-900/20 px-3 py-2 rounded-lg">📋 訂單備註：{{ viewingOrder.orderNote }}</p></div>
+            <div v-if="getDetailOrderNote(viewingOrder)" class="py-3 border-t border-slate-700"><p class="text-xs text-purple-400 bg-purple-900/20 px-3 py-2 rounded-lg">📋 訂單備註：{{ getDetailOrderNote(viewingOrder) }}</p></div>
         </div>
         <div class="px-5 py-4 border-t border-slate-700 bg-slate-800/80">
             <div class="flex justify-between items-center mb-1">
@@ -1812,7 +1812,8 @@ window._doCountUp = function() {
                         var g = group.toLowerCase();
                         var pricing = String(sel.pricing || '');
                         var isDrink = pricing === 'mealUpgrade' || g.indexOf('drink') !== -1 || g.indexOf('\u98f2\u6599') !== -1 || g.indexOf('\u5957\u9910\u98f2\u6599') !== -1;
-                        if (isDrink) return null;
+                        var isSizeOrTemp = g.indexOf('size') !== -1 || g.indexOf('temp') !== -1 || g.indexOf('\u5bb9\u91cf') !== -1 || g.indexOf('\u6eab\u5ea6') !== -1;
+                        if (isDrink || isSizeOrTemp) return null;
                     }
                     return Object.assign({}, sel, { groupName: group, name: name });
                 }).filter(function(sel) { return !!sel; });
@@ -1942,7 +1943,7 @@ window._doCountUp = function() {
                 var sels = Array.isArray(item.optionGroupSelections) ? item.optionGroupSelections : [];
                 sels.forEach(function(sel) {
                     var name = String(sel && sel.name || '').trim();
-                    var match = name.match(/\+\s*\$?(\d+)/);
+                    var match = name.match(/(?:\u88dc\u5dee\u50f9|\u88dc|\+)\s*\$?\s*(\d+)/);
                     if (match && match[1]) upgrade = Math.max(upgrade, Number(match[1] || 0));
                     var pricing = String(sel && sel.pricing || '');
                     var price = Number(sel && sel.price);
@@ -1976,9 +1977,25 @@ window._doCountUp = function() {
                         var base = Number(baseCandidates[i]);
                         if (Number.isFinite(base) && base > 0) { baseUnit = base; break; }
                     }
+                    if (baseUnit <= 0) {
+                        baseUnit = Number(this.getDetailBaseUnit ? this.getDetailBaseUnit(item, order, index) : 0);
+                        if (!Number.isFinite(baseUnit) || baseUnit < 0) baseUnit = 0;
+                    }
                     var line = this.getDetailLineTotal(item);
                     var qty = this.getDetailItemQty(item);
                     if (line > 0 && baseUnit > 0 && qty > 0) upgrade = Math.max(upgrade, (line / qty) - baseUnit);
+                    if (upgrade <= 0 && order && Array.isArray(order.items) && baseUnit > 0 && qty > 0) {
+                        var orderTotal = Number(this.getOrderTotalValue ? this.getOrderTotalValue(order) : (order.total || 0));
+                        var other = 0;
+                        for (var oi = 0; oi < order.items.length; oi++) {
+                            if (oi === index) continue;
+                            var otherItem = order.items[oi];
+                            if (!otherItem || this.isDetailComboDrinkLine(otherItem)) continue;
+                            other += this.getDetailLineTotal(otherItem);
+                        }
+                        var rest = orderTotal - other - (baseUnit * qty);
+                        if (Number.isFinite(rest) && rest > 0) upgrade = Math.max(upgrade, rest / qty);
+                    }
                 }
                 return Math.max(0, Math.round(upgrade));
             },
@@ -2025,8 +2042,8 @@ window._doCountUp = function() {
                     mealDrink.split(/[\/\u3001,]+/).forEach(function(part) {
                         var text = String(part || '').trim();
                         if (!text) return;
-                        var m = text.match(/\$?(\d+)/);
-                        if (text.indexOf('\u88dc\u5dee\u50f9') !== -1 && m && m[1]) {
+                        var m = text.match(/(?:\u88dc\u5dee\u50f9|\u88dc|\+)\s*\$?\s*(\d+)/);
+                        if (m && m[1]) {
                             upgrade = Math.max(upgrade, Number(m[1] || 0));
                             return;
                         }
@@ -2047,17 +2064,43 @@ window._doCountUp = function() {
                 if (upgrade > 0) text += '/+$' + upgrade;
                 return text;
             },
+            cleanDetailNoteText: function(note) {
+                var text = String(note || '').trim();
+                if (!text) return '';
+                var parts = text.split(/[，,、\/]+/).map(function(v) { return String(v || '').trim(); }).filter(Boolean);
+                var eggWords = ['\u534a\u719f\u86cb','\u592a\u967d\u86cb','\u5168\u719f\u86cb','\u6563\u86cb','\u7092\u86cb','\u8377\u5305\u86cb'];
+                parts = parts.filter(function(part) {
+                    if (part === '\u5957\u9910\u98f2\u6599') return false;
+                    if (part === '\u73fe\u5834\u55ae') return false;
+                    if (part.indexOf('\u4fee\u6539\u539f\u6d41\u6c34\u865f\u78bc') !== -1) return false;
+                    for (var i = 0; i < eggWords.length; i++) {
+                        if (part === eggWords[i]) return false;
+                    }
+                    return true;
+                });
+                return parts.join('，');
+            },
             getDetailItemNote: function(item, order, index) {
                 if (!item || this.isDetailComboDrinkLine(item)) return '';
                 var notes = [];
-                var own = String(item.note || item['\u5099\u8a3b'] || '').trim();
+                var own = this.cleanDetailNoteText(item.note || item['\u5099\u8a3b'] || '');
                 if (own) notes.push(own);
                 if (this.isDetailComboMainLine(item)) {
                     var sibling = this.findComboDrinkSibling(order, item, index);
-                    var sib = String((sibling && (sibling.note || sibling['\u5099\u8a3b'])) || '').trim();
+                    var sib = this.cleanDetailNoteText((sibling && (sibling.note || sibling['\u5099\u8a3b'])) || '');
                     if (sib && notes.indexOf(sib) === -1) notes.push(sib);
                 }
-                return notes.join(' / ');
+                return notes.join('，');
+            },
+            getDetailOrderNote: function(order) {
+                if (!order) return '';
+                var raw = String(order.orderNote || order['\u8a02\u55ae\u5099\u8a3b'] || '').trim();
+                if (!raw) return '';
+                var src = String(order.source || order.sourceLabel || '').toLowerCase();
+                var isPhone = src.indexOf('phone') !== -1 || src.indexOf('pos_local') !== -1 || String(order.sourceRecordPath || '').indexOf('phone_ai/orders/') === 0;
+                if (raw === '\u73fe\u5834\u55ae' && isPhone) return '\u96fb\u8a71\u9ede\u9910\u73fe\u5834\u55ae';
+                if (raw === '\u5957\u9910\u98f2\u6599') return '';
+                return raw;
             },
             normalizeStatsOrder: function(order) {
                 if (!order || typeof order !== 'object') return order;

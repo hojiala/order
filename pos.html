@@ -1201,13 +1201,45 @@
                 function isComboDrink(it){var note=text(it&&(it.note||it['\u5099\u8a3b']));return !!(it&&it.isComboDrink)||note.indexOf('\u5957\u9910\u98f2\u6599')!==-1;}
                 function hasDrinkSel(it){var sels=Array.isArray(it&&it.optionGroupSelections)?it.optionGroupSelections:[];return sels.some(function(sel){var g=text(sel&&sel.groupName).toLowerCase();var p=text(sel&&sel.pricing);return p==='mealUpgrade'||g.indexOf('drink')!==-1||g.indexOf('\u98f2\u6599')!==-1||g.indexOf('\u5957\u9910\u98f2\u6599')!==-1;});}
                 function isComboMain(it){if(!it||isComboDrink(it))return false;var name=text(it.name||it['\u54c1\u9805']);return !!it.isCombo||!!text(it.mealDrink||it.comboDrinkText)||name.indexOf('\u5957\u9910')!==-1||name.indexOf('\u62fc\u76e4')!==-1||hasDrinkSel(it)||!!text(it.comboGroupId);}
-                function menuBase(name){var menu=Array.isArray(self.menuItems)?self.menuItems:[];for(var i=0;i<menu.length;i++){var m=menu[i]||{};if(text(m.name)===name){var p=num(m.price);if(p>0)return p;}}return 0;}
-                function baseUnit(it,name){var c=[it&&it.basePrice,it&&it.originalPrice,it&&it['\u539f\u50f9']];for(var i=0;i<c.length;i++){var n=num(c[i]);if(n>0)return n;}return menuBase(name);}
+                function menuBase(name){
+                    var lists=[];
+                    if(Array.isArray(self.menu))lists.push(self.menu);
+                    if(Array.isArray(self.menuItems))lists.push(self.menuItems);
+                    for(var li=0;li<lists.length;li++){
+                        var menu=lists[li]||[];
+                        for(var i=0;i<menu.length;i++){
+                            var m=menu[i]||{};
+                            if(text(m.name)===name){var p=num(m.price);if(p>0)return p;}
+                            if(self.isMenuNameEquivalent&&self.isMenuNameEquivalent(m.name,name)){var p2=num(m.price);if(p2>0)return p2;}
+                        }
+                    }
+                    return 0;
+                }
+                function baseUnit(it,name){
+                    var c=[it&&it.basePrice,it&&it.originalPrice,it&&it['\u539f\u50f9']];
+                    for(var i=0;i<c.length;i++){var n=num(c[i]);if(n>0)return n;}
+                    var mb=menuBase(name);if(mb>0)return mb;
+                    var line=lineTotal(it),orderTotal=num(order&&((order.total!==undefined)?order.total:(order.totals&&order.totals.finalTotal)));
+                    var q=qtyOf(it);
+                    if(line>0&&orderTotal>line&&q>0)return line/q;
+                    return 0;
+                }
                 function stripAmount(s){return text(s).replace(/[（(]\s*\u88dc\s*\$?\d+\s*[）)]/g,'').replace(/\s*\/\s*\u88dc\u5dee\u50f9\s*\$?\d+\s*$/,'').replace(/\s*\/\s*\+\s*\$?\d+\s*$/,'').replace(/\s*\+\s*\$?\d+\s*$/,'').trim();}
-                function parseAmount(s){var raw=text(s);var m=raw.match(/(?:\u88dc\u5dee\u50f9|\u88dc)?\s*\$?\s*(\d+)/);if((raw.indexOf('\u88dc')!==-1||raw.indexOf('+')!==-1)&&m&&m[1])return num(m[1]);return 0;}
+                function parseAmount(s){var raw=text(s);var m=raw.match(/(?:\u88dc\u5dee\u50f9|\u88dc|\+)\s*\$?\s*(\d+)/);return m&&m[1]?num(m[1]):0;}
                 function normalizeDrinkName(raw,state){var out=stripAmount(raw);var m=out.match(/[（(](\u5927\u676f|\u4e2d\u676f)[）)]/);if(m&&m[1]&&!state.size)state.size=m[1];out=out.replace(/[（(](\u5927\u676f|\u4e2d\u676f)[）)]/g,'').trim();return out;}
-                function parseMealDrinkText(raw,state,upgradeRef){var parts=text(raw).split(/[\/\u3001,]+/).map(text).filter(Boolean);parts.forEach(function(part){var add=parseAmount(part);if(add>0)upgradeRef.value=Math.max(upgradeRef.value,add);var clean=stripAmount(part);if(!clean)return;if(!state.size&&(clean==='\u5927\u676f'||clean==='\u4e2d\u676f'))state.size=clean;else if(!state.temp&&(/\u51b0|\u71b1|\u6eab/.test(clean)))state.temp=clean;else if(!state.drink)state.drink=normalizeDrinkName(clean,state);});}
+                function parseMealDrinkText(raw,state,upgradeRef){text(raw).split(/[\/\u3001,]+/).map(text).filter(Boolean).forEach(function(part){var add=parseAmount(part);if(add>0)upgradeRef.value=Math.max(upgradeRef.value,add);var clean=stripAmount(part);if(!clean)return;if(!state.size&&(clean==='\u5927\u676f'||clean==='\u4e2d\u676f'))state.size=clean;else if(!state.temp&&/\u51b0|\u71b1|\u6eab/.test(clean))state.temp=clean;else if(!state.drink)state.drink=normalizeDrinkName(clean,state);});}
                 function findSibling(it,idx){var comboId=text(it&&it.comboGroupId);var first=null;for(var i=0;i<items.length;i++){if(i===idx)continue;var d=items[i];if(!isComboDrink(d))continue;if(!first)first=d;var gid=text(d&&d.comboGroupId);if(comboId&&gid&&comboId===gid)return {item:d,index:i};}return first?{item:first,index:items.indexOf(first)}:null;}
+                function orderTotal(){return num(order&&((order.total!==undefined)?order.total:(order.totals&&order.totals.finalTotal)));}
+                function otherKnownTotals(selfIdx){
+                    var total=0;
+                    for(var i=0;i<items.length;i++){
+                        if(i===selfIdx)continue;
+                        var it=items[i];
+                        if(!it||isComboDrink(it))continue;
+                        total+=lineTotal(it);
+                    }
+                    return total;
+                }
                 function comboInfo(it,idx,name){
                     var state={size:text(it&&it.size),temp:text(it&&it.temp),drink:''};
                     var upgrade=0;
@@ -1250,9 +1282,12 @@
                         if(explicit>0)upgrade=explicit;
                         if(full>0)upgrade=Math.max(upgrade,full-credit);
                     }
-                    if(upgrade<=0){
-                        var base=baseUnit(it,name),line=lineTotal(it),q=qtyOf(it);
-                        if(base>0&&line>0&&q>0)upgrade=Math.max(upgrade,(line/q)-base);
+                    var base=baseUnit(it,name),line=lineTotal(it),q=qtyOf(it);
+                    if(upgrade<=0&&base>0&&line>0&&q>0)upgrade=Math.max(upgrade,(line/q)-base);
+                    if(upgrade<=0&&base>0){
+                        var ot=orderTotal();
+                        var remainder=ot-otherKnownTotals(idx)-(base*q);
+                        if(remainder>0)upgrade=Math.max(upgrade,remainder/q);
                     }
                     return {size:state.size,temp:state.temp,drink:state.drink,upgrade:Math.max(0,Math.round(upgrade))};
                 }
