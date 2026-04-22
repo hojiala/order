@@ -1108,23 +1108,66 @@
             isPhoneCommandOrder:function(order){
                 return this.isPhoneSourceOrder(order);
             },
-            statusOverrideRawKey:function(order){
-                if(!order)return '';
+            statusOverrideRawKeys:function(order){
+                if(!order)return [];
                 var original=(order&&order._integrationOriginal)||{};
                 var integration=(order&&order.integration)||original.integration||{};
-                var path=String((integration&&integration.sourceRecordPath)||order.sourceRecordPath||original.sourceRecordPath||'').trim();
-                var direct=String(order.sourceOrderId||original.sourceOrderId||order.orderId||original.orderId||((original.audit&&original.audit.originalSourceSnapshotId)||'')||((order.audit&&order.audit.originalSourceSnapshotId)||'')||((original.phoneAi&&original.phoneAi.rawJsonPath)||'')||((order.phoneAi&&order.phoneAi.rawJsonPath)||'')).trim();
-                return path||direct||String(order.id||'').trim();
+                var values=[
+                    integration&&integration.sourceRecordPath,
+                    order.sourceRecordPath,
+                    original.sourceRecordPath,
+                    order.sourceOrderId,
+                    original.sourceOrderId,
+                    order.orderId,
+                    original.orderId,
+                    original.audit&&original.audit.originalSourceSnapshotId,
+                    order.audit&&order.audit.originalSourceSnapshotId,
+                    original.phoneAi&&original.phoneAi.rawJsonPath,
+                    order.phoneAi&&order.phoneAi.rawJsonPath,
+                    order.id
+                ];
+                var dateKey=String(order.orderDateKey||order.pickupDate||order._sourceDateKey||'').trim();
+                if(dateKey&&order.id)values.push('orders/'+dateKey+'/'+order.id);
+                var out=[];
+                values.forEach(function(v){
+                    var s=String(v||'').trim();
+                    if(!s)return;
+                    out.push(s);
+                    var phoneMatch=s.match(/(?:^|\/)phone_ai\/orders\/([^\/?#]+)/);
+                    if(phoneMatch&&phoneMatch[1])out.push('phone_ai/orders/'+phoneMatch[1],phoneMatch[1]);
+                    var orderMatch=s.match(/(?:^|\/)(orders|orders_archive)\/(\d{4}-\d{2}-\d{2})\/([^\/?#]+)/);
+                    if(orderMatch&&orderMatch[3])out.push(orderMatch[3],'orders/'+orderMatch[2]+'/'+orderMatch[3]);
+                });
+                return out.filter(function(v,i,arr){return !!v&&arr.indexOf(v)===i;});
+            },
+            statusOverrideRawKey:function(order){
+                var keys=this.statusOverrideRawKeys(order);
+                return keys[0]||'';
+            },
+            statusOverrideKeyFromRaw:function(raw){
+                raw=String(raw||'').trim();
+                return raw?encodeURIComponent(raw).replace(/[.#$\[\]]/g,'_'):'';
+            },
+            statusOverrideKey:function(order){
+                return this.statusOverrideKeyFromRaw(this.statusOverrideRawKey(order));
             },
             statusOverrideKey:function(order){
                 var raw=this.statusOverrideRawKey(order);
                 return raw?encodeURIComponent(raw).replace(/[.#$\[\]]/g,'_'):'';
             },
             getRemoteStatusOverride:function(order){
-                var key=this.statusOverrideKey(order);
-                var entry=key?(this.remoteStatusOverrides||{})[key]:null;
-                if(!entry)return '';
-                return String((entry&&typeof entry==='object')?(entry.status||''):entry).trim();
+                var s=this;
+                var keys=s.statusOverrideRawKeys(order).map(function(raw){return s.statusOverrideKeyFromRaw(raw);}).filter(Boolean);
+                var best=null;
+                keys.forEach(function(key){
+                    var entry=(s.remoteStatusOverrides||{})[key];
+                    if(!entry)return;
+                    var status=String((entry&&typeof entry==='object')?(entry.status||''):entry).trim();
+                    if(!status)return;
+                    var updatedAt=Number(entry&&typeof entry==='object'?(entry.updatedAt||0):0);
+                    if(!best||updatedAt>=best.updatedAt)best={status:status,updatedAt:updatedAt};
+                });
+                return best?best.status:'';
             },
             applyStatusOverrideToOrder:function(order){
                 if(!order||typeof order!=='object')return order;
@@ -1133,15 +1176,22 @@
                 return Object.assign({},order,{status:status,_remoteStatusOverride:status});
             },
             writeRemoteStatusOverride:function(order,status){
-                var key=this.statusOverrideKey(order);
-                if(!key)return Promise.resolve();
-                return set(ref(db,'integration_sync/display_status_overrides/'+key),{
-                    status:status,
-                    rawKey:this.statusOverrideRawKey(order),
-                    orderId:order&&order.id?String(order.id):'',
-                    source:'pos_ui',
-                    updatedAt:Date.now()
+                var s=this;
+                var rawKeys=s.statusOverrideRawKeys(order);
+                if(!rawKeys.length)return Promise.resolve();
+                var updates={};
+                rawKeys.forEach(function(rawKey){
+                    var key=s.statusOverrideKeyFromRaw(rawKey);
+                    if(!key)return;
+                    updates['integration_sync/display_status_overrides/'+key]={
+                        status:status,
+                        rawKey:rawKey,
+                        orderId:order&&order.id?String(order.id):'',
+                        source:'pos_ui',
+                        updatedAt:Date.now()
+                    };
                 });
+                return update(ref(db),updates);
             },
             listenRemoteStatusOverrides:function(){
                 var s=this;
@@ -2487,7 +2537,7 @@
                     total:s.cartTotal,
                     orderNote:s.posOrderNote||"",
                     type:s.posOrderType||'takeout',
-                    status:isLinePay?"new":"making",
+                    status:"new",
                     timestamp:Date.now(),source:"pos",
                     paymentMethod:isLinePay?"linepay":(isCash?"cash":"store"),
                     paymentStatus:isLinePay?"pending":(isCash?"paid":"unpaid"),

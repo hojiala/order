@@ -1003,6 +1003,9 @@
                     <p class="text-white font-bold text-sm"><span class="text-orange-400 mr-1">{{ getDetailItemQty(item) }}x</span>{{ getDetailItemName(item) }}</p>
                     <p class="text-orange-400 font-bold text-sm ml-2 flex-shrink-0">${{ getDetailItemTotal(item, viewingOrder, getOriginalDetailItemIndex(viewingOrder, item)) }}</p>
                 </div>
+                <div v-if="getDetailEggDoneness(item, viewingOrder, getOriginalDetailItemIndex(viewingOrder, item))" class="text-xs text-slate-300 mt-1">
+                    蛋熟成度：{{ getDetailEggDoneness(item, viewingOrder, getOriginalDetailItemIndex(viewingOrder, item)) }}
+                </div>
                 <div v-if="getDetailOptionSelections(item, viewingOrder, getOriginalDetailItemIndex(viewingOrder, item)).length" class="flex flex-wrap gap-1 mt-1.5">
                     <span v-for="sel in getDetailOptionSelections(item, viewingOrder, getOriginalDetailItemIndex(viewingOrder, item))" :key="sel.groupName"
                           class="text-xs bg-slate-700 text-slate-300 px-2 py-0.5 rounded-full">
@@ -1851,6 +1854,7 @@ window._doCountUp = function() {
                 }
                 var seen = {};
                 return out.filter(function(sel) {
+                    if (String(sel.groupName || '').indexOf('\u86cb') !== -1) return false;
                     var key = String(sel.groupName || '') + '|' + String(sel.name || '');
                     if (seen[key]) return false;
                     seen[key] = true;
@@ -2106,8 +2110,11 @@ window._doCountUp = function() {
             cleanDetailNoteText: function(note) {
                 var text = String(note || '').trim();
                 if (!text) return '';
-                var parts = text.split(/[，,、\/]+/).map(function(v) { return String(v || '').trim(); }).filter(Boolean);
-                var eggWords = ['\u534a\u719f\u86cb','\u592a\u967d\u86cb','\u5168\u719f\u86cb','\u6563\u86cb','\u7092\u86cb','\u8377\u5305\u86cb'];
+                var eggWords = this.eggDonenessWords();
+                eggWords.forEach(function(word) {
+                    text = text.split(word).join('');
+                });
+                var parts = text.split(/[\uFF0C\u3001,\/]+/).map(function(v) { return String(v || '').trim(); }).filter(Boolean);
                 parts = parts.filter(function(part) {
                     if (part === '\u5957\u9910\u98f2\u6599') return false;
                     if (part === '\u73fe\u5834\u55ae') return false;
@@ -2117,7 +2124,46 @@ window._doCountUp = function() {
                     }
                     return true;
                 });
-                return parts.join('，');
+                return parts.join('\uFF0C');
+            },
+            eggDonenessWords: function() {
+                return ['\u534a\u719f\u86cb','\u592a\u967d\u86cb','\u5168\u719f\u86cb','\u6563\u86cb','\u7092\u86cb','\u8377\u5305\u86cb'];
+            },
+            extractEggDonenessFromText: function(raw) {
+                var text = String(raw || '');
+                var words = this.eggDonenessWords();
+                for (var i = 0; i < words.length; i++) {
+                    if (text.indexOf(words[i]) !== -1) return words[i];
+                }
+                return '';
+            },
+            collectDetailEggTexts: function(item, order, index) {
+                var texts = [];
+                var add = function(v) { var s = String(v || '').trim(); if (s) texts.push(s); };
+                var addObj = function(obj) {
+                    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return;
+                    Object.keys(obj).forEach(function(k) { add(k + ':' + obj[k]); });
+                };
+                var addItem = function(it) {
+                    if (!it || typeof it !== 'object') return;
+                    add(it.note || it['\u5099\u8a3b']);
+                    addObj(it.optionSelections);
+                    addObj(it.selectedOptions);
+                    (Array.isArray(it.optionGroupSelections) ? it.optionGroupSelections : []).forEach(function(sel) {
+                        add((sel && sel.groupName) + ':' + (sel && (sel.name || sel.value)));
+                    });
+                };
+                addItem(item);
+                addItem(this.findComboDrinkSibling(order, item, index));
+                return texts;
+            },
+            getDetailEggDoneness: function(item, order, index) {
+                var texts = this.collectDetailEggTexts(item, order, index);
+                for (var i = 0; i < texts.length; i++) {
+                    var egg = this.extractEggDonenessFromText(texts[i]);
+                    if (egg) return egg;
+                }
+                return '';
             },
             getDetailItemNote: function(item, order, index) {
                 if (!item || this.isDetailComboDrinkLine(item)) return '';
@@ -2983,23 +3029,66 @@ window._doCountUp = function() {
                 }
                 return '';
             },
-            statusOverrideRawKey: function(order) {
-                if (!order) return '';
-                var original = (order && order._integrationOriginal) || {};
-                var integration = (order && order.integration) || original.integration || {};
-                var path = String((integration && integration.sourceRecordPath) || order.sourceRecordPath || original.sourceRecordPath || '').trim();
-                var direct = String(order.sourceOrderId || original.sourceOrderId || order.orderId || original.orderId || ((original.audit && original.audit.originalSourceSnapshotId) || '') || ((order.audit && order.audit.originalSourceSnapshotId) || '') || ((original.phoneAi && original.phoneAi.rawJsonPath) || '') || ((order.phoneAi && order.phoneAi.rawJsonPath) || '')).trim();
-                return path || direct || String(order.id || '').trim();
+            statusOverrideRawKeys:function(order){
+                if(!order)return [];
+                var original=(order&&order._integrationOriginal)||{};
+                var integration=(order&&order.integration)||original.integration||{};
+                var values=[
+                    integration&&integration.sourceRecordPath,
+                    order.sourceRecordPath,
+                    original.sourceRecordPath,
+                    order.sourceOrderId,
+                    original.sourceOrderId,
+                    order.orderId,
+                    original.orderId,
+                    original.audit&&original.audit.originalSourceSnapshotId,
+                    order.audit&&order.audit.originalSourceSnapshotId,
+                    original.phoneAi&&original.phoneAi.rawJsonPath,
+                    order.phoneAi&&order.phoneAi.rawJsonPath,
+                    order.id
+                ];
+                var dateKey=String(order.orderDateKey||order.pickupDate||order._sourceDateKey||'').trim();
+                if(dateKey&&order.id)values.push('orders/'+dateKey+'/'+order.id);
+                var out=[];
+                values.forEach(function(v){
+                    var s=String(v||'').trim();
+                    if(!s)return;
+                    out.push(s);
+                    var phoneMatch=s.match(/(?:^|\/)phone_ai\/orders\/([^\/?#]+)/);
+                    if(phoneMatch&&phoneMatch[1])out.push('phone_ai/orders/'+phoneMatch[1],phoneMatch[1]);
+                    var orderMatch=s.match(/(?:^|\/)(orders|orders_archive)\/(\d{4}-\d{2}-\d{2})\/([^\/?#]+)/);
+                    if(orderMatch&&orderMatch[3])out.push(orderMatch[3],'orders/'+orderMatch[2]+'/'+orderMatch[3]);
+                });
+                return out.filter(function(v,i,arr){return !!v&&arr.indexOf(v)===i;});
+            },
+            statusOverrideRawKey:function(order){
+                var keys=this.statusOverrideRawKeys(order);
+                return keys[0]||'';
+            },
+            statusOverrideKeyFromRaw:function(raw){
+                raw=String(raw||'').trim();
+                return raw?encodeURIComponent(raw).replace(/[.#$\[\]]/g,'_'):'';
+            },
+            statusOverrideKey:function(order){
+                return this.statusOverrideKeyFromRaw(this.statusOverrideRawKey(order));
             },
             statusOverrideKey: function(order) {
                 var raw = this.statusOverrideRawKey(order);
                 return raw ? encodeURIComponent(raw).replace(/[.#$\[\]]/g, '_') : '';
             },
             getRemoteStatusOverride: function(order) {
-                var key = this.statusOverrideKey(order);
-                var entry = key ? (this.remoteStatusOverrides || {})[key] : null;
-                if (!entry) return '';
-                return String((entry && typeof entry === 'object') ? (entry.status || '') : entry).trim();
+                var self = this;
+                var keys = self.statusOverrideRawKeys(order).map(function(raw) { return self.statusOverrideKeyFromRaw(raw); }).filter(Boolean);
+                var best = null;
+                keys.forEach(function(key) {
+                    var entry = (self.remoteStatusOverrides || {})[key];
+                    if (!entry) return;
+                    var status = String((entry && typeof entry === 'object') ? (entry.status || '') : entry).trim();
+                    if (!status) return;
+                    var updatedAt = Number(entry && typeof entry === 'object' ? (entry.updatedAt || 0) : 0);
+                    if (!best || updatedAt >= best.updatedAt) best = { status: status, updatedAt: updatedAt };
+                });
+                return best ? best.status : '';
             },
             applyStatusOverrideToOrder: function(order) {
                 if (!order || typeof order !== 'object') return order;

@@ -127,6 +127,9 @@
                                         </div>
                                     </div>
                                     <!-- 選項群組（容量、溫度、套餐飲料）-->
+                                    <div v-if="getDisplayEggDoneness(item, order)" class="text-sm text-orange-700 font-bold mt-1">
+                                        蛋熟成度：{{ getDisplayEggDoneness(item, order) }}
+                                    </div>
                                     <div v-if="getDisplayOptionSelections(item, order).length" class="mt-1 flex flex-wrap gap-1">
                                         <span v-for="sel in getDisplayOptionSelections(item, order)" :key="sel.groupName"
                                             class="inline-flex items-center bg-orange-50 border border-orange-200 text-orange-700 text-sm font-bold px-2 py-0.5 rounded-full">
@@ -145,7 +148,7 @@
                                     <div v-if="item.posExtras && item.posExtras.length" class="text-sm text-purple-600 mt-1">
                                         🔧 <span v-for="ex in item.posExtras" :key="ex.name" class="mr-2">{{ ex.name }} ${{ ex.price || 0 }}</span>
                                     </div>
-                                    <div v-if="getDisplayItemNote(item)" class="text-sm text-blue-600 font-bold mt-1 bg-blue-50 p-1 rounded">
+                                    <div v-if="getDisplayItemNote(item, order)" class="text-sm text-blue-600 font-bold mt-1 bg-blue-50 p-1 rounded">
                                         備註：{{ getDisplayItemNote(item) }}
                                     </div>
                                 </li>
@@ -379,35 +382,77 @@
                         console.warn('display status override listener failed', err && err.message ? err.message : err);
                     });
                 },
-                statusOverrideRawKey(order) {
-                    if (!order) return '';
+                statusOverrideRawKeys(order) {
+                    if (!order) return [];
                     const original = order._integrationOriginal || {};
                     const integration = order.integration || original.integration || {};
-                    const path = String(integration.sourceRecordPath || order.sourceRecordPath || original.sourceRecordPath || '').trim();
-                    const direct = String(order.sourceOrderId || original.sourceOrderId || order.orderId || original.orderId || (original.audit && original.audit.originalSourceSnapshotId) || (order.audit && order.audit.originalSourceSnapshotId) || (original.phoneAi && original.phoneAi.rawJsonPath) || (order.phoneAi && order.phoneAi.rawJsonPath) || '').trim();
-                    return path || direct || String(order.id || '').trim();
+                    const values = [
+                        integration.sourceRecordPath,
+                        order.sourceRecordPath,
+                        original.sourceRecordPath,
+                        order.sourceOrderId,
+                        original.sourceOrderId,
+                        order.orderId,
+                        original.orderId,
+                        original.audit && original.audit.originalSourceSnapshotId,
+                        order.audit && order.audit.originalSourceSnapshotId,
+                        original.phoneAi && original.phoneAi.rawJsonPath,
+                        order.phoneAi && order.phoneAi.rawJsonPath,
+                        order.id
+                    ];
+                    const dateKey = String(order.orderDateKey || order.pickupDate || order._sourceDateKey || '').trim();
+                    if (dateKey && order.id) values.push('orders/' + dateKey + '/' + order.id);
+                    const out = [];
+                    values.forEach((v) => {
+                        let s = String(v || '').trim();
+                        if (!s) return;
+                        out.push(s);
+                        const phoneMatch = s.match(/(?:^|\/)phone_ai\/orders\/([^\/?#]+)/);
+                        if (phoneMatch && phoneMatch[1]) out.push('phone_ai/orders/' + phoneMatch[1], phoneMatch[1]);
+                        const orderMatch = s.match(/(?:^|\/)(orders|orders_archive)\/(\d{4}-\d{2}-\d{2})\/([^\/?#]+)/);
+                        if (orderMatch && orderMatch[3]) out.push(orderMatch[3], 'orders/' + orderMatch[2] + '/' + orderMatch[3]);
+                    });
+                    return out.filter((v, i, arr) => !!v && arr.indexOf(v) === i);
+                },
+                statusOverrideRawKey(order) {
+                    const keys = this.statusOverrideRawKeys(order);
+                    return keys[0] || '';
+                },
+                statusOverrideKeyFromRaw(raw) {
+                    raw = String(raw || '').trim();
+                    return raw ? encodeURIComponent(raw).replace(/[.#$\[\]]/g, '_') : '';
+                },
+                statusOverrideKey(order) {
+                    return this.statusOverrideKeyFromRaw(this.statusOverrideRawKey(order));
                 },
                 statusOverrideKey(order) {
                     const raw = this.statusOverrideRawKey(order);
                     return raw ? encodeURIComponent(raw).replace(/[.#$\[\]]/g, '_') : '';
                 },
                 getRemoteStatusOverride(order) {
-                    const key = this.statusOverrideKey(order);
-                    const entry = key ? (this.remoteStatusOverrides || {})[key] : null;
-                    if (!entry) return '';
-                    return String((entry && typeof entry === 'object') ? (entry.status || '') : entry).trim();
+                    const keys = this.statusOverrideRawKeys(order).map((raw) => this.statusOverrideKeyFromRaw(raw)).filter(Boolean);
+                    let best = null;
+                    keys.forEach((key) => {
+                        const entry = (this.remoteStatusOverrides || {})[key];
+                        if (!entry) return;
+                        const status = String((entry && typeof entry === 'object') ? (entry.status || '') : entry).trim();
+                        if (!status) return;
+                        const updatedAt = Number(entry && typeof entry === 'object' ? (entry.updatedAt || 0) : 0);
+                        if (!best || updatedAt >= best.updatedAt) best = { status, updatedAt };
+                    });
+                    return best ? best.status : '';
                 },
                 getDisplayStatus(order) {
                     if (!order) return 'new';
                     const remote = this.getRemoteStatusOverride(order);
                     if (remote) return remote;
-                    const key = this.statusOverrideKey(order);
+                    const keys = this.statusOverrideRawKeys(order).map((raw) => this.statusOverrideKeyFromRaw(raw)).filter(Boolean);
                     const overrides = this.localStatusOverrides || {};
-                    if (key && overrides[key]) return String(overrides[key]);
+                    for (let i = 0; i < keys.length; i++) {
+                        if (overrides[keys[i]]) return String(overrides[keys[i]]);
+                    }
                     const status = String(order.status || 'new');
                     if (status === 'archived' || status === 'cancelled' || status === 'done') return status;
-                    const source = String(order.source || '').toLowerCase();
-                    if (source === 'pos' && status === 'making') return 'new';
                     return status;
                 },
                 applyLocalStatusOverride(order, status) {
@@ -430,22 +475,26 @@
                     return Object.assign({}, order, { status: remote, _remoteStatusOverride: remote });
                 },
                 writeRemoteStatusOverride(order, status) {
-                    const key = this.statusOverrideKey(order);
-                    if (!key) return Promise.resolve();
-                    const rawKey = this.statusOverrideRawKey(order);
-                    return set(ref(db, 'integration_sync/display_status_overrides/' + key), {
-                        status,
-                        rawKey,
-                        orderId: order && order.id ? String(order.id) : '',
-                        source: 'admin_ui',
-                        updatedAt: Date.now()
+                    const rawKeys = this.statusOverrideRawKeys(order);
+                    if (!rawKeys.length) return Promise.resolve();
+                    const updates = {};
+                    rawKeys.forEach((rawKey) => {
+                        const key = this.statusOverrideKeyFromRaw(rawKey);
+                        if (!key) return;
+                        updates['integration_sync/display_status_overrides/' + key] = {
+                            status,
+                            rawKey,
+                            orderId: order && order.id ? String(order.id) : '',
+                            source: 'admin_ui',
+                            updatedAt: Date.now()
+                        };
                     });
+                    return update(ref(db), updates);
                 },
                 cleanDisplayNoteText(note) {
                     let text = String(note || '').trim();
                     if (!text) return '';
-                    const eggWords = ['\u534a\u719f\u86cb','\u592a\u967d\u86cb','\u5168\u719f\u86cb','\u6563\u86cb','\u7092\u86cb','\u8377\u5305\u86cb'];
-                    eggWords.forEach((word) => {
+                    this.eggDonenessWords().forEach((word) => {
                         text = text.split(word).join('');
                     });
                     return text
@@ -454,7 +503,43 @@
                         .filter((part) => part && part !== '\u5957\u9910\u98f2\u6599' && part !== '\u73fe\u5834\u55ae' && part.indexOf('\u4fee\u6539\u539f\u6d41\u6c34\u865f\u78bc') === -1)
                         .join('\uFF0C');
                 },
-                getDisplayItemNote(item) {
+                eggDonenessWords() {
+                    return ['\u534a\u719f\u86cb','\u592a\u967d\u86cb','\u5168\u719f\u86cb','\u6563\u86cb','\u7092\u86cb','\u8377\u5305\u86cb'];
+                },
+                extractEggDonenessFromText(raw) {
+                    const text = String(raw || '');
+                    return this.eggDonenessWords().find((word) => text.indexOf(word) !== -1) || '';
+                },
+                collectEggTexts(item, order) {
+                    const texts = [];
+                    const add = (v) => { const s = String(v || '').trim(); if (s) texts.push(s); };
+                    const addObj = (obj) => {
+                        if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return;
+                        Object.keys(obj).forEach((k) => add(k + ':' + obj[k]));
+                    };
+                    const addItem = (it) => {
+                        if (!it || typeof it !== 'object') return;
+                        add(it.note || it['\u5099\u8a3b']);
+                        addObj(it.optionSelections);
+                        addObj(it.selectedOptions);
+                        (Array.isArray(it.optionGroupSelections) ? it.optionGroupSelections : []).forEach((sel) => {
+                            add((sel && sel.groupName) + ':' + (sel && (sel.name || sel.value)));
+                        });
+                    };
+                    addItem(item);
+                    const sibling = this.findComboDrinkSiblingForDisplay(item, order);
+                    addItem(sibling);
+                    return texts;
+                },
+                getDisplayEggDoneness(item, order) {
+                    const texts = this.collectEggTexts(item, order);
+                    for (let i = 0; i < texts.length; i++) {
+                        const egg = this.extractEggDonenessFromText(texts[i]);
+                        if (egg) return egg;
+                    }
+                    return '';
+                },
+                getDisplayItemNote(item, order) {
                     return this.cleanDisplayNoteText(item && (item.note || item['\u5099\u8a3b']));
                 },
                 formatOrderDateTime(order) {
@@ -609,6 +694,7 @@
                     }
                     const seen = {};
                     return out.filter((sel) => {
+                        if (String(sel.groupName || '').indexOf('\u86cb') !== -1) return false;
                         const key = String(sel.groupName || '') + '|' + String(sel.name || '');
                         if (seen[key]) return false;
                         seen[key] = true;
@@ -1930,8 +2016,6 @@
     </script>
 </body>
 </html>
-
-
 
 
 
