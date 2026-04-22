@@ -1003,10 +1003,10 @@
                     <p class="text-white font-bold text-sm"><span class="text-orange-400 mr-1">{{ getDetailItemQty(item) }}x</span>{{ getDetailItemName(item) }}</p>
                     <p class="text-orange-400 font-bold text-sm ml-2 flex-shrink-0">${{ getDetailItemTotal(item, viewingOrder, getOriginalDetailItemIndex(viewingOrder, item)) }}</p>
                 </div>
-                <div v-if="item.optionGroupSelections && item.optionGroupSelections.length" class="flex flex-wrap gap-1 mt-1.5">
-                    <span v-for="sel in item.optionGroupSelections" :key="sel.groupName"
+                <div v-if="getDetailOptionSelections(item).length" class="flex flex-wrap gap-1 mt-1.5">
+                    <span v-for="sel in getDetailOptionSelections(item)" :key="sel.groupName"
                           class="text-xs bg-slate-700 text-slate-300 px-2 py-0.5 rounded-full">
-                        {{ getDisplayOptionGroupName(sel.groupName) }}：{{ sel.name }}<span v-if="sel.pricing==='mealUpgrade' && sel.price > sel.baseValue" class="text-orange-400 ml-0.5">+${{ sel.price - sel.baseValue }}</span>
+                        {{ getDisplayOptionGroupName(sel.groupName) }}：{{ sel.name }}
                     </span>
                 </div>
                 <div v-if="getDetailMealDrink(item)" class="text-xs text-orange-400 mt-1">🧋 {{ getDetailMealDrink(item) }}</div>
@@ -1800,6 +1800,23 @@ window._doCountUp = function() {
                 if (!item) return '';
                 return String(item.name || item['品項'] || '').trim();
             },
+            getDetailOptionSelections: function(item) {
+                var sels = Array.isArray(item && item.optionGroupSelections) ? item.optionGroupSelections : [];
+                var isCombo = this.isDetailComboMainLine(item);
+                return sels.map(function(sel) {
+                    if (!sel) return null;
+                    var group = String(sel.groupName || '').trim();
+                    var name = String(sel.name || sel.value || '').trim();
+                    if (!group || !name) return null;
+                    if (isCombo) {
+                        var g = group.toLowerCase();
+                        var pricing = String(sel.pricing || '');
+                        var isDrink = pricing === 'mealUpgrade' || g.indexOf('drink') !== -1 || g.indexOf('\u98f2\u6599') !== -1 || g.indexOf('\u5957\u9910\u98f2\u6599') !== -1;
+                        if (isDrink) return null;
+                    }
+                    return Object.assign({}, sel, { groupName: group, name: name });
+                }).filter(function(sel) { return !!sel; });
+            },
             isDetailComboDrinkLine: function(item) {
                 if (!item || typeof item !== 'object') return false;
                 var note = String(item.note || item['\u5099\u8a3b'] || '').trim();
@@ -1904,6 +1921,15 @@ window._doCountUp = function() {
                     var n = Number(candidates[i]);
                     if (Number.isFinite(n) && n > 0) return n;
                 }
+                var menu = Array.isArray(this.menuItems) ? this.menuItems : [];
+                var itemName = String(item.name || item['\u54c1\u9805'] || '').trim();
+                for (var mi = 0; mi < menu.length; mi++) {
+                    var m = menu[mi] || {};
+                    if (String(m.name || '').trim() === itemName) {
+                        var mp = Number(m.price);
+                        if (Number.isFinite(mp) && mp > 0) return mp;
+                    }
+                }
                 var line = this.getDetailLineTotal(item);
                 var qty = this.getDetailItemQty(item);
                 var upgrade = this.getDetailComboUpgrade(item, order, index, true);
@@ -1971,6 +1997,7 @@ window._doCountUp = function() {
                 var sizeMatch = text.match(/[（(](\u5927\u676f|\u4e2d\u676f)[）)]/);
                 if (sizeMatch && sizeMatch[1] && state && !state.size) state.size = sizeMatch[1];
                 text = text.replace(/[（(](\u5927\u676f|\u4e2d\u676f)[）)]/g, '').trim();
+                text = text.replace(/[（(]\s*\u88dc\s*\$?\d+\s*[）)]/g, '').trim();
                 text = text.replace(/\s*\+\s*\$?\d+\s*$/, '').trim();
                 return text;
             },
