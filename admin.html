@@ -500,8 +500,73 @@
                     return text
                         .split(/[\uFF0C\u3001,\/]+/)
                         .map((part) => part.trim())
-                        .filter((part) => part && part !== '\u5957\u9910\u98f2\u6599' && part !== '\u73fe\u5834\u55ae' && part.indexOf('\u4fee\u6539\u539f\u6d41\u6c34\u865f\u78bc') === -1)
+                        .filter((part) => part && part !== '\u5957\u9910\u98f2\u6599' && part !== '\u73fe\u5834\u55ae' && part !== '\u96fb\u8a71\u8a02\u55ae' && part !== '\u96fb\u8a71\u8a02\u55ae\u7de8\u8f2f POS' && part.indexOf('\u4fee\u6539\u539f\u6d41\u6c34\u865f\u78bc') === -1)
                         .join('\uFF0C');
+                },
+                eggDonenessWords() {
+                    return ['\u534a\u719f\u86cb','\u592a\u967d\u86cb','\u5168\u719f\u86cb','\u6563\u86cb','\u7092\u86cb','\u8377\u5305\u86cb'];
+                },
+                extractEggDonenessFromText(raw) {
+                    const text = String(raw || '');
+                    return this.eggDonenessWords().find((word) => text.indexOf(word) !== -1) || '';
+                },
+                normalizeDisplayNameForMatch(name) {
+                    return String(name || '').replace(/[\s\u3000]+/g, '').trim();
+                },
+                findMenuItemForDisplayName(name) {
+                    const menu = Array.isArray(this.menuItems) ? this.menuItems : [];
+                    const target = this.normalizeDisplayNameForMatch(name);
+                    if (!target) return null;
+                    return menu.find((m) => this.normalizeDisplayNameForMatch(m && m.name) === target) || null;
+                },
+                getMenuDefaultEggDoneness(item) {
+                    const menuItem = this.findMenuItemForDisplayName(item && (item.name || item['\u54c1\u9805']));
+                    const groups = Array.isArray(menuItem && menuItem.optionGroups) ? menuItem.optionGroups : [];
+                    for (let i = 0; i < groups.length; i++) {
+                        const group = groups[i] || {};
+                        const groupName = String(group.groupName || group.name || '').trim();
+                        const choices = Array.isArray(group.choices) ? group.choices : [];
+                        const hasEggGroup = groupName.indexOf('\u86cb') !== -1 || choices.some((ch) => this.extractEggDonenessFromText(ch && (ch.name || ch.value)));
+                        if (!hasEggGroup || !choices.length) continue;
+                        let idx = Number(group.defaultIdx);
+                        if (!Number.isFinite(idx) || idx < 0 || idx >= choices.length) idx = 0;
+                        const preferred = this.extractEggDonenessFromText(choices[idx] && (choices[idx].name || choices[idx].value));
+                        if (preferred) return preferred;
+                        for (let ci = 0; ci < choices.length; ci++) {
+                            const egg = this.extractEggDonenessFromText(choices[ci] && (choices[ci].name || choices[ci].value));
+                            if (egg) return egg;
+                        }
+                    }
+                    return '';
+                },
+                collectEggTexts(item, order) {
+                    const texts = [];
+                    const add = (v) => { const s = String(v || '').trim(); if (s) texts.push(s); };
+                    const addObj = (obj) => {
+                        if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return;
+                        Object.keys(obj).forEach((k) => add(k + ':' + obj[k]));
+                    };
+                    const addItem = (it) => {
+                        if (!it || typeof it !== 'object') return;
+                        add(it.note || it['\u5099\u8a3b']);
+                        addObj(it.optionSelections);
+                        addObj(it.selectedOptions);
+                        (Array.isArray(it.optionGroupSelections) ? it.optionGroupSelections : []).forEach((sel) => {
+                            add((sel && sel.groupName) + ':' + (sel && (sel.name || sel.value)));
+                        });
+                    };
+                    addItem(item);
+                    const sibling = this.findComboDrinkSiblingForDisplay(item, order);
+                    addItem(sibling);
+                    return texts;
+                },
+                getDisplayEggDoneness(item, order) {
+                    const texts = this.collectEggTexts(item, order);
+                    for (let i = 0; i < texts.length; i++) {
+                        const egg = this.extractEggDonenessFromText(texts[i]);
+                        if (egg) return egg;
+                    }
+                    return this.getMenuDefaultEggDoneness(item);
                 },
                 eggDonenessWords() {
                     return ['\u534a\u719f\u86cb','\u592a\u967d\u86cb','\u5168\u719f\u86cb','\u6563\u86cb','\u7092\u86cb','\u8377\u5305\u86cb'];
@@ -1899,7 +1964,7 @@
                     this.orders.forEach(o => {
                         if (o.status !== 'archived' && futureIds.indexOf(o.id) === -1) {
                             if (this.isPhoneCommandOrder(o)) {
-                                phoneCmds.push(this.queuePhoneOrderCommand(o, 'set_status', { status: 'archived' }));
+                                phoneCmds.push(this.writeRemoteStatusOverride(o, 'archived'));
                                 return;
                             }
                             const archivedOrder = Object.assign({}, o, { status: (o.status === 'cancelled' ? 'cancelled' : 'archived') });

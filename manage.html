@@ -2118,6 +2118,8 @@ window._doCountUp = function() {
                 parts = parts.filter(function(part) {
                     if (part === '\u5957\u9910\u98f2\u6599') return false;
                     if (part === '\u73fe\u5834\u55ae') return false;
+                    if (part === '\u96fb\u8a71\u8a02\u55ae') return false;
+                    if (part === '\u96fb\u8a71\u8a02\u55ae\u7de8\u8f2f POS') return false;
                     if (part.indexOf('\u4fee\u6539\u539f\u6d41\u6c34\u865f\u78bc') !== -1) return false;
                     for (var i = 0; i < eggWords.length; i++) {
                         if (part === eggWords[i]) return false;
@@ -2125,6 +2127,77 @@ window._doCountUp = function() {
                     return true;
                 });
                 return parts.join('\uFF0C');
+            },
+            eggDonenessWords: function() {
+                return ['\u534a\u719f\u86cb','\u592a\u967d\u86cb','\u5168\u719f\u86cb','\u6563\u86cb','\u7092\u86cb','\u8377\u5305\u86cb'];
+            },
+            extractEggDonenessFromText: function(raw) {
+                var text = String(raw || '');
+                var words = this.eggDonenessWords();
+                for (var i = 0; i < words.length; i++) {
+                    if (text.indexOf(words[i]) !== -1) return words[i];
+                }
+                return '';
+            },
+            normalizeDetailNameForMatch: function(name) {
+                return String(name || '').replace(/[\s\u3000]+/g, '').trim();
+            },
+            findDetailMenuItemByName: function(name) {
+                var menu = Array.isArray(this.menuItems) ? this.menuItems : [];
+                var target = this.normalizeDetailNameForMatch(name);
+                if (!target) return null;
+                for (var i = 0; i < menu.length; i++) {
+                    if (this.normalizeDetailNameForMatch(menu[i] && menu[i].name) === target) return menu[i];
+                }
+                return null;
+            },
+            getDetailMenuDefaultEggDoneness: function(item) {
+                var menuItem = this.findDetailMenuItemByName(item && (item.name || item['\u54c1\u9805']));
+                var groups = Array.isArray(menuItem && menuItem.optionGroups) ? menuItem.optionGroups : [];
+                for (var i = 0; i < groups.length; i++) {
+                    var group = groups[i] || {};
+                    var groupName = String(group.groupName || group.name || '').trim();
+                    var choices = Array.isArray(group.choices) ? group.choices : [];
+                    var hasEggGroup = groupName.indexOf('\u86cb') !== -1 || choices.some(function(ch) { return this.extractEggDonenessFromText(ch && (ch.name || ch.value)); }.bind(this));
+                    if (!hasEggGroup || !choices.length) continue;
+                    var idx = Number(group.defaultIdx);
+                    if (!Number.isFinite(idx) || idx < 0 || idx >= choices.length) idx = 0;
+                    var preferred = this.extractEggDonenessFromText(choices[idx] && (choices[idx].name || choices[idx].value));
+                    if (preferred) return preferred;
+                    for (var ci = 0; ci < choices.length; ci++) {
+                        var egg = this.extractEggDonenessFromText(choices[ci] && (choices[ci].name || choices[ci].value));
+                        if (egg) return egg;
+                    }
+                }
+                return '';
+            },
+            collectDetailEggTexts: function(item, order, index) {
+                var texts = [];
+                var add = function(v) { var s = String(v || '').trim(); if (s) texts.push(s); };
+                var addObj = function(obj) {
+                    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return;
+                    Object.keys(obj).forEach(function(k) { add(k + ':' + obj[k]); });
+                };
+                var addItem = function(it) {
+                    if (!it || typeof it !== 'object') return;
+                    add(it.note || it['\u5099\u8a3b']);
+                    addObj(it.optionSelections);
+                    addObj(it.selectedOptions);
+                    (Array.isArray(it.optionGroupSelections) ? it.optionGroupSelections : []).forEach(function(sel) {
+                        add((sel && sel.groupName) + ':' + (sel && (sel.name || sel.value)));
+                    });
+                };
+                addItem(item);
+                addItem(this.findComboDrinkSibling(order, item, index));
+                return texts;
+            },
+            getDetailEggDoneness: function(item, order, index) {
+                var texts = this.collectDetailEggTexts(item, order, index);
+                for (var i = 0; i < texts.length; i++) {
+                    var egg = this.extractEggDonenessFromText(texts[i]);
+                    if (egg) return egg;
+                }
+                return this.getDetailMenuDefaultEggDoneness(item);
             },
             eggDonenessWords: function() {
                 return ['\u534a\u719f\u86cb','\u592a\u967d\u86cb','\u5168\u719f\u86cb','\u6563\u86cb','\u7092\u86cb','\u8377\u5305\u86cb'];
