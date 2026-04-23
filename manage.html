@@ -3352,7 +3352,25 @@ window._doCountUp = function() {
                         map[keepKey] = incoming;
                         return;
                     }
-                    var merged = Object.assign({}, current, incoming);
+                    var archivedSource = incoming._statsArchiveRecord ? incoming : (current._statsArchiveRecord ? current : null);
+                    var otherSource = incoming._statsArchiveRecord ? current : (current._statsArchiveRecord ? incoming : null);
+                    var merged = archivedSource ? Object.assign({}, otherSource || {}, archivedSource) : Object.assign({}, current, incoming);
+                    if (archivedSource) {
+                        if (String(merged.status || '').toLowerCase() !== 'cancelled') {
+                            merged.status = 'archived';
+                            merged.wasCancelled = false;
+                        } else {
+                            merged.wasCancelled = true;
+                        }
+                        if ((!merged.orderNo || String(merged.orderNo) === '???') && otherSource && otherSource.orderNo) merged.orderNo = otherSource.orderNo;
+                        if ((!merged.serialNumber || String(merged.serialNumber) === '???') && otherSource && otherSource.serialNumber) merged.serialNumber = otherSource.serialNumber;
+                        if ((!Number.isFinite(Number(self.getOrderTotalValue(merged))) || Number(self.getOrderTotalValue(merged)) <= 0) && otherSource) {
+                            var otherTotal = Number(self.getOrderTotalValue(otherSource) || 0);
+                            if (otherTotal > 0) merged.total = otherTotal;
+                        }
+                        if ((!merged.paymentMethod || merged.paymentMethod === 'store') && otherSource && otherSource.paymentMethod) merged.paymentMethod = otherSource.paymentMethod;
+                        if ((!merged.paymentStatus || merged.paymentStatus === 'unpaid') && otherSource && otherSource.paymentStatus) merged.paymentStatus = otherSource.paymentStatus;
+                    }
                     var bestItems = self.pickRicherStatsItems(current.items, incoming.items, Number(self.getOrderTotalValue(incoming) || self.getOrderTotalValue(current) || 0));
                     if (bestItems && bestItems.length) merged.items = bestItems.map(function(it){ return Object.assign({}, it); });
                     var totals = [Number(self.getOrderTotalValue(current) || 0), Number(self.getOrderTotalValue(incoming) || 0), self.sumStatsItemsTotal(merged.items)];
@@ -3404,7 +3422,12 @@ window._doCountUp = function() {
                             Object.entries(r.archiveBucket || {}).forEach(function(e) {
                                 if (e[1]) {
                                     var archived = Object.assign({ id: e[0] }, e[1]);
-                                    if (archived.status !== 'cancelled') archived.status = 'archived';
+                                    if (archived.status !== 'cancelled') {
+                                        archived.status = 'archived';
+                                        archived.wasCancelled = false;
+                                    } else {
+                                        archived.wasCancelled = true;
+                                    }
                                     archived._statsArchiveRecord = true;
                                     out.push(archived);
                                 }

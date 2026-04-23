@@ -1659,14 +1659,25 @@
                         phoneCmds.push(s.writeRemoteStatusOverride(o,'archived'));
                         return;
                     }
-                    var archivedOrder=Object.assign({},o,{status:(o.status==="cancelled"?"cancelled":"archived")});
-                    // 取得訂單的實際日期作為資料夾名稱
+                    var sourcePath=String((o.integration&&o.integration.sourceRecordPath)||o.sourceRecordPath||'').trim();
+                    var sourceMatch=sourcePath.match(/(?:^|\/)orders\/(\d{4}-\d{2}-\d{2})\/([^\/?#]+)/);
+                    var validDate=function(v){return /^\d{4}-\d{2}-\d{2}$/.test(String(v||'').trim());};
                     var d = new Date(o.timestamp || Date.now());
-                    var dateKey = o.orderDateKey || o.pickupDate || (d.getFullYear() + '-' + ('0'+(d.getMonth()+1)).slice(-2) + '-' + ('0'+d.getDate()).slice(-2));
-
-                    // 寫入「按日期分類」的歷史節點中，並同步刪除 active 節點
+                    var fallbackDate = d.getFullYear() + '-' + ('0'+(d.getMonth()+1)).slice(-2) + '-' + ('0'+d.getDate()).slice(-2);
+                    var dateCandidates=[sourceMatch&&sourceMatch[1],o.orderDateKey,o.pickupDate,fallbackDate].filter(function(v,i,arr){v=String(v||'').trim();return validDate(v)&&arr.indexOf(v)===i;});
+                    var dateKey=dateCandidates[0]||fallbackDate;
+                    var wasCancelled=o.status==="cancelled";
+                    var archivedOrder=Object.assign({},o,{
+                        status:wasCancelled?"cancelled":"archived",
+                        wasCancelled:wasCancelled,
+                        orderDateKey:dateKey
+                    });
+                    archivedOrder.integration=Object.assign({},archivedOrder.integration||{},{
+                        sourceRecordPath:"orders_archive/"+dateKey+"/"+o.id,
+                        archivedFrom:sourcePath||("orders/"+dateKey+"/"+o.id)
+                    });
                     updates["orders_archive/" + dateKey + "/" + o.id] = archivedOrder;
-                    updates["orders/"+dateKey+"/"+o.id]=null;
+                    dateCandidates.forEach(function(k){updates["orders/"+k+"/"+o.id]=null;});
                   });
                 if(!Object.keys(updates).length&&!phoneCmds.length){s.toast("✅ 目前沒有待結單訂單");return;}
                 try{
