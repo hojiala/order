@@ -2064,6 +2064,8 @@ window._doCountUp = function() {
             },
             isDetailDiscount5Meal: function(item, order, index) {
                 if (!item || typeof item !== 'object') return false;
+                if (item.comboDrinkDiscount5) return true;
+                if (String(item.comboDrinkLabel || '').indexOf('\u642d\u914d\u98f2\u6599\u62985\u5143') !== -1) return true;
                 var checkSel = function(sel) {
                     var group = String(sel && sel.groupName || '');
                     var base = Number(sel && sel.baseValue);
@@ -2113,6 +2115,11 @@ window._doCountUp = function() {
                         else if (!drink) drink = this.normalizeDetailDrinkName(text, state);
                     }.bind(this));
                 }
+                var explicitCharge = String(item.comboDrinkChargeText || '').trim();
+                if (explicitCharge) {
+                    var em = explicitCharge.match(/(?:\u88dc\u5dee\u50f9|\u98f2\u6599\u52a0\u8cfc)\s*\$?\s*(\d+)/);
+                    if (em && em[1]) upgrade = Math.max(upgrade, Number(em[1] || 0));
+                }
                 var sibling = this.findComboDrinkSibling(order, item, index);
                 if (sibling && (!drink || !state.size || !state.temp)) {
                     drink = drink || this.normalizeDetailDrinkName(sibling.name || sibling['\u54c1\u9805'] || '', state);
@@ -2123,8 +2130,10 @@ window._doCountUp = function() {
                 if (!parts.length) return '';
                 var text = parts.join('/');
                 var discount5 = this.isDetailDiscount5Meal(item, order, index);
-                if (upgrade > 0) text += '/' + (discount5 ? '\u98f2\u6599\u52a0\u8cfc$' : '\u88dc\u5dee\u50f9$') + upgrade;
-                return (discount5 ? '\u642d\u914d\u98f2\u6599\u62985\u5143' : '\u5957\u9910\u98f2\u6599') + '\uFF1A' + text;
+                var label = String(item.comboDrinkLabel || '').trim() || (discount5 ? '\u642d\u914d\u98f2\u6599\u62985\u5143' : '\u5957\u9910\u98f2\u6599');
+                var chargeText = String(item.comboDrinkChargeText || '').trim();
+                if (upgrade > 0) text += '/' + (chargeText || ((discount5 ? '\u98f2\u6599\u52a0\u8cfc$' : '\u88dc\u5dee\u50f9$') + upgrade));
+                return label + '\uFF1A' + text;
             },
             cleanDetailNoteText: function(note) {
                 var text = String(note || '').trim();
@@ -3400,6 +3409,50 @@ window._doCountUp = function() {
                         if (k !== keepKey && map[k]) delete map[k];
                     });
                 };
+                var collapseMergedStatsValues = function(values) {
+                    var aliasMap = {};
+                    (Array.isArray(values) ? values : []).forEach(function(rawOrder) {
+                        if (!rawOrder || typeof rawOrder !== 'object') return;
+                        var incoming = self.normalizeStatsOrder(rawOrder);
+                        var mergeKey = resolveMergeKey(incoming);
+                        var fallbackKey = resolveFallbackDedupKey(incoming);
+                        var aliases = [mergeKey, fallbackKey, incoming && incoming.id ? String(incoming.id) : ''].filter(function(v, i, arr) {
+                            return !!v && arr.indexOf(v) === i;
+                        });
+                        if (!incoming || !aliases.length || !incoming.status) return;
+                        var hits = aliases.map(function(k){ return aliasMap[k]; }).filter(Boolean);
+                        var merged = incoming;
+                        hits.forEach(function(existing) {
+                            var archivedSource = merged._statsArchiveRecord ? merged : (existing && existing._statsArchiveRecord ? existing : null);
+                            var otherSource = merged._statsArchiveRecord ? existing : (existing && existing._statsArchiveRecord ? merged : null);
+                            var nextMerged = archivedSource ? Object.assign({}, otherSource || {}, archivedSource) : Object.assign({}, existing || {}, merged || {});
+                            if (archivedSource) {
+                                if (String(nextMerged.status || '').toLowerCase() !== 'cancelled') {
+                                    nextMerged.status = 'archived';
+                                    nextMerged.wasCancelled = false;
+                                } else {
+                                    nextMerged.wasCancelled = true;
+                                }
+                            }
+                            var bestItems = self.pickRicherStatsItems(existing && existing.items, merged && merged.items, Number(self.getOrderTotalValue(merged) || self.getOrderTotalValue(existing) || 0));
+                            if (bestItems && bestItems.length) nextMerged.items = bestItems.map(function(it){ return Object.assign({}, it); });
+                            var totals = [Number(self.getOrderTotalValue(existing) || 0), Number(self.getOrderTotalValue(merged) || 0), self.sumStatsItemsTotal(nextMerged.items)];
+                            var finiteTotals = totals.filter(function(v){ return Number.isFinite(v); });
+                            if (finiteTotals.length) nextMerged.total = Math.max.apply(null, finiteTotals);
+                            merged = self.normalizeStatsOrder(nextMerged);
+                        });
+                        aliases.forEach(function(k) { aliasMap[k] = merged; });
+                    });
+                    var out = [];
+                    var seen = [];
+                    Object.keys(aliasMap).forEach(function(k) {
+                        var obj = aliasMap[k];
+                        if (!obj || seen.indexOf(obj) !== -1) return;
+                        seen.push(obj);
+                        out.push(obj);
+                    });
+                    return out;
+                };
 
                 var integrationPromise = get(ref(db, 'integration_views/merged_orders_history_index'))
                     .then(function(snap) {
@@ -3466,7 +3519,7 @@ window._doCountUp = function() {
                     var mergedMap = {};
                     integrationOrders.forEach(function(o){ mergeOrderById(mergedMap, o); });
                     bucketOrders.forEach(function(o){ mergeOrderById(mergedMap, o); });
-                    self.allOrdersCache = Object.values(mergedMap).map(function(o) { return self.applyStatusOverrideToOrder(o); });
+                    self.allOrdersCache = collapseMergedStatsValues(Object.values(mergedMap)).map(function(o) { return self.applyStatusOverrideToOrder(o); });
                     self.doFilter();
                 }).catch(function(e) {
                     console.error('讀取統計失敗:', e);

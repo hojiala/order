@@ -1842,7 +1842,7 @@
                 };
                 var getMergeKey=function(order){
                     if(!order)return '';
-                    var sourcePath=(order.integration&&order.integration.sourceRecordPath)||'';
+                    var sourcePath=(order.integration&&order.integration.sourceRecordPath)||order.sourceRecordPath||'';
                     var pathId=getPathOrderId(sourcePath);
                     if(pathId)return String(pathId);
                     var original=(order&&order._integrationOriginal)||{};
@@ -1974,6 +1974,40 @@
                     map[keep]=merged;
                     hit.forEach(function(k){if(k!==keep)delete map[k];});
                 };
+                var collapseMergedValues=function(values){
+                    var aliasMap={};
+                    (Array.isArray(values)?values:[]).forEach(function(o){
+                        if(!o||!o.id)return;
+                        var keys=[];
+                        var primary=getMergeKey(o);
+                        if(primary)keys.push(String(primary));
+                        var fallbackKey=getFallbackDedupKey(o);
+                        if(fallbackKey)keys.push(String(fallbackKey));
+                        if(o.id)keys.push(String(o.id));
+                        var uniq={};
+                        keys=keys.filter(function(k){
+                            if(!k)return false;
+                            if(uniq[k])return false;
+                            uniq[k]=true;
+                            return true;
+                        });
+                        if(!keys.length)return;
+                        var hits=keys.map(function(k){return aliasMap[k];}).filter(Boolean);
+                        var merged=Object.assign({},o);
+                        hits.forEach(function(existing){ merged=mergeTwo(existing, merged); });
+                        var keep=hits.length ? hits[0] : merged;
+                        if(hits.length) keep=mergeTwo(keep, merged);
+                        keys.forEach(function(k){ aliasMap[k]=keep; });
+                    });
+                    var out=[], seen=[];
+                    Object.keys(aliasMap).forEach(function(k){
+                        var obj=aliasMap[k];
+                        if(!obj||seen.indexOf(obj)!==-1)return;
+                        seen.push(obj);
+                        out.push(obj);
+                    });
+                    return out;
+                };
                 var integrationList=Array.isArray(s.integrationOrdersCache)?s.integrationOrdersCache:[];
                 var mergedMap={};
                 if(integrationList.length){
@@ -1993,7 +2027,7 @@
                         upsertMerged(mergedMap,o);
                     });
                 }
-                var mergedOrders=s.normalizeIncomingOrders(Object.values(mergedMap)).map(function(o){return s.applyStatusOverrideToOrder(o);});
+                var mergedOrders=s.normalizeIncomingOrders(collapseMergedValues(Object.values(mergedMap))).map(function(o){return s.applyStatusOverrideToOrder(o);});
                 s.onlineOrders=mergedOrders.filter(function(o){return !o||o.status!=='archived';}).sort(function(a,b){
                     var w={new:1,making:2,done:3,cancelled:4};
                     if(w[a.status]!==w[b.status])return w[a.status]-w[b.status];

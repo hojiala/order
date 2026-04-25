@@ -904,6 +904,8 @@
                     return text;
                 },
                 isDiscount5MealForDisplay(item, order) {
+                    if (item && item.comboDrinkDiscount5) return true;
+                    if (String(item && item.comboDrinkLabel || '').indexOf('\u642d\u914d\u98f2\u6599\u62985\u5143') !== -1) return true;
                     const checkSel = (sel) => {
                         const group = String(sel && sel.groupName || '');
                         const base = Number(sel && sel.baseValue);
@@ -920,9 +922,13 @@
                     return Number.isFinite(sibCredit) && sibCredit > 0 && sibCredit <= 5;
                 },
                 getItemMealDrinkLabel(item, order) {
+                    const explicit = String(item && item.comboDrinkLabel || '').trim();
+                    if (explicit) return explicit;
                     return this.isDiscount5MealForDisplay(item, order) ? '\u642d\u914d\u98f2\u6599\u62985\u5143' : '\u5957\u9910\u98f2\u6599';
                 },
                 getItemMealDrinkChargeText(item, order, amount) {
+                    const explicit = String(item && item.comboDrinkChargeText || '').trim();
+                    if (explicit) return explicit;
                     return (this.isDiscount5MealForDisplay(item, order) ? '\u98f2\u6599\u52a0\u8cfc$' : '\u88dc\u5dee\u50f9$') + amount;
                 },
                 getItemMealDrinkText(item, order) {
@@ -948,6 +954,11 @@
                             else if (!drinkName) drinkName = this.normalizeDisplayDrinkName(part, state);
                         });
                     });
+                    const explicitCharge = String(item && item.comboDrinkChargeText || '').trim();
+                    if (explicitCharge) {
+                        const m = explicitCharge.match(/(?:\u88dc\u5dee\u50f9|\u98f2\u6599\u52a0\u8cfc)\s*\$?\s*(\d+)/);
+                        if (m && m[1]) upgrade = Math.max(upgrade, Number(m[1]));
+                    }
                     const sibling = this.findComboDrinkSiblingForDisplay(item, order);
                     if (sibling && (!drinkName || !state.size || !state.temp)) {
                         drinkName = drinkName || this.normalizeDisplayDrinkName(sibling.name || sibling['\u54c1\u9805'] || '', state);
@@ -1447,7 +1458,7 @@
                     };
                     const getMergeKey = (order) => {
                         if (!order) return '';
-                        const sourcePath = (order.integration && order.integration.sourceRecordPath) || '';
+                        const sourcePath = (order.integration && order.integration.sourceRecordPath) || order.sourceRecordPath || '';
                         const pathId = getPathOrderId(sourcePath);
                         if (pathId) return pathId;
                         const original = (order && order._integrationOriginal) || {};
@@ -1569,6 +1580,35 @@
                         });
                         map[keepKey] = merged;
                     };
+                    const collapseMergedValues = (values) => {
+                        const aliasMap = {};
+                        (Array.isArray(values) ? values : []).forEach((order) => {
+                            if (!order || !order.id) return;
+                            const primary = getMergeKey(order) || String(order.id);
+                            const fallbackKey = getFallbackDedupKey(order);
+                            const aliases = Array.from(new Set([primary, fallbackKey, String(order.id)].filter(Boolean)));
+                            if (!aliases.length) return;
+                            const hits = aliases.map((k) => aliasMap[k]).filter(Boolean);
+                            let merged = Object.assign({}, order);
+                            hits.forEach((existing) => {
+                                merged = mergeTwo(existing, merged);
+                            });
+                            let keep = hits.length ? hits[0] : merged;
+                            if (hits.length) keep = mergeTwo(keep, merged);
+                            aliases.forEach((k) => {
+                                aliasMap[k] = keep;
+                            });
+                        });
+                        const out = [];
+                        const seen = [];
+                        Object.keys(aliasMap).forEach((k) => {
+                            const obj = aliasMap[k];
+                            if (!obj || seen.indexOf(obj) !== -1) return;
+                            seen.push(obj);
+                            out.push(obj);
+                        });
+                        return out;
+                    };
                     const integrationList = Array.isArray(this.integrationOrdersCache) ? this.integrationOrdersCache : [];
                     const mergedMap = {};
                     if (integrationList.length) {
@@ -1588,7 +1628,7 @@
                             // handled by upsertMerged
                         });
                     }
-                    const mergedOrders = this.normalizeIncomingOrders(Object.values(mergedMap)).map((o) => this.applyRemoteStatusOverrideToOrder(o));
+                    const mergedOrders = this.normalizeIncomingOrders(collapseMergedValues(Object.values(mergedMap))).map((o) => this.applyRemoteStatusOverrideToOrder(o));
                     this.orders = mergedOrders;
                     const mergedNewCount = mergedOrders.filter(o => this.getDisplayStatus(o) === 'new').length;
                     if (mergedNewCount > this.previousNewCount && this.previousNewCount !== 0) this.playAlert();
@@ -2149,7 +2189,5 @@
     </script>
 </body>
 </html>
-
-
 
 
