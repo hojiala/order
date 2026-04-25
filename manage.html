@@ -2067,6 +2067,8 @@ window._doCountUp = function() {
                 if (item.comboDrinkDiscount5) return true;
                 if (String(item.comboDrinkLabel || '').indexOf('\u642d\u914d\u98f2\u6599\u62985\u5143') !== -1) return true;
                 if (String(item.comboDrinkChargeText || item.comboDrinkText || item.mealDrink || '').indexOf('\u98f2\u6599\u52a0\u8cfc') !== -1) return true;
+                var inferredCredit = Number(item.comboDrinkFullPrice || 0) - Number(item.comboDrinkSurcharge || 0);
+                if (Number.isFinite(inferredCredit) && inferredCredit > 0 && inferredCredit <= 5) return true;
                 var checkSel = function(sel) {
                     var group = String(sel && sel.groupName || '');
                     var base = Number(sel && sel.baseValue);
@@ -2082,6 +2084,8 @@ window._doCountUp = function() {
                 if (sibling && sibling.comboDrinkDiscount5) return true;
                 if (String(sibling && sibling.comboDrinkLabel || '').indexOf('\u642d\u914d\u98f2\u6599\u62985\u5143') !== -1) return true;
                 if (String(sibling && (sibling.comboDrinkChargeText || sibling.comboDrinkText || sibling.mealDrink) || '').indexOf('\u98f2\u6599\u52a0\u8cfc') !== -1) return true;
+                var sibInferredCredit = Number(sibling && sibling.comboDrinkFullPrice || 0) - Number(sibling && sibling.comboDrinkSurcharge || 0);
+                if (Number.isFinite(sibInferredCredit) && sibInferredCredit > 0 && sibInferredCredit <= 5) return true;
                 var sibSels = Array.isArray(sibling && sibling.optionGroupSelections) ? sibling.optionGroupSelections : [];
                 if (sibSels.some(checkSel)) return true;
                 var sibCredit = Number(sibling && sibling.comboDrinkCredit || 0);
@@ -2137,7 +2141,9 @@ window._doCountUp = function() {
                 var text = parts.join('/');
                 var discount5 = this.isDetailDiscount5Meal(item, order, index);
                 var label = String(item.comboDrinkLabel || sibling && sibling.comboDrinkLabel || '').trim() || (discount5 ? '\u642d\u914d\u98f2\u6599\u62985\u5143' : '\u5957\u9910\u98f2\u6599');
+                if (discount5 && (label === '\u5957\u9910\u98f2\u6599' || label.indexOf('\u5957\u9910\u98f2\u6599') !== -1)) label = '\u642d\u914d\u98f2\u6599\u62985\u5143';
                 var chargeText = String(item.comboDrinkChargeText || sibling && sibling.comboDrinkChargeText || '').trim();
+                if (discount5 && chargeText) chargeText = chargeText.replace(/\u88dc\u5dee\u50f9/g, '\u98f2\u6599\u52a0\u8cfc');
                 if (upgrade > 0) text += '/' + (chargeText || ((discount5 ? '\u98f2\u6599\u52a0\u8cfc$' : '\u88dc\u5dee\u50f9$') + upgrade));
                 return label + '\uFF1A' + text;
             },
@@ -2521,6 +2527,11 @@ window._doCountUp = function() {
                             } else if (Number.isFinite(explicitFullPrice) && explicitFullPrice > 0 && Number.isFinite(explicitCredit)) {
                                 mappedItem.comboDrinkSurcharge = Math.max(0, explicitFullPrice - explicitCredit);
                             }
+                        }
+                        if ((!Number.isFinite(Number(mappedItem.comboDrinkCredit)) || Number(mappedItem.comboDrinkCredit) <= 0)
+                            && Number.isFinite(Number(mappedItem.comboDrinkFullPrice)) && Number(mappedItem.comboDrinkFullPrice) > 0
+                            && Number.isFinite(Number(mappedItem.comboDrinkSurcharge)) && Number(mappedItem.comboDrinkSurcharge) > 0) {
+                            mappedItem.comboDrinkCredit = Math.max(0, Number(mappedItem.comboDrinkFullPrice) - Number(mappedItem.comboDrinkSurcharge));
                         }
                         if (!mappedItem.comboDrinkDiscount5) {
                             mappedItem.comboDrinkDiscount5 = (Number(mappedItem.comboDrinkCredit || 0) > 0 && Number(mappedItem.comboDrinkCredit || 0) <= 5)
@@ -3383,6 +3394,44 @@ window._doCountUp = function() {
             doFilter: function() {
                 var self = this;
                 var all = Array.isArray(self.allOrdersCache) ? self.allOrdersCache.slice() : [];
+                var collapseVisibleStatsOrders = function(list) {
+                    var bySig = {};
+                    var score = function(order) {
+                        var items = Array.isArray(order && order.items) ? order.items : [];
+                        return items.length * 10 + items.reduce(function(sum, item) {
+                            return sum
+                                + (item && item.comboDrinkText ? 3 : 0)
+                                + (item && item.mealDrink ? 3 : 0)
+                                + (item && item.comboDrinkLabel ? 2 : 0)
+                                + (item && item.comboDrinkChargeText ? 2 : 0)
+                                + (Array.isArray(item && item.optionGroupSelections) ? item.optionGroupSelections.length : 0);
+                        }, 0);
+                    };
+                    (Array.isArray(list) ? list : []).forEach(function(order) {
+                        var src = String(order && order.source || '').toLowerCase();
+                        var label = String(order && order.sourceLabel || '').toLowerCase();
+                        var family = (src === 'phone_ai' || src === 'pos_local' || label.indexOf('電話') !== -1 || label.indexOf('phone') !== -1)
+                            ? 'phone_ai'
+                            : ((src === 'pos') ? 'pos' : ((src === 'qrcode' || src === 'qr_takeout' || src === 'dinein' || src === 'line' || src === 'web_liff') ? src : 'web'));
+                        var no = String(order && (order.orderNo || order.serialNumber || '')).trim();
+                        var day = self.getOrderDate(order);
+                        var total = Number(self.getOrderTotalValue(order) || 0);
+                        var phone = String((order && order.customer && order.customer.phone) || (order && order.phone) || '').replace(/\D/g, '');
+                        var pickup = String((order && order.pickupTime) || (order && order.pickupTimeLabel) || '').trim();
+                        var sig = no && day ? [family, day, no, Number.isFinite(total) ? Math.round(total) : '', phone, pickup].join('|') : '';
+                        if (!sig) {
+                            bySig['id:' + String((order && order.id) || Math.random())] = order;
+                            return;
+                        }
+                        if (!bySig[sig] || score(order) > score(bySig[sig])) {
+                            var merged = bySig[sig] ? Object.assign({}, bySig[sig], order) : Object.assign({}, order);
+                            var bestItems = score(order) >= score(bySig[sig]) ? order.items : bySig[sig].items;
+                            if (Array.isArray(bestItems)) merged.items = bestItems.map(function(item) { return Object.assign({}, item); });
+                            bySig[sig] = self.normalizeStatsOrder(merged);
+                        }
+                    });
+                    return Object.keys(bySig).map(function(key) { return bySig[key]; });
+                };
                 var dateList = self.buildDateListForStatsMode(self.statsMode);
                 if (!dateList.length) {
                     self.statsOrders = [];
@@ -3390,7 +3439,7 @@ window._doCountUp = function() {
                     return;
                 }
                 var dateSet = new Set(dateList);
-                self.statsOrders = all.filter(function(o) {
+                self.statsOrders = collapseVisibleStatsOrders(all).filter(function(o) {
                     if (!o || !o.status) return false;
                     var orderDate = self.getOrderDate(o);
                     return dateSet.has(orderDate);

@@ -607,7 +607,52 @@
             activeOrderCount:function(){return this.onlineOrders.filter(function(o){return o.status==='new'||o.status==='making';}).length;},
             filteredOrders:function(){
                 var q=this.orderSearch.trim().toLowerCase();
-                var visibleOrders=this.onlineOrders.filter(function(o){return !o||o.status!=='archived';});
+                var s=this;
+                function dayOf(order){
+                    var explicit=String((order&&order.pickupDate)||(order&&order.orderDateKey)||(order&&order._sourceDateKey)||'').trim();
+                    if(explicit)return explicit;
+                    var ts=Number(order&&((order.timestamp!==undefined)?order.timestamp:order.createdAt));
+                    if(Number.isFinite(ts)&&ts>0){
+                        var d=new Date(ts);
+                        if(!isNaN(d.getTime()))return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);
+                    }
+                    return '';
+                }
+                function familyOf(order){
+                    var src=String(order&&order.source||'').toLowerCase();
+                    var label=String(order&&(order.sourceLabel||order._integrationSourceLabel)||'').toLowerCase();
+                    if(src==='phone_ai'||src==='pos_local'||label.indexOf('電話')!==-1||label.indexOf('phone')!==-1)return 'phone_ai';
+                    if(src==='pos')return 'pos';
+                    if(src==='qrcode'||src==='qr_takeout'||src==='dinein'||src==='line'||src==='web_liff')return src;
+                    return 'web';
+                }
+                function visualSig(order){
+                    var no=String(order&&((order.orderNo!==undefined)?order.orderNo:order.serialNumber)||'').trim();
+                    var day=dayOf(order);
+                    if(!no||!day)return '';
+                    var total=Number(order&&((order.total!==undefined)?order.total:(order.totals&&order.totals.finalTotal)));
+                    var phone=String((order&&order.customer&&order.customer.phone)||(order&&order.phone)||'').replace(/\D/g,'');
+                    var pickup=String((order&&order.pickupTime)||(order&&order.pickupTimeLabel)||'').trim();
+                    return [familyOf(order),day,no,Number.isFinite(total)?Math.round(total):'',phone,pickup].join('|');
+                }
+                function score(order){
+                    var items=Array.isArray(order&&order.items)?order.items:[];
+                    return items.length*10+items.reduce(function(sum,item){
+                        return sum+(item&&item.comboDrinkText?3:0)+(item&&item.mealDrink?3:0)+(item&&item.comboDrinkLabel?2:0)+(item&&item.comboDrinkChargeText?2:0)+(Array.isArray(item&&item.optionGroupSelections)?item.optionGroupSelections.length:0);
+                    },0);
+                }
+                var bySig={};
+                (this.onlineOrders||[]).forEach(function(order){
+                    var sig=visualSig(order);
+                    if(!sig){bySig['id:'+String((order&&order.id)||Math.random())]=order;return;}
+                    if(!bySig[sig]||score(order)>score(bySig[sig])){
+                        var merged=bySig[sig]?Object.assign({},bySig[sig],order):Object.assign({},order);
+                        var bestItems=score(order)>=score(bySig[sig])?order.items:bySig[sig].items;
+                        if(Array.isArray(bestItems))merged.items=bestItems.map(function(item){return Object.assign({},item);});
+                        bySig[sig]=s.normalizeIncomingOrder(merged);
+                    }
+                });
+                var visibleOrders=Object.keys(bySig).map(function(key){return bySig[key];}).filter(function(o){return !o||o.status!=='archived';});
                 if(!q)return visibleOrders;
                 return visibleOrders.filter(function(o){
                     var name=(o.customer&&o.customer.name?o.customer.name:(o.customer||"")).toLowerCase();
@@ -1084,6 +1129,11 @@
                             }else if(Number.isFinite(explicitFullPrice)&&explicitFullPrice>0&&Number.isFinite(explicitCredit)){
                                 mapped.comboDrinkSurcharge=Math.max(0,explicitFullPrice-explicitCredit);
                             }
+                        }
+                        if((!Number.isFinite(Number(mapped.comboDrinkCredit))||Number(mapped.comboDrinkCredit)<=0)
+                            &&Number.isFinite(Number(mapped.comboDrinkFullPrice))&&Number(mapped.comboDrinkFullPrice)>0
+                            &&Number.isFinite(Number(mapped.comboDrinkSurcharge))&&Number(mapped.comboDrinkSurcharge)>0){
+                            mapped.comboDrinkCredit=Math.max(0,Number(mapped.comboDrinkFullPrice)-Number(mapped.comboDrinkSurcharge));
                         }
                         if(!mapped.comboDrinkDiscount5){
                             mapped.comboDrinkDiscount5=(Number(mapped.comboDrinkCredit||0)>0&&Number(mapped.comboDrinkCredit||0)<=5)

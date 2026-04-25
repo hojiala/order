@@ -314,7 +314,47 @@
                     return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);
                 },
                 sortedOrders() {
-                    return this.orders
+                    const signatureOf = (order) => {
+                        if (!order || typeof order !== 'object') return '';
+                        const src = String(order.source || '').toLowerCase();
+                        const label = String(order.sourceLabel || order._integrationSourceLabel || '').toLowerCase();
+                        const family = (src === 'phone_ai' || src === 'pos_local' || label.indexOf('\u96fb\u8a71') !== -1 || label.indexOf('phone') !== -1)
+                            ? 'phone_ai'
+                            : ((src === 'pos') ? 'pos' : ((src === 'qrcode' || src === 'qr_takeout' || src === 'dinein' || src === 'line' || src === 'web_liff') ? src : 'web'));
+                        const no = String(order.orderNo || order.serialNumber || '').trim();
+                        const day = this.formatDate(order.timestamp || order.createdAt || '').slice(0, 10) || String(order.pickupDate || order.orderDateKey || '').trim();
+                        const total = Number(order.total || (order.totals && order.totals.finalTotal) || 0);
+                        const phone = String((order.customer && order.customer.phone) || order.phone || '').replace(/\D/g, '');
+                        const pickup = String(order.pickupTime || order.pickupTimeLabel || '').trim();
+                        if (!no || !day) return '';
+                        return [family, day, no, Number.isFinite(total) ? Math.round(total) : '', phone, pickup].join('|');
+                    };
+                    const score = (order) => {
+                        const items = Array.isArray(order && order.items) ? order.items : [];
+                        return items.length * 10 + items.reduce((sum, item) => {
+                            return sum
+                                + (item && item.comboDrinkText ? 3 : 0)
+                                + (item && item.mealDrink ? 3 : 0)
+                                + (item && item.comboDrinkLabel ? 2 : 0)
+                                + (item && item.comboDrinkChargeText ? 2 : 0)
+                                + (Array.isArray(item && item.optionGroupSelections) ? item.optionGroupSelections.length : 0);
+                        }, 0);
+                    };
+                    const bySig = {};
+                    (Array.isArray(this.orders) ? this.orders : []).forEach((order) => {
+                        const sig = signatureOf(order);
+                        if (!sig) {
+                            bySig['id:' + String(order && order.id || Math.random())] = order;
+                            return;
+                        }
+                        if (!bySig[sig] || score(order) > score(bySig[sig])) {
+                            const merged = bySig[sig] ? Object.assign({}, bySig[sig], order) : Object.assign({}, order);
+                            const bestItems = score(order) >= score(bySig[sig]) ? order.items : bySig[sig].items;
+                            if (Array.isArray(bestItems)) merged.items = bestItems.map((item) => Object.assign({}, item));
+                            bySig[sig] = this.normalizeIncomingOrder(merged);
+                        }
+                    });
+                    return Object.keys(bySig).map((key) => bySig[key])
                         .filter(o => this.getDisplayStatus(o) !== 'archived')
                         .slice()
                         .sort((a, b) => {
@@ -907,6 +947,8 @@
                     if (item && item.comboDrinkDiscount5) return true;
                     if (String(item && item.comboDrinkLabel || '').indexOf('\u642d\u914d\u98f2\u6599\u62985\u5143') !== -1) return true;
                     if (String(item && (item.comboDrinkChargeText || item.comboDrinkText || item.mealDrink) || '').indexOf('\u98f2\u6599\u52a0\u8cfc') !== -1) return true;
+                    const inferredCredit = Number(item && item.comboDrinkFullPrice) - Number(item && item.comboDrinkSurcharge);
+                    if (Number.isFinite(inferredCredit) && inferredCredit > 0 && inferredCredit <= 5) return true;
                     const checkSel = (sel) => {
                         const group = String(sel && sel.groupName || '');
                         const base = Number(sel && sel.baseValue);
@@ -922,6 +964,8 @@
                     if (sibling && sibling.comboDrinkDiscount5) return true;
                     if (String(sibling && sibling.comboDrinkLabel || '').indexOf('\u642d\u914d\u98f2\u6599\u62985\u5143') !== -1) return true;
                     if (String(sibling && (sibling.comboDrinkChargeText || sibling.comboDrinkText || sibling.mealDrink) || '').indexOf('\u98f2\u6599\u52a0\u8cfc') !== -1) return true;
+                    const sibInferredCredit = Number(sibling && sibling.comboDrinkFullPrice) - Number(sibling && sibling.comboDrinkSurcharge);
+                    if (Number.isFinite(sibInferredCredit) && sibInferredCredit > 0 && sibInferredCredit <= 5) return true;
                     const sibSels = Array.isArray(sibling && sibling.optionGroupSelections) ? sibling.optionGroupSelections : [];
                     if (sibSels.some(checkSel)) return true;
                     const sibCredit = Number(sibling && sibling.comboDrinkCredit);
@@ -930,12 +974,16 @@
                 getItemMealDrinkLabel(item, order) {
                     const sibling = this.findComboDrinkSiblingForDisplay(item, order);
                     const explicit = String(item && item.comboDrinkLabel || sibling && sibling.comboDrinkLabel || '').trim();
+                    if (this.isDiscount5MealForDisplay(item, order) && (explicit === '\u5957\u9910\u98f2\u6599' || explicit.indexOf('\u5957\u9910\u98f2\u6599') !== -1)) {
+                        return '\u642d\u914d\u98f2\u6599\u62985\u5143';
+                    }
                     if (explicit) return explicit;
                     return this.isDiscount5MealForDisplay(item, order) ? '\u642d\u914d\u98f2\u6599\u62985\u5143' : '\u5957\u9910\u98f2\u6599';
                 },
                 getItemMealDrinkChargeText(item, order, amount) {
                     const sibling = this.findComboDrinkSiblingForDisplay(item, order);
                     const explicit = String(item && item.comboDrinkChargeText || sibling && sibling.comboDrinkChargeText || '').trim();
+                    if (explicit && this.isDiscount5MealForDisplay(item, order)) return explicit.replace(/\u88dc\u5dee\u50f9/g, '\u98f2\u6599\u52a0\u8cfc');
                     if (explicit) return explicit;
                     return (this.isDiscount5MealForDisplay(item, order) ? '\u98f2\u6599\u52a0\u8cfc$' : '\u88dc\u5dee\u50f9$') + amount;
                 },
@@ -1240,6 +1288,11 @@
                                 } else if (Number.isFinite(explicitFullPrice) && explicitFullPrice > 0 && Number.isFinite(explicitCredit)) {
                                     mapped.comboDrinkSurcharge = Math.max(0, explicitFullPrice - explicitCredit);
                                 }
+                            }
+                            if ((!Number.isFinite(Number(mapped.comboDrinkCredit)) || Number(mapped.comboDrinkCredit) <= 0)
+                                && Number.isFinite(Number(mapped.comboDrinkFullPrice)) && Number(mapped.comboDrinkFullPrice) > 0
+                                && Number.isFinite(Number(mapped.comboDrinkSurcharge)) && Number(mapped.comboDrinkSurcharge) > 0) {
+                                mapped.comboDrinkCredit = Math.max(0, Number(mapped.comboDrinkFullPrice) - Number(mapped.comboDrinkSurcharge));
                             }
                             if (!mapped.comboDrinkDiscount5) {
                                 mapped.comboDrinkDiscount5 = (Number(mapped.comboDrinkCredit || 0) > 0 && Number(mapped.comboDrinkCredit || 0) <= 5)
