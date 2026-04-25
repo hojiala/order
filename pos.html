@@ -286,7 +286,7 @@
             <div v-if="item.optionGroupSelections && item.optionGroupSelections.length" class="flex flex-wrap gap-1 mt-1">
               <span v-for="sel in item.optionGroupSelections" :key="sel.groupName"
                 class="text-xs bg-orange-50 text-orange-600 border border-orange-200 px-1.5 py-0.5 rounded">
-                {{ sel.name }}<span v-if="sel.pricing==='mealUpgrade' && sel.price>sel.baseValue"> +${{ sel.price-sel.baseValue }}</span></span></div>
+                {{ sel.name }}<span v-if="sel.pricing==='mealUpgrade' && sel.price>sel.baseValue"> {{ ((sel.groupName||'').includes('折5') || ((sel.baseValue||0)>0 && (sel.baseValue||0)<=5)) ? '飲料加購$' : '補差價$' }}{{ sel.price-sel.baseValue }}</span></span></div>
             <div v-if="getCartItemMealDrinkText(item,idx)" class="text-xs text-orange-500 mt-0.5">🧋 {{ getCartItemMealDrinkText(item,idx) }}</div>
             <div v-if="item.options && item.options.length" class="text-xs text-gray-400 mt-0.5">{{ item.options.map(function(o){return "+"+o.name+" $"+(o.price||0);}).join(" ") }}</div>
             <div v-if="item.posExtras && item.posExtras.length" class="text-xs text-purple-500 mt-0.5">🔧 {{ item.posExtras.map(function(e){return e.name+" $"+(e.price||0);}).join(', ') }}</div>
@@ -426,7 +426,7 @@
               <span v-else-if="grp.pricing==='addDelta' && ch.price>0" class="text-orange-500">+${{ ch.price }}</span>
               <span v-else-if="grp.pricing==='addDelta' && ch.price===0" class="text-gray-400">免費</span>
               <span v-else-if="grp.pricing==='mealUpgrade'">
-                <span v-if="ch.price>(grp.baseValue||0)" class="text-orange-500">+${{ ch.price-(grp.baseValue||0) }}</span>
+                <span v-if="ch.price>(grp.baseValue||0)" class="text-orange-500">{{ ((grp.groupName||'').includes('折5') || ((grp.baseValue||0)>0 && (grp.baseValue||0)<=5)) ? '飲料加購$' : '補差價$' }}{{ ch.price-(grp.baseValue||0) }}</span>
                 <span v-else class="text-gray-400 text-sm font-bold">$0</span></span></span>
           </label>
         </div>
@@ -1322,8 +1322,14 @@
                     if(line>0&&orderTotal>line&&q>0)return line/q;
                     return 0;
                 }
-                function stripAmount(s){return text(s).replace(/[（(]\s*\u88dc\s*\$?\d+\s*[）)]/g,'').replace(/\s*\/\s*\u88dc\u5dee\u50f9\s*\$?\d+\s*$/,'').replace(/\s*\/\s*\+\s*\$?\d+\s*$/,'').replace(/\s*\+\s*\$?\d+\s*$/,'').trim();}
-                function parseAmount(s){var raw=text(s);var m=raw.match(/(?:\u88dc\u5dee\u50f9|\u88dc|\+)\s*\$?\s*(\d+)/);return m&&m[1]?num(m[1]):0;}
+                function stripAmount(s){return text(s).replace(/[（(]\s*\u88dc\s*\$?\d+\s*[）)]/g,'').replace(/\s*\/\s*(?:\u88dc\u5dee\u50f9|\u98f2\u6599\u52a0\u8cfc)\s*\$?\d+\s*$/,'').replace(/\s*\/\s*\+\s*\$?\d+\s*$/,'').replace(/\s*\+\s*\$?\d+\s*$/,'').trim();}
+                function parseAmount(s){var raw=text(s);var m=raw.match(/(?:\u88dc\u5dee\u50f9|\u98f2\u6599\u52a0\u8cfc|\u88dc|\+)\s*\$?\s*(\d+)/);return m&&m[1]?num(m[1]):0;}
+                function isDiscount5Meal(sel){
+                    var g=text(sel&&sel.groupName);
+                    var base=num(sel&&sel.baseValue);
+                    return g.indexOf('\u642d\u914d\u98f2\u6599\u62985\u5143')!==-1||g.indexOf('\u62985')!==-1||(base>0&&base<=5);
+                }
+                function comboChargeText(discount5,amount){return (discount5?'\u98f2\u6599\u52a0\u8cfc$':'\u88dc\u5dee\u50f9$')+amount;}
                 function normalizeDrinkName(raw,state){var out=stripAmount(raw);var m=out.match(/[（(](\u5927\u676f|\u4e2d\u676f)[）)]/);if(m&&m[1]&&!state.size)state.size=m[1];out=out.replace(/[（(](\u5927\u676f|\u4e2d\u676f)[）)]/g,'').trim();return out;}
                 function parseMealDrinkText(raw,state,upgradeRef){text(raw).split(/[\/\u3001,]+/).map(text).filter(Boolean).forEach(function(part){var add=parseAmount(part);if(add>0)upgradeRef.value=Math.max(upgradeRef.value,add);var clean=stripAmount(part);if(!clean)return;if(!state.size&&(clean==='\u5927\u676f'||clean==='\u4e2d\u676f'))state.size=clean;else if(!state.temp&&/\u51b0|\u71b1|\u6eab/.test(clean))state.temp=clean;else if(!state.drink)state.drink=normalizeDrinkName(clean,state);});}
                 function findSibling(it,idx){var comboId=text(it&&it.comboGroupId);var first=null;for(var i=0;i<items.length;i++){if(i===idx)continue;var d=items[i];if(!isComboDrink(d))continue;if(!first)first=d;var gid=text(d&&d.comboGroupId);if(comboId&&gid&&comboId===gid)return {item:d,index:i};}return first?{item:first,index:items.indexOf(first)}:null;}
@@ -1341,6 +1347,7 @@
                 function comboInfo(it,idx,name){
                     var state={size:text(it&&it.size),temp:text(it&&it.temp),drink:''};
                     var upgrade=0;
+                    var discount5=false;
                     var sels=Array.isArray(it&&it.optionGroupSelections)?it.optionGroupSelections:[];
                     sels.forEach(function(sel){
                         var g=text(sel&&sel.groupName).toLowerCase();
@@ -1350,6 +1357,7 @@
                         var clean=stripAmount(n);
                         var pricing=text(sel&&sel.pricing);
                         var price=num(sel&&sel.price),base=num(sel&&sel.baseValue);
+                        if(pricing==='mealUpgrade'&&isDiscount5Meal(sel))discount5=true;
                         if(pricing==='mealUpgrade'&&price>base)upgrade=Math.max(upgrade,price-base);
                         if(!state.size&&(g.indexOf('size')!==-1||g.indexOf('\u5bb9\u91cf')!==-1))state.size=clean;
                         else if(!state.temp&&(g.indexOf('temp')!==-1||g.indexOf('\u6eab\u5ea6')!==-1))state.temp=clean;
@@ -1365,6 +1373,8 @@
                         if(!state.drink)state.drink=normalizeDrinkName(d.name||d['\u54c1\u9805'],state);
                         if(!state.size)state.size=text(d.size||d['\u5bb9\u91cf']);
                         if(!state.temp)state.temp=text(d.temp||d['\u6eab\u5ea6']);
+                        var sCreditForLabel=num(d.comboDrinkCredit);
+                        if(sCreditForLabel>0&&sCreditForLabel<=5)discount5=true;
                         if(upgrade<=0){
                             var sFull=num(d.comboDrinkFullPrice),sCredit=num(d.comboDrinkCredit),sExplicit=num(d.comboDrinkSurcharge);
                             if(sExplicit>0)upgrade=Math.max(upgrade,sExplicit);
@@ -1380,6 +1390,8 @@
                         if(explicit>0)upgrade=explicit;
                         if(full>0)upgrade=Math.max(upgrade,full-credit);
                     }
+                    var ownCreditForLabel=num(it&&it.comboDrinkCredit);
+                    if(ownCreditForLabel>0&&ownCreditForLabel<=5)discount5=true;
                     var base=baseUnit(it,name),line=lineTotal(it),q=qtyOf(it);
                     if(upgrade<=0&&base>0&&line>0&&q>0)upgrade=Math.max(upgrade,(line/q)-base);
                     if(upgrade<=0&&base>0){
@@ -1387,7 +1399,7 @@
                         var remainder=ot-otherKnownTotals(idx)-(base*q);
                         if(remainder>0)upgrade=Math.max(upgrade,remainder/q);
                     }
-                    return {size:state.size,temp:state.temp,drink:state.drink,upgrade:Math.max(0,Math.round(upgrade))};
+                    return {size:state.size,temp:state.temp,drink:state.drink,upgrade:Math.max(0,Math.round(upgrade)),discount5:discount5};
                 }
                 var mainGroups={};
                 var hasMain=items.some(function(it){var ok=isComboMain(it);if(ok){var gid=text(it&&it.comboGroupId);if(gid)mainGroups[gid]=true;}return ok;});
@@ -1402,7 +1414,7 @@
                     if(isComboMain(it)){
                         var info=comboInfo(it,idx,name);
                         var parts=[info.size,info.temp,info.drink].filter(Boolean);
-                        if(info.upgrade>0)parts.push('\u88dc\u5dee\u50f9$'+info.upgrade);
+                        if(info.upgrade>0)parts.push(comboChargeText(info.discount5,info.upgrade));
                         if(parts.length)name=name+' ['+parts.join('/')+']';
                     }else if(comboLine||it.size||it.temp){
                         var drinkParts=[text(it.size),text(it.temp),name].filter(Boolean);
@@ -1545,15 +1557,22 @@
                 var temp=String(item.temp||'').trim();
                 var drinkName='';
                 var upgrade=0;
+                var discount5=false;
+                function isDiscount5Meal(sel){
+                    var group=String(sel&&sel.groupName||'');
+                    var base=Number(sel&&sel.baseValue);
+                    return group.indexOf('\u642d\u914d\u98f2\u6599\u62985\u5143')!==-1||group.indexOf('\u62985')!==-1||(Number.isFinite(base)&&base>0&&base<=5);
+                }
+                function comboChargeText(discount5Flag,amount){return (discount5Flag?'\u98f2\u6599\u52a0\u8cfc$':'\u88dc\u5dee\u50f9$')+amount;}
                 sels.forEach(function(sel){
                     var g=String(sel&&sel.groupName||'').toLowerCase();
                     var n=String(sel&&sel.name||'').trim();
                     if(!n)return;
-                    var m=n.match(/\+\s*\$(\d+)/);
+                    var m=n.match(/(?:\u88dc\u5dee\u50f9|\u98f2\u6599\u52a0\u8cfc|\+)\s*\$?\s*(\d+)/);
                     if(m&&m[1]){
                         var v=Number(m[1]||0);
                         if(Number.isFinite(v)&&v>0)upgrade=Math.max(upgrade,v);
-                        n=n.replace(/\s*\+\s*\$\d+\s*$/,'').trim();
+                        n=n.replace(/\s*(?:\u88dc\u5dee\u50f9|\u98f2\u6599\u52a0\u8cfc|\+)\s*\$?\d+\s*$/,'').trim();
                     }
                     if(!size&&(g.indexOf('size')!==-1||g.indexOf('\u5bb9\u91cf')!==-1))size=n;
                     else if(!temp&&(g.indexOf('temp')!==-1||g.indexOf('\u6eab\u5ea6')!==-1))temp=n;
@@ -1561,6 +1580,7 @@
                     var pricing=String(sel&&sel.pricing||'');
                     var p=Number(sel&&sel.price);
                     var b=Number(sel&&sel.baseValue);
+                    if(pricing==='mealUpgrade'&&isDiscount5Meal(sel))discount5=true;
                     if(pricing==='mealUpgrade'&&Number.isFinite(p)&&Number.isFinite(b)&&p>b){
                         upgrade=Math.max(upgrade,p-b);
                     }
@@ -1572,6 +1592,7 @@
                 if(upgrade<=0){
                     var itemFull=Number((item&&item.comboDrinkFullPrice)!==undefined?(item&&item.comboDrinkFullPrice):0);
                     var itemCredit=Number((item&&item.comboDrinkCredit)!==undefined?(item&&item.comboDrinkCredit):0);
+                    if(Number.isFinite(itemCredit)&&itemCredit>0&&itemCredit<=5)discount5=true;
                     if(Number.isFinite(itemFull)&&itemFull>0&&Number.isFinite(itemCredit))upgrade=Math.max(upgrade,itemFull-itemCredit);
                 }
                 if(upgrade<=0){
@@ -1603,6 +1624,8 @@
                         if(upgrade<=0){
                             var explicitSiblingSurcharge=Number((sib&&sib.comboDrinkSurcharge)!==undefined?(sib&&sib.comboDrinkSurcharge):0);
                             if(Number.isFinite(explicitSiblingSurcharge)&&explicitSiblingSurcharge>0)upgrade=Math.max(upgrade,explicitSiblingSurcharge);
+                            var siblingCredit=Number((sib&&sib.comboDrinkCredit)!==undefined?(sib&&sib.comboDrinkCredit):0);
+                            if(Number.isFinite(siblingCredit)&&siblingCredit>0&&siblingCredit<=5)discount5=true;
                             var su=Number((sib.price!==undefined)?sib.price:((sib['\u55ae\u50f9']!==undefined)?sib['\u55ae\u50f9']:0));
                             var st=Number((sib.itemTotal!==undefined)?sib.itemTotal:((sib.total!==undefined)?sib.total:sib['\u7e3d\u50f9']));
                             var sq=Number((sib.qty!==undefined)?sib.qty:1);
@@ -1615,7 +1638,7 @@
                 var out=[size,temp,drinkName].filter(function(v){return !!v;}).join('/');
                 if(!out)return '';
                 upgrade=Math.max(0,Math.round(upgrade));
-                if(upgrade>0)out=out+'/\u88dc\u5dee\u50f9$'+upgrade;
+                if(upgrade>0)out=out+'/'+comboChargeText(discount5,upgrade);
                 return out;
             },
             orderSig:function(items){
