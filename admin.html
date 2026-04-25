@@ -906,6 +906,7 @@
                 isDiscount5MealForDisplay(item, order) {
                     if (item && item.comboDrinkDiscount5) return true;
                     if (String(item && item.comboDrinkLabel || '').indexOf('\u642d\u914d\u98f2\u6599\u62985\u5143') !== -1) return true;
+                    if (String(item && (item.comboDrinkChargeText || item.comboDrinkText || item.mealDrink) || '').indexOf('\u98f2\u6599\u52a0\u8cfc') !== -1) return true;
                     const checkSel = (sel) => {
                         const group = String(sel && sel.groupName || '');
                         const base = Number(sel && sel.baseValue);
@@ -918,16 +919,23 @@
                     const credit = Number(item && item.comboDrinkCredit);
                     if (Number.isFinite(credit) && credit > 0 && credit <= 5) return true;
                     const sibling = this.findComboDrinkSiblingForDisplay(item, order);
+                    if (sibling && sibling.comboDrinkDiscount5) return true;
+                    if (String(sibling && sibling.comboDrinkLabel || '').indexOf('\u642d\u914d\u98f2\u6599\u62985\u5143') !== -1) return true;
+                    if (String(sibling && (sibling.comboDrinkChargeText || sibling.comboDrinkText || sibling.mealDrink) || '').indexOf('\u98f2\u6599\u52a0\u8cfc') !== -1) return true;
+                    const sibSels = Array.isArray(sibling && sibling.optionGroupSelections) ? sibling.optionGroupSelections : [];
+                    if (sibSels.some(checkSel)) return true;
                     const sibCredit = Number(sibling && sibling.comboDrinkCredit);
                     return Number.isFinite(sibCredit) && sibCredit > 0 && sibCredit <= 5;
                 },
                 getItemMealDrinkLabel(item, order) {
-                    const explicit = String(item && item.comboDrinkLabel || '').trim();
+                    const sibling = this.findComboDrinkSiblingForDisplay(item, order);
+                    const explicit = String(item && item.comboDrinkLabel || sibling && sibling.comboDrinkLabel || '').trim();
                     if (explicit) return explicit;
                     return this.isDiscount5MealForDisplay(item, order) ? '\u642d\u914d\u98f2\u6599\u62985\u5143' : '\u5957\u9910\u98f2\u6599';
                 },
                 getItemMealDrinkChargeText(item, order, amount) {
-                    const explicit = String(item && item.comboDrinkChargeText || '').trim();
+                    const sibling = this.findComboDrinkSiblingForDisplay(item, order);
+                    const explicit = String(item && item.comboDrinkChargeText || sibling && sibling.comboDrinkChargeText || '').trim();
                     if (explicit) return explicit;
                     return (this.isDiscount5MealForDisplay(item, order) ? '\u98f2\u6599\u52a0\u8cfc$' : '\u88dc\u5dee\u50f9$') + amount;
                 },
@@ -954,12 +962,12 @@
                             else if (!drinkName) drinkName = this.normalizeDisplayDrinkName(part, state);
                         });
                     });
-                    const explicitCharge = String(item && item.comboDrinkChargeText || '').trim();
+                    const sibling = this.findComboDrinkSiblingForDisplay(item, order);
+                    const explicitCharge = String(item && item.comboDrinkChargeText || sibling && sibling.comboDrinkChargeText || '').trim();
                     if (explicitCharge) {
                         const m = explicitCharge.match(/(?:\u88dc\u5dee\u50f9|\u98f2\u6599\u52a0\u8cfc)\s*\$?\s*(\d+)/);
                         if (m && m[1]) upgrade = Math.max(upgrade, Number(m[1]));
                     }
-                    const sibling = this.findComboDrinkSiblingForDisplay(item, order);
                     if (sibling && (!drinkName || !state.size || !state.temp)) {
                         drinkName = drinkName || this.normalizeDisplayDrinkName(sibling.name || sibling['\u54c1\u9805'] || '', state);
                         state.size = state.size || String(sibling.size || sibling['\u5bb9\u91cf'] || '').trim();
@@ -968,6 +976,70 @@
                     const out = [state.size, state.temp, drinkName].filter(Boolean).join('/');
                     if (!out) return '';
                     return upgrade > 0 ? (out + '/' + this.getItemMealDrinkChargeText(item, order, upgrade)) : out;
+                },
+                mergeNormalizedOrderItems(items) {
+                    const list = Array.isArray(items) ? items : [];
+                    const mergedMap = {};
+                    const mergedList = [];
+                    const stablePartList = (rows, mapper) => (Array.isArray(rows) ? rows : []).map((row) => mapper(row || {})).sort();
+                    const buildKey = (item) => JSON.stringify({
+                        name: String(item && (item.name || item['\u54c1\u9805']) || '').trim(),
+                        note: String(item && (item.note || item['\u5099\u8a3b']) || '').trim(),
+                        size: String(item && (item.size || item['\u5bb9\u91cf']) || '').trim(),
+                        temp: String(item && (item.temp || item['\u6eab\u5ea6']) || '').trim(),
+                        egg: String(item && item.eggDoneness || '').trim(),
+                        isCombo: !!(item && item.isCombo),
+                        isComboDrink: !!(item && item.isComboDrink),
+                        mealDrink: String(item && item.mealDrink || '').trim(),
+                        comboDrinkText: String(item && item.comboDrinkText || '').trim(),
+                        comboDrinkLabel: String(item && item.comboDrinkLabel || '').trim(),
+                        comboDrinkChargeText: String(item && item.comboDrinkChargeText || '').trim(),
+                        selections: stablePartList(item && item.optionGroupSelections, (sel) => [
+                            String(sel.groupName || '').trim(),
+                            String(sel.name || '').trim(),
+                            String(sel.pricing || '').trim(),
+                            Number(sel.price || 0),
+                            Number(sel.baseValue || 0)
+                        ].join('|')),
+                        options: stablePartList(item && item.options, (opt) => [
+                            String(opt.name || '').trim(),
+                            Number(opt.price || 0)
+                        ].join('|')),
+                        extras: stablePartList(item && item.posExtras, (ex) => [
+                            String(ex.name || '').trim(),
+                            Number(ex.price || 0)
+                        ].join('|'))
+                    });
+                    list.forEach((rawItem) => {
+                        if (!rawItem || typeof rawItem !== 'object') return;
+                        const item = Object.assign({}, rawItem);
+                        const key = buildKey(item);
+                        const qty = this.getDisplayQty(item);
+                        const lineTotal = this.getDisplayLineTotal(item);
+                        if (!mergedMap[key]) {
+                            const first = Object.assign({}, item);
+                            first.qty = qty;
+                            if (Number.isFinite(lineTotal)) first.itemTotal = lineTotal;
+                            mergedMap[key] = first;
+                            mergedList.push(first);
+                            return;
+                        }
+                        const target = mergedMap[key];
+                        target.qty = this.getDisplayQty(target) + qty;
+                        const nextLineTotal = this.getDisplayLineTotal(target) + lineTotal;
+                        if (Number.isFinite(nextLineTotal)) target.itemTotal = nextLineTotal;
+                        if (!target.eggDoneness && item.eggDoneness) target.eggDoneness = item.eggDoneness;
+                        if (!target.comboDrinkText && item.comboDrinkText) target.comboDrinkText = item.comboDrinkText;
+                        if (!target.mealDrink && item.mealDrink) target.mealDrink = item.mealDrink;
+                        if (!target.comboDrinkLabel && item.comboDrinkLabel) target.comboDrinkLabel = item.comboDrinkLabel;
+                        if (!target.comboDrinkChargeText && item.comboDrinkChargeText) target.comboDrinkChargeText = item.comboDrinkChargeText;
+                        if (!target.comboDrinkDiscount5 && item.comboDrinkDiscount5) target.comboDrinkDiscount5 = true;
+                        if ((!target.comboGroupId || !String(target.comboGroupId).trim()) && item.comboGroupId) target.comboGroupId = item.comboGroupId;
+                        if ((!target.optionGroupSelections || !target.optionGroupSelections.length) && Array.isArray(item.optionGroupSelections) && item.optionGroupSelections.length) {
+                            target.optionGroupSelections = item.optionGroupSelections.slice();
+                        }
+                    });
+                    return mergedList;
                 },
                 normalizeSourceRecordPath(order, orderId) {
                     const o = order || {};
@@ -1154,7 +1226,10 @@
                                 comboDrinkText: (src.comboDrinkText !== undefined && src.comboDrinkText !== null) ? String(src.comboDrinkText) : '',
                                 comboDrinkFullPrice: Number(src.comboDrinkFullPrice || 0),
                                 comboDrinkCredit: Number(src.comboDrinkCredit || 0),
-                                comboDrinkSurcharge: Number(src.comboDrinkSurcharge || 0)
+                                comboDrinkSurcharge: Number(src.comboDrinkSurcharge || 0),
+                                comboDrinkDiscount5: !!src.comboDrinkDiscount5,
+                                comboDrinkLabel: (src.comboDrinkLabel !== undefined && src.comboDrinkLabel !== null) ? String(src.comboDrinkLabel) : '',
+                                comboDrinkChargeText: (src.comboDrinkChargeText !== undefined && src.comboDrinkChargeText !== null) ? String(src.comboDrinkChargeText) : ''
                             });
                             if (mapped.isComboDrink && mapped.comboGroupId) {
                                 const explicitSurcharge = Number(mapped.comboDrinkSurcharge || src.comboDrinkSurcharge || 0);
@@ -1165,6 +1240,20 @@
                                 } else if (Number.isFinite(explicitFullPrice) && explicitFullPrice > 0 && Number.isFinite(explicitCredit)) {
                                     mapped.comboDrinkSurcharge = Math.max(0, explicitFullPrice - explicitCredit);
                                 }
+                            }
+                            if (!mapped.comboDrinkDiscount5) {
+                                mapped.comboDrinkDiscount5 = (Number(mapped.comboDrinkCredit || 0) > 0 && Number(mapped.comboDrinkCredit || 0) <= 5)
+                                    || (Array.isArray(mapped.optionGroupSelections) && mapped.optionGroupSelections.some((sel) => {
+                                        const group = String(sel && sel.groupName || '');
+                                        const base = Number(sel && sel.baseValue);
+                                        return group.indexOf('搭配飲料折5元') !== -1 || group.indexOf('折5') !== -1 || (Number.isFinite(base) && base > 0 && base <= 5);
+                                    }));
+                            }
+                            if (!mapped.comboDrinkLabel) {
+                                mapped.comboDrinkLabel = mapped.comboDrinkDiscount5 ? '搭配飲料折5元' : '套餐飲料';
+                            }
+                            if (!mapped.comboDrinkChargeText && Number(mapped.comboDrinkSurcharge || 0) > 0) {
+                                mapped.comboDrinkChargeText = (mapped.comboDrinkDiscount5 ? '飲料加購$' : '補差價$') + Number(mapped.comboDrinkSurcharge || 0);
                             }
                             const rawSelections = (src.optionSelections && typeof src.optionSelections === 'object')
                                 ? src.optionSelections
@@ -1201,6 +1290,7 @@
                             item.note = cleanedNote;
                             item['\u5099\u8a3b'] = cleanedNote;
                         });
+                        out.items = this.mergeNormalizedOrderItems(out.items);
                     }
                     if (out.integration && out._integrationReadOnly === undefined) {
                         out._integrationReadOnly = !((out.integration.capabilities || {}).editDirect);
@@ -1609,6 +1699,48 @@
                         });
                         return out;
                     };
+                    const getSourceFamilyForSignature = (order) => {
+                        const src = String(order && order.source || '').toLowerCase().trim();
+                        const label = String(order && (order.sourceLabel || order._integrationSourceLabel) || '').toLowerCase().trim();
+                        const path = this.normalizeSourceRecordPath(order, order && order.id || '');
+                        const type = String(order && order.type || '').toLowerCase().trim();
+                        if (path.indexOf('phone_ai/orders/') === 0 || src === 'phone_ai' || src === 'pos_local' || label.indexOf('電話') !== -1 || label.indexOf('phone') !== -1) return 'phone_ai';
+                        if (src === 'pos' || label.indexOf('pos') !== -1) return 'pos';
+                        if (src === 'qrcode') return 'qrcode';
+                        if (src === 'qr_takeout') return 'qr_takeout';
+                        if (src === 'dinein' || type === 'dinein') return 'dinein';
+                        if (src === 'line' || src === 'web_liff') return 'line';
+                        if (path.indexOf('orders/') === 0 || path.indexOf('orders_archive/') === 0 || src === 'web' || src === 'online' || !src) return 'web';
+                        return src;
+                    };
+                    const buildDisplaySignature = (order) => {
+                        if (!order || typeof order !== 'object') return '';
+                        const sourcePath = this.normalizeSourceRecordPath(order, order && order.id || '');
+                        const family = getSourceFamilyForSignature(order);
+                        const no = String(order.orderNo || order.serialNumber || '').trim();
+                        const day = getOrderDayKey(order);
+                        const sourceOrderId = String(order.sourceOrderId || order.orderId || '').trim();
+                        const total = Number(order.total || (order.totals && order.totals.finalTotal) || 0);
+                        const phone = String((order.customer && order.customer.phone) || order.phone || '').trim();
+                        const pickup = String(order.pickupTime || order.pickupTimeLabel || '').trim();
+                        if (sourceOrderId && day && family) return ['oid', family, day, sourceOrderId].join('|');
+                        if (no && day && family) return ['sig', family, day, no, Number.isFinite(total) ? Math.round(total) : '', phone, pickup].join('|');
+                        if (sourcePath) return ['path', sourcePath].join('|');
+                        if (!no || !day || !family) return '';
+                        return '';
+                    };
+                    const collapseByDisplaySignature = (values) => {
+                        const bySig = {};
+                        (Array.isArray(values) ? values : []).forEach((order) => {
+                            const sig = buildDisplaySignature(order);
+                            if (!sig) {
+                                bySig['id:' + String((order && order.id) || Math.random())] = order;
+                                return;
+                            }
+                            bySig[sig] = bySig[sig] ? mergeTwo(bySig[sig], order) : order;
+                        });
+                        return Object.keys(bySig).map((k) => bySig[k]);
+                    };
                     const integrationList = Array.isArray(this.integrationOrdersCache) ? this.integrationOrdersCache : [];
                     const mergedMap = {};
                     if (integrationList.length) {
@@ -1628,7 +1760,7 @@
                             // handled by upsertMerged
                         });
                     }
-                    const mergedOrders = this.normalizeIncomingOrders(collapseMergedValues(Object.values(mergedMap))).map((o) => this.applyRemoteStatusOverrideToOrder(o));
+                    const mergedOrders = this.normalizeIncomingOrders(collapseByDisplaySignature(collapseMergedValues(Object.values(mergedMap)))).map((o) => this.applyRemoteStatusOverrideToOrder(o));
                     this.orders = mergedOrders;
                     const mergedNewCount = mergedOrders.filter(o => this.getDisplayStatus(o) === 'new').length;
                     if (mergedNewCount > this.previousNewCount && this.previousNewCount !== 0) this.playAlert();
@@ -2189,5 +2321,3 @@
     </script>
 </body>
 </html>
-
-

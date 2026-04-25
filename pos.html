@@ -843,6 +843,62 @@
                 }
                 return '';
             },
+            mergeNormalizedOrderItems:function(items){
+                var list=Array.isArray(items)?items:[];
+                var mergedMap={};
+                var mergedList=[];
+                function stablePartList(rows,mapper){return (Array.isArray(rows)?rows:[]).map(function(row){return mapper(row||{});}).sort();}
+                function qtyOf(item){var qty=Number(item&&((item.qty!==undefined)?item.qty:((item['數量']!==undefined)?item['數量']:item.quantity)));return (Number.isFinite(qty)&&qty>0)?qty:1;}
+                function lineTotalOf(item){var candidates=[item&&item.itemTotal,item&&item.subtotal,item&&item['總價'],item&&item.lineSubtotal,item&&item.total];for(var i=0;i<candidates.length;i++){var v=Number(candidates[i]);if(Number.isFinite(v)&&v>0)return v;}var unit=Number(item&&((item.price!==undefined)?item.price:((item.unitPrice!==undefined)?item.unitPrice:item['單價'])));return (Number.isFinite(unit)&&unit>0)?unit*qtyOf(item):0;}
+                function buildKey(item){
+                    return JSON.stringify({
+                        name:String(item&&(item.name||item['品項'])||'').trim(),
+                        note:String(item&&(item.note||item['備註'])||'').trim(),
+                        size:String(item&&(item.size||item['容量'])||'').trim(),
+                        temp:String(item&&(item.temp||item['溫度'])||'').trim(),
+                        egg:String(item&&item.eggDoneness||'').trim(),
+                        isCombo:!!(item&&item.isCombo),
+                        isComboDrink:!!(item&&item.isComboDrink),
+                        mealDrink:String(item&&item.mealDrink||'').trim(),
+                        comboDrinkText:String(item&&item.comboDrinkText||'').trim(),
+                        comboDrinkLabel:String(item&&item.comboDrinkLabel||'').trim(),
+                        comboDrinkChargeText:String(item&&item.comboDrinkChargeText||'').trim(),
+                        selections:stablePartList(item&&item.optionGroupSelections,function(sel){return [String(sel.groupName||'').trim(),String(sel.name||'').trim(),String(sel.pricing||'').trim(),Number(sel.price||0),Number(sel.baseValue||0)].join('|');}),
+                        options:stablePartList(item&&item.options,function(opt){return [String(opt.name||'').trim(),Number(opt.price||0)].join('|');}),
+                        extras:stablePartList(item&&item.posExtras,function(ex){return [String(ex.name||'').trim(),Number(ex.price||0)].join('|');})
+                    });
+                }
+                list.forEach(function(rawItem){
+                    if(!rawItem||typeof rawItem!=='object')return;
+                    var item=Object.assign({},rawItem);
+                    var key=buildKey(item);
+                    var qty=qtyOf(item);
+                    var lineTotal=lineTotalOf(item);
+                    if(!mergedMap[key]){
+                        var first=Object.assign({},item);
+                        first.qty=qty;
+                        if(Number.isFinite(lineTotal))first.itemTotal=lineTotal;
+                        mergedMap[key]=first;
+                        mergedList.push(first);
+                        return;
+                    }
+                    var target=mergedMap[key];
+                    target.qty=qtyOf(target)+qty;
+                    var nextLineTotal=lineTotalOf(target)+lineTotal;
+                    if(Number.isFinite(nextLineTotal))target.itemTotal=nextLineTotal;
+                    if(!target.eggDoneness&&item.eggDoneness)target.eggDoneness=item.eggDoneness;
+                    if(!target.comboDrinkText&&item.comboDrinkText)target.comboDrinkText=item.comboDrinkText;
+                    if(!target.mealDrink&&item.mealDrink)target.mealDrink=item.mealDrink;
+                    if(!target.comboDrinkLabel&&item.comboDrinkLabel)target.comboDrinkLabel=item.comboDrinkLabel;
+                    if(!target.comboDrinkChargeText&&item.comboDrinkChargeText)target.comboDrinkChargeText=item.comboDrinkChargeText;
+                    if(!target.comboDrinkDiscount5&&item.comboDrinkDiscount5)target.comboDrinkDiscount5=true;
+                    if((!target.comboGroupId||!String(target.comboGroupId).trim())&&item.comboGroupId)target.comboGroupId=item.comboGroupId;
+                    if((!target.optionGroupSelections||!target.optionGroupSelections.length)&&Array.isArray(item.optionGroupSelections)&&item.optionGroupSelections.length){
+                        target.optionGroupSelections=item.optionGroupSelections.slice();
+                    }
+                }.bind(this));
+                return mergedList;
+            },
             normalizeIncomingOrder:function(order){
                 if(!order||typeof order!=='object')return order;
                 var out=Object.assign({},order);
@@ -1005,7 +1061,10 @@
                             comboDrinkText:(src.comboDrinkText!==undefined&&src.comboDrinkText!==null)?String(src.comboDrinkText):'',
                             comboDrinkFullPrice:Number(src.comboDrinkFullPrice||0),
                             comboDrinkCredit:Number(src.comboDrinkCredit||0),
-                            comboDrinkSurcharge:Number(src.comboDrinkSurcharge||0)
+                            comboDrinkSurcharge:Number(src.comboDrinkSurcharge||0),
+                            comboDrinkDiscount5:!!src.comboDrinkDiscount5,
+                            comboDrinkLabel:(src.comboDrinkLabel!==undefined&&src.comboDrinkLabel!==null)?String(src.comboDrinkLabel):'',
+                            comboDrinkChargeText:(src.comboDrinkChargeText!==undefined&&src.comboDrinkChargeText!==null)?String(src.comboDrinkChargeText):''
                         });
                         if(!mapped.options.length&&Array.isArray(src['加料'])){
                             mapped.options=src['加料'].map(function(addon){
@@ -1025,6 +1084,20 @@
                             }else if(Number.isFinite(explicitFullPrice)&&explicitFullPrice>0&&Number.isFinite(explicitCredit)){
                                 mapped.comboDrinkSurcharge=Math.max(0,explicitFullPrice-explicitCredit);
                             }
+                        }
+                        if(!mapped.comboDrinkDiscount5){
+                            mapped.comboDrinkDiscount5=(Number(mapped.comboDrinkCredit||0)>0&&Number(mapped.comboDrinkCredit||0)<=5)
+                                ||(Array.isArray(mapped.optionGroupSelections)&&mapped.optionGroupSelections.some(function(sel){
+                                    var group=String(sel&&sel.groupName||'');
+                                    var base=Number(sel&&sel.baseValue);
+                                    return group.indexOf('搭配飲料折5元')!==-1||group.indexOf('折5')!==-1||(Number.isFinite(base)&&base>0&&base<=5);
+                                }));
+                        }
+                        if(!mapped.comboDrinkLabel){
+                            mapped.comboDrinkLabel=mapped.comboDrinkDiscount5?'搭配飲料折5元':'套餐飲料';
+                        }
+                        if(!mapped.comboDrinkChargeText&&Number(mapped.comboDrinkSurcharge||0)>0){
+                            mapped.comboDrinkChargeText=(mapped.comboDrinkDiscount5?'飲料加購$':'補差價$')+Number(mapped.comboDrinkSurcharge||0);
                         }
                         var rawSelections = (src.optionSelections && typeof src.optionSelections==='object')
                             ? src.optionSelections
@@ -1060,6 +1133,7 @@
                         }
                         return mapped.name?mapped:null;
                     }).filter(function(item){return !!item;});
+                    out.items=self.mergeNormalizedOrderItems(out.items);
                 }
                 if(out.integration&&out._integrationReadOnly===undefined){
                     out._integrationReadOnly=!((out.integration.capabilities||{}).editDirect);
@@ -2008,6 +2082,48 @@
                     });
                     return out;
                 };
+                function getSourceFamilyForSignature(order){
+                    var src=String(order&&order.source||'').toLowerCase().trim();
+                    var label=String(order&&(order.sourceLabel||order._integrationSourceLabel)||'').toLowerCase().trim();
+                    var path=s.normalizeSourceRecordPath(order,order&&order.id||'');
+                    var type=String(order&&order.type||'').toLowerCase().trim();
+                    if(path.indexOf('phone_ai/orders/')===0||src==='phone_ai'||src==='pos_local'||label.indexOf('電話')!==-1||label.indexOf('phone')!==-1)return 'phone_ai';
+                    if(src==='pos'||label.indexOf('pos')!==-1)return 'pos';
+                    if(src==='qrcode')return 'qrcode';
+                    if(src==='qr_takeout')return 'qr_takeout';
+                    if(src==='dinein'||type==='dinein')return 'dinein';
+                    if(src==='line'||src==='web_liff')return 'line';
+                    if(path.indexOf('orders/')===0||path.indexOf('orders_archive/')===0||src==='web'||src==='online'||!src)return 'web';
+                    return src;
+                }
+                var buildDisplaySignature=function(order){
+                    if(!order||typeof order!=='object')return '';
+                    var sourcePath=s.normalizeSourceRecordPath(order,order&&order.id||'');
+                    var family=getSourceFamilyForSignature(order);
+                    var no=String(order.orderNo||order.serialNumber||'').trim();
+                    var day=getOrderDayKey(order);
+                    var sourceOrderId=String(order.sourceOrderId||order.orderId||'').trim();
+                    var total=Number(order.total||((order.totals&&order.totals.finalTotal)||0));
+                    var phone=String((order.customer&&order.customer.phone)||order.phone||'').trim();
+                    var pickup=String(order.pickupTime||order.pickupTimeLabel||'').trim();
+                    if(sourceOrderId&&day&&family)return ['oid',family,day,sourceOrderId].join('|');
+                    if(no&&day&&family)return ['sig',family,day,no,Number.isFinite(total)?Math.round(total):'',phone,pickup].join('|');
+                    if(sourcePath)return ['path',sourcePath].join('|');
+                    if(!no||!day||!family)return '';
+                    return '';
+                };
+                var collapseByDisplaySignature=function(values){
+                    var bySig={};
+                    (Array.isArray(values)?values:[]).forEach(function(order){
+                        var sig=buildDisplaySignature(order);
+                        if(!sig){
+                            bySig['id:'+String((order&&order.id)||Math.random())]=order;
+                            return;
+                        }
+                        bySig[sig]=bySig[sig]?mergeTwo(bySig[sig],order):order;
+                    });
+                    return Object.keys(bySig).map(function(k){return bySig[k];});
+                };
                 var integrationList=Array.isArray(s.integrationOrdersCache)?s.integrationOrdersCache:[];
                 var mergedMap={};
                 if(integrationList.length){
@@ -2027,7 +2143,7 @@
                         upsertMerged(mergedMap,o);
                     });
                 }
-                var mergedOrders=s.normalizeIncomingOrders(collapseMergedValues(Object.values(mergedMap))).map(function(o){return s.applyStatusOverrideToOrder(o);});
+                var mergedOrders=s.normalizeIncomingOrders(collapseByDisplaySignature(collapseMergedValues(Object.values(mergedMap)))).map(function(o){return s.applyStatusOverrideToOrder(o);});
                 s.onlineOrders=mergedOrders.filter(function(o){return !o||o.status!=='archived';}).sort(function(a,b){
                     var w={new:1,making:2,done:3,cancelled:4};
                     if(w[a.status]!==w[b.status])return w[a.status]-w[b.status];

@@ -2066,6 +2066,7 @@ window._doCountUp = function() {
                 if (!item || typeof item !== 'object') return false;
                 if (item.comboDrinkDiscount5) return true;
                 if (String(item.comboDrinkLabel || '').indexOf('\u642d\u914d\u98f2\u6599\u62985\u5143') !== -1) return true;
+                if (String(item.comboDrinkChargeText || item.comboDrinkText || item.mealDrink || '').indexOf('\u98f2\u6599\u52a0\u8cfc') !== -1) return true;
                 var checkSel = function(sel) {
                     var group = String(sel && sel.groupName || '');
                     var base = Number(sel && sel.baseValue);
@@ -2078,6 +2079,11 @@ window._doCountUp = function() {
                 var credit = Number(item.comboDrinkCredit || 0);
                 if (Number.isFinite(credit) && credit > 0 && credit <= 5) return true;
                 var sibling = this.findComboDrinkSibling(order, item, index);
+                if (sibling && sibling.comboDrinkDiscount5) return true;
+                if (String(sibling && sibling.comboDrinkLabel || '').indexOf('\u642d\u914d\u98f2\u6599\u62985\u5143') !== -1) return true;
+                if (String(sibling && (sibling.comboDrinkChargeText || sibling.comboDrinkText || sibling.mealDrink) || '').indexOf('\u98f2\u6599\u52a0\u8cfc') !== -1) return true;
+                var sibSels = Array.isArray(sibling && sibling.optionGroupSelections) ? sibling.optionGroupSelections : [];
+                if (sibSels.some(checkSel)) return true;
                 var sibCredit = Number(sibling && sibling.comboDrinkCredit || 0);
                 return Number.isFinite(sibCredit) && sibCredit > 0 && sibCredit <= 5;
             },
@@ -2115,12 +2121,12 @@ window._doCountUp = function() {
                         else if (!drink) drink = this.normalizeDetailDrinkName(text, state);
                     }.bind(this));
                 }
-                var explicitCharge = String(item.comboDrinkChargeText || '').trim();
+                var sibling = this.findComboDrinkSibling(order, item, index);
+                var explicitCharge = String(item.comboDrinkChargeText || sibling && sibling.comboDrinkChargeText || '').trim();
                 if (explicitCharge) {
                     var em = explicitCharge.match(/(?:\u88dc\u5dee\u50f9|\u98f2\u6599\u52a0\u8cfc)\s*\$?\s*(\d+)/);
                     if (em && em[1]) upgrade = Math.max(upgrade, Number(em[1] || 0));
                 }
-                var sibling = this.findComboDrinkSibling(order, item, index);
                 if (sibling && (!drink || !state.size || !state.temp)) {
                     drink = drink || this.normalizeDetailDrinkName(sibling.name || sibling['\u54c1\u9805'] || '', state);
                     state.size = state.size || String(sibling.size || sibling['\u5bb9\u91cf'] || '').trim();
@@ -2130,8 +2136,8 @@ window._doCountUp = function() {
                 if (!parts.length) return '';
                 var text = parts.join('/');
                 var discount5 = this.isDetailDiscount5Meal(item, order, index);
-                var label = String(item.comboDrinkLabel || '').trim() || (discount5 ? '\u642d\u914d\u98f2\u6599\u62985\u5143' : '\u5957\u9910\u98f2\u6599');
-                var chargeText = String(item.comboDrinkChargeText || '').trim();
+                var label = String(item.comboDrinkLabel || sibling && sibling.comboDrinkLabel || '').trim() || (discount5 ? '\u642d\u914d\u98f2\u6599\u62985\u5143' : '\u5957\u9910\u98f2\u6599');
+                var chargeText = String(item.comboDrinkChargeText || sibling && sibling.comboDrinkChargeText || '').trim();
                 if (upgrade > 0) text += '/' + (chargeText || ((discount5 ? '\u98f2\u6599\u52a0\u8cfc$' : '\u88dc\u5dee\u50f9$') + upgrade));
                 return label + '\uFF1A' + text;
             },
@@ -2304,6 +2310,74 @@ window._doCountUp = function() {
                 if (raw === '\u5957\u9910\u98f2\u6599') return '';
                 return raw;
             },
+            mergeNormalizedStatsItems: function(items) {
+                var list = Array.isArray(items) ? items : [];
+                var mergedMap = {};
+                var mergedList = [];
+                var stablePartList = function(rows, mapper) {
+                    return (Array.isArray(rows) ? rows : []).map(function(row) { return mapper(row || {}); }).sort();
+                };
+                var buildKey = function(item) {
+                    return JSON.stringify({
+                        name: String(item && (item.name || item['\u54c1\u9805']) || '').trim(),
+                        note: String(item && (item.note || item['\u5099\u8a3b']) || '').trim(),
+                        size: String(item && (item.size || item['\u5bb9\u91cf']) || '').trim(),
+                        temp: String(item && (item.temp || item['\u6eab\u5ea6']) || '').trim(),
+                        egg: String(item && item.eggDoneness || '').trim(),
+                        isCombo: !!(item && item.isCombo),
+                        isComboDrink: !!(item && item.isComboDrink),
+                        mealDrink: String(item && item.mealDrink || '').trim(),
+                        comboDrinkText: String(item && item.comboDrinkText || '').trim(),
+                        comboDrinkLabel: String(item && item.comboDrinkLabel || '').trim(),
+                        comboDrinkChargeText: String(item && item.comboDrinkChargeText || '').trim(),
+                        selections: stablePartList(item && item.optionGroupSelections, function(sel) {
+                            return [
+                                String(sel.groupName || '').trim(),
+                                String(sel.name || '').trim(),
+                                String(sel.pricing || '').trim(),
+                                Number(sel.price || 0),
+                                Number(sel.baseValue || 0)
+                            ].join('|');
+                        }),
+                        options: stablePartList(item && item.options, function(opt) {
+                            return [String(opt.name || '').trim(), Number(opt.price || 0)].join('|');
+                        }),
+                        extras: stablePartList(item && item.posExtras, function(ex) {
+                            return [String(ex.name || '').trim(), Number(ex.price || 0)].join('|');
+                        })
+                    });
+                };
+                list.forEach(function(rawItem) {
+                    if (!rawItem || typeof rawItem !== 'object') return;
+                    var item = Object.assign({}, rawItem);
+                    var key = buildKey(item);
+                    var qty = this.getDetailItemQty(item);
+                    var lineTotal = this.getDetailLineTotal(item);
+                    if (!mergedMap[key]) {
+                        var first = Object.assign({}, item);
+                        first.qty = qty;
+                        if (Number.isFinite(lineTotal)) first.itemTotal = lineTotal;
+                        mergedMap[key] = first;
+                        mergedList.push(first);
+                        return;
+                    }
+                    var target = mergedMap[key];
+                    target.qty = this.getDetailItemQty(target) + qty;
+                    var nextLineTotal = this.getDetailLineTotal(target) + lineTotal;
+                    if (Number.isFinite(nextLineTotal)) target.itemTotal = nextLineTotal;
+                    if (!target.eggDoneness && item.eggDoneness) target.eggDoneness = item.eggDoneness;
+                    if (!target.comboDrinkText && item.comboDrinkText) target.comboDrinkText = item.comboDrinkText;
+                    if (!target.mealDrink && item.mealDrink) target.mealDrink = item.mealDrink;
+                    if (!target.comboDrinkLabel && item.comboDrinkLabel) target.comboDrinkLabel = item.comboDrinkLabel;
+                    if (!target.comboDrinkChargeText && item.comboDrinkChargeText) target.comboDrinkChargeText = item.comboDrinkChargeText;
+                    if (!target.comboDrinkDiscount5 && item.comboDrinkDiscount5) target.comboDrinkDiscount5 = true;
+                    if ((!target.comboGroupId || !String(target.comboGroupId).trim()) && item.comboGroupId) target.comboGroupId = item.comboGroupId;
+                    if ((!target.optionGroupSelections || !target.optionGroupSelections.length) && Array.isArray(item.optionGroupSelections) && item.optionGroupSelections.length) {
+                        target.optionGroupSelections = item.optionGroupSelections.slice();
+                    }
+                }.bind(this));
+                return mergedList;
+            },
             normalizeStatsOrder: function(order) {
                 if (!order || typeof order !== 'object') return order;
                 var out = Object.assign({}, order);
@@ -2417,6 +2491,7 @@ window._doCountUp = function() {
                         }
 
                         var mappedItem = Object.assign({}, src, {
+                            id: src.id || src.productId || src.sku || String(nameRaw || 'item'),
                             name: String(nameRaw || '').trim(),
                             qty: qty,
                             price: Number(unit || 0),
@@ -2424,19 +2499,42 @@ window._doCountUp = function() {
                             note: (src.note !== undefined && src.note !== null) ? String(src.note) : (src['備註'] || ''),
                             size: (src.size !== undefined && src.size !== null) ? String(src.size) : (src['容量'] || ''),
                             temp: (src.temp !== undefined && src.temp !== null) ? String(src.temp) : (src['溫度'] || ''),
+                            isComboDrink: !!(src.isComboDrink || String(src['備註'] || '').indexOf('套餐飲料') !== -1),
+                            comboGroupId: src.comboGroupId || '',
+                            mealDrink: (src.mealDrink !== undefined && src.mealDrink !== null) ? String(src.mealDrink) : '',
+                            comboDrinkText: (src.comboDrinkText !== undefined && src.comboDrinkText !== null) ? String(src.comboDrinkText) : '',
+                            comboDrinkFullPrice: Number(src.comboDrinkFullPrice || 0),
+                            comboDrinkCredit: Number(src.comboDrinkCredit || 0),
+                            comboDrinkSurcharge: Number(src.comboDrinkSurcharge || 0),
+                            comboDrinkDiscount5: !!src.comboDrinkDiscount5,
+                            comboDrinkLabel: (src.comboDrinkLabel !== undefined && src.comboDrinkLabel !== null) ? String(src.comboDrinkLabel) : '',
+                            comboDrinkChargeText: (src.comboDrinkChargeText !== undefined && src.comboDrinkChargeText !== null) ? String(src.comboDrinkChargeText) : '',
                             optionGroupSelections: Array.isArray(src.optionGroupSelections) ? src.optionGroupSelections.slice() : []
                         });
 
                         if (mappedItem.isComboDrink && mappedItem.comboGroupId) {
-                            var mQty = Math.max(1, Number(mappedItem.qty || 1));
-                            var mUnit = Number(mappedItem.price || 0);
-                            var mLine = Number(mappedItem.itemTotal || 0);
-                            var fullUnit = (mUnit >= 30) ? mUnit : ((mLine >= 30 && mQty > 0) ? (mLine / mQty) : mUnit);
-                            if (Number.isFinite(fullUnit) && fullUnit >= 30) {
-                                var surcharge = Math.max(0, fullUnit - 30);
-                                mappedItem.price = surcharge;
-                                mappedItem.itemTotal = surcharge * mQty;
+                            var explicitSurcharge = Number(mappedItem.comboDrinkSurcharge || src.comboDrinkSurcharge || 0);
+                            var explicitFullPrice = Number(mappedItem.comboDrinkFullPrice || src.comboDrinkFullPrice || 0);
+                            var explicitCredit = Number(mappedItem.comboDrinkCredit || src.comboDrinkCredit || 0);
+                            if (Number.isFinite(explicitSurcharge) && explicitSurcharge > 0) {
+                                mappedItem.comboDrinkSurcharge = explicitSurcharge;
+                            } else if (Number.isFinite(explicitFullPrice) && explicitFullPrice > 0 && Number.isFinite(explicitCredit)) {
+                                mappedItem.comboDrinkSurcharge = Math.max(0, explicitFullPrice - explicitCredit);
                             }
+                        }
+                        if (!mappedItem.comboDrinkDiscount5) {
+                            mappedItem.comboDrinkDiscount5 = (Number(mappedItem.comboDrinkCredit || 0) > 0 && Number(mappedItem.comboDrinkCredit || 0) <= 5)
+                                || (Array.isArray(mappedItem.optionGroupSelections) && mappedItem.optionGroupSelections.some(function(sel) {
+                                    var group = String(sel && sel.groupName || '');
+                                    var base = Number(sel && sel.baseValue);
+                                    return group.indexOf('搭配飲料折5元') !== -1 || group.indexOf('折5') !== -1 || (Number.isFinite(base) && base > 0 && base <= 5);
+                                }));
+                        }
+                        if (!mappedItem.comboDrinkLabel) {
+                            mappedItem.comboDrinkLabel = mappedItem.comboDrinkDiscount5 ? '搭配飲料折5元' : '套餐飲料';
+                        }
+                        if (!mappedItem.comboDrinkChargeText && Number(mappedItem.comboDrinkSurcharge || 0) > 0) {
+                            mappedItem.comboDrinkChargeText = (mappedItem.comboDrinkDiscount5 ? '飲料加購$' : '補差價$') + Number(mappedItem.comboDrinkSurcharge || 0);
                         }
                         var rawSelections = (src.optionSelections && typeof src.optionSelections === 'object')
                             ? src.optionSelections
@@ -2474,6 +2572,7 @@ window._doCountUp = function() {
                         item.note = cleanedNote;
                         item['\u5099\u8a3b'] = cleanedNote;
                     });
+                    out.items = self.mergeNormalizedStatsItems(out.items);
                 }
                 return out;
             },
@@ -3453,6 +3552,59 @@ window._doCountUp = function() {
                     });
                     return out;
                 };
+                var getStatsSourceFamilyForSignature = function(order) {
+                    var src = String(order && order.source || '').toLowerCase().trim();
+                    var label = String(order && order.sourceLabel || '').toLowerCase().trim();
+                    var path = self.resolveStatsSourceOrderPath(order);
+                    var type = String(order && order.type || '').toLowerCase().trim();
+                    if (path.indexOf('phone_ai/orders/') === 0 || src === 'phone_ai' || src === 'pos_local' || label.indexOf('電話') !== -1 || label.indexOf('phone') !== -1) return 'phone_ai';
+                    if (src === 'pos' || label.indexOf('pos') !== -1) return 'pos';
+                    if (src === 'qrcode') return 'qrcode';
+                    if (src === 'qr_takeout') return 'qr_takeout';
+                    if (src === 'dinein' || type === 'dinein') return 'dinein';
+                    if (src === 'line' || src === 'web_liff') return 'line';
+                    if (path.indexOf('orders/') === 0 || path.indexOf('orders_archive/') === 0 || src === 'web' || src === 'online' || !src) return 'web';
+                    return src;
+                };
+                var buildStatsDisplaySignature = function(order) {
+                    if (!order || typeof order !== 'object') return '';
+                    var sourcePath = self.resolveStatsSourceOrderPath(order);
+                    var family = getStatsSourceFamilyForSignature(order);
+                    var no = String(order.orderNo || order.serialNumber || '').trim();
+                    var day = resolveDayKey(order);
+                    var sourceOrderId = String(order.sourceOrderId || order.orderId || '').trim();
+                    var total = Number(self.getOrderTotalValue(order) || 0);
+                    var phone = String((order.customer && order.customer.phone) || order.phone || '').trim();
+                    var pickup = String(order.pickupTime || order.pickupTimeLabel || '').trim();
+                    if (sourceOrderId && day && family) return ['oid', family, day, sourceOrderId].join('|');
+                    if (no && day && family) return ['sig', family, day, no, Number.isFinite(total) ? Math.round(total) : '', phone, pickup].join('|');
+                    if (sourcePath) return ['path', sourcePath].join('|');
+                    if (!no || !day || !family) return '';
+                    return '';
+                };
+                var collapseStatsByDisplaySignature = function(values) {
+                    var bySig = {};
+                    (Array.isArray(values) ? values : []).forEach(function(order) {
+                        var sig = buildStatsDisplaySignature(order);
+                        if (!sig) {
+                            bySig['id:' + String((order && order.id) || Math.random())] = order;
+                            return;
+                        }
+                        if (!bySig[sig]) {
+                            bySig[sig] = order;
+                            return;
+                        }
+                        var current = bySig[sig];
+                        var bestItems = self.pickRicherStatsItems(current.items, order.items, Number(self.getOrderTotalValue(order) || self.getOrderTotalValue(current) || 0));
+                        var merged = Object.assign({}, current, order);
+                        if (bestItems && bestItems.length) merged.items = bestItems.map(function(it){ return Object.assign({}, it); });
+                        var totals = [Number(self.getOrderTotalValue(current) || 0), Number(self.getOrderTotalValue(order) || 0), self.sumStatsItemsTotal(merged.items)];
+                        var finiteTotals = totals.filter(function(v){ return Number.isFinite(v); });
+                        if (finiteTotals.length) merged.total = Math.max.apply(null, finiteTotals);
+                        bySig[sig] = self.normalizeStatsOrder(merged);
+                    });
+                    return Object.keys(bySig).map(function(k){ return bySig[k]; });
+                };
 
                 var integrationPromise = get(ref(db, 'integration_views/merged_orders_history_index'))
                     .then(function(snap) {
@@ -3519,7 +3671,7 @@ window._doCountUp = function() {
                     var mergedMap = {};
                     integrationOrders.forEach(function(o){ mergeOrderById(mergedMap, o); });
                     bucketOrders.forEach(function(o){ mergeOrderById(mergedMap, o); });
-                    self.allOrdersCache = collapseMergedStatsValues(Object.values(mergedMap)).map(function(o) { return self.applyStatusOverrideToOrder(o); });
+                    self.allOrdersCache = collapseStatsByDisplaySignature(collapseMergedStatsValues(Object.values(mergedMap))).map(function(o) { return self.applyStatusOverrideToOrder(o); });
                     self.doFilter();
                 }).catch(function(e) {
                     console.error('讀取統計失敗:', e);
