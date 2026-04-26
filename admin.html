@@ -299,6 +299,8 @@
                     assigningNos: {},
                     orderBuckets: {},
                     orderBucketUnsubs: [],
+                    phoneOrderMap: {},
+                    phoneOrdersUnsub: null,
                     integrationOrdersCache: [],
                     linePayServerUrl: '',
                     linePayConfirmUrl: '',
@@ -684,18 +686,22 @@
                     }
                     return this.getMenuDefaultEggDoneness(item);
                 },
-                menuItemUsesDiscount5MealTemplate(item) {
+                getMenuMealUpgradeMetaForDisplay(item) {
                     const menuItem = this.findMenuItemForDisplayName(item && (item.name || item['\u54c1\u9805']));
                     const groups = Array.isArray(menuItem && menuItem.optionGroups) ? menuItem.optionGroups : [];
-                    return groups.some((group) => {
-                        const groupName = String(group && (group.groupName || group.name || group.label) || '');
-                        const pricing = String(group && group.pricing || '');
-                        const base = Number(group && group.baseValue);
-                        if (groupName.indexOf('\u642d\u914d\u98f2\u6599\u62985\u5143') !== -1 || groupName.indexOf('\u62985') !== -1) return true;
-                        return pricing === 'mealUpgrade' && Number.isFinite(base) && base > 0 && base <= 5;
-                    });
-                },
-                getDisplayItemNote(item, order) {
+                    for (let i = 0; i < groups.length; i++) {
+                        const group = groups[i] || {};
+                        if (String(group && group.pricing || '') !== 'mealUpgrade') continue;
+                        const groupName = String(group.groupName || group.name || group.label || '').trim();
+                        const explicitLabel = String(group.mealUpgradeDisplayLabel || group.displayLabel || '').trim();
+                        const explicitPrefix = String(group.mealUpgradeChargePrefix || group.chargePrefix || '').trim();
+                        const base = Number(group.baseValue);
+                        const discountStyle = explicitPrefix.indexOf('飲料加購') !== -1
+                            || explicitLabel.indexOf('折') !== -1
+                            || groupName.indexOf('折') !== -1
+                            || (Number.isFinite(base) && base > 0 && base <= 5);
+                        const label = explicitLabel || (discountStyle ? (groupName || ('搭配飲料折' + (Number.isFinite(base) && base > 0 ? base : 5) + '元')) : '套餐飲料');
+                        const chargePrefix = explicitPrefix || (discountStyle ? '飲料加購
                     if (!item || this.isComboDrinkLineForDisplay(item)) return '';
                     const notes = [];
                     const own = this.cleanDisplayNoteText(item.note || item['\u5099\u8a3b'] || '');
@@ -1008,20 +1014,20 @@
                 getItemMealDrinkLabel(item, order) {
                     const sibling = this.findComboDrinkSiblingForDisplay(item, order);
                     const explicit = String(item && item.comboDrinkLabel || sibling && sibling.comboDrinkLabel || '').trim();
+                    const meta = this.getMenuMealUpgradeMetaForDisplay(item);
+                    if (meta && meta.label && (!explicit || explicit === '套餐飲料' || explicit.indexOf('套餐飲料') !== -1)) return meta.label;
                     if (this.isDiscount5MealForDisplay(item, order) && (explicit === '\u5957\u9910\u98f2\u6599' || explicit.indexOf('\u5957\u9910\u98f2\u6599') !== -1)) {
-                        return '\u642d\u914d\u98f2\u6599\u62985\u5143';
+                        return meta && meta.label ? meta.label : '\u642d\u914d\u98f2\u6599\u62985\u5143';
                     }
                     if (explicit) return explicit;
+                    if (meta && meta.label) return meta.label;
                     return this.isDiscount5MealForDisplay(item, order) ? '\u642d\u914d\u98f2\u6599\u62985\u5143' : '\u5957\u9910\u98f2\u6599';
                 },
                 getItemMealDrinkChargeText(item, order, amount) {
                     const sibling = this.findComboDrinkSiblingForDisplay(item, order);
                     const explicit = String(item && item.comboDrinkChargeText || sibling && sibling.comboDrinkChargeText || '').trim();
-                    if (explicit && this.isDiscount5MealForDisplay(item, order)) return explicit.replace(/\u88dc\u5dee\u50f9/g, '\u98f2\u6599\u52a0\u8cfc');
-                    if (explicit) return explicit;
-                    return (this.isDiscount5MealForDisplay(item, order) ? '\u98f2\u6599\u52a0\u8cfc$' : '\u88dc\u5dee\u50f9$') + amount;
-                },
-                getItemMealDrinkText(item, order) {
+                    const meta = this.getMenuMealUpgradeMetaForDisplay(item);
+                    const desiredPrefix = String(meta && meta.chargePrefix || (this.isDiscount5MealForDisplay(item, order) ? '飲料加購
                     if (!this.isComboMainLineForDisplay(item)) return '';
                     const state = { size: String(item.size || item['\u5bb9\u91cf'] || '').trim(), temp: String(item.temp || item['\u6eab\u5ea6'] || '').trim() };
                     let drinkName = '';
@@ -1510,6 +1516,7 @@
                 listenToOrders() {
                     const self = this;
                     self.resetOrderBucketListeners();
+                    self.resetPhoneOrdersListener();
                     self.resetIntegrationOrdersListener();
                     const selfS = this;
                     const _loadAdminSettings = () => {
@@ -1524,6 +1531,26 @@
                     _loadAdminSettings();
                     setInterval(_loadAdminSettings, 300000);
                     const self2 = this;
+                    const phoneOrdersRef = ref(db, 'phone_ai/orders');
+                    self.phoneOrdersUnsub = onValue(phoneOrdersRef, (snap) => {
+                        const raw = snap.exists() ? (snap.val() || {}) : {};
+                        const next = {};
+                        Object.keys(raw).forEach((id) => {
+                            const row = raw[id];
+                            if (!row || typeof row !== 'object') return;
+                            next[id] = Object.assign({}, row, {
+                                id: String(id),
+                                source: String(row.source || 'phone_ai'),
+                                sourceRecordPath: String(row.sourceRecordPath || ('phone_ai/orders/' + id))
+                            });
+                        });
+                        self.phoneOrderMap = next;
+                        self.rebuildOrdersFromBuckets();
+                    }, (err) => {
+                        console.error('❌ phone_ai/orders 監聽失敗:', err && err.message ? err.message : err);
+                        self.phoneOrderMap = {};
+                        self.rebuildOrdersFromBuckets();
+                    });
                     (() => {
                         const txnQ = query(ref(db, 'linepay_transactions'), limitToLast(100));
                         const _confirmed = {}, _statusMap = {};
@@ -1585,6 +1612,17 @@
                             const row = { id, ...o };
                             if (!map[id] || (row.timestamp || 0) > (map[id].timestamp || 0)) map[id] = row;
                         });
+                    });
+                    Object.keys(this.phoneOrderMap || {}).forEach((id) => {
+                        const row = this.phoneOrderMap[id];
+                        if (!row || typeof row !== 'object') return;
+                        if (!row.status) return;
+                        if (row.status !== 'new' && row.status !== 'making' && row.status !== 'done' && row.status !== 'ready' && row.status !== 'cancelled') return;
+                        const item = Object.assign({ id: String(id) }, row, {
+                            source: String(row.source || 'phone_ai'),
+                            sourceRecordPath: String(row.sourceRecordPath || ('phone_ai/orders/' + id))
+                        });
+                        if (!map[id] || Number(item.timestamp || item.createdAt || 0) > Number((map[id] && (map[id].timestamp || map[id].createdAt)) || 0)) map[id] = item;
                     });
                     const parsedOrders = this.normalizeIncomingOrders(Object.values(map));
                     parsedOrders.forEach((o) => {
@@ -1854,6 +1892,11 @@
                     this.previousNewCount = mergedNewCount;
                     // ★ 離線補印：檢查有流水號但未列印的訂單，重新寫入 print_queue
                     this.requeueUnprintedOrders(mergedOrders);
+                },
+                resetPhoneOrdersListener() {
+                    try { if (this.phoneOrdersUnsub) this.phoneOrdersUnsub(); } catch (e) {}
+                    this.phoneOrdersUnsub = null;
+                    this.phoneOrderMap = {};
                 },
                 resetOrderBucketListeners() {
                     (this.orderBucketUnsubs || []).forEach((fn) => { try { fn && fn(); } catch(_) {} });
