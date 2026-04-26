@@ -583,7 +583,7 @@
                 posOrderType:'takeout',posTableLabel:'',posTables:[],cartDragIdx:null,
                 posPickupDate:"",posPickupTime:"",
                 orderMode:"pos",editingOrder:null,
-                onlineOrders:[],ordersLoading:false,assigningNos:{},orderBuckets:{},orderBucketUnsubs:[],integrationOrdersUnsub:null,integrationOrdersCache:[],useIntegrationView:false,remoteStatusOverrides:{},remoteStatusOverridesUnsub:null,orderHydrateInFlight:{},orderHydrateDone:{},
+                onlineOrders:[],ordersLoading:false,assigningNos:{},orderBuckets:{},orderBucketUnsubs:[],integrationOrdersUnsub:null,integrationOrdersCache:[],phoneOrdersUnsub:null,phoneOrdersCache:[],useIntegrationView:false,remoteStatusOverrides:{},remoteStatusOverridesUnsub:null,orderHydrateInFlight:{},orderHydrateDone:{},
                 orderSearch:"",
                 activeItem:null,tempQty:1,tempNote:"",tempSels:[],tempOG:{},tempPosExtras:[],
                 toastMsg:"",toastTimer:null,lastOrderId:null,
@@ -1385,6 +1385,7 @@
             listenIntegratedOrders:function(){
                 var s=this;
                 s.resetIntegrationOrdersListener();
+                s.listenPhoneOrders();
                 var integrationRef=ref(db,'integration_views/merged_orders_active');
                 s.integrationOrdersUnsub=onValue(integrationRef,function(snap){
                     var view=snap.exists()?(snap.val()||{}):{};
@@ -1410,6 +1411,32 @@
                     s.ordersLoading=false;
                     s.integrationOrdersCache=[];
                     s.useIntegrationView=false;
+                    s.rebuildOnlineOrders();
+                });
+            },
+            resetPhoneOrdersListener:function(){
+                var s=this;
+                try{if(s.phoneOrdersUnsub)s.phoneOrdersUnsub();}catch(_){}
+                s.phoneOrdersUnsub=null;
+            },
+            listenPhoneOrders:function(){
+                var s=this;
+                s.resetPhoneOrdersListener();
+                var phoneRef=ref(db,'phone_ai/orders');
+                s.phoneOrdersUnsub=onValue(phoneRef,function(snap){
+                    var raw=snap.exists()?(snap.val()||{}):{};
+                    var list=Object.keys(raw).map(function(id){
+                        return Object.assign({
+                            id:id,
+                            source:'phone_ai',
+                            sourceLabel:'電話點餐',
+                            sourceRecordPath:'phone_ai/orders/'+id
+                        },raw[id]||{});
+                    });
+                    s.phoneOrdersCache=s.normalizeIncomingOrders(list).map(function(o){return s.applyStatusOverrideToOrder(o);});
+                    s.rebuildOnlineOrders();
+                },function(){
+                    s.phoneOrdersCache=[];
                     s.rebuildOnlineOrders();
                 });
             },
@@ -2218,8 +2245,17 @@
                     return Object.keys(bySig).map(function(k){return bySig[k];});
                 };
                 var integrationList=Array.isArray(s.integrationOrdersCache)?s.integrationOrdersCache:[];
+                var phoneList=Array.isArray(s.phoneOrdersCache)?s.phoneOrdersCache:[];
                 var mergedMap={};
-                if(integrationList.length){
+                if(integrationList.length||phoneList.length){
+                    phoneList.forEach(function(o){
+                        if(!o||!o.id)return;
+                        upsertMerged(mergedMap,o);
+                    });
+                    integrationList.forEach(function(o){
+                        if(!o||!o.id)return;
+                        upsertMerged(mergedMap,o);
+                    });
                     // integration_views 作為主來源，避免同一張單在本地 buckets 被重覆疊加
                     integrationList.forEach(function(o){
                         upsertMerged(mergedMap,o);

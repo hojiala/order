@@ -300,6 +300,8 @@
                     orderBuckets: {},
                     orderBucketUnsubs: [],
                     integrationOrdersCache: [],
+                    phoneOrdersCache: [],
+                    phoneOrdersUnsub: null,
                     linePayServerUrl: '',
                     linePayConfirmUrl: '',
                     integrationOrdersUnsub: null,
@@ -1539,6 +1541,7 @@
                         onChildChanged(txnQ, _update);
                         onChildRemoved(txnQ, (snap) => { delete _statusMap[snap.key]; delete _confirmed[snap.key]; clearTimeout(_timer); _timer = setTimeout(_flush, 150); });
                     })();
+                    self.listenPhoneOrders();
                     const integrationRef = ref(db, 'integration_views/merged_orders_active');
                     self.integrationOrdersUnsub = onValue(integrationRef, (snap) => {
                         const view = snap.exists() ? (snap.val() || {}) : {};
@@ -1549,6 +1552,29 @@
                         console.error('❌ integration_views 監聽失敗:', err && err.message ? err.message : err);
                         self.integrationOrdersCache = [];
                         self.useIntegrationView = false;
+                        self.rebuildOrdersFromBuckets();
+                    });
+                },
+                resetPhoneOrdersListener() {
+                    try { if (this.phoneOrdersUnsub) this.phoneOrdersUnsub(); } catch (_) {}
+                    this.phoneOrdersUnsub = null;
+                },
+                listenPhoneOrders() {
+                    const self = this;
+                    this.resetPhoneOrdersListener();
+                    const phoneRef = ref(db, 'phone_ai/orders');
+                    this.phoneOrdersUnsub = onValue(phoneRef, (snap) => {
+                        const raw = snap.exists() ? (snap.val() || {}) : {};
+                        const list = Object.keys(raw).map((id) => Object.assign({
+                            id: id,
+                            source: 'phone_ai',
+                            sourceLabel: '電話點餐',
+                            sourceRecordPath: 'phone_ai/orders/' + id
+                        }, raw[id] || {}));
+                        self.phoneOrdersCache = self.normalizeIncomingOrders(list);
+                        self.rebuildOrdersFromBuckets();
+                    }, () => {
+                        self.phoneOrdersCache = [];
                         self.rebuildOrdersFromBuckets();
                     });
                 },
@@ -1829,8 +1855,17 @@
                         return Object.keys(bySig).map((k) => bySig[k]);
                     };
                     const integrationList = Array.isArray(this.integrationOrdersCache) ? this.integrationOrdersCache : [];
+                    const phoneList = Array.isArray(this.phoneOrdersCache) ? this.phoneOrdersCache : [];
                     const mergedMap = {};
-                    if (integrationList.length) {
+                    if (integrationList.length || phoneList.length) {
+                        phoneList.forEach((o) => {
+                            if (!o || !o.id) return;
+                            upsertMerged(mergedMap, o);
+                        });
+                        integrationList.forEach((o) => {
+                            if (!o || !o.id) return;
+                            upsertMerged(mergedMap, o);
+                        });
                         integrationList.forEach((o) => {
                             upsertMerged(mergedMap, o);
                         });

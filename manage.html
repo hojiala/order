@@ -3666,6 +3666,24 @@ window._doCountUp = function() {
                         return [];
                     });
 
+                var phonePromise = get(ref(db, 'phone_ai/orders'))
+                    .then(function(snap) {
+                        if (!snap.exists()) return [];
+                        var raw = snap.val() || {};
+                        return Object.keys(raw).map(function(id) {
+                            return Object.assign({
+                                id: id,
+                                source: 'phone_ai',
+                                sourceLabel: '電話點餐',
+                                sourceRecordPath: 'phone_ai/orders/' + id
+                            }, raw[id] || {});
+                        });
+                    })
+                    .catch(function(e) {
+                        console.warn('讀取 phone_ai/orders 失敗', e && e.message ? e.message : e);
+                        return [];
+                    });
+
                 var overridesPromise = get(ref(db, 'integration_sync/display_status_overrides'))
                     .then(function(snap) { return snap.exists() ? (snap.val() || {}) : {}; })
                     .catch(function(e) {
@@ -3713,11 +3731,13 @@ window._doCountUp = function() {
                     });
                 })();
 
-                Promise.all([integrationPromise, bucketPromise, overridesPromise]).then(function(parts) {
+                Promise.all([integrationPromise, bucketPromise, phonePromise, overridesPromise]).then(function(parts) {
                     var integrationOrders = Array.isArray(parts[0]) ? parts[0] : [];
                     var bucketOrders = Array.isArray(parts[1]) ? parts[1] : [];
-                    self.remoteStatusOverrides = parts[2] || {};
+                    var phoneOrders = Array.isArray(parts[2]) ? parts[2] : [];
+                    self.remoteStatusOverrides = parts[3] || {};
                     var mergedMap = {};
+                    phoneOrders.forEach(function(o){ mergeOrderById(mergedMap, o); });
                     integrationOrders.forEach(function(o){ mergeOrderById(mergedMap, o); });
                     bucketOrders.forEach(function(o){ mergeOrderById(mergedMap, o); });
                     self.allOrdersCache = collapseStatsByDisplaySignature(collapseMergedStatsValues(Object.values(mergedMap))).map(function(o) { return self.applyStatusOverrideToOrder(o); });
