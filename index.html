@@ -225,7 +225,7 @@
                                 <span v-else-if="grp.pricing === 'addDelta' && ch.price > 0" class="text-orange-400 text-sm font-bold">+${{ ch.price }}</span>
                                 <!-- 套餐升級：顯示完整售價+是否含在套餐內 -->
                                 <span v-else-if="grp.pricing === 'mealUpgrade'" class="text-sm font-bold">
-                                    <span v-if="ch.price > (grp.baseValue || 0)" class="text-orange-500">{{ ((grp.groupName || '').includes('折5') || ((grp.baseValue || 0) > 0 && (grp.baseValue || 0) <= 5)) ? '飲料加購$' : '補差價$' }}{{ ch.price - (grp.baseValue || 0) }}</span>
+                                    <span v-if="ch.price > (grp.baseValue || 0)" class="text-orange-500">{{ getMealUpgradeChargePrefix(grp) }}{{ ch.price - (grp.baseValue || 0) }}</span>
                                     <span v-else class="text-gray-400">$0</span>
                                 </span>
                             </label>
@@ -288,7 +288,7 @@
                             <p class="font-semibold text-gray-800 text-sm">{{ item.name }}</p>
                             <!-- 選項群組選擇摘要 -->
                             <p v-for="sel in (item.optionGroupSelections || [])" :key="sel.groupName" class="text-xs text-gray-500 mt-0.5">
-                                {{ sel.groupName }}：{{ sel.name }}<span v-if="sel.pricing==='mealUpgrade' && sel.price > sel.baseValue" class="text-orange-400">（{{ ((sel.groupName || '').includes('折5') || ((sel.baseValue || 0) > 0 && (sel.baseValue || 0) <= 5)) ? '飲料加購$' : '補差價$' }}{{ sel.price - sel.baseValue }}）</span>
+                                {{ sel.groupName }}：{{ sel.name }}<span v-if="sel.pricing==='mealUpgrade' && sel.price > sel.baseValue" class="text-orange-400">（{{ getMealUpgradeChargePrefix(sel) }}{{ sel.price - sel.baseValue }}）</span>
                             </p>
                             <p v-for="opt in item.options" :key="opt.name" class="text-xs text-gray-400 mt-0.5">＋ {{ opt.name }}</p>
                             <p v-if="item.mealDrink" class="text-xs text-orange-400 mt-0.5">&#x1F964; {{ item.mealDrink }}</p>
@@ -580,6 +580,27 @@
 
     const app = initializeApp(firebaseConfig);
     const db = getDatabase(app);
+    // === 每日主題顏色（依當日星期自動套用，由 manage.html 設定） ===
+    (function applyDailyTheme(){
+        var defs = { 0:'#64748B', 1:'#3B82F6', 2:'#10B981', 3:'#F59E0B', 4:'#8B5CF6', 5:'#EC4899', 6:'#EF4444' };
+        var st = document.createElement('style');
+        st.textContent = 'body::before{content:"";position:fixed;top:0;left:0;right:0;height:6px;background:var(--day-theme,#F59E0B);z-index:9999;pointer-events:none}';
+        document.head.appendChild(st);
+        function setTheme(c){
+            if (!/^#[0-9A-Fa-f]{6}$/.test(c||'')) return;
+            document.documentElement.style.setProperty('--day-theme', c);
+            var m = document.querySelector('meta[name="theme-color"]');
+            if (m) m.setAttribute('content', c);
+        }
+        setTheme(defs[new Date().getDay()]);
+        try {
+            onValue(ref(db, 'settings/dailyThemes'), function(snap){
+                var v = snap.val() || {};
+                var d = new Date().getDay();
+                setTheme((v && v[d]) || defs[d]);
+            });
+        } catch(e){ console.warn('daily theme listener failed:', e); }
+    })();
     // ★ 匿名登入：用於取得流水號權限（settings/orderCounter 需要 auth）
     const auth = getAuth(app);
     setPersistence(auth, browserLocalPersistence).then(function() {
@@ -1004,6 +1025,1063 @@
                 this.tempOptionGroups = og;
                 this.editIndex = index;
                 this.currentView = 'detail';
+            },
+            getMealUpgradeDisplayLabel: function(groupOrSel) {
+                var explicit = String(groupOrSel && groupOrSel.mealUpgradeDisplayLabel || '').trim();
+                if (explicit) return explicit;
+                var base = Number(groupOrSel && groupOrSel.baseValue || 0);
+                if (Number.isFinite(base) && base > 0 && base < 30) return '搭配飲料折' + Math.round(base) + '元';
+                return '套餐飲料';
+            },
+            getMealUpgradeChargePrefix: function(groupOrSel) {
+                var explicit = String(groupOrSel && groupOrSel.mealUpgradeChargePrefix || '').trim();
+                if (explicit) return explicit;
+                var base = Number(groupOrSel && groupOrSel.baseValue || 0);
+                return (Number.isFinite(base) && base > 0 && base < 30) ? '飲料加購                // 整理選項群組的選擇結果
+                var self = this;
+                var ogSels = [];
+                (this.activeItem.optionGroups || []).forEach(function(grp, gi) {
+                    if (grp.type === 'radio') {
+                        var selIdx = self.tempOptionGroups[gi];
+                        if (selIdx === undefined || selIdx === null) selIdx = grp.defaultIdx || 0;
+                        var ch = (grp.choices || [])[selIdx];
+                        if (ch) ogSels.push({ groupName: grp.groupName, idx: selIdx, name: ch.name, price: ch.price, pricing: grp.pricing, baseValue: grp.baseValue || 0, mealUpgradeDisplayLabel: grp.mealUpgradeDisplayLabel || '', mealUpgradeChargePrefix: grp.mealUpgradeChargePrefix || '' });
+                    } else {
+                        (self.tempOptionGroups[gi] || []).forEach(function(ci) {
+                            var ch = (grp.choices || [])[ci];
+                            if (ch) ogSels.push({ groupName: grp.groupName, idx: ci, name: ch.name, price: ch.price, pricing: 'addDelta', baseValue: 0, mealUpgradeDisplayLabel: grp.mealUpgradeDisplayLabel || '', mealUpgradeChargePrefix: grp.mealUpgradeChargePrefix || '' });
+                        });
+                    }
+                });
+                var item = {
+                    id: this.activeItem.id,
+                    name: this.activeItem.name,
+                    price: this.activeItem.price,
+                    station: this.activeItem.station || this.getDefaultStationName(),
+                    qty: this.tempQty,
+                    note: this.tempNote,
+                    options: this.tempSelections.slice(),
+                    mealDrink: this.tempMealDrink,
+                    optionGroupSelections: ogSels,
+                    itemTotal: this.tempTotalPrice
+                };
+                if (this.editIndex > -1) this.cart[this.editIndex] = item;
+                else this.cart.push(item);
+                this.closeItemDetail();
+            },
+            removeFromCart: function(index) {
+                this.cart.splice(index, 1);
+                if (!this.cart.length) { this.activeItem = null; this.editIndex = -1; this.currentView = 'menu'; }
+            },
+            checkAnnouncements: function(cat) {
+                var s = this;
+                var anns = (s.settings.announcements || []).filter(function(a) { return a.active && a.text; });
+                var msgs = [];
+                anns.forEach(function(a) {
+                    if (cat) {
+                        // 分類公告：只要active就每次切換都彈出（固定彈出）
+                        if (a.category === cat) {
+                            msgs.push(a.text);
+                        }
+                    } else {
+                        // 全站公告（進站時）：同一 session 只彈一次
+                        var key = '__global__' + (a.text || '');
+                        if (!a.category && !s.shownAnnCats[key]) {
+                            msgs.push(a.text);
+                            s.shownAnnCats[key] = true;
+                        }
+                    }
+                });
+                if (msgs.length) {
+                    s.annModalText = msgs.join('\n\n');
+                    s.showAnnModal = true;
+                }
+                // 注意：不在此處關閉公告視窗，避免誤關全站公告
+                // 無對應公告的分類切換，靜默處理（顧客按「我知道了」自行關閉）
+            },
+            showAlertModal: function(title, msg) {
+                this.alertDialogTitle = title;
+                this.alertDialogMsg = msg;
+                this.showAlertDialog = true;
+            },
+            getItemQty: function(id) {
+                return this.cart.filter(function(c) { return c.id === id; }).reduce(function(s, c) { return s + c.qty; }, 0);
+            },
+            // ★ Fix6: 判斷是否有選項，決定直接加入或開詳細頁
+            quickAddOrDetail: function(item) {
+                // ★ 快速加入：永遠直接加入購物車，有選項的使用預設值
+                var basePrice = item.price;
+                var extra = 0;
+                var ogSels = [];
+                // 使用選項群組預設值
+                (item.optionGroups || []).forEach(function(grp, gi) {
+                    var idx = grp.defaultIdx || 0;
+                    var ch = (grp.choices || [])[idx];
+                    if (!ch) return;
+                    if (grp.pricing === 'setPrice') basePrice = ch.price;
+                    else if (grp.pricing === 'addDelta') extra += ch.price;
+                    else if (grp.pricing === 'mealUpgrade') extra += Math.max(0, ch.price - (grp.baseValue || 0));
+                    ogSels.push({groupName: grp.groupName, idx: idx, name: ch.name, price: ch.price, pricing: grp.pricing, baseValue: grp.baseValue || 0});
+                });
+                var mealDrink = (item.mealOptions && item.mealOptions.length) ? item.mealOptions[0].name : '';
+                var unitPrice = basePrice + extra;
+                // 找已有的相同項目（無備註、無加料、相同選項）
+                var ogKey = JSON.stringify(ogSels);
+                var existing = null;
+                for (var i = 0; i < this.cart.length; i++) {
+                    var c = this.cart[i];
+                    if (c.id === item.id && !c.note && (!c.options || !c.options.length) && JSON.stringify(c.optionGroupSelections || []) === ogKey) {
+                        existing = c; break;
+                    }
+                }
+                if (existing) {
+                    existing.qty += 1;
+                    existing.itemTotal = unitPrice * existing.qty;
+                } else {
+                    this.cart.push({
+                        id: item.id, name: item.name, price: item.price,
+                        station: item.station || this.getDefaultStationName(),
+                        qty: 1, note: '', options: [], mealDrink: mealDrink,
+                        optionGroupSelections: ogSels,
+                        itemTotal: unitPrice
+                    });
+                }
+                this.showQuickAddToast(item.name);
+            },
+            showQuickAddToast: function(name) {
+                this.toastItem = name;
+                var self = this;
+                clearTimeout(self.toastTimer);
+                self.toastTimer = setTimeout(function() { self.toastItem = ''; }, 1800);
+            },
+            formatOrderTime: function(ts) {
+                if (!ts) return '';
+                var d = new Date(ts);
+                return d.getFullYear() + '/' + ('0'+(d.getMonth()+1)).slice(-2) + '/' + ('0'+d.getDate()).slice(-2) + ' ' + ('0'+d.getHours()).slice(-2) + ':' + ('0'+d.getMinutes()).slice(-2);
+            },
+            loadMyOrders: function() {
+                try {
+                    var saved = localStorage.getItem('my_orders');
+                    if (!saved) { this.myOrders = []; return; }
+                    var all = JSON.parse(saved);
+                    // 只顯示最近 7 天的訂單
+                    var cutoff = Date.now() - 7 * 24 * 3600 * 1000;
+                    this.myOrders = all.filter(function(o) { return o.timestamp >= cutoff; })
+                        .sort(function(a,b) { return (b.timestamp||0) - (a.timestamp||0); });
+                } catch(e) { this.myOrders = []; }
+            },
+            saveMyOrder: function(orderId, orderData) {
+                try {
+                    var saved = localStorage.getItem('my_orders');
+                    var all = saved ? JSON.parse(saved) : [];
+                    all.push(Object.assign({ id: orderId }, orderData));
+                    // 只保留最近 7 天
+                    var cutoff = Date.now() - 7 * 24 * 3600 * 1000;
+                    all = all.filter(function(o) { return o.timestamp >= cutoff; });
+                    localStorage.setItem('my_orders', JSON.stringify(all));
+                    this.loadMyOrders();
+                } catch(e) {}
+            },
+            updateMyOrderNo: function(orderId, orderNo) {
+                try {
+                    var saved = JSON.parse(localStorage.getItem('my_orders') || '[]');
+                    var changed = false;
+                    saved.forEach(function(o) { if (o.id === orderId) { o.orderNo = orderNo; changed = true; } });
+                    if (changed) {
+                        localStorage.setItem('my_orders', JSON.stringify(saved));
+                        this.loadMyOrders();
+                    }
+                } catch(e) {}
+            },
+            shouldTrackOrderForRefresh: function(order) {
+                if (!order || !order.id) return false;
+                var status = String(order.status || '').toLowerCase();
+                if (status === 'new' || status === 'making') return true;
+                if (status === 'cancelled' || status === 'archived' || status === 'done' || status === 'completed') return false;
+                var pm = String(order.paymentMethod || '').toLowerCase();
+                var ps = String(order.paymentStatus || '').toLowerCase();
+                var isLinePay = (pm === 'linepay' || pm === 'linepay_offline' || pm === 'linepay_refund');
+                return isLinePay && ps !== 'paid' && ps !== 'refunded' && ps !== 'cancelled';
+            },
+            // ★ 嘗試從 Firebase 讀取訂單狀態更新（可能因權限失敗）
+            tryRefreshOrderStatus: function() {
+                var self = this;
+                if (!self.myOrders.length) return;
+                var targets = self.myOrders.filter(function(order) {
+                    return self.shouldTrackOrderForRefresh(order);
+                });
+                if (!targets.length) return;
+                var changed = false;
+                var deniedCount = 0;
+                targets.forEach(function(order) {
+                    if (!order.id) return;
+                    var dk=(order.orderDateKey||order.pickupDate||(function(){var d=new Date(order.timestamp||Date.now());return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);})());
+                    var orderPath='orders/'+dk+'/'+order.id;
+                    get(ref(db, orderPath)).then(function(snap) {
+                        if (!snap.exists()) return;
+                        var data = snap.val();
+                        if (data.status && data.status !== order.status) { order.status = data.status; changed = true; }
+                        if (data.orderNo && data.orderNo !== order.orderNo) { order.orderNo = data.orderNo; changed = true; }
+                        if (data.paymentStatus !== undefined && data.paymentStatus !== order.paymentStatus) { order.paymentStatus = data.paymentStatus; changed = true; }
+                        if (data.paymentMethod && data.paymentMethod !== order.paymentMethod) { order.paymentMethod = data.paymentMethod; changed = true; }
+                        var pm = data.paymentMethod || order.paymentMethod || '';
+                        var needsLinePayCheck = (pm === 'linepay' || pm === 'linepay_offline' || pm === 'linepay_refund')
+                            && data.paymentStatus !== 'paid' && data.paymentStatus !== 'refunded';
+                        if (needsLinePayCheck) {
+                            get(ref(db, 'linepay_transactions/' + order.id + '/status')).then(function(stSnap) {
+                                var st = stSnap.exists() ? String(stSnap.val() || '').toLowerCase() : '';
+                                if (st) self.lpTxnState[order.id] = st;
+                                else if (self.lpTxnState[order.id]) delete self.lpTxnState[order.id];
+                                var isConfirmed = st === 'confirmed';
+                                if (isConfirmed) self.lpConfirmed[order.id] = true;
+                                else if (self.lpConfirmed[order.id]) delete self.lpConfirmed[order.id];
+                            }).catch(function() {});
+                        } else if (self.lpConfirmed[order.id]) {
+                            delete self.lpConfirmed[order.id];
+                            if (self.lpTxnState[order.id]) delete self.lpTxnState[order.id];
+                        }
+                    }).catch(function(err) {
+                        var msg = (err && err.message) ? String(err.message).toLowerCase() : '';
+                        if (msg.indexOf('permission') !== -1 || msg.indexOf('denied') !== -1) deniedCount += 1;
+                    });
+                });
+                setTimeout(function() {
+                    if (changed) {
+                        try {
+                            var saved = JSON.parse(localStorage.getItem('my_orders') || '[]');
+                            self.myOrders.forEach(function(o) {
+                                saved.forEach(function(s) { if (s.id === o.id) { s.status = o.status; s.orderNo = o.orderNo; s.paymentStatus = o.paymentStatus; s.paymentMethod = o.paymentMethod; } });
+                            });
+                            localStorage.setItem('my_orders', JSON.stringify(saved));
+                        } catch(e) {}
+                    }
+                    if (targets.length && deniedCount === targets.length) {
+                        self.refreshErrorCount = (self.refreshErrorCount || 0) + 1;
+                        if (self.refreshErrorCount >= 3 && self.refreshTimer) {
+                            clearInterval(self.refreshTimer);
+                            self.refreshTimer = null;
+                            console.warn('order status polling stopped after repeated permission denied');
+                        }
+                    } else if (deniedCount === 0) {
+                        self.refreshErrorCount = 0;
+                    }
+                }, 2200);
+            },
+            startAutoRefresh: function() {
+                var self = this;
+                if (self.refreshTimer) return;
+                self.refreshTimer = setInterval(function() {
+                    if (!self.myOrders.length) return;
+                    if (!self.showStoreInfo || self.storeInfoTab !== 'orders') return;
+                    if (!self.myOrders.some(function(order) { return self.shouldTrackOrderForRefresh(order); })) return;
+                    self.tryRefreshOrderStatus();
+                }, 15000);
+            },
+            reorderItems: function(order) {
+                var self = this;
+                if (!order.items || !order.items.length) return;
+                order.items.forEach(function(item) {
+                    self.cart.push({
+                        id: item.id,
+                        name: item.name,
+                        price: item.price,
+                        qty: item.qty,
+                        note: item.note || '',
+                        options: item.options || [],
+                        mealDrink: item.mealDrink || '',
+                        optionGroupSelections: item.optionGroupSelections || [],
+                        itemTotal: item.itemTotal
+                    });
+                });
+                self.showStoreInfo = false;
+                self.goToCart();
+            },
+            cancelMyOrder: function(order) {
+                var self = this;
+                if (!order || !order.id) return;
+                var limitMin = self.settings.cancelLimitMinutes || 15;
+                var pd = order.pickupDate || '', pt = order.pickupTime || '';
+                if (pd && pt && pt !== '盡快' && pt !== '已過點餐時間') {
+                    var diff = (new Date(pd + 'T' + pt + ':00').getTime() - Date.now()) / 60000;
+                    if (diff <= limitMin) { self.showAlertModal('無法取消', '距離取餐時間不足 ' + limitMin + ' 分鐘，已無法線上取消訂單。\n如需取消，請直接聯繫店家，造成不便敬請見諒！'); return; }
+                }
+                if (!confirm('確定要取消此訂單嗎？')) return;
+                var dk=(order.orderDateKey||order.pickupDate||(function(){var d=new Date(order.timestamp||Date.now());return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);})());
+                var orderBase='orders/'+dk+'/'+order.id;
+                var cancelTs=Date.now();
+                var cancelTask='cancel_'+cancelTs;
+                update(ref(db, orderBase), { status:'cancelled', cancelledAt:cancelTs, cancelSource:'customer', print_task:cancelTask }).then(function() {
+                    var queueData=Object.assign({},order,{status:'cancelled',cancelledAt:cancelTs,cancelSource:'customer',print_task:cancelTask});
+                    delete queueData.id;
+                    return set(ref(db,'print_queue/'+order.id),null).catch(function(){})
+                        .then(function(){return new Promise(function(resolve){setTimeout(resolve,120);});})
+                        .then(function(){return set(ref(db,'print_queue/'+order.id),queueData);})
+                        .catch(function(e){console.warn('cancel print_queue 寫入失敗:',e&&e.message?e.message:e);});
+                }).then(function(){
+                    order.status = 'cancelled';
+                    try { var sv = JSON.parse(localStorage.getItem('my_orders')||'[]'); sv.forEach(function(s){if(s.id===order.id)s.status='cancelled';}); localStorage.setItem('my_orders',JSON.stringify(sv)); } catch(e){}
+                    self.showAlertModal('已取消', '訂單已取消，廚房將收到取消通知。');
+                }).catch(function(e) { self.showAlertModal('取消失敗', '無法取消訂單：' + e.message); });
+            },
+            submitToFirebase: function(payMethod) {
+                var self = this;
+                // ★ Fix4: 所有驗證改用自訂 modal，不用 alert()
+                // 檢查冷卻時間，防止惡意下單
+                var lastOrder = ''; try{ lastOrder = localStorage.getItem('lastOrderTime'); }catch(e){}
+                var cooldownEnabled = self.settings.orderCooldownEnabled !== false;
+                var cooldownSecs = self.settings.orderCooldownSecs || 300;
+                var cooldown = cooldownSecs * 1000;
+                if (cooldownEnabled && lastOrder && Date.now() - parseInt(lastOrder) < cooldown) {
+                    var remaining = Math.ceil((cooldown - (Date.now() - parseInt(lastOrder))) / 60000);
+                    this.showAlertModal('請稍候', '您剛剛已送出訂單，請等待 ' + remaining + ' 分鐘後再試。');
+                    return;
+                }
+                if (!this.inputName.trim()) {
+                    this.showAlertModal('提醒', '請輸入取餐姓名！');
+                    return;
+                }
+                // 驗證台灣手機號碼（09開頭，共10碼）
+                var phoneReg = /^09\d{8}$/;
+                if (!this.inputPhone || !phoneReg.test(this.inputPhone.replace(/[-\s]/g, ''))) {
+                    this.showAlertModal('提醒', '請輸入有效的手機號碼（09 開頭，共 10 碼）');
+                    return;
+                }
+                // ★ 取餐時間若為「已過點餐時間」直接攔截
+                if (this.pickupTime === '已過點餐時間' || !this.pickupTime) {
+                    this.initDateTime();
+                    this.showAlertModal('無法送出', '今日點餐時間已結束，已自動切換至明日時段，請確認取餐時間後再送出。');
+                    return;
+                }
+                // ★ Fix3: 重新驗算取餐時間是否仍然有效（防止放太久再送出）
+                var isToday = this.availableDates.length > 0
+                    && this.pickupDate === this.availableDates[0].value
+                    && this.availableDates[0].label.indexOf('今天') !== -1;
+                if (isToday && this.pickupTime !== '已過點餐時間') {
+                    var now = new Date();
+                    var nowMin = now.getHours() * 60 + now.getMinutes();
+                    var pParts = this.pickupTime.split(':');
+                    var pickupMin = parseInt(pParts[0]) * 60 + parseInt(pParts[1]);
+                    var nowCeil5 = Math.ceil(nowMin / 5) * 5;
+                    var interval = this.settings.pickupInterval || 30;
+                    var earliestSlot = nowCeil5 + interval;
+                    if (pickupMin <= nowMin) {
+                        var origTime = this.pickupTime;
+                        this.updateAvailableTimes();
+                        this.showAlertModal('取餐時間已過', '您選擇的取餐時間「' + origTime + '」已過期，已自動更新為最早可取餐時間「' + this.pickupTime + '」，請確認後再送出。');
+                        return;
+                    } else if (pickupMin < earliestSlot) {
+                        var origTime2 = this.pickupTime;
+                        this.updateAvailableTimes();
+                        this.showAlertModal('取餐時間調整', '原先選擇的取餐時間「' + origTime2 + '」因備餐時間需要，已自動調整為「' + this.pickupTime + '」，請確認後再送出。');
+                        return;
+                    }
+                }
+                if (this.isSubmitting) return;
+                this.isSubmitting = true;
+                var self = this;
+                var orderData = {
+                    customer: this.inputName.trim(),
+                    phone: this.inputPhone,
+                    pickupDate: this.pickupDate,
+                    pickupTime: this.pickupTime,
+                    type: this.orderType,
+                    source: 'online',
+                    deviceId: self.deviceId || '',
+                    orderNote: this.orderNote || '',
+                    paymentMethod: payMethod || 'store',
+                    paymentStatus: payMethod === 'linepay' ? 'pending' : '',
+                    items: this.cart,
+                    stationMap: self.settings.stations || [],
+                    total: this.cartTotal,
+                    status: 'new',
+                    timestamp: Date.now(),
+                    orderDateKey: this.pickupDate
+                };
+                // ★ 先取流水號，再送出訂單（確保訂單一建立就有 orderNo + print_task）
+                var orderDateKey = orderData.pickupDate || (function(){ var d=new Date(orderData.timestamp || Date.now()); return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); })();
+                orderData.orderDateKey = orderDateKey;
+                var orderId = push(ref(db, 'orders/' + orderDateKey)).key;
+                var bucketOrderRef = ref(db, 'orders/' + orderDateKey + '/' + orderId);
+                // ★ 先取得流水號
+                runTransaction(ref(db, 'settings/orderCounter'), function(cur) { return (cur || 0) + 1; })
+                .then(function(result) {
+                    var assignedNo = result.snapshot.val();
+                    orderData.orderNo = assignedNo;
+                    // 非 LINE Pay 訂單：同時寫入 print_task 觸發列印
+                    if (payMethod !== 'linepay') {
+                        orderData.print_task = 'kitchen_' + Date.now();
+                    }
+                    return set(bucketOrderRef, orderData).then(function() { return assignedNo; });
+                })
+                .catch(function() {
+                    // 流水號取得失敗，仍送出訂單（後台補發）
+                    return set(bucketOrderRef, orderData).then(function() { return null; });
+                })
+                .then(function(assignedNo) {
+                    // ★ 非 LINE Pay 且有 print_task：寫入 print_queue 觸發 Node-RED 列印
+                    if (assignedNo && payMethod !== 'linepay' && orderData.print_task) {
+                        try {
+                            var queueData = Object.assign({}, orderData);
+                            set(ref(db, 'print_queue/' + orderId), queueData).catch(function(e) { console.warn('print_queue 寫入失敗:', e.message); });
+                        } catch(e) {}
+                    }
+                    self.saveMyOrder(orderId, orderData);
+
+                    // ★ LINE Pay 付款流程（Firebase 中介，解決 HTTPS→HTTP 問題）
+                    var confirmBase = (self.settings.linePayConfirmUrl || '').trim();
+                    if(confirmBase){
+                        if(!/\/linepay-confirm\.html(\?|$)/i.test(confirmBase)){
+                            if(/\.html(\?|$)/i.test(confirmBase)){
+                                confirmBase = confirmBase.replace(/\/[^/?#]+\.html(?=([?#]|$))/i, '/linepay-confirm.html');
+                            }else{
+                                confirmBase = confirmBase.replace(/\/+$/,'') + '/linepay-confirm.html';
+                            }
+                        }
+                    }                    if(payMethod==='linepay' && confirmBase){
+                        self.isSubmitting=false;
+                        // 把請求寫入 Firebase，樹莓派背景工作會自動處理並把 paymentUrl 寫回
+                        set(ref(db, 'linepay_requests/' + orderId), {
+                            amount: orderData.total,
+                            items: orderData.items,
+                            orderDateKey: orderDateKey,
+                            confirmBaseUrl: confirmBase,
+                            returnPage: 'index',
+                            returnDeviceId: self.deviceId || '',
+                            status: 'pending',
+                            createdAt: Date.now()
+                        }).then(function() {
+                            // 顯示等待畫面
+                            self.showAlertModal('LINE Pay', '正在建立付款連結，請稍候...');
+                            // 輪詢 Firebase 等待樹莓派回寫 paymentUrl（最多 20 秒）
+                            var tries = 0;
+                            var poll = setInterval(function() {
+                                tries++;
+                                get(ref(db, 'linepay_requests/' + orderId)).then(function(snap) {
+                                    if(!snap.exists()) return;
+                                    var r = snap.val();
+                                    if(r.status === 'ready' && r.paymentUrl) {
+                                        clearInterval(poll);
+                                        self.showAlertDialog = false;
+                                        try{localStorage.setItem('linepay_return_url', window.location.href)}catch(e){}
+                                        try{localStorage.setItem('lastOrderTime', Date.now().toString());}catch(e){}
+                                        self.cart=[];try{localStorage.removeItem('cart_items')}catch(e){}
+                                        self.currentView='menu';
+                                        window.location.href = r.paymentUrl;
+                                    } else if(r.status === 'error') {
+                                        clearInterval(poll);
+                                        self.showAlertModal('LINE Pay 失敗', (r.error||'未知錯誤') + '\n訂單已送出，請改用店內付款');
+                                    } else if(tries >= 20) {
+                                        clearInterval(poll);
+                                        self.showAlertModal('LINE Pay 逾時', '樹莓派無回應，請確認服務是否正常運行\n訂單已送出，請改用店內付款');
+                                    }
+                                }).catch(function(){});
+                            }, 1000);
+                        }).catch(function(e){
+                            self.showAlertModal('LINE Pay 失敗', '無法寫入請求：' + e.message);
+                        });
+                        return;
+                    }
+
+                    // 一般付款：顯示成功畫面
+                    var now = new Date();
+                    var hh = ('0'+now.getHours()).slice(-2);
+                    var mm = ('0'+now.getMinutes()).slice(-2);
+                    self.successPickupTime = self.pickupTime;
+                    self.successOrderTime = hh + ':' + mm;
+                    self.showSuccessModal = true;
+                    self.cart = [];
+                    try { localStorage.removeItem('cart_items'); } catch(e) {}
+                    self.inputName = '';
+                    self.inputPhone = '';
+                    self.orderNote = '';
+                    self.currentView = 'menu';
+                }).catch(function(e) {
+                    console.error(e);
+                    self.showAlertModal('傳送失敗', (e && e.message) ? ('送單失敗：' + e.message) : '請檢查網路連線或系統設定！');
+                }).finally(function() {
+                    self.isSubmitting = false;
+                });
+                try{localStorage.setItem('lastOrderTime', Date.now().toString());}catch(e){}
+            }
+        }
+    }).mount('#app');
+
+    // ★ Fix3: 安卓/iOS 系統返回鍵 → 回到上一頁而非離開
+    window.addEventListener('popstate', function() {
+        var vueInstance = document.getElementById('app').__vue_app__;
+        if (!vueInstance) return;
+        var vm = vueInstance._context.app._instance.proxy;
+        if (vm.currentView === 'detail') {
+            vm.currentView = 'menu';
+            vm.activeItem = null;
+        } else if (vm.currentView === 'cart') {
+            vm.currentView = 'menu';
+        } else {
+            // 已在菜單頁，讓瀏覽器正常處理
+            history.back();
+        }
+    });
+
+    // ★ Fix1: 滑鼠拖曳滾動時間選擇區（電腦版）
+    document.addEventListener('DOMContentLoaded', function() {
+        var initDrag = function() {
+            var el = document.querySelector('.time-chip-scroll');
+            if (!el) { setTimeout(initDrag, 500); return; }
+            var isDown = false, startX, scrollLeft;
+            el.addEventListener('mousedown', function(e) {
+                isDown = true; el.style.cursor = 'grabbing';
+                startX = e.pageX - el.offsetLeft;
+                scrollLeft = el.scrollLeft;
+            });
+            document.addEventListener('mouseup', function() {
+                isDown = false; if(el) el.style.cursor = 'grab';
+            });
+            el.addEventListener('mouseleave', function() { isDown = false; el.style.cursor = 'grab'; });
+            el.addEventListener('mousemove', function(e) {
+                if (!isDown) return;
+                e.preventDefault();
+                var x = e.pageX - el.offsetLeft;
+                el.scrollLeft = scrollLeft - (x - startX) * 1.2;
+            });
+            // 滑鼠滾輪也可橫向滾動
+            el.addEventListener('wheel', function(e) {
+                if (e.deltaY !== 0) { e.preventDefault(); el.scrollLeft += e.deltaY * 0.8; }
+            }, { passive: false });
+        };
+        initDrag();
+    });
+</script>
+</body>
+</html>
+
+
+
+
+
+
+ : '補差價                // 整理選項群組的選擇結果
+                var self = this;
+                var ogSels = [];
+                (this.activeItem.optionGroups || []).forEach(function(grp, gi) {
+                    if (grp.type === 'radio') {
+                        var selIdx = self.tempOptionGroups[gi];
+                        if (selIdx === undefined || selIdx === null) selIdx = grp.defaultIdx || 0;
+                        var ch = (grp.choices || [])[selIdx];
+                        if (ch) ogSels.push({ groupName: grp.groupName, idx: selIdx, name: ch.name, price: ch.price, pricing: grp.pricing, baseValue: grp.baseValue || 0 });
+                    } else {
+                        (self.tempOptionGroups[gi] || []).forEach(function(ci) {
+                            var ch = (grp.choices || [])[ci];
+                            if (ch) ogSels.push({ groupName: grp.groupName, idx: ci, name: ch.name, price: ch.price, pricing: 'addDelta', baseValue: 0 });
+                        });
+                    }
+                });
+                var item = {
+                    id: this.activeItem.id,
+                    name: this.activeItem.name,
+                    price: this.activeItem.price,
+                    station: this.activeItem.station || this.getDefaultStationName(),
+                    qty: this.tempQty,
+                    note: this.tempNote,
+                    options: this.tempSelections.slice(),
+                    mealDrink: this.tempMealDrink,
+                    optionGroupSelections: ogSels,
+                    itemTotal: this.tempTotalPrice
+                };
+                if (this.editIndex > -1) this.cart[this.editIndex] = item;
+                else this.cart.push(item);
+                this.closeItemDetail();
+            },
+            removeFromCart: function(index) {
+                this.cart.splice(index, 1);
+                if (!this.cart.length) { this.activeItem = null; this.editIndex = -1; this.currentView = 'menu'; }
+            },
+            checkAnnouncements: function(cat) {
+                var s = this;
+                var anns = (s.settings.announcements || []).filter(function(a) { return a.active && a.text; });
+                var msgs = [];
+                anns.forEach(function(a) {
+                    if (cat) {
+                        // 分類公告：只要active就每次切換都彈出（固定彈出）
+                        if (a.category === cat) {
+                            msgs.push(a.text);
+                        }
+                    } else {
+                        // 全站公告（進站時）：同一 session 只彈一次
+                        var key = '__global__' + (a.text || '');
+                        if (!a.category && !s.shownAnnCats[key]) {
+                            msgs.push(a.text);
+                            s.shownAnnCats[key] = true;
+                        }
+                    }
+                });
+                if (msgs.length) {
+                    s.annModalText = msgs.join('\n\n');
+                    s.showAnnModal = true;
+                }
+                // 注意：不在此處關閉公告視窗，避免誤關全站公告
+                // 無對應公告的分類切換，靜默處理（顧客按「我知道了」自行關閉）
+            },
+            showAlertModal: function(title, msg) {
+                this.alertDialogTitle = title;
+                this.alertDialogMsg = msg;
+                this.showAlertDialog = true;
+            },
+            getItemQty: function(id) {
+                return this.cart.filter(function(c) { return c.id === id; }).reduce(function(s, c) { return s + c.qty; }, 0);
+            },
+            // ★ Fix6: 判斷是否有選項，決定直接加入或開詳細頁
+            quickAddOrDetail: function(item) {
+                // ★ 快速加入：永遠直接加入購物車，有選項的使用預設值
+                var basePrice = item.price;
+                var extra = 0;
+                var ogSels = [];
+                // 使用選項群組預設值
+                (item.optionGroups || []).forEach(function(grp, gi) {
+                    var idx = grp.defaultIdx || 0;
+                    var ch = (grp.choices || [])[idx];
+                    if (!ch) return;
+                    if (grp.pricing === 'setPrice') basePrice = ch.price;
+                    else if (grp.pricing === 'addDelta') extra += ch.price;
+                    else if (grp.pricing === 'mealUpgrade') extra += Math.max(0, ch.price - (grp.baseValue || 0));
+                    ogSels.push({groupName: grp.groupName, idx: idx, name: ch.name, price: ch.price, pricing: grp.pricing, baseValue: grp.baseValue || 0});
+                });
+                var mealDrink = (item.mealOptions && item.mealOptions.length) ? item.mealOptions[0].name : '';
+                var unitPrice = basePrice + extra;
+                // 找已有的相同項目（無備註、無加料、相同選項）
+                var ogKey = JSON.stringify(ogSels);
+                var existing = null;
+                for (var i = 0; i < this.cart.length; i++) {
+                    var c = this.cart[i];
+                    if (c.id === item.id && !c.note && (!c.options || !c.options.length) && JSON.stringify(c.optionGroupSelections || []) === ogKey) {
+                        existing = c; break;
+                    }
+                }
+                if (existing) {
+                    existing.qty += 1;
+                    existing.itemTotal = unitPrice * existing.qty;
+                } else {
+                    this.cart.push({
+                        id: item.id, name: item.name, price: item.price,
+                        station: item.station || this.getDefaultStationName(),
+                        qty: 1, note: '', options: [], mealDrink: mealDrink,
+                        optionGroupSelections: ogSels,
+                        itemTotal: unitPrice
+                    });
+                }
+                this.showQuickAddToast(item.name);
+            },
+            showQuickAddToast: function(name) {
+                this.toastItem = name;
+                var self = this;
+                clearTimeout(self.toastTimer);
+                self.toastTimer = setTimeout(function() { self.toastItem = ''; }, 1800);
+            },
+            formatOrderTime: function(ts) {
+                if (!ts) return '';
+                var d = new Date(ts);
+                return d.getFullYear() + '/' + ('0'+(d.getMonth()+1)).slice(-2) + '/' + ('0'+d.getDate()).slice(-2) + ' ' + ('0'+d.getHours()).slice(-2) + ':' + ('0'+d.getMinutes()).slice(-2);
+            },
+            loadMyOrders: function() {
+                try {
+                    var saved = localStorage.getItem('my_orders');
+                    if (!saved) { this.myOrders = []; return; }
+                    var all = JSON.parse(saved);
+                    // 只顯示最近 7 天的訂單
+                    var cutoff = Date.now() - 7 * 24 * 3600 * 1000;
+                    this.myOrders = all.filter(function(o) { return o.timestamp >= cutoff; })
+                        .sort(function(a,b) { return (b.timestamp||0) - (a.timestamp||0); });
+                } catch(e) { this.myOrders = []; }
+            },
+            saveMyOrder: function(orderId, orderData) {
+                try {
+                    var saved = localStorage.getItem('my_orders');
+                    var all = saved ? JSON.parse(saved) : [];
+                    all.push(Object.assign({ id: orderId }, orderData));
+                    // 只保留最近 7 天
+                    var cutoff = Date.now() - 7 * 24 * 3600 * 1000;
+                    all = all.filter(function(o) { return o.timestamp >= cutoff; });
+                    localStorage.setItem('my_orders', JSON.stringify(all));
+                    this.loadMyOrders();
+                } catch(e) {}
+            },
+            updateMyOrderNo: function(orderId, orderNo) {
+                try {
+                    var saved = JSON.parse(localStorage.getItem('my_orders') || '[]');
+                    var changed = false;
+                    saved.forEach(function(o) { if (o.id === orderId) { o.orderNo = orderNo; changed = true; } });
+                    if (changed) {
+                        localStorage.setItem('my_orders', JSON.stringify(saved));
+                        this.loadMyOrders();
+                    }
+                } catch(e) {}
+            },
+            shouldTrackOrderForRefresh: function(order) {
+                if (!order || !order.id) return false;
+                var status = String(order.status || '').toLowerCase();
+                if (status === 'new' || status === 'making') return true;
+                if (status === 'cancelled' || status === 'archived' || status === 'done' || status === 'completed') return false;
+                var pm = String(order.paymentMethod || '').toLowerCase();
+                var ps = String(order.paymentStatus || '').toLowerCase();
+                var isLinePay = (pm === 'linepay' || pm === 'linepay_offline' || pm === 'linepay_refund');
+                return isLinePay && ps !== 'paid' && ps !== 'refunded' && ps !== 'cancelled';
+            },
+            // ★ 嘗試從 Firebase 讀取訂單狀態更新（可能因權限失敗）
+            tryRefreshOrderStatus: function() {
+                var self = this;
+                if (!self.myOrders.length) return;
+                var targets = self.myOrders.filter(function(order) {
+                    return self.shouldTrackOrderForRefresh(order);
+                });
+                if (!targets.length) return;
+                var changed = false;
+                var deniedCount = 0;
+                targets.forEach(function(order) {
+                    if (!order.id) return;
+                    var dk=(order.orderDateKey||order.pickupDate||(function(){var d=new Date(order.timestamp||Date.now());return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);})());
+                    var orderPath='orders/'+dk+'/'+order.id;
+                    get(ref(db, orderPath)).then(function(snap) {
+                        if (!snap.exists()) return;
+                        var data = snap.val();
+                        if (data.status && data.status !== order.status) { order.status = data.status; changed = true; }
+                        if (data.orderNo && data.orderNo !== order.orderNo) { order.orderNo = data.orderNo; changed = true; }
+                        if (data.paymentStatus !== undefined && data.paymentStatus !== order.paymentStatus) { order.paymentStatus = data.paymentStatus; changed = true; }
+                        if (data.paymentMethod && data.paymentMethod !== order.paymentMethod) { order.paymentMethod = data.paymentMethod; changed = true; }
+                        var pm = data.paymentMethod || order.paymentMethod || '';
+                        var needsLinePayCheck = (pm === 'linepay' || pm === 'linepay_offline' || pm === 'linepay_refund')
+                            && data.paymentStatus !== 'paid' && data.paymentStatus !== 'refunded';
+                        if (needsLinePayCheck) {
+                            get(ref(db, 'linepay_transactions/' + order.id + '/status')).then(function(stSnap) {
+                                var st = stSnap.exists() ? String(stSnap.val() || '').toLowerCase() : '';
+                                if (st) self.lpTxnState[order.id] = st;
+                                else if (self.lpTxnState[order.id]) delete self.lpTxnState[order.id];
+                                var isConfirmed = st === 'confirmed';
+                                if (isConfirmed) self.lpConfirmed[order.id] = true;
+                                else if (self.lpConfirmed[order.id]) delete self.lpConfirmed[order.id];
+                            }).catch(function() {});
+                        } else if (self.lpConfirmed[order.id]) {
+                            delete self.lpConfirmed[order.id];
+                            if (self.lpTxnState[order.id]) delete self.lpTxnState[order.id];
+                        }
+                    }).catch(function(err) {
+                        var msg = (err && err.message) ? String(err.message).toLowerCase() : '';
+                        if (msg.indexOf('permission') !== -1 || msg.indexOf('denied') !== -1) deniedCount += 1;
+                    });
+                });
+                setTimeout(function() {
+                    if (changed) {
+                        try {
+                            var saved = JSON.parse(localStorage.getItem('my_orders') || '[]');
+                            self.myOrders.forEach(function(o) {
+                                saved.forEach(function(s) { if (s.id === o.id) { s.status = o.status; s.orderNo = o.orderNo; s.paymentStatus = o.paymentStatus; s.paymentMethod = o.paymentMethod; } });
+                            });
+                            localStorage.setItem('my_orders', JSON.stringify(saved));
+                        } catch(e) {}
+                    }
+                    if (targets.length && deniedCount === targets.length) {
+                        self.refreshErrorCount = (self.refreshErrorCount || 0) + 1;
+                        if (self.refreshErrorCount >= 3 && self.refreshTimer) {
+                            clearInterval(self.refreshTimer);
+                            self.refreshTimer = null;
+                            console.warn('order status polling stopped after repeated permission denied');
+                        }
+                    } else if (deniedCount === 0) {
+                        self.refreshErrorCount = 0;
+                    }
+                }, 2200);
+            },
+            startAutoRefresh: function() {
+                var self = this;
+                if (self.refreshTimer) return;
+                self.refreshTimer = setInterval(function() {
+                    if (!self.myOrders.length) return;
+                    if (!self.showStoreInfo || self.storeInfoTab !== 'orders') return;
+                    if (!self.myOrders.some(function(order) { return self.shouldTrackOrderForRefresh(order); })) return;
+                    self.tryRefreshOrderStatus();
+                }, 15000);
+            },
+            reorderItems: function(order) {
+                var self = this;
+                if (!order.items || !order.items.length) return;
+                order.items.forEach(function(item) {
+                    self.cart.push({
+                        id: item.id,
+                        name: item.name,
+                        price: item.price,
+                        qty: item.qty,
+                        note: item.note || '',
+                        options: item.options || [],
+                        mealDrink: item.mealDrink || '',
+                        optionGroupSelections: item.optionGroupSelections || [],
+                        itemTotal: item.itemTotal
+                    });
+                });
+                self.showStoreInfo = false;
+                self.goToCart();
+            },
+            cancelMyOrder: function(order) {
+                var self = this;
+                if (!order || !order.id) return;
+                var limitMin = self.settings.cancelLimitMinutes || 15;
+                var pd = order.pickupDate || '', pt = order.pickupTime || '';
+                if (pd && pt && pt !== '盡快' && pt !== '已過點餐時間') {
+                    var diff = (new Date(pd + 'T' + pt + ':00').getTime() - Date.now()) / 60000;
+                    if (diff <= limitMin) { self.showAlertModal('無法取消', '距離取餐時間不足 ' + limitMin + ' 分鐘，已無法線上取消訂單。\n如需取消，請直接聯繫店家，造成不便敬請見諒！'); return; }
+                }
+                if (!confirm('確定要取消此訂單嗎？')) return;
+                var dk=(order.orderDateKey||order.pickupDate||(function(){var d=new Date(order.timestamp||Date.now());return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);})());
+                var orderBase='orders/'+dk+'/'+order.id;
+                var cancelTs=Date.now();
+                var cancelTask='cancel_'+cancelTs;
+                update(ref(db, orderBase), { status:'cancelled', cancelledAt:cancelTs, cancelSource:'customer', print_task:cancelTask }).then(function() {
+                    var queueData=Object.assign({},order,{status:'cancelled',cancelledAt:cancelTs,cancelSource:'customer',print_task:cancelTask});
+                    delete queueData.id;
+                    return set(ref(db,'print_queue/'+order.id),null).catch(function(){})
+                        .then(function(){return new Promise(function(resolve){setTimeout(resolve,120);});})
+                        .then(function(){return set(ref(db,'print_queue/'+order.id),queueData);})
+                        .catch(function(e){console.warn('cancel print_queue 寫入失敗:',e&&e.message?e.message:e);});
+                }).then(function(){
+                    order.status = 'cancelled';
+                    try { var sv = JSON.parse(localStorage.getItem('my_orders')||'[]'); sv.forEach(function(s){if(s.id===order.id)s.status='cancelled';}); localStorage.setItem('my_orders',JSON.stringify(sv)); } catch(e){}
+                    self.showAlertModal('已取消', '訂單已取消，廚房將收到取消通知。');
+                }).catch(function(e) { self.showAlertModal('取消失敗', '無法取消訂單：' + e.message); });
+            },
+            submitToFirebase: function(payMethod) {
+                var self = this;
+                // ★ Fix4: 所有驗證改用自訂 modal，不用 alert()
+                // 檢查冷卻時間，防止惡意下單
+                var lastOrder = ''; try{ lastOrder = localStorage.getItem('lastOrderTime'); }catch(e){}
+                var cooldownEnabled = self.settings.orderCooldownEnabled !== false;
+                var cooldownSecs = self.settings.orderCooldownSecs || 300;
+                var cooldown = cooldownSecs * 1000;
+                if (cooldownEnabled && lastOrder && Date.now() - parseInt(lastOrder) < cooldown) {
+                    var remaining = Math.ceil((cooldown - (Date.now() - parseInt(lastOrder))) / 60000);
+                    this.showAlertModal('請稍候', '您剛剛已送出訂單，請等待 ' + remaining + ' 分鐘後再試。');
+                    return;
+                }
+                if (!this.inputName.trim()) {
+                    this.showAlertModal('提醒', '請輸入取餐姓名！');
+                    return;
+                }
+                // 驗證台灣手機號碼（09開頭，共10碼）
+                var phoneReg = /^09\d{8}$/;
+                if (!this.inputPhone || !phoneReg.test(this.inputPhone.replace(/[-\s]/g, ''))) {
+                    this.showAlertModal('提醒', '請輸入有效的手機號碼（09 開頭，共 10 碼）');
+                    return;
+                }
+                // ★ 取餐時間若為「已過點餐時間」直接攔截
+                if (this.pickupTime === '已過點餐時間' || !this.pickupTime) {
+                    this.initDateTime();
+                    this.showAlertModal('無法送出', '今日點餐時間已結束，已自動切換至明日時段，請確認取餐時間後再送出。');
+                    return;
+                }
+                // ★ Fix3: 重新驗算取餐時間是否仍然有效（防止放太久再送出）
+                var isToday = this.availableDates.length > 0
+                    && this.pickupDate === this.availableDates[0].value
+                    && this.availableDates[0].label.indexOf('今天') !== -1;
+                if (isToday && this.pickupTime !== '已過點餐時間') {
+                    var now = new Date();
+                    var nowMin = now.getHours() * 60 + now.getMinutes();
+                    var pParts = this.pickupTime.split(':');
+                    var pickupMin = parseInt(pParts[0]) * 60 + parseInt(pParts[1]);
+                    var nowCeil5 = Math.ceil(nowMin / 5) * 5;
+                    var interval = this.settings.pickupInterval || 30;
+                    var earliestSlot = nowCeil5 + interval;
+                    if (pickupMin <= nowMin) {
+                        var origTime = this.pickupTime;
+                        this.updateAvailableTimes();
+                        this.showAlertModal('取餐時間已過', '您選擇的取餐時間「' + origTime + '」已過期，已自動更新為最早可取餐時間「' + this.pickupTime + '」，請確認後再送出。');
+                        return;
+                    } else if (pickupMin < earliestSlot) {
+                        var origTime2 = this.pickupTime;
+                        this.updateAvailableTimes();
+                        this.showAlertModal('取餐時間調整', '原先選擇的取餐時間「' + origTime2 + '」因備餐時間需要，已自動調整為「' + this.pickupTime + '」，請確認後再送出。');
+                        return;
+                    }
+                }
+                if (this.isSubmitting) return;
+                this.isSubmitting = true;
+                var self = this;
+                var orderData = {
+                    customer: this.inputName.trim(),
+                    phone: this.inputPhone,
+                    pickupDate: this.pickupDate,
+                    pickupTime: this.pickupTime,
+                    type: this.orderType,
+                    source: 'online',
+                    deviceId: self.deviceId || '',
+                    orderNote: this.orderNote || '',
+                    paymentMethod: payMethod || 'store',
+                    paymentStatus: payMethod === 'linepay' ? 'pending' : '',
+                    items: this.cart,
+                    stationMap: self.settings.stations || [],
+                    total: this.cartTotal,
+                    status: 'new',
+                    timestamp: Date.now(),
+                    orderDateKey: this.pickupDate
+                };
+                // ★ 先取流水號，再送出訂單（確保訂單一建立就有 orderNo + print_task）
+                var orderDateKey = orderData.pickupDate || (function(){ var d=new Date(orderData.timestamp || Date.now()); return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); })();
+                orderData.orderDateKey = orderDateKey;
+                var orderId = push(ref(db, 'orders/' + orderDateKey)).key;
+                var bucketOrderRef = ref(db, 'orders/' + orderDateKey + '/' + orderId);
+                // ★ 先取得流水號
+                runTransaction(ref(db, 'settings/orderCounter'), function(cur) { return (cur || 0) + 1; })
+                .then(function(result) {
+                    var assignedNo = result.snapshot.val();
+                    orderData.orderNo = assignedNo;
+                    // 非 LINE Pay 訂單：同時寫入 print_task 觸發列印
+                    if (payMethod !== 'linepay') {
+                        orderData.print_task = 'kitchen_' + Date.now();
+                    }
+                    return set(bucketOrderRef, orderData).then(function() { return assignedNo; });
+                })
+                .catch(function() {
+                    // 流水號取得失敗，仍送出訂單（後台補發）
+                    return set(bucketOrderRef, orderData).then(function() { return null; });
+                })
+                .then(function(assignedNo) {
+                    // ★ 非 LINE Pay 且有 print_task：寫入 print_queue 觸發 Node-RED 列印
+                    if (assignedNo && payMethod !== 'linepay' && orderData.print_task) {
+                        try {
+                            var queueData = Object.assign({}, orderData);
+                            set(ref(db, 'print_queue/' + orderId), queueData).catch(function(e) { console.warn('print_queue 寫入失敗:', e.message); });
+                        } catch(e) {}
+                    }
+                    self.saveMyOrder(orderId, orderData);
+
+                    // ★ LINE Pay 付款流程（Firebase 中介，解決 HTTPS→HTTP 問題）
+                    var confirmBase = (self.settings.linePayConfirmUrl || '').trim();
+                    if(confirmBase){
+                        if(!/\/linepay-confirm\.html(\?|$)/i.test(confirmBase)){
+                            if(/\.html(\?|$)/i.test(confirmBase)){
+                                confirmBase = confirmBase.replace(/\/[^/?#]+\.html(?=([?#]|$))/i, '/linepay-confirm.html');
+                            }else{
+                                confirmBase = confirmBase.replace(/\/+$/,'') + '/linepay-confirm.html';
+                            }
+                        }
+                    }                    if(payMethod==='linepay' && confirmBase){
+                        self.isSubmitting=false;
+                        // 把請求寫入 Firebase，樹莓派背景工作會自動處理並把 paymentUrl 寫回
+                        set(ref(db, 'linepay_requests/' + orderId), {
+                            amount: orderData.total,
+                            items: orderData.items,
+                            orderDateKey: orderDateKey,
+                            confirmBaseUrl: confirmBase,
+                            returnPage: 'index',
+                            returnDeviceId: self.deviceId || '',
+                            status: 'pending',
+                            createdAt: Date.now()
+                        }).then(function() {
+                            // 顯示等待畫面
+                            self.showAlertModal('LINE Pay', '正在建立付款連結，請稍候...');
+                            // 輪詢 Firebase 等待樹莓派回寫 paymentUrl（最多 20 秒）
+                            var tries = 0;
+                            var poll = setInterval(function() {
+                                tries++;
+                                get(ref(db, 'linepay_requests/' + orderId)).then(function(snap) {
+                                    if(!snap.exists()) return;
+                                    var r = snap.val();
+                                    if(r.status === 'ready' && r.paymentUrl) {
+                                        clearInterval(poll);
+                                        self.showAlertDialog = false;
+                                        try{localStorage.setItem('linepay_return_url', window.location.href)}catch(e){}
+                                        try{localStorage.setItem('lastOrderTime', Date.now().toString());}catch(e){}
+                                        self.cart=[];try{localStorage.removeItem('cart_items')}catch(e){}
+                                        self.currentView='menu';
+                                        window.location.href = r.paymentUrl;
+                                    } else if(r.status === 'error') {
+                                        clearInterval(poll);
+                                        self.showAlertModal('LINE Pay 失敗', (r.error||'未知錯誤') + '\n訂單已送出，請改用店內付款');
+                                    } else if(tries >= 20) {
+                                        clearInterval(poll);
+                                        self.showAlertModal('LINE Pay 逾時', '樹莓派無回應，請確認服務是否正常運行\n訂單已送出，請改用店內付款');
+                                    }
+                                }).catch(function(){});
+                            }, 1000);
+                        }).catch(function(e){
+                            self.showAlertModal('LINE Pay 失敗', '無法寫入請求：' + e.message);
+                        });
+                        return;
+                    }
+
+                    // 一般付款：顯示成功畫面
+                    var now = new Date();
+                    var hh = ('0'+now.getHours()).slice(-2);
+                    var mm = ('0'+now.getMinutes()).slice(-2);
+                    self.successPickupTime = self.pickupTime;
+                    self.successOrderTime = hh + ':' + mm;
+                    self.showSuccessModal = true;
+                    self.cart = [];
+                    try { localStorage.removeItem('cart_items'); } catch(e) {}
+                    self.inputName = '';
+                    self.inputPhone = '';
+                    self.orderNote = '';
+                    self.currentView = 'menu';
+                }).catch(function(e) {
+                    console.error(e);
+                    self.showAlertModal('傳送失敗', (e && e.message) ? ('送單失敗：' + e.message) : '請檢查網路連線或系統設定！');
+                }).finally(function() {
+                    self.isSubmitting = false;
+                });
+                try{localStorage.setItem('lastOrderTime', Date.now().toString());}catch(e){}
+            }
+        }
+    }).mount('#app');
+
+    // ★ Fix3: 安卓/iOS 系統返回鍵 → 回到上一頁而非離開
+    window.addEventListener('popstate', function() {
+        var vueInstance = document.getElementById('app').__vue_app__;
+        if (!vueInstance) return;
+        var vm = vueInstance._context.app._instance.proxy;
+        if (vm.currentView === 'detail') {
+            vm.currentView = 'menu';
+            vm.activeItem = null;
+        } else if (vm.currentView === 'cart') {
+            vm.currentView = 'menu';
+        } else {
+            // 已在菜單頁，讓瀏覽器正常處理
+            history.back();
+        }
+    });
+
+    // ★ Fix1: 滑鼠拖曳滾動時間選擇區（電腦版）
+    document.addEventListener('DOMContentLoaded', function() {
+        var initDrag = function() {
+            var el = document.querySelector('.time-chip-scroll');
+            if (!el) { setTimeout(initDrag, 500); return; }
+            var isDown = false, startX, scrollLeft;
+            el.addEventListener('mousedown', function(e) {
+                isDown = true; el.style.cursor = 'grabbing';
+                startX = e.pageX - el.offsetLeft;
+                scrollLeft = el.scrollLeft;
+            });
+            document.addEventListener('mouseup', function() {
+                isDown = false; if(el) el.style.cursor = 'grab';
+            });
+            el.addEventListener('mouseleave', function() { isDown = false; el.style.cursor = 'grab'; });
+            el.addEventListener('mousemove', function(e) {
+                if (!isDown) return;
+                e.preventDefault();
+                var x = e.pageX - el.offsetLeft;
+                el.scrollLeft = scrollLeft - (x - startX) * 1.2;
+            });
+            // 滑鼠滾輪也可橫向滾動
+            el.addEventListener('wheel', function(e) {
+                if (e.deltaY !== 0) { e.preventDefault(); el.scrollLeft += e.deltaY * 0.8; }
+            }, { passive: false });
+        };
+        initDrag();
+    });
+</script>
+</body>
+</html>
+
+
+
+
+
+
+;
             },
             confirmAddToCart: function() {
                 // 整理選項群組的選擇結果
