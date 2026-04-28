@@ -867,22 +867,24 @@
                 });
                 return hasComboMain&&!hasComboDrink;
             },
-            hydrateOrderFromSource:async function(order){
+            hydrateOrderFromSource:async function(order, forceFresh){
                 var s=this;
-                if(!s.shouldHydrateOrderFromSource(order))return;
+                // forceFresh=true 時略過「已 hydrate 過」與「資料看起來夠完整」的閘門，強制重抓
+                if(!forceFresh && !s.shouldHydrateOrderFromSource(order))return null;
                 var orderId=order.id;
                 s.orderHydrateInFlight[orderId]=true;
                 try{
                     var sourcePath=s.normalizeSourceRecordPath(order,orderId);
-                    if(!sourcePath)return;
+                    if(!sourcePath)return null;
                     var snap=await get(ref(db,sourcePath));
-                    if(!snap.exists())return;
+                    if(!snap.exists())return null;
                     var sourceNorm=s.normalizeIncomingOrder(Object.assign({id:orderId},snap.val()||{}));
                     var incomingItems=Array.isArray(sourceNorm&&sourceNorm.items)?sourceNorm.items:[];
-                    if(!incomingItems.length)return;
+                    if(!incomingItems.length)return null;
                     var baseOrder=s.findOrderById(orderId)||order;
-                    var picked=s.pickRicherItemsForOrder(baseOrder&&baseOrder.items,incomingItems,Number((baseOrder&&baseOrder.total)||0));
-                    if(!picked.length)return;
+                    // forceFresh=true 時直接吃 incoming，不跑「選較豐富那份」邏輯（避免測試殘留 cache 被誤判為較新）
+                    var picked=forceFresh ? incomingItems.slice() : s.pickRicherItemsForOrder(baseOrder&&baseOrder.items,incomingItems,Number((baseOrder&&baseOrder.total)||0));
+                    if(!picked.length)return null;
                     var target=s.onlineOrders.find(function(o){return o&&o.id===orderId;});
                     if(target){
                         target.items=picked.map(function(it){return Object.assign({},it);});
@@ -899,8 +901,12 @@
                             s.cart=JSON.parse(JSON.stringify(nextEditing.items||[]));
                         }
                     }
+                    // ★ 把剛抓到的最新 items 與 total 回傳給呼叫端（修問題 4：第 1 次按修改 cart 是空的，
+                    //   因為訂單還沒進 onlineOrders 時 target=null，items 沒地方放）
+                    return { items: picked, total: Number(sourceNorm&&sourceNorm.total||0), order: sourceNorm };
                 }catch(e){
                     console.warn('hydrateOrderFromSource failed:',orderId,e&&e.message?e.message:e);
+                    return null;
                 }finally{
                     delete s.orderHydrateInFlight[orderId];
                     s.orderHydrateDone[orderId]=true;
@@ -2736,7 +2742,10 @@
                 });
                 e+=(s.tempSels||[]).reduce(function(x,o){return x+o.price;},0);
                 e+=(s.tempPosExtras||[]).reduce(function(x,o){return x+(o.price||0);},0);
-                var newItem={id:item.id,name:item.name,price:item.price,station:item.station||s.getDefaultStationName(),qty:s.tempQty,note:s.tempNote,options:s.tempSels.slice(),posExtras:(s.tempPosExtras||[]).slice(),optionGroupSelections:sels,itemTotal:(b+e)*s.tempQty};
+                // ★ 從 sels 重建 optionSelections/selectedOptions（dict 形式），避免舊值殘留導致 print_order.py 一次印出新舊兩個選項
+                var rebuiltOptionSelections={};
+                sels.forEach(function(sel){if(sel&&sel.groupName&&sel.name)rebuiltOptionSelections[sel.groupName]=sel.name;});
+                var newItem={id:item.id,name:item.name,price:item.price,station:item.station||s.getDefaultStationName(),qty:s.tempQty,note:s.tempNote,options:s.tempSels.slice(),posExtras:(s.tempPosExtras||[]).slice(),optionGroupSelections:sels,optionSelections:rebuiltOptionSelections,selectedOptions:Object.assign({},rebuiltOptionSelections),itemTotal:(b+e)*s.tempQty};
                 if(s.editingCartIdx>=0&&s.editingCartIdx<s.cart.length){
                     // 修改已有品項
                     s.cart.splice(s.editingCartIdx,1,newItem);
@@ -3067,8 +3076,15 @@
                     return;
                 }
                 var normalized=this.normalizeIncomingOrder(order)||order;
-                await this.hydrateOrderFromSource(normalized);
+                // ★ 進入編輯模式前，清掉「已 hydrate 過」標記並強制重抓 source，
+                //   避免顯示過期 cache（例如以前測試殘留的飲料/品項）導致儲存時把舊資料寫回去
+                if(this.orderHydrateDone)delete this.orderHydrateDone[normalized.id];
+                var hydrateResult=await this.hydrateOrderFromSource(normalized, true);
                 var latest=this.findOrderById(normalized.id)||normalized;
+                // 若訂單還沒進 onlineOrders（首次點擊時序問題），用剛抓回的 hydrateResult 直接覆蓋
+                if(hydrateResult&&Array.isArray(hydrateResult.items)&&hydrateResult.items.length){
+                    latest=Object.assign({},latest,{items:hydrateResult.items.slice(),total:hydrateResult.total||latest.total});
+                }
                 this.editingOrder=Object.assign({},order||{},normalized||{},latest||{});
                 this.cart=JSON.parse(JSON.stringify((latest&&latest.items)||normalized.items||[])).map(function(item){
                     var mapped=Object.assign({},item||{});
