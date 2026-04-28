@@ -665,6 +665,19 @@
                     }
                     return null;
                 },
+                // ★ 從菜單查詢該餐點 mealUpgrade 群組的標題/前綴（給 AI 電話訂單等沒帶新欄位的訂單回查用）
+                getMealUpgradeMetaFromMenu(itemName) {
+                    const menuItem = this.findMenuItemForDisplayName(itemName);
+                    if (!menuItem) return null;
+                    const groups = Array.isArray(menuItem.optionGroups) ? menuItem.optionGroups : [];
+                    const grp = groups.find((g) => g && String(g.pricing || '') === 'mealUpgrade');
+                    if (!grp) return null;
+                    return {
+                        label: String(grp.mealUpgradeDisplayLabel || '').trim(),
+                        prefix: String(grp.mealUpgradeChargePrefix || '').trim(),
+                        baseValue: Number(grp.baseValue || 0)
+                    };
+                },
                 getEggChoicesFromGroup(group) {
                     if (!group || typeof group !== 'object') return [];
                     return (Array.isArray(group.choices) ? group.choices : (Array.isArray(group.options) ? group.options : (Array.isArray(group.values) ? group.values : [])));
@@ -1363,9 +1376,22 @@
                             }
                             // ★ 優先讀 optionGroupSelections 上的明確標題/前綴（由模板設定），其次才回退舊邏輯
                             var explicitMealSel = (Array.isArray(mapped.optionGroupSelections) ? mapped.optionGroupSelections : []).find(function(sel){
-                                return String(sel && sel.pricing || '') === 'mealUpgrade'
-                                    && (String(sel && sel.mealUpgradeDisplayLabel || '').trim() || String(sel && sel.mealUpgradeChargePrefix || '').trim());
+                                return String(sel && sel.pricing || '') === 'mealUpgrade';
                             });
+                            // 若 selection 缺新欄位（AI 電話訂單／舊資料），從菜單回查補上
+                            if (explicitMealSel && (!String(explicitMealSel.mealUpgradeDisplayLabel || '').trim() || !String(explicitMealSel.mealUpgradeChargePrefix || '').trim())) {
+                                var menuMeta = self.getMealUpgradeMetaFromMenu(mapped.name);
+                                if (menuMeta) {
+                                    if (!String(explicitMealSel.mealUpgradeDisplayLabel || '').trim() && menuMeta.label) explicitMealSel.mealUpgradeDisplayLabel = menuMeta.label;
+                                    if (!String(explicitMealSel.mealUpgradeChargePrefix || '').trim() && menuMeta.prefix) explicitMealSel.mealUpgradeChargePrefix = menuMeta.prefix;
+                                }
+                            }
+                            // 若 mapping 沒抓到 surcharge，從 mealUpgrade 選項推算（POS confirmAdd 不會寫 comboDrinkSurcharge）
+                            if (!Number(mapped.comboDrinkSurcharge || 0) && explicitMealSel) {
+                                var selPrice = Number(explicitMealSel.price || 0);
+                                var selBase = Number(explicitMealSel.baseValue || 0);
+                                if (selPrice > selBase) mapped.comboDrinkSurcharge = selPrice - selBase;
+                            }
                             if (!mapped.comboDrinkLabel) {
                                 var explicitLabel = explicitMealSel ? String(explicitMealSel.mealUpgradeDisplayLabel || '').trim() : '';
                                 mapped.comboDrinkLabel = explicitLabel || (mapped.comboDrinkDiscount5 ? '搭配飲料折5元' : '套餐飲料');
