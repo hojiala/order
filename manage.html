@@ -359,9 +359,23 @@
                             <div><label class="text-slate-400 text-xs font-bold uppercase tracking-wider block mb-1">定價模式</label>
                                 <select v-model="templateForm.pricing" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-amber-500"><option value="setPrice">各自完整售價（容量用）</option><option value="addDelta">差價加購（加料用）</option><option value="mealUpgrade">套餐飲料升級</option></select></div>
                         </div>
-                        <div v-if="templateForm.pricing === 'mealUpgrade'" class="flex items-center gap-3 bg-slate-700/50 rounded-lg px-3 py-2">
-                            <span class="text-slate-300 text-xs">套餐內含飲料售價（基礎值）$</span>
-                            <input v-model.number="templateForm.baseValue" type="number" min="0" placeholder="30" class="w-20 bg-slate-700 border border-slate-600 rounded px-2 py-1 text-white text-sm focus:outline-none focus:border-amber-500">
+                        <div v-if="templateForm.pricing === 'mealUpgrade'" class="space-y-3 bg-slate-700/50 rounded-lg px-3 py-3">
+                            <div class="flex items-center gap-3">
+                                <span class="text-slate-300 text-xs">套餐內含飲料售價（基礎值）$</span>
+                                <input v-model.number="templateForm.baseValue" type="number" min="0" placeholder="30" class="w-20 bg-slate-700 border border-slate-600 rounded px-2 py-1 text-white text-sm focus:outline-none focus:border-amber-500">
+                            </div>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                <div>
+                                    <label class="text-slate-400 text-xs font-bold uppercase tracking-wider block mb-1">前台顯示標題</label>
+                                    <input v-model="templateForm.mealUpgradeDisplayLabel" type="text" :placeholder="getMealUpgradeDefaultLabel(templateForm)" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm placeholder-slate-400 focus:outline-none focus:border-amber-500">
+                                    <p class="text-slate-500 text-xs mt-1">例：套餐飲料、搭配飲料折5元、搭配飲料折10元</p>
+                                </div>
+                                <div>
+                                    <label class="text-slate-400 text-xs font-bold uppercase tracking-wider block mb-1">加價顯示前綴</label>
+                                    <input v-model="templateForm.mealUpgradeChargePrefix" type="text" :placeholder="getMealUpgradeDefaultChargePrefix(templateForm)" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm placeholder-slate-400 focus:outline-none focus:border-amber-500">
+                                    <p class="text-slate-500 text-xs mt-1">例：補差價$、飲料加購$</p>
+                                </div>
+                            </div>
                         </div>
                         <div v-if="templateForm.type === 'radio'" class="flex items-center gap-3">
                             <span class="text-slate-400 text-xs">預設選第幾個（從0算起）：</span>
@@ -427,6 +441,10 @@
                                 </div>
                                 <div class="flex flex-wrap gap-1 mt-2">
                                     <span v-for="ch in (tpl.choices||[])" :key="ch.name" class="text-xs bg-slate-700 text-slate-300 px-2 py-0.5 rounded">{{ ch.name }} <span class="text-slate-500">${{ ch.price }}</span></span>
+                                </div>
+                                <div v-if="tpl.pricing === 'mealUpgrade'" class="flex flex-wrap gap-2 mt-2">
+                                    <span class="text-xs bg-emerald-900/40 text-emerald-300 px-2 py-0.5 rounded">標題：{{ tpl.mealUpgradeDisplayLabel || getMealUpgradeDefaultLabel(tpl) }}</span>
+                                    <span class="text-xs bg-sky-900/40 text-sky-300 px-2 py-0.5 rounded">前綴：{{ tpl.mealUpgradeChargePrefix || getMealUpgradeDefaultChargePrefix(tpl) }}</span>
                                 </div>
                             </div>
                         </div>
@@ -1383,7 +1401,7 @@ window._doCountUp = function() {
                 // Templates
                 optionTemplates: [],
                 showTemplateDropdown: false,
-                templateForm: { templateName:'', groupName:'', type:'radio', pricing:'setPrice', defaultIdx:0, baseValue:0, choices:[{name:'',price:0}] },
+                templateForm: { templateName:'', groupName:'', type:'radio', pricing:'setPrice', defaultIdx:0, baseValue:0, mealUpgradeDisplayLabel:'', mealUpgradeChargePrefix:'', choices:[{name:'',price:0}] },
                 editingTemplateId: null,
                 showTemplateForm: false,
                 // Image compress
@@ -3141,13 +3159,44 @@ window._doCountUp = function() {
             },
 
             // ── TEMPLATE METHODS ──
+            // 套餐飲料升級：依 baseValue 計算預設「前台顯示標題」與「加價顯示前綴」
+            getMealUpgradeDefaultLabel: function(tpl) {
+                var base = Number((tpl && tpl.baseValue) || 0);
+                if (base >= 30) return '套餐飲料';
+                if (base > 0) return '搭配飲料折' + base + '元';
+                return '套餐飲料';
+            },
+            getMealUpgradeDefaultChargePrefix: function(tpl) {
+                var base = Number((tpl && tpl.baseValue) || 0);
+                if (base >= 30) return '補差價$';
+                if (base > 0) return '飲料加購$';
+                return '補差價$';
+            },
+            normalizeOptionTemplateConfig: function(tpl) {
+                var out = Object.assign({}, tpl || {});
+                out.templateName = String(out.templateName || '').trim();
+                out.groupName = String(out.groupName || '').trim();
+                out.type = out.type || 'radio';
+                out.pricing = out.pricing || 'setPrice';
+                out.defaultIdx = Number(out.defaultIdx || 0);
+                out.baseValue = Number(out.baseValue || 0);
+                out.choices = Array.isArray(out.choices) ? out.choices : [];
+                if (out.pricing === 'mealUpgrade') {
+                    out.mealUpgradeDisplayLabel = String(out.mealUpgradeDisplayLabel || '').trim() || this.getMealUpgradeDefaultLabel(out);
+                    out.mealUpgradeChargePrefix = String(out.mealUpgradeChargePrefix || '').trim() || this.getMealUpgradeDefaultChargePrefix(out);
+                } else {
+                    out.mealUpgradeDisplayLabel = String(out.mealUpgradeDisplayLabel || '').trim();
+                    out.mealUpgradeChargePrefix = String(out.mealUpgradeChargePrefix || '').trim();
+                }
+                return out;
+            },
             loadTemplates: function() {
                 var self = this;
                 get(ref(db, 'settings/optionTemplates')).then(function(snap) {
                     if (snap.exists()) {
                         var data = snap.val();
                         self.optionTemplates = Object.entries(data).map(function(e) {
-                            return Object.assign({ id: e[0] }, e[1]);
+                            return self.normalizeOptionTemplateConfig(Object.assign({ id: e[0] }, e[1]));
                         }).sort(function(a, b) {
                             // ★ 修正：依 sortOrder 排序（有設定的排前面），沒有的再依名稱
                             if (a.sortOrder !== undefined && b.sortOrder !== undefined) return a.sortOrder - b.sortOrder;
@@ -3162,7 +3211,7 @@ window._doCountUp = function() {
             },
             openNewTemplateForm: function() {
                 this.editingTemplateId = null;
-                this.templateForm = { templateName:'', groupName:'', type:'radio', pricing:'setPrice', defaultIdx:0, baseValue:0, choices:[{name:'',price:0}] };
+                this.templateForm = { templateName:'', groupName:'', type:'radio', pricing:'setPrice', defaultIdx:0, baseValue:0, mealUpgradeDisplayLabel:'', mealUpgradeChargePrefix:'', choices:[{name:'',price:0}] };
                 this.showTemplateForm = true;
             },
             editTemplate: function(tpl) {
@@ -3171,6 +3220,8 @@ window._doCountUp = function() {
                     templateName: tpl.templateName, groupName: tpl.groupName,
                     type: tpl.type, pricing: tpl.pricing,
                     defaultIdx: tpl.defaultIdx || 0, baseValue: tpl.baseValue || 0,
+                    mealUpgradeDisplayLabel: tpl.mealUpgradeDisplayLabel || (tpl.pricing === 'mealUpgrade' ? this.getMealUpgradeDefaultLabel(tpl) : ''),
+                    mealUpgradeChargePrefix: tpl.mealUpgradeChargePrefix || (tpl.pricing === 'mealUpgrade' ? this.getMealUpgradeDefaultChargePrefix(tpl) : ''),
                     choices: tpl.choices || []
                 }));
                 this.showTemplateForm = true;
@@ -3183,6 +3234,12 @@ window._doCountUp = function() {
                 if (!tf.groupName.trim()) { alert('請填寫群組名稱'); return; }
                 if (!tf.choices.length || !tf.choices[0].name.trim()) { alert('請至少新增一個選項'); return; }
                 var tplId = self.editingTemplateId;
+                var mealUpgradeDisplayLabel = tf.pricing === 'mealUpgrade'
+                    ? (String(tf.mealUpgradeDisplayLabel || '').trim() || self.getMealUpgradeDefaultLabel(tf))
+                    : '';
+                var mealUpgradeChargePrefix = tf.pricing === 'mealUpgrade'
+                    ? (String(tf.mealUpgradeChargePrefix || '').trim() || self.getMealUpgradeDefaultChargePrefix(tf))
+                    : '';
                 var data = {
                     templateName: tf.templateName.trim(),
                     groupName: tf.groupName.trim(),
@@ -3190,6 +3247,8 @@ window._doCountUp = function() {
                     pricing: tf.pricing,
                     defaultIdx: tf.defaultIdx || 0,
                     baseValue: tf.baseValue || 0,
+                    mealUpgradeDisplayLabel: mealUpgradeDisplayLabel,
+                    mealUpgradeChargePrefix: mealUpgradeChargePrefix,
                     choices: tf.choices.filter(function(c) { return c.name.trim(); })
                 };
                 var p = tplId
@@ -3225,6 +3284,8 @@ window._doCountUp = function() {
                                 pricing: tplData.pricing,
                                 defaultIdx: tplData.defaultIdx || 0,
                                 baseValue: tplData.baseValue || 0,
+                                mealUpgradeDisplayLabel: tplData.mealUpgradeDisplayLabel || '',
+                                mealUpgradeChargePrefix: tplData.mealUpgradeChargePrefix || '',
                                 choices: JSON.parse(JSON.stringify(tplData.choices || []))
                             });
                         }
@@ -3261,6 +3322,8 @@ window._doCountUp = function() {
                     pricing: tpl.pricing,
                     defaultIdx: tpl.defaultIdx || 0,
                     baseValue: tpl.baseValue || 0,
+                    mealUpgradeDisplayLabel: tpl.mealUpgradeDisplayLabel || '',
+                    mealUpgradeChargePrefix: tpl.mealUpgradeChargePrefix || '',
                     choices: tpl.choices || []
                 }));
                 if (!this.form.optionGroups) this.form.optionGroups = [];
