@@ -1449,9 +1449,132 @@
                 if(realPm==='linepay')return { paymentMethod:'linepay', paymentStatus:oldPaid?'paid':'pending' };
                 return { paymentMethod:realPm||oldPm||'store', paymentStatus:oldPaid?'paid':'unpaid' };
             },
+            findPhoneCommandMealUpgradeSelection:function(item){
+                var sels=Array.isArray(item&&item.optionGroupSelections)?item.optionGroupSelections:[];
+                for(var i=0;i<sels.length;i++){
+                    var sel=sels[i]||{};
+                    var g=String(sel.groupName||'').toLowerCase();
+                    if(String(sel.pricing||'')==='mealUpgrade'||g.indexOf('drink')!==-1||g.indexOf('\u98f2\u6599')!==-1)return sel;
+                }
+                return null;
+            },
+            readPhoneCommandSelection:function(item,kind){
+                var sels=Array.isArray(item&&item.optionGroupSelections)?item.optionGroupSelections:[];
+                for(var i=0;i<sels.length;i++){
+                    var sel=sels[i]||{};
+                    var g=String(sel.groupName||'').toLowerCase();
+                    if(kind==='size'&&(g.indexOf('size')!==-1||g.indexOf('\u5bb9\u91cf')!==-1))return String(sel.name||'').trim();
+                    if(kind==='temp'&&(g.indexOf('temp')!==-1||g.indexOf('\u6eab\u5ea6')!==-1||g.indexOf('\u51b0')!==-1))return String(sel.name||'').trim();
+                }
+                return '';
+            },
+            cleanPhoneCommandDrinkName:function(name){
+                return String(name||'')
+                    .replace(/^\s*(\u5927\u676f|\u4e2d\u676f|\u5c0f\u676f)\s*/,'')
+                    .replace(/\s*(\u5927\u676f|\u4e2d\u676f|\u5c0f\u676f)\s*$/,'')
+                    .trim();
+            },
+            buildPhoneCommandItems:function(){
+                var s=this;
+                var src=JSON.parse(JSON.stringify(this.cart||[]));
+                var out=[];
+                src.forEach(function(item,idx){
+                    if(!item||typeof item!=='object')return;
+                    if(item.isComboDrink){
+                        out.push(item);
+                        return;
+                    }
+                    var mealSel=s.findPhoneCommandMealUpgradeSelection(item);
+                    if(!mealSel){
+                        out.push(item);
+                        return;
+                    }
+                    var qty=Math.max(1,Number(item.qty||item.quantity||1));
+                    var size=String(item.size||s.readPhoneCommandSelection(item,'size')||'').trim();
+                    var temp=String(item.temp||s.readPhoneCommandSelection(item,'temp')||'').trim();
+                    var drinkName=s.cleanPhoneCommandDrinkName(mealSel.name||item.comboDrinkName||'');
+                    if(!drinkName){
+                        out.push(item);
+                        return;
+                    }
+                    var fullPrice=Number(mealSel.price||item.comboDrinkFullPrice||0);
+                    var credit=Number(mealSel.baseValue||item.comboDrinkCredit||0);
+                    if(!Number.isFinite(fullPrice))fullPrice=0;
+                    if(!Number.isFinite(credit))credit=0;
+                    var surcharge=Math.max(0,Math.round(Number(item.comboDrinkSurcharge||0)||Math.max(0,fullPrice-credit)));
+                    var groupName=String(mealSel.groupName||'');
+                    var displayLabel=String(mealSel.mealUpgradeDisplayLabel||item.comboDrinkLabel||'').trim();
+                    var chargePrefix=String(mealSel.mealUpgradeChargePrefix||'').trim();
+                    var discount5=!!item.comboDrinkDiscount5
+                        ||groupName.indexOf('\u642d\u914d\u98f2\u6599\u62985\u5143')!==-1
+                        ||groupName.indexOf('\u62985')!==-1
+                        ||displayLabel.indexOf('\u642d\u914d\u98f2\u6599\u62985\u5143')!==-1
+                        ||(Number.isFinite(credit)&&credit>0&&credit<=5)
+                        ||chargePrefix.indexOf('\u98f2\u6599\u52a0\u8cfc')!==-1;
+                    var label=displayLabel||(discount5?'\u642d\u914d\u98f2\u6599\u62985\u5143':'\u5957\u9910\u98f2\u6599');
+                    var prefix=chargePrefix||(discount5?'\u98f2\u6599\u52a0\u8cfc$':'\u88dc\u5dee\u50f9$');
+                    var chargeText=surcharge>0?(prefix+surcharge):'';
+                    var comboText=[size,temp,drinkName].filter(Boolean).join('/');
+                    var comboTextWithCharge=[size,temp,drinkName,chargeText].filter(Boolean).join('/');
+                    var gid=String(item.comboGroupId||item.uid||item.id||('combo_'+idx)).trim();
+                    var rawTotal=Number(item.itemTotal||item.subtotal||item.total||0);
+                    var mainTotal=Number.isFinite(rawTotal)&&rawTotal>0?Math.max(0,rawTotal-(surcharge*qty)):rawTotal;
+                    var main=Object.assign({},item,{
+                        isCombo:true,
+                        comboGroupId:gid,
+                        size:'',
+                        temp:'',
+                        itemTotal:mainTotal,
+                        subtotal:mainTotal,
+                        comboDrinkText:comboTextWithCharge,
+                        mealDrink:comboTextWithCharge,
+                        comboDrinkFullPrice:fullPrice,
+                        comboDrinkCredit:credit,
+                        comboDrinkSurcharge:surcharge,
+                        comboDrinkDiscount5:discount5,
+                        comboDrinkLabel:label,
+                        comboDrinkChargeText:chargeText,
+                        optionGroupSelections:(Array.isArray(item.optionGroupSelections)?item.optionGroupSelections:[]).filter(function(sel){
+                            var g=String(sel&&sel.groupName||'').toLowerCase();
+                            var p=String(sel&&sel.pricing||'');
+                            if(p==='mealUpgrade')return false;
+                            if(g.indexOf('drink')!==-1||g.indexOf('\u98f2\u6599')!==-1||g.indexOf('\u5bb9\u91cf')!==-1||g.indexOf('size')!==-1||g.indexOf('\u6eab\u5ea6')!==-1||g.indexOf('temp')!==-1)return false;
+                            return true;
+                        })
+                    });
+                    var drink={
+                        id:gid+'_drink',
+                        name:drinkName,
+                        qty:qty,
+                        price:surcharge,
+                        basePrice:fullPrice,
+                        itemTotal:surcharge*qty,
+                        subtotal:surcharge*qty,
+                        note:label,
+                        size:size,
+                        temp:temp,
+                        category:'\u98f2\u6599',
+                        isComboDrink:true,
+                        comboGroupId:gid,
+                        optionGroupSelections:[],
+                        options:[],
+                        posExtras:[],
+                        comboDrinkText:comboText,
+                        comboDrinkFullPrice:fullPrice,
+                        comboDrinkCredit:credit,
+                        comboDrinkSurcharge:surcharge,
+                        comboDrinkDiscount5:discount5,
+                        comboDrinkLabel:label,
+                        comboDrinkChargeText:chargeText
+                    };
+                    out.push(main,drink);
+                });
+                return out;
+            },
             buildPhoneEditCommandPayload:function(targetOrder,extra){
+                var phoneItems=this.buildPhoneCommandItems();
                 return Object.assign({
-                    items:JSON.parse(JSON.stringify(this.cart||[])),
+                    items:phoneItems,
                     total:Number(this.cartTotal||0),
                     orderType:this.editOrderType||'takeout',
                     tableLabel:this.editTableLabel||'',
