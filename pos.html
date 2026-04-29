@@ -1652,11 +1652,57 @@
                 var items=(order&&Array.isArray(order.items))?order.items:[];
                 function text(v){return String(v===undefined||v===null?'':v).trim();}
                 function num(v){var n=Number(v);return Number.isFinite(n)?n:0;}
-                function qtyOf(it){var q=num(it&&((it.qty!==undefined)?it.qty:((it['\u6578\u91cf']!==undefined)?it['\u6578\u91cf']:it.quantity)));return q>0?q:1;}
-                function lineTotal(it){var c=[it&&it.itemTotal,it&&it.subtotal,it&&it['\u7e3d\u50f9'],it&&it.lineSubtotal,it&&it.total];for(var i=0;i<c.length;i++){var n=num(c[i]);if(n>0)return n;}var u=num(it&&((it.price!==undefined)?it.price:((it.unitPrice!==undefined)?it.unitPrice:it['\u55ae\u50f9'])));return u>0?u*qtyOf(it):0;}
-                function isComboDrink(it){var note=text(it&&(it.note||it['\u5099\u8a3b']));return !!(it&&it.isComboDrink)||note.indexOf('\u5957\u9910\u98f2\u6599')!==-1;}
-                function hasDrinkSel(it){var sels=Array.isArray(it&&it.optionGroupSelections)?it.optionGroupSelections:[];return sels.some(function(sel){var g=text(sel&&sel.groupName).toLowerCase();var p=text(sel&&sel.pricing);return p==='mealUpgrade'||g.indexOf('drink')!==-1||g.indexOf('\u98f2\u6599')!==-1||g.indexOf('\u5957\u9910\u98f2\u6599')!==-1;});}
-                function isComboMain(it){if(!it||isComboDrink(it))return false;var name=text(it.name||it['\u54c1\u9805']);return !!it.isCombo||!!text(it.mealDrink||it.comboDrinkText)||name.indexOf('\u5957\u9910')!==-1||name.indexOf('\u62fc\u76e4')!==-1||hasDrinkSel(it)||!!text(it.comboGroupId);}
+                function qtyOf(it){var q=num(it&&((it.qty!==undefined)?it.qty:((it['數量']!==undefined)?it['數量']:it.quantity)));return q>0?q:1;}
+                function explicitLineTotal(it){
+                    var c=[it&&it.itemTotal,it&&it.subtotal,it&&it['總價'],it&&it.lineSubtotal,it&&it.total];
+                    for(var i=0;i<c.length;i++){var n=num(c[i]);if(n>0)return n;}
+                    return 0;
+                }
+                function lineTotal(it){
+                    var direct=explicitLineTotal(it);
+                    if(direct>0)return direct;
+                    var u=num(it&&((it.price!==undefined)?it.price:((it.unitPrice!==undefined)?it.unitPrice:it['單價'])));
+                    return u>0?u*qtyOf(it):0;
+                }
+                function comboMeta(it){
+                    return [
+                        it&&it.note,
+                        it&&it['備註'],
+                        it&&it.comboDrinkLabel,
+                        it&&it.comboDrinkChargeText,
+                        it&&it.comboDrinkText,
+                        it&&it.mealDrink
+                    ].map(text).filter(Boolean).join(' ');
+                }
+                function isComboDrink(it){
+                    var meta=comboMeta(it);
+                    return !!(it&&it.isComboDrink)||/套餐飲料|搭配飲料折\s*5\s*元|飲料加購|補差價/.test(meta);
+                }
+                function hasDrinkSel(it){
+                    var sels=Array.isArray(it&&it.optionGroupSelections)?it.optionGroupSelections:[];
+                    return sels.some(function(sel){
+                        var g=text(sel&&sel.groupName).toLowerCase();
+                        var p=text(sel&&sel.pricing);
+                        return p==='mealUpgrade'||g.indexOf('drink')!==-1||g.indexOf('飲料')!==-1||g.indexOf('套餐飲料')!==-1;
+                    });
+                }
+                function looksLikeDrink(it){
+                    if(!it)return false;
+                    if(isComboDrink(it))return true;
+                    if(text(it.size||it['容量'])||text(it.temp||it['溫度']))return true;
+                    var name=text(it.name||it['品項']);
+                    if(/咖啡|奶茶|紅茶|綠茶|烏龍|鮮奶|可可|拿鐵|美式|冬瓜|檸檬|茶/.test(name))return true;
+                    var sels=Array.isArray(it.optionGroupSelections)?it.optionGroupSelections:[];
+                    return sels.some(function(sel){
+                        var g=text(sel&&sel.groupName).toLowerCase();
+                        return g.indexOf('size')!==-1||g.indexOf('temp')!==-1||g.indexOf('drink')!==-1||g.indexOf('容量')!==-1||g.indexOf('溫度')!==-1||g.indexOf('飲料')!==-1;
+                    });
+                }
+                function isComboMain(it){
+                    if(!it||isComboDrink(it))return false;
+                    var name=text(it.name||it['品項']);
+                    return !!it.isCombo||!!text(it.mealDrink||it.comboDrinkText)||name.indexOf('套餐')!==-1||name.indexOf('拼盤')!==-1||hasDrinkSel(it)||!!text(it.comboGroupId);
+                }
                 function menuBase(name){
                     var lists=[];
                     if(Array.isArray(self.menu))lists.push(self.menu);
@@ -1692,12 +1738,12 @@
                         var groupName=text(group&&(group.groupName||group.name||group.label));
                         var pricing=text(group&&group.pricing);
                         var base=num(group&&group.baseValue);
-                        if(groupName.indexOf('\u642d\u914d\u98f2\u6599\u62985\u5143')!==-1||groupName.indexOf('\u62985')!==-1)return true;
+                        if(groupName.indexOf('搭配飲料折5元')!==-1||groupName.indexOf('折5')!==-1)return true;
                         return pricing==='mealUpgrade'&&base>0&&base<=5;
                     });
                 }
                 function baseUnit(it,name){
-                    var c=[it&&it.basePrice,it&&it.originalPrice,it&&it['\u539f\u50f9']];
+                    var c=[it&&it.basePrice,it&&it.originalPrice,it&&it['原價']];
                     for(var i=0;i<c.length;i++){var n=num(c[i]);if(n>0)return n;}
                     var mb=menuBase(name);if(mb>0)return mb;
                     var line=lineTotal(it),orderTotal=num(order&&((order.total!==undefined)?order.total:(order.totals&&order.totals.finalTotal)));
@@ -1705,25 +1751,78 @@
                     if(line>0&&orderTotal>line&&q>0)return line/q;
                     return 0;
                 }
-                function stripAmount(s){return text(s).replace(/[（(]\s*\u88dc\s*\$?\d+\s*[）)]/g,'').replace(/\s*\/\s*(?:\u88dc\u5dee\u50f9|\u98f2\u6599\u52a0\u8cfc)\s*\$?\d+\s*$/,'').replace(/\s*\/\s*\+\s*\$?\d+\s*$/,'').replace(/\s*\+\s*\$?\d+\s*$/,'').trim();}
-                function parseAmount(s){var raw=text(s);var m=raw.match(/(?:\u88dc\u5dee\u50f9|\u98f2\u6599\u52a0\u8cfc|\u88dc|\+)\s*\$?\s*(\d+)/);return m&&m[1]?num(m[1]):0;}
+                function stripAmount(s){
+                    return text(s)
+                        .replace(/[（(]\s*補\s*\$?\d+\s*[）)]/g,'')
+                        .replace(/\s*\/\s*(?:補差價|飲料加購)\s*\$?\d+\s*$/,'')
+                        .replace(/\s*\/\s*\+\s*\$?\d+\s*$/,'')
+                        .replace(/\s*\+\s*\$?\d+\s*$/,'')
+                        .trim();
+                }
+                function parseAmount(s){
+                    var raw=text(s);
+                    var m=raw.match(/(?:補差價|飲料加購|補|\+)\s*\$?\s*(\d+)/);
+                    return m&&m[1]?num(m[1]):0;
+                }
                 function isDiscount5Meal(sel){
                     var g=text(sel&&sel.groupName);
                     var base=num(sel&&sel.baseValue);
-                    return g.indexOf('\u642d\u914d\u98f2\u6599\u62985\u5143')!==-1||g.indexOf('\u62985')!==-1||(base>0&&base<=5);
+                    return g.indexOf('搭配飲料折5元')!==-1||g.indexOf('折5')!==-1||(base>0&&base<=5);
                 }
                 function isNonNumberedMealWithDrinkCharge(it,name){
-                    var mealName=text(name||it&&it.name||it&&it['\u54c1\u9805']);
-                    if(!mealName||/^\s*[1-9]\s*\u865f/.test(mealName))return false;
-                    var looksMeal=!!(it&&(it.isCombo||it.comboGroupId))||mealName.indexOf('\u5957\u9910')!==-1;
+                    var mealName=text(name||it&&it.name||it&&it['品項']);
+                    if(!mealName||/^\s*[1-9]\s*號/.test(mealName))return false;
+                    var looksMeal=!!(it&&(it.isCombo||it.comboGroupId))||mealName.indexOf('套餐')!==-1;
                     if(!looksMeal)return false;
                     var raw=text(it&&(it.comboDrinkChargeText||it.comboDrinkText||it.mealDrink));
-                    return /(?:\u88dc\u5dee\u50f9|\u98f2\u6599\u52a0\u8cfc|\+)\s*\$?\s*\d+/.test(raw);
+                    return /(?:補差價|飲料加購|\+)\s*\$?\s*\d+/.test(raw);
                 }
-                function comboChargeText(discount5,amount){return (discount5?'\u98f2\u6599\u52a0\u8cfc$':'\u88dc\u5dee\u50f9$')+amount;}
-                function normalizeDrinkName(raw,state){var out=stripAmount(raw);var m=out.match(/[（(](\u5927\u676f|\u4e2d\u676f)[）)]/);if(m&&m[1]&&!state.size)state.size=m[1];out=out.replace(/[（(](\u5927\u676f|\u4e2d\u676f)[）)]/g,'').trim();return out;}
-                function parseMealDrinkText(raw,state,upgradeRef){text(raw).split(/[\/\u3001,]+/).map(text).filter(Boolean).forEach(function(part){var add=parseAmount(part);if(add>0)upgradeRef.value=Math.max(upgradeRef.value,add);var clean=stripAmount(part);if(!clean)return;if(!state.size&&(clean==='\u5927\u676f'||clean==='\u4e2d\u676f'))state.size=clean;else if(!state.temp&&/\u51b0|\u71b1|\u6eab/.test(clean))state.temp=clean;else if(!state.drink)state.drink=normalizeDrinkName(clean,state);});}
-                function findSibling(it,idx){var comboId=text(it&&it.comboGroupId);var first=null;for(var i=0;i<items.length;i++){if(i===idx)continue;var d=items[i];if(!isComboDrink(d))continue;if(!first)first=d;var gid=text(d&&d.comboGroupId);if(comboId&&gid&&comboId===gid)return {item:d,index:i};}return first?{item:first,index:items.indexOf(first)}:null;}
+                function comboChargeText(discount5,amount){return (discount5?'飲料加購$':'補差價$')+amount;}
+                function normalizeDrinkName(raw,state){
+                    var out=stripAmount(raw);
+                    var m=out.match(/[（(](大杯|中杯)[）)]/);
+                    if(m&&m[1]&&!state.size)state.size=m[1];
+                    out=out.replace(/[（(](大杯|中杯)[）)]/g,'').trim();
+                    return out;
+                }
+                function parseMealDrinkText(raw,state,upgradeRef){
+                    text(raw).split(/[\/、,]+/).map(text).filter(Boolean).forEach(function(part){
+                        var add=parseAmount(part);
+                        if(add>0)upgradeRef.value=Math.max(upgradeRef.value,add);
+                        var clean=stripAmount(part);
+                        if(!clean)return;
+                        if(!state.size&&(clean==='大杯'||clean==='中杯'))state.size=clean;
+                        else if(!state.temp&&!/套餐飲料|搭配飲料折5元/.test(clean)&&/冰|熱|溫/.test(clean))state.temp=clean;
+                        else if(!state.drink&&!/套餐飲料|搭配飲料折5元/.test(clean))state.drink=normalizeDrinkName(clean,state);
+                    });
+                }
+                function findSibling(it,idx,used){
+                    var comboId=text(it&&it.comboGroupId);
+                    var loose=null;
+                    for(var i=0;i<items.length;i++){
+                        if(i===idx||(used&&used[i]))continue;
+                        var d=items[i];
+                        if(!d||isComboMain(d)||!looksLikeDrink(d))continue;
+                        var gid=text(d&&d.comboGroupId);
+                        if(comboId&&gid&&comboId===gid)return {item:d,index:i};
+                        if(!loose&&isComboDrink(d))loose={item:d,index:i};
+                    }
+                    for(var j=idx+1;j<items.length;j++){
+                        if(used&&used[j])continue;
+                        var f=items[j];
+                        if(!f)continue;
+                        if(isComboMain(f))break;
+                        if(looksLikeDrink(f))return {item:f,index:j};
+                    }
+                    for(var k=idx-1;k>=0;k--){
+                        if(used&&used[k])continue;
+                        var b=items[k];
+                        if(!b)continue;
+                        if(isComboMain(b))break;
+                        if(looksLikeDrink(b))return {item:b,index:k};
+                    }
+                    return loose;
+                }
                 function orderTotal(){return num(order&&((order.total!==undefined)?order.total:(order.totals&&order.totals.finalTotal)));}
                 function otherKnownTotals(selfIdx){
                     var total=0;
@@ -1735,14 +1834,14 @@
                     }
                     return total;
                 }
-                function comboInfo(it,idx,name){
+                function comboInfo(it,idx,name,sibPair){
                     var state={size:text(it&&it.size),temp:text(it&&it.temp),drink:''};
                     var upgrade=0;
                     var discount5=false;
                     if(isNonNumberedMealWithDrinkCharge(it,name))discount5=true;
                     if(menuUsesDiscount5(name))discount5=true;
-                    if(text(it&&it.comboDrinkLabel).indexOf('\u642d\u914d\u98f2\u6599\u62985\u5143')!==-1)discount5=true;
-                    if(text(it&&it.comboDrinkChargeText).indexOf('\u98f2\u6599\u52a0\u8cfc')!==-1)discount5=true;
+                    if(comboMeta(it).indexOf('搭配飲料折5元')!==-1)discount5=true;
+                    if(comboMeta(it).indexOf('飲料加購')!==-1)discount5=true;
                     var ownInferredCredit=num(it&&it.comboDrinkFullPrice)-num(it&&it.comboDrinkSurcharge);
                     if(ownInferredCredit>0&&ownInferredCredit<=5)discount5=true;
                     var sels=Array.isArray(it&&it.optionGroupSelections)?it.optionGroupSelections:[];
@@ -1756,40 +1855,45 @@
                         var price=num(sel&&sel.price),base=num(sel&&sel.baseValue);
                         if(pricing==='mealUpgrade'&&isDiscount5Meal(sel))discount5=true;
                         if(pricing==='mealUpgrade'&&price>base)upgrade=Math.max(upgrade,price-base);
-                        if(!state.size&&(g.indexOf('size')!==-1||g.indexOf('\u5bb9\u91cf')!==-1))state.size=clean;
-                        else if(!state.temp&&(g.indexOf('temp')!==-1||g.indexOf('\u6eab\u5ea6')!==-1))state.temp=clean;
-                        else if(!state.drink&&(pricing==='mealUpgrade'||g.indexOf('drink')!==-1||g.indexOf('\u98f2\u6599')!==-1))state.drink=normalizeDrinkName(clean,state);
+                        if(!state.size&&(g.indexOf('size')!==-1||g.indexOf('容量')!==-1))state.size=clean;
+                        else if(!state.temp&&(g.indexOf('temp')!==-1||g.indexOf('溫度')!==-1))state.temp=clean;
+                        else if(!state.drink&&(pricing==='mealUpgrade'||g.indexOf('drink')!==-1||g.indexOf('飲料')!==-1))state.drink=normalizeDrinkName(clean,state);
                     });
                     var ref={value:upgrade};
                     parseMealDrinkText(it&&it.mealDrink,state,ref);
                     parseMealDrinkText(it&&it.comboDrinkText,state,ref);
                     upgrade=ref.value;
-                    var sib=findSibling(it,idx);
-                    if(sib&&(!state.drink||!state.size||!state.temp)){
+                    var sib=sibPair&&sibPair.item?sibPair:findSibling(it,idx);
+                    var drinkQty=qtyOf(it);
+                    if(sib){
                         var d=sib.item||{};
-                        if(!state.drink)state.drink=normalizeDrinkName(d.name||d['\u54c1\u9805'],state);
-                        if(!state.size)state.size=text(d.size||d['\u5bb9\u91cf']);
-                        if(!state.temp)state.temp=text(d.temp||d['\u6eab\u5ea6']);
-                        if(text(d.comboDrinkLabel).indexOf('\u642d\u914d\u98f2\u6599\u62985\u5143')!==-1)discount5=true;
-                        if(text(d.comboDrinkChargeText).indexOf('\u98f2\u6599\u52a0\u8cfc')!==-1)discount5=true;
+                        drinkQty=qtyOf(d);
+                        if(!state.drink)state.drink=normalizeDrinkName(d.name||d['品項'],state);
+                        if(!state.size)state.size=text(d.size||d['容量']);
+                        if(!state.temp)state.temp=text(d.temp||d['溫度']);
+                        if(comboMeta(d).indexOf('搭配飲料折5元')!==-1)discount5=true;
+                        if(comboMeta(d).indexOf('飲料加購')!==-1)discount5=true;
                         var sInferredCredit=num(d.comboDrinkFullPrice)-num(d.comboDrinkSurcharge);
                         if(sInferredCredit>0&&sInferredCredit<=5)discount5=true;
                         var sCreditForLabel=num(d.comboDrinkCredit);
                         if(sCreditForLabel>0&&sCreditForLabel<=5)discount5=true;
                         if(upgrade<=0){
-                            var sFull=num(d.comboDrinkFullPrice),sCredit=num(d.comboDrinkCredit),sExplicit=num(d.comboDrinkSurcharge);
+                            var sExplicit=num(d.comboDrinkSurcharge);
+                            var sCharge=parseAmount(text(d.comboDrinkChargeText||d.comboDrinkText||d.mealDrink));
+                            var sFull=num(d.comboDrinkFullPrice),sCredit=num(d.comboDrinkCredit);
+                            var sLine=explicitLineTotal(d),sq=qtyOf(d);
                             if(sExplicit>0)upgrade=Math.max(upgrade,sExplicit);
-                            if(sFull>0)upgrade=Math.max(upgrade,sFull-sCredit);
-                            var su=num((d.price!==undefined)?d.price:d['\u55ae\u50f9']);
-                            var st=lineTotal(d),sq=qtyOf(d);
-                            if(su>0)upgrade=Math.max(upgrade,su);
-                            if(st>0&&sq>0)upgrade=Math.max(upgrade,st/sq);
+                            if(sCharge>0)upgrade=Math.max(upgrade,sCharge);
+                            if(sFull>0&&sCredit>0&&sFull>=sCredit)upgrade=Math.max(upgrade,sFull-sCredit);
+                            if(sLine>0&&sq>0)upgrade=Math.max(upgrade,sLine/sq);
                         }
                     }
                     if(upgrade<=0){
                         var explicit=num(it&&it.comboDrinkSurcharge),full=num(it&&it.comboDrinkFullPrice),credit=num(it&&it.comboDrinkCredit);
+                        var ownCharge=parseAmount(text(it&&((it.comboDrinkChargeText||it.comboDrinkText||it.mealDrink))));
                         if(explicit>0)upgrade=explicit;
-                        if(full>0)upgrade=Math.max(upgrade,full-credit);
+                        if(ownCharge>0)upgrade=Math.max(upgrade,ownCharge);
+                        if(full>0&&credit>0&&full>=credit)upgrade=Math.max(upgrade,full-credit);
                     }
                     var ownCreditForLabel=num(it&&it.comboDrinkCredit);
                     if(ownCreditForLabel>0&&ownCreditForLabel<=5)discount5=true;
@@ -1800,23 +1904,31 @@
                         var remainder=ot-otherKnownTotals(idx)-(base*q);
                         if(remainder>0)upgrade=Math.max(upgrade,remainder/q);
                     }
-                    return {size:state.size,temp:state.temp,drink:state.drink,upgrade:Math.max(0,Math.round(upgrade)),discount5:discount5};
+                    return {size:state.size,temp:state.temp,drink:state.drink,upgrade:Math.max(0,Math.round(upgrade)),discount5:discount5,qty:drinkQty};
                 }
-                var mainGroups={};
-                var hasMain=items.some(function(it){var ok=isComboMain(it);if(ok){var gid=text(it&&it.comboGroupId);if(gid)mainGroups[gid]=true;}return ok;});
+                var hiddenIdx={};
+                var siblingMap={};
+                for(var mi=0;mi<items.length;mi++){
+                    if(!isComboMain(items[mi]))continue;
+                    var pair=findSibling(items[mi],mi,hiddenIdx);
+                    if(pair&&pair.index!==undefined){
+                        hiddenIdx[pair.index]=true;
+                        siblingMap[mi]=pair;
+                    }
+                }
                 return items.map(function(it,idx){
-                    if(!it)return '';
-                    var name=text(it.name||it['\u54c1\u9805']);
+                    if(!it||hiddenIdx[idx])return '';
+                    var name=text(it.name||it['品項']);
                     if(!name)return '';
                     var comboLine=isComboDrink(it);
-                    var gid=text(it.comboGroupId);
-                    if(comboLine&&((gid&&mainGroups[gid])||hasMain))return '';
                     var qty=qtyOf(it);
                     if(isComboMain(it)){
-                        var info=comboInfo(it,idx,name);
+                        var info=comboInfo(it,idx,name,siblingMap[idx]);
                         var parts=[info.size,info.temp,info.drink].filter(Boolean);
-                        if(info.upgrade>0)parts.push(comboChargeText(info.discount5,info.upgrade));
-                        if(parts.length)name=name+' ['+parts.join('/')+']';
+                        var comboText='';
+                        if(parts.length)comboText=((info.qty>0?info.qty:qty)+'x'+parts.join('/'));
+                        if(info.upgrade>0)comboText=(comboText?comboText+'/':'')+comboChargeText(info.discount5,info.upgrade);
+                        if(comboText)name=name+' ['+comboText+']';
                     }else if(comboLine||it.size||it.temp){
                         var drinkParts=[text(it.size),text(it.temp),name].filter(Boolean);
                         name=drinkParts.join('/');
@@ -1826,8 +1938,7 @@
                     if(Array.isArray(it.posExtras)&&it.posExtras.length)extras.push('extra:'+it.posExtras.map(function(e){return e.name+'$'+(e.price||0);}).join(','));
                     return qty+'x'+name+(extras.length?('('+extras.join(' ')+')'):'');
                 }).filter(Boolean).join(', ');
-            },
-            enrichPhoneCartItemsFromNote:function(){
+            },            enrichPhoneCartItemsFromNote:function(){
                 var cart=Array.isArray(this.cart)?this.cart:[];
                 if(!cart.length)return;
                 var eggKeywords=['\u534a\u719f\u86cb','\u592a\u967d\u86cb','\u5168\u719f\u86cb','\u6563\u86cb','\u7092\u86cb','\u8377\u5305\u86cb'];
