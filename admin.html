@@ -256,7 +256,8 @@
         import { getDatabase, ref, onValue, onChildAdded, onChildChanged, onChildRemoved, update, set, get, remove, runTransaction, query, orderByChild, limitToLast } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
         import { getAuth, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
 
-        // ????隢票?交?詨???Firebase ?蔭 ????        const firebaseConfig = {
+        // ★★★ 請貼入您相同的 Firebase 配置 ★★★
+        const firebaseConfig = {
             apiKey: "AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
             authDomain: "breakfast-ai-system.firebaseapp.com",
             databaseURL: "https://breakfast-ai-system-default-rtdb.asia-southeast1.firebasedatabase.app",
@@ -270,7 +271,7 @@
         const db = getDatabase(app);
         const auth = getAuth(app);
 
-        // ??瘥銝駁?憿嚗???憟 --day-theme嚗蒂?? settings/dailyThemes ?單??湔
+        // ★ 每日主題顏色：依星期套用 --day-theme，並監聽 settings/dailyThemes 即時更新
         (function applyDailyTheme(){
             var defs = { 0:'#64748B', 1:'#3B82F6', 2:'#10B981', 3:'#F59E0B', 4:'#8B5CF6', 5:'#EC4899', 6:'#EF4444' };
             var st = document.createElement('style');
@@ -664,7 +665,8 @@
                     }
                     return null;
                 },
-                // ??敺??格閰Ｚ府擗? mealUpgrade 蝢斤???憿??韌嚗策 AI ?餉店閮蝑?撣嗆甈????桀??亦嚗?                getMealUpgradeMetaFromMenu(itemName) {
+                // ★ 從菜單查詢該餐點 mealUpgrade 群組的標題/前綴（給 AI 電話訂單等沒帶新欄位的訂單回查用）
+                getMealUpgradeMetaFromMenu(itemName) {
                     const menuItem = this.findMenuItemForDisplayName(itemName);
                     if (!menuItem) return null;
                     const groups = Array.isArray(menuItem.optionGroups) ? menuItem.optionGroups : [];
@@ -793,36 +795,10 @@
                     const name = String(item.name || item['\u54c1\u9805'] || '').trim();
                     return name || '';
                 },
-                looksLikeDrinkItemForDisplay(item) {
-                    if (!item || typeof item !== 'object') return false;
-                    const name = String(item.name || item['\u54c1\u9805'] || '').trim();
-                    const category = String(item.category || item['\u985e\u5225'] || '').trim();
-                    const size = String(item.size || item['\u5bb9\u91cf'] || '').trim();
-                    const temp = String(item.temp || item['\u6eab\u5ea6'] || '').trim();
-                    return /\u8336|\u5496\u5561|\u5976|\u53ef\u53ef|\u8c46\u6f3f|\u62ff\u9435|\u7f8e\u5f0f|\u9bae\u5976|\u7d05\u8336|\u5976\u8336|\u70cf\u9f8d/.test(name)
-                        || category.indexOf('\u98f2') !== -1
-                        || category.toLowerCase().indexOf('drink') !== -1
-                        || !!size
-                        || !!temp;
-                },
                 isComboDrinkLineForDisplay(item) {
                     if (!item || typeof item !== 'object') return false;
                     const note = String(item.note || item['\u5099\u8a3b'] || '').trim();
-                    const groupId = String(item.comboGroupId || '').trim();
-                    const mealText = String(item.mealDrink || item.comboDrinkText || '').trim();
-                    const comboMeta = String(item.comboDrinkLabel || item.comboDrinkChargeText || '').trim();
-                    const sels = Array.isArray(item.optionGroupSelections) ? item.optionGroupSelections : [];
-                    const hasMealUpgradeSel = sels.some((sel) => String(sel && sel.pricing || '') === 'mealUpgrade');
-                    const looksLikeDrink = this.looksLikeDrinkItemForDisplay(item);
-                    return !!item.isComboDrink
-                        || note.indexOf('\u5957\u9910\u98f2\u6599') !== -1
-                        || note.indexOf('\u642d\u914d\u98f2\u6599\u6298') !== -1
-                        || note.indexOf('\u98f2\u6599\u52a0\u8cfc') !== -1
-                        || comboMeta.indexOf('\u5957\u9910\u98f2\u6599') !== -1
-                        || comboMeta.indexOf('\u642d\u914d\u98f2\u6599\u6298') !== -1
-                        || comboMeta.indexOf('\u88dc\u5dee\u50f9') !== -1
-                        || comboMeta.indexOf('\u98f2\u6599\u52a0\u8cfc') !== -1
-                        || (!!groupId && !hasMealUpgradeSel && !mealText && (looksLikeDrink || !!comboMeta));
+                    return !!item.isComboDrink || note.indexOf('\u5957\u9910\u98f2\u6599') !== -1;
                 },
                 isComboMainLineForDisplay(item) {
                     if (!item || typeof item !== 'object') return false;
@@ -855,13 +831,20 @@
                 },
                 getDisplayOrderItems(order) {
                     const items = (order && Array.isArray(order.items)) ? order.items : [];
-                    const hiddenIndices = {};
+                    const mainGroups = {};
+                    let hasMain = false;
                     items.forEach((it) => {
                         if (!this.isComboMainLineForDisplay(it)) return;
-                        const siblingIndex = this.findComboDrinkSiblingIndexForDisplay(it, order);
-                        if (siblingIndex >= 0) hiddenIndices[siblingIndex] = true;
+                        hasMain = true;
+                        const gid = String(it.comboGroupId || '').trim();
+                        if (gid) mainGroups[gid] = true;
                     });
-                    return items.filter((it, idx) => !hiddenIndices[idx]);
+                    return items.filter((it) => {
+                        if (!this.isComboDrinkLineForDisplay(it)) return true;
+                        const gid = String(it.comboGroupId || '').trim();
+                        if (gid && mainGroups[gid]) return false;
+                        return !hasMain;
+                    });
                 },
                 getDisplayOptionSelections(item, order) {
                     const sels = Array.isArray(item && item.optionGroupSelections) ? item.optionGroupSelections : [];
@@ -922,50 +905,20 @@
                         return true;
                     });
                 },
-                findComboDrinkSiblingIndexForDisplay(item, order) {
+                findComboDrinkSiblingForDisplay(item, order) {
                     const items = (order && Array.isArray(order.items)) ? order.items : [];
-                    if (!items.length || !item) return -1;
                     const selfIndex = items.indexOf(item);
-                    if (selfIndex < 0) return -1;
                     const comboId = String((item && item.comboGroupId) || '').trim();
-                    const isDrinkCandidate = (candidate) => {
-                        if (!candidate || candidate === item) return false;
-                        if (this.isComboMainLineForDisplay(candidate)) return false;
-                        if (this.isComboDrinkLineForDisplay(candidate)) return true;
-                        const candidateMealText = String(candidate.mealDrink || candidate.comboDrinkText || '').trim();
-                        const note = String(candidate.note || candidate['\u5099\u8a3b'] || '').trim();
-                        const comboMeta = String(candidate.comboDrinkLabel || candidate.comboDrinkChargeText || '').trim();
-                        const hasComboHint = note.indexOf('\u5957\u9910\u98f2\u6599') !== -1
-                            || note.indexOf('\u642d\u914d\u98f2\u6599\u6298') !== -1
-                            || note.indexOf('\u98f2\u6599\u52a0\u8cfc') !== -1
-                            || comboMeta.indexOf('\u5957\u9910\u98f2\u6599') !== -1
-                            || comboMeta.indexOf('\u642d\u914d\u98f2\u6599\u6298') !== -1
-                            || comboMeta.indexOf('\u88dc\u5dee\u50f9') !== -1
-                            || comboMeta.indexOf('\u98f2\u6599\u52a0\u8cfc') !== -1;
-                        return this.looksLikeDrinkItemForDisplay(candidate) && (!candidateMealText || hasComboHint);
-                    };
+                    let first = null;
                     for (let i = 0; i < items.length; i++) {
                         if (i === selfIndex) continue;
                         const candidate = items[i];
-                        if (!isDrinkCandidate(candidate)) continue;
+                        if (!this.isComboDrinkLineForDisplay(candidate)) continue;
+                        if (!first) first = candidate;
                         const gid = String(candidate.comboGroupId || '').trim();
-                        if (comboId && gid && comboId === gid) return i;
+                        if (comboId && gid && comboId === gid) return candidate;
                     }
-                    for (let i = selfIndex + 1; i < items.length; i++) {
-                        const candidate = items[i];
-                        if (this.isComboMainLineForDisplay(candidate)) break;
-                        if (isDrinkCandidate(candidate)) return i;
-                    }
-                    for (let i = selfIndex - 1; i >= 0; i--) {
-                        const candidate = items[i];
-                        if (this.isComboMainLineForDisplay(candidate)) break;
-                        if (isDrinkCandidate(candidate)) return i;
-                    }
-                    return -1;
-                },
-                findComboDrinkSiblingForDisplay(item, order) {
-                    const index = this.findComboDrinkSiblingIndexForDisplay(item, order);
-                    return index >= 0 && order && Array.isArray(order.items) ? order.items[index] : null;
+                    return first;
                 },
                 getDisplayQty(item) {
                     const qty = Number(item && (item.qty !== undefined ? item.qty : (item['\u6578\u91cf'] !== undefined ? item['\u6578\u91cf'] : item.quantity)));
@@ -1018,40 +971,37 @@
                         const base = Number(sel && sel.baseValue);
                         if (pricing === 'mealUpgrade' && Number.isFinite(price) && Number.isFinite(base) && price > base) upgrade = Math.max(upgrade, price - base);
                     });
-                    [item && item.comboDrinkChargeText, item && item.comboDrinkText, item && item.mealDrink].forEach((raw) => {
-                        upgrade = Math.max(upgrade, parseAmount(raw));
-                    });
+                    [item.mealDrink, item.comboDrinkText].forEach((txt) => { upgrade = Math.max(upgrade, parseAmount(txt)); });
                     const explicit = Number(item.comboDrinkSurcharge || 0);
                     if (Number.isFinite(explicit) && explicit > 0) upgrade = Math.max(upgrade, explicit);
                     const full = Number(item.comboDrinkFullPrice || 0);
                     const credit = Number(item.comboDrinkCredit || 0);
-                    if (Number.isFinite(full) && full > 0 && Number.isFinite(credit) && credit > 0) upgrade = Math.max(upgrade, Math.max(0, full - credit));
+                    if (Number.isFinite(full) && full > 0 && Number.isFinite(credit)) upgrade = Math.max(upgrade, full - credit);
                     const sibling = this.findComboDrinkSiblingForDisplay(item, order);
                     if (sibling) {
-                        [sibling.comboDrinkChargeText, sibling.comboDrinkText, sibling.mealDrink].forEach((raw) => {
-                            upgrade = Math.max(upgrade, parseAmount(raw));
-                        });
                         const sibExplicit = Number(sibling.comboDrinkSurcharge || 0);
                         if (Number.isFinite(sibExplicit) && sibExplicit > 0) upgrade = Math.max(upgrade, sibExplicit);
                         const sibFull = Number(sibling.comboDrinkFullPrice || 0);
                         const sibCredit = Number(sibling.comboDrinkCredit || 0);
-                        if (Number.isFinite(sibFull) && sibFull > 0 && Number.isFinite(sibCredit) && sibCredit > 0) upgrade = Math.max(upgrade, Math.max(0, sibFull - sibCredit));
+                        if (Number.isFinite(sibFull) && sibFull > 0 && Number.isFinite(sibCredit)) upgrade = Math.max(upgrade, sibFull - sibCredit);
+                        const sibUnit = Number(sibling.price || sibling.unitPrice || sibling['\u55ae\u50f9'] || 0);
                         const sibLine = this.getDisplayLineTotal(sibling);
                         const sibQty = this.getDisplayQty(sibling);
+                        if (Number.isFinite(sibUnit) && sibUnit > 0) upgrade = Math.max(upgrade, sibUnit);
                         if (sibLine > 0 && sibQty > 0) upgrade = Math.max(upgrade, sibLine / sibQty);
                     }
                     const base = this.getDisplayBaseUnit(item);
                     const line = this.getDisplayLineTotal(item);
                     const qty = this.getDisplayQty(item);
-                    if (line > 0 && base > 0 && qty > 0) upgrade = Math.max(upgrade, Math.max(0, (line / qty) - base));
+                    if (line > 0 && base > 0 && qty > 0) upgrade = Math.max(upgrade, (line / qty) - base);
                     return Math.max(0, Math.round(upgrade));
                 },
                 normalizeDisplayDrinkName(name, state) {
                     let text = String(name || '').trim();
                     if (!text) return '';
-                    const sizeMatch = text.match(/[嚗?](\u5927\u676f|\u4e2d\u676f)[嚗?]/);
+                    const sizeMatch = text.match(/[（(](\u5927\u676f|\u4e2d\u676f)[）)]/);
                     if (sizeMatch && sizeMatch[1] && state && !state.size) state.size = sizeMatch[1];
-                    text = text.replace(/[嚗?](\u5927\u676f|\u4e2d\u676f)[嚗?]/g, '').replace(/\s*[嚗?]\s*\u88dc\s*\$?\d+\s*[嚗?]/g, '').replace(/\s*\/\s*(?:\u88dc\u5dee\u50f9|\u98f2\u6599\u52a0\u8cfc)\s*\$?\d+\s*$/, '').replace(/\s*\+\s*\$?\d+\s*$/, '').trim();
+                    text = text.replace(/[（(](\u5927\u676f|\u4e2d\u676f)[）)]/g, '').replace(/\s*[（(]\s*\u88dc\s*\$?\d+\s*[）)]/g, '').replace(/\s*\/\s*(?:\u88dc\u5dee\u50f9|\u98f2\u6599\u52a0\u8cfc)\s*\$?\d+\s*$/, '').replace(/\s*\+\s*\$?\d+\s*$/, '').trim();
                     return text;
                 },
                 isDiscount5MealForDisplay(item, order) {
@@ -1268,24 +1218,24 @@
                         if (sourcePath.indexOf('orders/') === 0 || sourcePath.indexOf('orders_archive/') === 0) out.source = 'web';
                     }
                     if ((out.total === undefined || out.total === null || out.total === '') && Number.isFinite(Number(totals.finalTotal))) out.total = Number(totals.finalTotal);
-                    if ((out.total === undefined || out.total === null || out.total === '') && Number.isFinite(Number(out['蝮賡?憿?]))) out.total = Number(out['蝮賡?憿?]);
+                    if ((out.total === undefined || out.total === null || out.total === '') && Number.isFinite(Number(out['總金額']))) out.total = Number(out['總金額']);
                     if (!out.paymentMethod && payment.method) out.paymentMethod = payment.method;
                     if (!out.paymentStatus && payment.status) out.paymentStatus = payment.status;
-                    const pmRaw = String(out.paymentMethod || out['隞狡?孵?'] || payment.method || '').toLowerCase();
+                    const pmRaw = String(out.paymentMethod || out['付款方式'] || payment.method || '').toLowerCase();
                     if ((!out.paymentMethod || out.paymentMethod === 'store') && /line.?pay/.test(pmRaw)) {
                         out.paymentMethod = pmRaw.indexOf('offline') >= 0 ? 'linepay_offline' : 'linepay';
                     }
-                    const psRaw = String(out.paymentStatus || out['隞狡???] || payment.status || '').toLowerCase();
-                    const psText = String(out['隞狡???] || out.paymentStatusText || '').toLowerCase();
+                    const psRaw = String(out.paymentStatus || out['付款狀態'] || payment.status || '').toLowerCase();
+                    const psText = String(out['付款狀態'] || out.paymentStatusText || '').toLowerCase();
                     const hasPaidHints = !!(
                         out.paymentConfirmedAt || out.linePayConfirmedAt || out.linepayConfirmedAt || out.paidAt ||
                         out.linepayTransactionId || out.linePayTransactionId || out.transactionId ||
-                        psText.indexOf('撌脖?') >= 0 || psText.indexOf('paid') >= 0 || psText.indexOf('confirmed') >= 0
+                        psText.indexOf('已付') >= 0 || psText.indexOf('paid') >= 0 || psText.indexOf('confirmed') >= 0
                     );
                     if ((out.paymentMethod === 'linepay' || out.paymentMethod === 'linepay_offline') && (psRaw === 'pending' || psRaw === 'unpaid' || !psRaw) && hasPaidHints) {
                         out.paymentStatus = 'paid';
                     }
-                    if (!out.orderNote && typeof out['閮?酉'] === 'string') out.orderNote = out['閮?酉'];
+                    if (!out.orderNote && typeof out['訂單備註'] === 'string') out.orderNote = out['訂單備註'];
                     if (!out.phone && out.customer && out.customer.phone) out.phone = out.customer.phone;
                     const customerObj = (out.customer && typeof out.customer === 'object') ? out.customer : {};
                     let customerName = '';
@@ -1328,7 +1278,7 @@
                             if (!isNaN(parsedTs)) out.timestamp = parsedTs;
                         }
                     }
-                    if (!Array.isArray(out.items) && Array.isArray(out['閮'])) out.items = out['閮'];
+                    if (!Array.isArray(out.items) && Array.isArray(out['訂單'])) out.items = out['訂單'];
                     if (!Array.isArray(out.items) && Array.isArray(out['\u8a02\u55ae'])) out.items = out['\u8a02\u55ae'];
                     if (Array.isArray(out.items)) {
                         out.items = out.items.map((item) => {
@@ -1397,7 +1347,7 @@
                                 note: (src.note !== undefined && src.note !== null) ? String(src.note) : (src['\u5099\u8a3b'] || ''),
                                 size: (src.size !== undefined && src.size !== null) ? String(src.size) : (src['\u5bb9\u91cf'] || ''),
                                 temp: (src.temp !== undefined && src.temp !== null) ? String(src.temp) : (src['\u6eab\u5ea6'] || ''),
-                                isComboDrink: !!src.isComboDrink,
+                                isComboDrink: !!(src.isComboDrink || String(src['\u5099\u8a3b'] || '').indexOf('\u5957\u9910\u98f2\u6599') !== -1),
                                 comboGroupId: src.comboGroupId || '',
                                 options: Array.isArray(src.options) ? src.options.slice() : [],
                                 posExtras: Array.isArray(src.posExtras) ? src.posExtras.slice() : [],
@@ -1411,38 +1361,19 @@
                                 comboDrinkLabel: (src.comboDrinkLabel !== undefined && src.comboDrinkLabel !== null) ? String(src.comboDrinkLabel) : '',
                                 comboDrinkChargeText: (src.comboDrinkChargeText !== undefined && src.comboDrinkChargeText !== null) ? String(src.comboDrinkChargeText) : ''
                             });
-                            const mappedNote = String(mapped.note || '').trim();
-                            const mappedComboMeta = String(mapped.comboDrinkLabel || mapped.comboDrinkChargeText || '').trim();
-                            const mappedMealText = String(mapped.mealDrink || mapped.comboDrinkText || '').trim();
-                            const mappedLooksLikeDrink = this.looksLikeDrinkItemForDisplay(mapped);
-                            if (!mapped.isComboDrink) {
-                                mapped.isComboDrink = mappedNote.indexOf('\u5957\u9910\u98f2\u6599') !== -1
-                                    || mappedNote.indexOf('\u642d\u914d\u98f2\u6599\u6298') !== -1
-                                    || mappedNote.indexOf('\u98f2\u6599\u52a0\u8cfc') !== -1
-                                    || mappedComboMeta.indexOf('\u5957\u9910\u98f2\u6599') !== -1
-                                    || mappedComboMeta.indexOf('\u642d\u914d\u98f2\u6599\u6298') !== -1
-                                    || mappedComboMeta.indexOf('\u88dc\u5dee\u50f9') !== -1
-                                    || mappedComboMeta.indexOf('\u98f2\u6599\u52a0\u8cfc') !== -1
-                                    || (!!mapped.comboGroupId && !mappedMealText && mappedLooksLikeDrink);
-                            }
                             if (mapped.isComboDrink && mapped.comboGroupId) {
                                 const explicitSurcharge = Number(mapped.comboDrinkSurcharge || src.comboDrinkSurcharge || 0);
                                 const explicitFullPrice = Number(mapped.comboDrinkFullPrice || src.comboDrinkFullPrice || 0);
                                 const explicitCredit = Number(mapped.comboDrinkCredit || src.comboDrinkCredit || 0);
-                                const mappedQty = Number(qty || 1) > 0 ? Number(qty || 1) : 1;
-                                const mappedLineTotal = Number(mapped.itemTotal || 0);
                                 if (Number.isFinite(explicitSurcharge) && explicitSurcharge > 0) {
                                     mapped.comboDrinkSurcharge = explicitSurcharge;
-                                } else if (Number.isFinite(mappedLineTotal) && mappedLineTotal > 0) {
-                                    mapped.comboDrinkSurcharge = mappedLineTotal / mappedQty;
-                                } else if (Number.isFinite(explicitFullPrice) && explicitFullPrice > 0 && Number.isFinite(explicitCredit) && explicitCredit > 0) {
+                                } else if (Number.isFinite(explicitFullPrice) && explicitFullPrice > 0 && Number.isFinite(explicitCredit)) {
                                     mapped.comboDrinkSurcharge = Math.max(0, explicitFullPrice - explicitCredit);
                                 }
                             }
                             if ((!Number.isFinite(Number(mapped.comboDrinkCredit)) || Number(mapped.comboDrinkCredit) <= 0)
                                 && Number.isFinite(Number(mapped.comboDrinkFullPrice)) && Number(mapped.comboDrinkFullPrice) > 0
-                                && Number.isFinite(Number(mapped.comboDrinkSurcharge)) && Number(mapped.comboDrinkSurcharge) > 0
-                                && Number(mapped.comboDrinkFullPrice) > Number(mapped.comboDrinkSurcharge)) {
+                                && Number.isFinite(Number(mapped.comboDrinkSurcharge)) && Number(mapped.comboDrinkSurcharge) > 0) {
                                 mapped.comboDrinkCredit = Math.max(0, Number(mapped.comboDrinkFullPrice) - Number(mapped.comboDrinkSurcharge));
                             }
                             if (!mapped.comboDrinkDiscount5) {
@@ -1450,49 +1381,40 @@
                                     || (Array.isArray(mapped.optionGroupSelections) && mapped.optionGroupSelections.some((sel) => {
                                         const group = String(sel && sel.groupName || '');
                                         const base = Number(sel && sel.baseValue);
-                                        return group.indexOf('\u642d\u914d\u98f2\u6599\u62985\u5143') !== -1 || group.indexOf('\u62985') !== -1 || (Number.isFinite(base) && base > 0 && base <= 5);
+                                        return group.indexOf('搭配飲料折5元') !== -1 || group.indexOf('折5') !== -1 || (Number.isFinite(base) && base > 0 && base <= 5);
                                     }));
                             }
+                            // ★ 優先讀 optionGroupSelections 上的明確標題/前綴（由模板設定），其次才回退舊邏輯
                             var explicitMealSel = (Array.isArray(mapped.optionGroupSelections) ? mapped.optionGroupSelections : []).find(function(sel){
                                 return String(sel && sel.pricing || '') === 'mealUpgrade';
                             });
-                            // 蝯曹?敺??格銝甈∴?蝯?AI ?餉店閮嚗?鞈?嚗election 蝻箸?雿?????剁?
+                            // 統一從菜單查一次（給 AI 電話訂單／舊資料／selection 缺欄位等情況回退用）
                             var menuMetaForItem = null;
                             try { menuMetaForItem = this.getMealUpgradeMetaFromMenu(mapped.name); }
                             catch (lookupErr) { console.warn('mealUpgrade menu lookup failed:', lookupErr && lookupErr.message ? lookupErr.message : lookupErr); }
-                            // ???格?啁?鋆?explicitMealSel嚗??
+                            // 把菜單查到的補進 explicitMealSel（若有）
                             if (explicitMealSel && menuMetaForItem) {
                                 if (!String(explicitMealSel.mealUpgradeDisplayLabel || '').trim() && menuMetaForItem.label) explicitMealSel.mealUpgradeDisplayLabel = menuMetaForItem.label;
                                 if (!String(explicitMealSel.mealUpgradeChargePrefix || '').trim() && menuMetaForItem.prefix) explicitMealSel.mealUpgradeChargePrefix = menuMetaForItem.prefix;
                             }
-                            var desiredCredit = Number(mapped.comboDrinkCredit || 0);
-                            var explicitBaseValue = Number(explicitMealSel && explicitMealSel.baseValue || 0);
-                            var menuBaseValue = Number(menuMetaForItem && menuMetaForItem.baseValue || 0);
-                            if ((!Number.isFinite(desiredCredit) || desiredCredit <= 0) && explicitBaseValue > 0) desiredCredit = explicitBaseValue;
-                            if ((!Number.isFinite(desiredCredit) || desiredCredit <= 0) && menuBaseValue > 0) desiredCredit = menuBaseValue;
-                            if ((!Number.isFinite(desiredCredit) || desiredCredit <= 0) && mapped.comboDrinkDiscount5) desiredCredit = 5;
-                            if (desiredCredit > 0) mapped.comboDrinkCredit = desiredCredit;
+                            // 若 mapping 沒抓到 surcharge，從 mealUpgrade 選項推算（POS confirmAdd 不會寫 comboDrinkSurcharge）
                             if (!Number(mapped.comboDrinkSurcharge || 0) && explicitMealSel) {
                                 var selPrice = Number(explicitMealSel.price || 0);
                                 var selBase = Number(explicitMealSel.baseValue || 0);
                                 if (selPrice > selBase) mapped.comboDrinkSurcharge = selPrice - selBase;
                             }
-                            if (!Number(mapped.comboDrinkSurcharge || 0) && mapped.isComboDrink && Number(mapped.itemTotal || 0) > 0) {
-                                mapped.comboDrinkSurcharge = Number(mapped.itemTotal || 0) / Math.max(1, Number(mapped.qty || 1));
-                            }
-                            if (!Number(mapped.comboDrinkSurcharge || 0) && Number(mapped.comboDrinkFullPrice || 0) > 0 && Number(mapped.comboDrinkCredit || 0) > 0) {
-                                mapped.comboDrinkSurcharge = Math.max(0, Number(mapped.comboDrinkFullPrice || 0) - Number(mapped.comboDrinkCredit || 0));
-                            }
+                            // 優先序：selection 明確值 > 菜單回查值 > 既有預設值 > 硬編碼
                             var desiredLabel = (explicitMealSel ? String(explicitMealSel.mealUpgradeDisplayLabel || '').trim() : '')
                                 || (menuMetaForItem && menuMetaForItem.label ? String(menuMetaForItem.label).trim() : '');
                             if (desiredLabel) {
                                 mapped.comboDrinkLabel = desiredLabel;
                             } else if (!mapped.comboDrinkLabel) {
-                                mapped.comboDrinkLabel = mapped.comboDrinkDiscount5 ? '\u642d\u914d\u98f2\u6599\u62985\u5143' : '\u5957\u9910\u98f2\u6599';
+                                mapped.comboDrinkLabel = mapped.comboDrinkDiscount5 ? '搭配飲料折5元' : '套餐飲料';
                             }
-                            // chargeText嚗??蝣箏?蝬游?閬?嚗???????身
+                            // chargeText：若有明確前綴則覆蓋；無則保留既有或回退預設
                             var desiredPrefix = (explicitMealSel ? String(explicitMealSel.mealUpgradeChargePrefix || '').trim() : '')
                                 || (menuMetaForItem && menuMetaForItem.prefix ? String(menuMetaForItem.prefix).trim() : '');
+                            // 取得實際 surcharge 數值（必要時從既有 comboDrinkChargeText 反解）
                             var actualSurcharge = Number(mapped.comboDrinkSurcharge || 0);
                             if (!actualSurcharge && mapped.comboDrinkChargeText) {
                                 var sm = String(mapped.comboDrinkChargeText).match(/(\d+)\s*$/);
@@ -1502,7 +1424,7 @@
                                 mapped.comboDrinkChargeText = desiredPrefix + actualSurcharge;
                                 if (!Number(mapped.comboDrinkSurcharge || 0)) mapped.comboDrinkSurcharge = actualSurcharge;
                             } else if (!mapped.comboDrinkChargeText && actualSurcharge > 0) {
-                                mapped.comboDrinkChargeText = (mapped.comboDrinkDiscount5 ? '\u98f2\u6599\u52a0\u8cfc$' : '\u88dc\u5dee\u50f9$') + actualSurcharge;
+                                mapped.comboDrinkChargeText = (mapped.comboDrinkDiscount5 ? '飲料加購$' : '補差價$') + actualSurcharge;
                             }
                             const rawSelections = (src.optionSelections && typeof src.optionSelections === 'object')
                                 ? src.optionSelections
@@ -1592,7 +1514,7 @@
                     const original = (order && order._integrationOriginal) || {};
                     const directValue = (order && order.sourceOrderId) || original.sourceOrderId || (original.audit && original.audit.originalSourceSnapshotId) || (original.phoneAi && original.phoneAi.rawJsonPath) || '';
                     if (directValue && String(directValue).includes('/')) {
-                        return String(directValue).split('/').pop().replace('_蝜?.json', '');
+                        return String(directValue).split('/').pop().replace('_繁體.json', '');
                     }
                     if (directValue) return String(directValue);
                     const id = order && order.id ? String(order.id) : '';
@@ -1602,7 +1524,7 @@
                 queuePhoneOrderCommand(order, action, extra = {}) {
                     const original = (order && order._integrationOriginal) || {};
                     const sourceOrderId = this.resolvePhoneCommandSourceOrderId(order);
-                    if (!sourceOrderId) return Promise.reject(new Error('?曆??圈閰梯??桐?皞楊??));
+                    if (!sourceOrderId) return Promise.reject(new Error('找不到電話訂單來源編號'));
                     const commandId = 'cmd_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
                     return set(ref(db, 'integration_sync/phone_order_commands/' + commandId), Object.assign({
                         commandId,
@@ -1624,7 +1546,7 @@
                     try {
                         const today = new Date(); today.setHours(0, 0, 0, 0);
                         const cutoff = today.getTime();
-                        // ????▲霈??銝閰?orders/ ?寡楝敺?
+                        // ★ 逐日期桶讀取（不查詢 orders/ 根路徑）
                         const updates = {};
                         let count = 0;
                         for (let i = 1; i <= 7; i++) {
@@ -1643,10 +1565,10 @@
                                         count++;
                                     }
                                 }
-                            } catch(buckErr) { console.warn('甇豢?霈??' + dateKey + ' 憭望?:', buckErr.message); }
+                            } catch(buckErr) { console.warn('歸檔讀取 ' + dateKey + ' 失敗:', buckErr.message); }
                         }
-                        if (count > 0) { await update(ref(db), updates); console.log('??甇豢? ' + count + ' 蝑?閮'); }
-                        // 甇豢? linepay_transactions
+                        if (count > 0) { await update(ref(db), updates); console.log('✅ 歸檔 ' + count + ' 筆舊訂單'); }
+                        // 歸檔 linepay_transactions
                         const lpSnap = await get(ref(db, 'linepay_transactions'));
                         if (lpSnap.exists()) {
                             const lpData = lpSnap.val(); const lpUp = {}; let lc = 0;
@@ -1655,19 +1577,19 @@
                                 const ts = t.timestamp || t.createdAt || t.cancelledAt || 0;
                                 if (ts && ts < cutoff) { lpUp['linepay_archive/' + id] = t; lpUp['linepay_transactions/' + id] = null; lc++; }
                             }
-                            if (lc > 0) { await update(ref(db), lpUp); console.log('??甇豢? ' + lc + ' 蝑?鈭斗?'); }
+                            if (lc > 0) { await update(ref(db), lpUp); console.log('✅ 歸檔 ' + lc + ' 筆舊交易'); }
                         }
-                    } catch(e) { console.warn('甇豢?憭望?:', e.message); }
+                    } catch(e) { console.warn('歸檔失敗:', e.message); }
                 },
                 async login() {
                     try {
                         await authReady;
                         await signInWithEmailAndPassword(auth, this.email, this.password);
                         try { localStorage.setItem('admin_remembered_email', this.email); } catch(e) {}
-                    } catch (error) { this.toast("???餃憭望?嚗?瑼Ｘ靽∠拳??蝣?); }
+                    } catch (error) { this.toast("❌ 登入失敗，請檢查信箱與密碼"); }
                 },
                 async logout() {
-                    try { await signOut(auth); } catch (error) { console.error("?餃憭望?", error); }
+                    try { await signOut(auth); } catch (error) { console.error("登出失敗", error); }
                 },
                 listenToOrders() {
                     const self = this;
@@ -1709,7 +1631,7 @@
                         self.useIntegrationView = !!self.integrationOrdersCache.length;
                         self.rebuildOrdersFromBuckets();
                     }, (err) => {
-                        console.error('??integration_views ??憭望?:', err && err.message ? err.message : err);
+                        console.error('❌ integration_views 監聽失敗:', err && err.message ? err.message : err);
                         self.integrationOrdersCache = [];
                         self.useIntegrationView = false;
                         self.rebuildOrdersFromBuckets();
@@ -1728,7 +1650,7 @@
                         const list = Object.keys(raw).map((id) => Object.assign({
                             id: id,
                             source: 'phone_ai',
-                            sourceLabel: '?餉店暺?',
+                            sourceLabel: '電話點餐',
                             sourceRecordPath: 'phone_ai/orders/' + id
                         }, raw[id] || {}));
                         self.phoneOrdersCache = self.normalizeIncomingOrders(list);
@@ -1749,12 +1671,14 @@
                 },
                 buildWatchDateKeys() {
                     const out = [];
-                    // ???芰?賣憭抬?敺予嚗??▲嚗?銝???16?▲
-                    // ?頃?桀銝?歇撖怠撠??交?獢塚???admin??get() 銝甈∪??                    for (let i = -1; i <= 2; i++) out.push(this.dateKeyOffset(i));
+                    // ★ 只監聽昨天～後天（4個桶），不再監聽16個桶
+                    // 預購單在下單時已寫入對應日期桶，打開admin時 get() 一次即可
+                    for (let i = -1; i <= 2; i++) out.push(this.dateKeyOffset(i));
                     return out;
                 },
                 _scheduleRebuild() {
-                    // ???脫?嚗?甈∟??交? onChildAdded ???閫貊嚗?雿萇銝甈⊿?撱?                    clearTimeout(this._rebuildTimer);
+                    // ★ 防抖：初次載入時 onChildAdded 會連續觸發，合併為一次重建
+                    clearTimeout(this._rebuildTimer);
                     this._rebuildTimer = setTimeout(() => this.rebuildOrdersFromBuckets(), 150);
                 },
                 rebuildOrdersFromBuckets() {
@@ -1774,7 +1698,7 @@
                     parsedOrders.forEach((o) => {
                         if (o.status === 'new') currentNewCount++;
                         if (o.status !== 'archived' && o.status !== 'cancelled' && !o.orderNo && !this.isPhoneSourceOrder(o) && !this.isIntegrationReadOnlyOrder(o)) this.autoAssignOrderNo(o.id);
-                        // ????瘞渲?雿 print_task ???殷?憒?dinein ?湔?嚗?鋆神 print_task 閫貊?
+                        // ★ 有流水號但無 print_task 的訂單（如 dinein 直接送出），補寫 print_task 觸發列印
                         else {
                             const pm = o.paymentMethod || '';
                             const isLinePayPm = (pm === 'linepay' || pm === 'linepay_offline' || pm === 'linepay_refund');
@@ -1827,7 +1751,7 @@
                         if (direct) {
                             direct = String(direct);
                             if (direct.includes('/')) direct = direct.split('/').pop();
-                            direct = direct.replace(/_蝜?\.json$/, '').replace(/\.json$/, '');
+                            direct = direct.replace(/_繁體\.json$/, '').replace(/\.json$/, '');
                             if (direct) return direct;
                         }
                         if (order.id) return String(order.id);
@@ -1975,7 +1899,7 @@
                         const label = String(order && (order.sourceLabel || order._integrationSourceLabel) || '').toLowerCase().trim();
                         const path = this.normalizeSourceRecordPath(order, order && order.id || '');
                         const type = String(order && order.type || '').toLowerCase().trim();
-                        if (path.indexOf('phone_ai/orders/') === 0 || src === 'phone_ai' || src === 'pos_local' || label.indexOf('?餉店') !== -1 || label.indexOf('phone') !== -1) return 'phone_ai';
+                        if (path.indexOf('phone_ai/orders/') === 0 || src === 'phone_ai' || src === 'pos_local' || label.indexOf('電話') !== -1 || label.indexOf('phone') !== -1) return 'phone_ai';
                         if (src === 'pos' || label.indexOf('pos') !== -1) return 'pos';
                         if (src === 'qrcode') return 'qrcode';
                         if (src === 'qr_takeout') return 'qr_takeout';
@@ -2030,7 +1954,7 @@
                         parsedOrders.forEach((o) => {
                             if (!o || !o.id) return;
                             upsertMerged(mergedMap, o);
-                            // integration 摮??靽??砍 key嚗????皞??貉???閮瘨仃
+                            // integration 存在時也保留本地 key，避免不同來源互相覆蓋造成訂單消失
                             // handled by upsertMerged
                         });
                     } else {
@@ -2045,7 +1969,7 @@
                     const mergedNewCount = mergedOrders.filter(o => this.getDisplayStatus(o) === 'new').length;
                     if (mergedNewCount > this.previousNewCount && this.previousNewCount !== 0) this.playAlert();
                     this.previousNewCount = mergedNewCount;
-                    // ???Ｙ?鋆嚗炎?交?瘚偌???芸??啁?閮嚗??啣神??print_queue
+                    // ★ 離線補印：檢查有流水號但未列印的訂單，重新寫入 print_queue
                     this.requeueUnprintedOrders(mergedOrders);
                 },
                 resetOrderBucketListeners() {
@@ -2056,14 +1980,14 @@
                     this.buildWatchDateKeys().forEach((dateKey) => {
                         if (!self.orderBuckets[dateKey]) self.orderBuckets[dateKey] = {};
                         const bucketRef = ref(db, 'orders/' + dateKey);
-                        // ???寧 child 鈭辣嚗銝?霈?銝蝑?銝??單?▲
+                        // ★ 改用 child 事件：只下載變更的那一筆，不重傳整個桶
                         const u1 = onChildAdded(bucketRef, (snap) => {
                             self.orderBuckets[dateKey][snap.key] = snap.val();
                             self._scheduleRebuild();
                         }, (err) => {
-                            console.error('??閮??憭望? [' + dateKey + ']:', err && err.message ? err.message : err);
+                            console.error('❌ 訂單監聽失敗 [' + dateKey + ']:', err && err.message ? err.message : err);
                             if (err && err.message && err.message.indexOf('PERMISSION_DENIED') !== -1) {
-                                self.toast('?? 霈???格???頞喉?隢Ⅱ隤?亙董??);
+                                self.toast('⚠️ 讀取訂單權限不足，請確認登入帳號');
                             }
                         });
                         const u2 = onChildChanged(bucketRef, (snap) => {
@@ -2114,7 +2038,8 @@
                 },
                 async setPrintTaskMirror(orderId, task, orderObj) {
                     await this.updateOrderMirror(orderId, { print_task: task }, orderObj);
-                    // ????撖怠 print_queue 靘?Node-RED 蝎暹???嚗???賣??orders/嚗?                    this.writeToPrintQueue(orderId, task, orderObj);
+                    // ★ 同時寫入 print_queue 供 Node-RED 精準監聽（不再監聽整個 orders/）
+                    this.writeToPrintQueue(orderId, task, orderObj);
                 },
                 writeToPrintQueue(orderId, task, orderObj) {
                     try {
@@ -2137,7 +2062,7 @@
                         remove(qRef).catch(() => {})
                             .then(() => new Promise(r => setTimeout(r, 120)))
                             .then(() => set(qRef, queueData))
-                            .catch(e => console.warn('print_queue 撖怠憭望?:', e.message));
+                            .catch(e => console.warn('print_queue 寫入失敗:', e.message));
                     } catch(e) { console.warn('print_queue error:', e); }
                 },
                 async autoAssignOrderNo(orderId) {
@@ -2163,7 +2088,7 @@
                             const updateData = { orderNo: result.snapshot.val() };
                             if (payStatus !== 'pending') updateData.print_task = 'kitchen_' + Date.now();
                             await this.updateOrderMirror(orderId, updateData, orderObj);
-                            // ??憒???print_task嚗神??print_queue 靘?Node-RED
+                            // ★ 如果有 print_task，寫入 print_queue 供 Node-RED
                             if (updateData.print_task) this.writeToPrintQueue(orderId, updateData.print_task, orderObj);
                             delete this.assigningNos[orderId];
                             return;
@@ -2173,7 +2098,7 @@
                     }
                     delete this.assigningNos[orderId];
                 },
-                // ????orderNo 雿 print_task ???殷?dinein 蝑?蝡舫嚗?鋆神 print_task 閫貊?
+                // ★ 有 orderNo 但無 print_task 的訂單（dinein 等前端送出），補寫 print_task 觸發列印
                 async triggerPrintForOrder(order) {
                     const key = 'triggering_' + order.id;
                     if (this[key]) return;
@@ -2189,35 +2114,39 @@
                     } catch(e) { console.warn('triggerPrint failed:', order.id, e.message); }
                     delete this[key];
                 },
-                // ???Ｙ?鋆嚗i ???嚗??芸??啁?閮?撖怠 print_queue
+                // ★ 離線補印：Pi 重連後，將未列印的訂單重新寫入 print_queue
                 async requeueUnprintedOrders(orders) {
-                    if (this._requeueDone) return; // 瘥活?頛?芸銵?甈?                    this._requeueDone = true;
+                    if (this._requeueDone) return; // 每次頁面載入只執行一次
+                    this._requeueDone = true;
                     const unprinted = orders.filter(o => {
                         if (!o.orderNo) return false;
-                        if (this.isPhoneSourceOrder(o) || this.isIntegrationReadOnlyOrder(o)) return false; // 撠??瘚偌??                        if (o.status === 'archived' || o.status === 'cancelled') return false;
-                        if (o.paymentStatus === 'pending') return false; // LINE Pay 敺?甈?                        // 瑼Ｘ print_queue 銝剜?血歇?迨閮
+                        if (this.isPhoneSourceOrder(o) || this.isIntegrationReadOnlyOrder(o)) return false; // 尚未分配流水號
+                        if (o.status === 'archived' || o.status === 'cancelled') return false;
+                        if (o.paymentStatus === 'pending') return false; // LINE Pay 待付款
+                        // 檢查 print_queue 中是否已有此訂單
                         return true;
                     });
                     if (!unprinted.length) return;
                     let requeueCount = 0;
                     for (const o of unprinted) {
                         try {
-                            // 瑼Ｘ print_queue 銝剜?血歇摮
+                            // 檢查 print_queue 中是否已存在
                             const qSnap = await get(ref(db, 'print_queue/' + o.id));
-                            if (qSnap.exists()) continue; // 撌脣雿?銝哨?銝?銴?                            // 瑼Ｘ order ??print_task ?臬摮嚗歇??停銝??堆?
+                            if (qSnap.exists()) continue; // 已在佇列中，不重複
+                            // 檢查 order 的 print_task 是否存在（已列印過就不補印）
                             const base = this.orderBasePath(o.id, o);
                             const ptSnap = await get(ref(db, `${base}/print_task`));
-                            if (ptSnap.exists() && ptSnap.val()) continue; // ??print_task 隞?”撌脰孛?潮??
-                            // 撖怠鋆隞餃?
+                            if (ptSnap.exists() && ptSnap.val()) continue; // 有 print_task 代表已觸發過列印
+                            // 寫入補印任務
                             const task = 'kitchen_requeue_' + Date.now();
                             await this.updateOrderMirror(o.id, { print_task: task }, o);
                             this.writeToPrintQueue(o.id, task, o);
                             requeueCount++;
-                        } catch(e) { console.warn('鋆瑼Ｘ憭望?:', o.id, e.message); }
+                        } catch(e) { console.warn('補印檢查失敗:', o.id, e.message); }
                     }
                     if (requeueCount > 0) {
-                        this.toast('?儭?撌脰???' + requeueCount + ' 蝑蝺???閮');
-                        console.log('???Ｙ?鋆:', requeueCount, '蝑?);
+                        this.toast('🖨️ 已補印 ' + requeueCount + ' 筆離線期間未列印訂單');
+                        console.log('★ 離線補印:', requeueCount, '筆');
                     }
                 },
                 updateStatus(orderId, newStatus) {
@@ -2244,38 +2173,38 @@
                 async printOrder(order) {
                     if (this.isPhoneCommandOrder(order)) {
                         await this.queuePhoneOrderCommand(order, 'print_kitchen');
-                        this.toast('?儭?撌脤?餉店閮鋆?賭誘');
+                        this.toast('🖨️ 已送出電話訂單補印命令');
                         return;
                     }
                     if (this.isIntegrationReadOnlyOrder(order)) {
-                        this.toast('?? ?餉店?游?閮隢??券閰勗??啗???);
+                        this.toast('☎️ 電話整合訂單請先在電話後台補印');
                         return;
                     }
                     try {
                         const reprintTask = `kitchen_reprint_${Date.now()}`;
                         this.writeToPrintQueue(order.id, reprintTask, order);
-                        console.log("撱撌亙鋆?誘?潮???);
+                        console.log("廚房工單補印指令發送成功");
                     } catch (err) {
-                        this.toast("??鋆撌亙憭望?嚗? + err);
+                        this.toast("❌ 補印工單失敗：" + err);
                     }
                 },
                 async printReceipt(order) {
                     if (this.isPhoneCommandOrder(order)) {
                         await this.queuePhoneOrderCommand(order, 'print_receipt');
-                        this.toast('?屁 撌脤?餉店閮?嗆??賭誘');
+                        this.toast('🧾 已送出電話訂單收據命令');
                         return;
                     }
                     if (this.isIntegrationReadOnlyOrder(order)) {
-                        this.toast('?? ?餉店?游?閮隢??券閰勗??啣??唳??);
+                        this.toast('☎️ 電話整合訂單請先在電話後台列印收據');
                         return;
                     }
                     try {
                         const receiptTask = `receipt_${Date.now()}`;
                         await this.clearPrintTaskMirror(order.id, order);
                         await this.setPrintTaskMirror(order.id, receiptTask, order);
-                        console.log("摰Ｘ?嗆???誘?潮???);
+                        console.log("客戶收據列印指令發送成功");
                     } catch (err) {
-                        this.toast("???唳?仃??" + err);
+                        this.toast("❌ 印收據失敗：" + err);
                     }
                 },
                 getLinePayState(order) {
@@ -2287,7 +2216,7 @@
                     return 'pending';
                 },
                 async requestLinePayRefund(order) {
-                    const reason = '摨振??閮';
+                    const reason = '店家取消訂單';
                     const reqRef = ref(db, `linepay_refund_requests/${order.id}`);
 
                     try {
@@ -2310,7 +2239,7 @@
                                 return { success: true, returnCode: rv.returnCode || '0000' };
                             }
                             if (rv.status === 'error') {
-                                return { success: false, error: rv.error || '?甈曉仃??, returnCode: rv.returnCode || '' };
+                                return { success: false, error: rv.error || '退款失敗', returnCode: rv.returnCode || '' };
                             }
                         }
                     } catch (_) {}
@@ -2344,7 +2273,7 @@
                             if (!res.ok) continue;
                             const rd = await res.json();
                             if (rd.success || rd.returnCode === 'ALREADY_REFUNDED') return { success: true, returnCode: rd.returnCode || '0000' };
-                            if (rd.error) return { success: false, error: rd.error || '?甈曉仃??, returnCode: rd.returnCode || '' };
+                            if (rd.error) return { success: false, error: rd.error || '退款失敗', returnCode: rd.returnCode || '' };
                         } catch (_) {}
                     }
 
@@ -2354,17 +2283,17 @@
                             return { success: true, returnCode: 'LATE_REFUNDED' };
                         }
                     } catch (_) {}
-                    return { success: false, error: '?甈暹????' };
+                    return { success: false, error: '退款服務無回應' };
                 },
                 async cancelOrder(order) {
                     if (this.isPhoneCommandOrder(order)) {
-                        if (!confirm('蝣箏?閬?瘨??餉店閮??')) return;
+                        if (!confirm('確定要取消這筆電話訂單嗎？')) return;
                         await this.queuePhoneOrderCommand(order, 'cancel_order');
-                        this.toast('??撌脤?餉店閮???賭誘');
+                        this.toast('✅ 已送出電話訂單取消命令');
                         return;
                     }
                     if (this.isIntegrationReadOnlyOrder(order)) {
-                        this.toast('?? ?餉店?游?閮隢??券閰勗??啣?瘨?);
+                        this.toast('☎️ 電話整合訂單請先在電話後台取消');
                         return;
                     }
                     let latestOrder = { ...order };
@@ -2395,10 +2324,10 @@
 
                     const shouldRefund = isLinePay && linePayState === 'paid';
                     if (shouldRefund) {
-                        const choice = confirm(`甇方??桀歇摰? LINE Pay 隞狡 $${latestOrder.total || order.total || 0}?n\n蝣箏???嚗n嚗??Ⅱ摰??隢?LINE Pay ?甈橘?暺?瘨璉?雿?`);
+                        const choice = confirm(`此訂單已完成 LINE Pay 付款 $${latestOrder.total || order.total || 0}。\n\n確定取消？\n（點「確定」同時申請 LINE Pay 退款，點「取消」放棄操作）`);
                         if (!choice) return;
                     } else {
-                        if (!confirm('蝣箏?閬?瘨?閮??嚗??芸?????株撱嚗?)) return;
+                        if (!confirm('確定要取消這筆訂單嗎？（將自動列印取消單至廚房）')) return;
                     }
 
                     const taskRef = ref(db, `${orderBase}/print_task`);
@@ -2437,18 +2366,18 @@
                                 latestOrder.refundedAt = rts;
                                 this.lpStatus[order.id] = 'refunded';
                                 delete this.lpConfirmed[order.id];
-                                this.toast(`??LINE Pay ?甈?$${latestOrder.total || order.total || 0} 撌脩隢?蝑????甇伐?`);
+                                this.toast(`✅ LINE Pay 退款 $${latestOrder.total || order.total || 0} 已申請（等待狀態同步）`);
                             } else {
-                                this.toast('?? ?甈曉仃??'+(refund.error||'???∪???)+'嚗????甈?);
+                                this.toast('⚠️ 退款失敗：'+(refund.error||'服務無回應')+'，請手動退款');
                             }
                         } else if (isLinePay && linePayState !== 'refunded') {
                             await update(ref(db), {
                                 [`linepay_transactions/${order.id}/status`]: 'cancelled',
                                 [`linepay_transactions/${order.id}/cancelledAt`]: Date.now()
                             });
-                            this.toast('??閮撌脣?瘨?LINE Pay ?芯?甈橘?');
+                            this.toast('✅ 訂單已取消（LINE Pay 未付款）');
                         } else {
-                            this.toast('??閮撌脣?瘨?);
+                            this.toast('✅ 訂單已取消');
                         }
 
                         if (shouldRefund) await new Promise(r => setTimeout(r, 500));
@@ -2457,20 +2386,21 @@
                         await set(taskRef, cancelTask);
                         this.writeToPrintQueue(order.id, cancelTask, latestOrder);
                     } catch (err) {
-                        this.toast('????閮憭望?嚗? + err);
+                        this.toast('❌ 取消訂單失敗：' + err);
                     }
-                },                // ????蝯嚗撠?隞予???餌?閮嚗??靘?蝝?                async dailyClose() {
+                },                // ★ 打烊結單：只封存今天及過去的訂單，保留未來預約
+                async dailyClose() {
                     const today = new Date();
                     const todayStr = today.getFullYear()+'-'+('0'+(today.getMonth()+1)).slice(-2)+'-'+('0'+today.getDate()).slice(-2);
-                    // ?曉?芯?閮
+                    // 找出未來訂單
                     const futureOrders = this.orders.filter(o => {
                         if (o.status === 'archived' || o.status === 'cancelled') return false;
                         var pd = o.pickupDate || '';
-                        return pd > todayStr; // ???予隞亙?
+                        return pd > todayStr; // 預約明天以後
                     });
                     const futureCount = futureOrders.length;
-                    var msg = "蝣箏?閬脰??????柴?嚗n??撠??亙?????桀?摮甇瑕蝝??;
-                    if (futureCount > 0) msg += "\n\n?? ??" + futureCount + " 蝑靘?蝝??桀?靽??函?Ｖ???;
+                    var msg = "確定要進行「打烊結單」嗎？\n這會將今日及過去的訂單封存至歷史紀錄。";
+                    if (futureCount > 0) msg += "\n\n⚠️ 有 " + futureCount + " 筆未來預約訂單將保留在畫面上。";
                     if (!confirm(msg)) return;
                     const updates = {};
                     const phoneCmds = [];
@@ -2488,7 +2418,7 @@
                             updates['orders/' + dateKey + '/' + o.id] = null;
                         }
                     });
-                    if (!Object.keys(updates).length && !phoneCmds.length) { this.toast("???桀?瘝??閬??桃?閮"); return; }
+                    if (!Object.keys(updates).length && !phoneCmds.length) { this.toast("✅ 目前沒有需要結單的訂單"); return; }
                     try {
                         if (Object.keys(updates).length) {
                             await update(ref(db), updates);
@@ -2496,23 +2426,23 @@
                         if (phoneCmds.length) {
                             const rs = await Promise.allSettled(phoneCmds);
                             const failed = rs.filter(r => r.status !== 'fulfilled').length;
-                            if (failed > 0) throw new Error('?餉店閮蝯?賭誘憭望? ' + failed + ' 蝑?);
+                            if (failed > 0) throw new Error('電話訂單結單命令失敗 ' + failed + ' 筆');
                         }
-                        var msg = "??蝯摰?嚗??虫?嚗?;
-                        if (futureCount > 0) msg += "\n嚗? + futureCount + " 蝑靘?蝝??桀歇靽?嚗?;
-                        if (phoneCmds.length > 0) msg += "\n嚗閰勗撌脤蝯?賭誘 " + phoneCmds.length + " 蝑?";
+                        var msg = "✅ 結單完成！辛苦了！";
+                        if (futureCount > 0) msg += "\n（" + futureCount + " 筆未來預約訂單已保留）";
+                        if (phoneCmds.length > 0) msg += "\n（電話單已送出結單命令 " + phoneCmds.length + " 筆）";
                         this.toast(msg);
                     } catch (err) {
-                        this.toast("??蝯憭望?嚗? + (err && err.message ? err.message : err));
+                        this.toast("❌ 結單失敗：" + (err && err.message ? err.message : err));
                     }
                 },
                 playAlert() {
                     this.alertSound.currentTime = 0;
-                    this.alertSound.play().catch(err => console.log("?單?鋡恍??));
+                    this.alertSound.play().catch(err => console.log("音效被阻擋"));
                 },
                 openEditModal(order) {
                     if (this.isIntegrationReadOnlyOrder(order)) {
-                        this.toast('?? ?餉店?游?閮?桀?隢?餉店敺蝺刻摩');
+                        this.toast('☎️ 電話整合訂單目前請在電話後台編輯');
                         return;
                     }
                     this.editModal = JSON.parse(JSON.stringify(order));
@@ -2527,7 +2457,7 @@
                     try {
                         const id = this.editModal.id;
                         const orderForMirror = this.editModal || this.findOrderById(id) || { id, pickupDate: this.editPickupDate, timestamp: Date.now() };
-                        // 隞狡?孵?撠?
+                        // 付款方式對應
                         var pm = this.editPayMethod;
                         var realPm = (pm==='linepay_qr') ? 'linepay' : pm;
                         var confirmBase = (this.linePayConfirmUrl || '').trim();
@@ -2540,14 +2470,15 @@
                                 }
                             }
                         }
-                        // ??隞狡???頛荔?
-                        // linepay ???韏唬?甈暹?蝔?pending)嚗? linepay_server 蝣箄?
-                        // linepay_offline ???Ⅳ?嗅隞? ??paid
-                        // store/cash ???∩?甈曄???                        const isLinePay = realPm === 'linepay';
+                        // ★ 付款狀態邏輯：
+                        // linepay → 重新走付款流程(pending)，等 linepay_server 確認
+                        // linepay_offline → 掃碼當場付清 → paid
+                        // store/cash → 無付款狀態
+                        const isLinePay = realPm === 'linepay';
                         const isOffline = realPm === 'linepay_offline';
                         const origPaid = (this.editModal.paymentStatus === 'paid' || this.lpConfirmed[this.editModal.id]);
-                        // ?亙??砍歇隞?(LINE Pay)銝??碌INE Pay ??靽?paid
-                        // ?仿??圈LINE Pay雿??祆隞???pending
+                        // 若原本已付清(LINE Pay)且仍選LINE Pay → 保留paid
+                        // 若重新選LINE Pay但原本未付 → pending
                         const newPayStatus = isOffline ? 'paid'
                             : (realPm === 'cash') ? 'paid'
                             : (realPm === 'store') ? 'pending'
@@ -2566,7 +2497,7 @@
                         };
                         await this.updateOrderMirror(id, upd, orderForMirror);
                         if (isLinePay && newPayStatus === 'pending' && confirmBase) {
-                            // ????潸絲 LINE Pay 隞狡隢?
+                            // ★ 重新發起 LINE Pay 付款請求
                             const { set: fbSet, ref: fbRef } = { set, ref };
                             await fbSet(fbRef(db, `linepay_requests/${id}`), {
                                 amount: upd.items ? upd.items.reduce((s,i)=>s+(i.itemTotal||0),0) : (this.editModal.total||0),
@@ -2577,14 +2508,14 @@
                                 status: 'pending',
                                 createdAt: Date.now()
                             });
-                            this.toast('???脣?摰?嚗歇??潸絲 LINE Pay 隞狡隢?');
+                            this.toast('✅ 儲存完成，已重新發起 LINE Pay 付款請求');
                         } else {
                             await this.clearPrintTaskMirror(id, orderForMirror);
                             await this.setPrintTaskMirror(id, `kitchen_edit_${Date.now()}`, orderForMirror);
                         }
                         this.editModal = null;
                     } catch (err) {
-                        this.toast('???脣?憭望?嚗? + err.message);
+                        this.toast('❌ 儲存失敗：' + err.message);
                     } finally {
                         this.editSaving = false;
                     }
