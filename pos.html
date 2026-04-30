@@ -1523,27 +1523,45 @@
                 var src=JSON.parse(JSON.stringify(this.cart||[]));
                 var out=[];
                 var comboDrinkRe=/套餐飲料|搭配飲料折\s*5\s*元|飲料加購|補差價/;
+                var consumedDrinkIdx={};
+                var comboMainIdxByGroup={};
                 function text(v){return String(v===undefined||v===null?'':v).trim();}
+                src.forEach(function(item,idx){
+                    if(!item||typeof item!=='object')return;
+                    var name=text(item.name||item['品項']);
+                    var sels=Array.isArray(item.optionGroupSelections)?item.optionGroupSelections:[];
+                    var hasUpgrade=sels.some(function(sel){return String(sel&&sel.pricing||'')==='mealUpgrade';});
+                    var isMain=!!(item.isCombo&&!item.isComboDrink)||hasUpgrade||name.indexOf('套餐')!==-1||name.indexOf('拼盤')!==-1;
+                    var gid=text(item.comboGroupId);
+                    if(isMain&&gid&&!Object.prototype.hasOwnProperty.call(comboMainIdxByGroup,gid)){
+                        comboMainIdxByGroup[gid]=idx;
+                    }
+                });
                 function findSiblingForMain(main,idx){
                     var gid=text(main&&main.comboGroupId);
                     var firstLoose=null;
                     for(var j=0;j<src.length;j++){
-                        if(j===idx)continue;
+                        if(j===idx||consumedDrinkIdx[j])continue;
                         var cand=src[j];
                         if(!cand||typeof cand!=='object')continue;
                         var note=text(cand.note||cand['備註']);
                         var meta=[note,cand.comboDrinkLabel,cand.comboDrinkChargeText,cand.comboDrinkText,cand.mealDrink].map(text).join(' ');
                         var isDrink=!!cand.isComboDrink||(!(cand.isCombo&&!cand.isComboDrink)&&comboDrinkRe.test(meta));
                         if(!isDrink)continue;
-                        if(!firstLoose)firstLoose=cand;
+                        if(!firstLoose)firstLoose={item:cand,index:j};
                         var cgid=text(cand.comboGroupId);
-                        if(gid&&cgid&&gid===cgid)return cand;
+                        if(gid&&cgid&&gid===cgid)return {item:cand,index:j};
                     }
                     return firstLoose;
                 }
                 src.forEach(function(item,idx){
+                    if(consumedDrinkIdx[idx])return;
                     if(!item||typeof item!=='object')return;
                     if(item.isComboDrink||(!(item.isCombo&&!item.isComboDrink)&&comboDrinkRe.test(text(item.note||item['備註']||item.comboDrinkLabel||'')))){
+                        var directGroupId=text(item.comboGroupId);
+                        if(directGroupId&&Object.prototype.hasOwnProperty.call(comboMainIdxByGroup,directGroupId)&&comboMainIdxByGroup[directGroupId]!==idx){
+                            return;
+                        }
                         out.push(item);
                         return;
                     }
@@ -1556,7 +1574,8 @@
                     var size=String(item.size||s.readPhoneCommandSelection(item,'size')||'').trim();
                     var temp=String(item.temp||s.readPhoneCommandSelection(item,'temp')||'').trim();
                     var drinkName=s.cleanPhoneCommandDrinkName(mealSel.name||item.comboDrinkName||'');
-                    var sibling=findSiblingForMain(item,idx);
+                    var siblingPair=findSiblingForMain(item,idx);
+                    var sibling=siblingPair&&siblingPair.item?siblingPair.item:null;
                     if(sibling){
                         if(!size)size=String(sibling.size||sibling['容量']||'').trim();
                         if(!temp)temp=String(sibling.temp||sibling['溫度']||'').trim();
@@ -1649,6 +1668,7 @@
                         sibling.comboDrinkDiscount5=discount5;
                         sibling.comboDrinkLabel=label;
                         sibling.comboDrinkChargeText=chargeText;
+                        if(siblingPair&&siblingPair.index!==undefined)consumedDrinkIdx[siblingPair.index]=true;
                         out.push(main);
                         return;
                     }
