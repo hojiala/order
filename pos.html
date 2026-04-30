@@ -863,7 +863,7 @@
                 });
                 var hasComboDrink=items.some(function(it){
                     var note=String((it&&it.note)||'');
-                    return !!(it&&it.isComboDrink)||note.indexOf('\u5957\u9910\u98f2\u6599')!==-1;
+                    return !!(it&&it.isComboDrink)||/套餐飲料|搭配飲料折\s*5\s*元|飲料加購|補差價/.test(note);
                 });
                 return hasComboMain&&!hasComboDrink;
             },
@@ -1148,7 +1148,7 @@
                             note:(src.note!==undefined&&src.note!==null)?String(src.note):(src['備註']||''),
                             size:(src.size!==undefined&&src.size!==null)?String(src.size):(src['容量']||''),
                             temp:(src.temp!==undefined&&src.temp!==null)?String(src.temp):(src['溫度']||''),
-                            isComboDrink:!!(src.isComboDrink||String(src['備註']||'').indexOf('套餐飲料')!==-1),
+                            isComboDrink:!!(src.isComboDrink||/套餐飲料|搭配飲料折\s*5\s*元|飲料加購|補差價/.test(String(src['備註']||src.note||src.comboDrinkLabel||src.comboDrinkChargeText||''))),
                             comboGroupId:src.comboGroupId||'',
                             options:Array.isArray(src.options)?src.options.slice():[],
                             posExtras:Array.isArray(src.posExtras)?src.posExtras.slice():[],
@@ -1478,9 +1478,28 @@
                 var s=this;
                 var src=JSON.parse(JSON.stringify(this.cart||[]));
                 var out=[];
+                var comboDrinkRe=/套餐飲料|搭配飲料折\s*5\s*元|飲料加購|補差價/;
+                function text(v){return String(v===undefined||v===null?'':v).trim();}
+                function findSiblingForMain(main,idx){
+                    var gid=text(main&&main.comboGroupId);
+                    var firstLoose=null;
+                    for(var j=0;j<src.length;j++){
+                        if(j===idx)continue;
+                        var cand=src[j];
+                        if(!cand||typeof cand!=='object')continue;
+                        var note=text(cand.note||cand['備註']);
+                        var meta=[note,cand.comboDrinkLabel,cand.comboDrinkChargeText,cand.comboDrinkText,cand.mealDrink].map(text).join(' ');
+                        var isDrink=!!cand.isComboDrink||comboDrinkRe.test(meta);
+                        if(!isDrink)continue;
+                        if(!firstLoose)firstLoose=cand;
+                        var cgid=text(cand.comboGroupId);
+                        if(gid&&cgid&&gid===cgid)return cand;
+                    }
+                    return firstLoose;
+                }
                 src.forEach(function(item,idx){
                     if(!item||typeof item!=='object')return;
-                    if(item.isComboDrink){
+                    if(item.isComboDrink||comboDrinkRe.test(text(item.note||item['備註']||item.comboDrinkLabel||''))){
                         out.push(item);
                         return;
                     }
@@ -1493,17 +1512,30 @@
                     var size=String(item.size||s.readPhoneCommandSelection(item,'size')||'').trim();
                     var temp=String(item.temp||s.readPhoneCommandSelection(item,'temp')||'').trim();
                     var drinkName=s.cleanPhoneCommandDrinkName(mealSel.name||item.comboDrinkName||'');
+                    var sibling=findSiblingForMain(item,idx);
+                    if(sibling){
+                        if(!size)size=String(sibling.size||sibling['容量']||'').trim();
+                        if(!temp)temp=String(sibling.temp||sibling['溫度']||'').trim();
+                        if(!drinkName)drinkName=s.cleanPhoneCommandDrinkName(sibling.name||sibling['品項']||'');
+                    }
                     if(!drinkName){
                         out.push(item);
                         return;
                     }
                     var fullPrice=Number(mealSel.price||item.comboDrinkFullPrice||0);
                     var credit=Number(mealSel.baseValue||item.comboDrinkCredit||0);
+                    if((!Number.isFinite(fullPrice)||fullPrice<=0)&&sibling)fullPrice=Number(sibling.basePrice||sibling.comboDrinkFullPrice||sibling['原價']||0);
+                    if((!Number.isFinite(credit)||credit<=0)&&sibling)credit=Number(sibling.comboDrinkCredit||0);
                     if(!Number.isFinite(fullPrice))fullPrice=0;
                     if(!Number.isFinite(credit))credit=0;
                     var surcharge=Math.max(0,Math.round(Number(item.comboDrinkSurcharge||0)||Math.max(0,fullPrice-credit)));
+                    if(surcharge<=0&&sibling){
+                        var siblingSurcharge=Number(sibling.comboDrinkSurcharge||sibling.price||sibling['單價']||0);
+                        if(!Number.isFinite(siblingSurcharge)||siblingSurcharge<0)siblingSurcharge=0;
+                        if(siblingSurcharge>0)surcharge=Math.round(siblingSurcharge);
+                    }
                     var groupName=String(mealSel.groupName||'');
-                    var displayLabel=String(mealSel.mealUpgradeDisplayLabel||item.comboDrinkLabel||'').trim();
+                    var displayLabel=String(mealSel.mealUpgradeDisplayLabel||item.comboDrinkLabel||(sibling&&sibling.comboDrinkLabel)||(sibling&&sibling.note)||'').trim();
                     var chargePrefix=String(mealSel.mealUpgradeChargePrefix||'').trim();
                     var discount5=!!item.comboDrinkDiscount5
                         ||groupName.indexOf('\u642d\u914d\u98f2\u6599\u62985\u5143')!==-1
@@ -1511,6 +1543,12 @@
                         ||displayLabel.indexOf('\u642d\u914d\u98f2\u6599\u62985\u5143')!==-1
                         ||(Number.isFinite(credit)&&credit>0&&credit<=5)
                         ||chargePrefix.indexOf('\u98f2\u6599\u52a0\u8cfc')!==-1;
+                    if(!discount5&&sibling){
+                        var siblingMeta=[sibling.note,sibling['備註'],sibling.comboDrinkLabel,sibling.comboDrinkChargeText].map(text).join(' ');
+                        var siblingCredit=Number(sibling.comboDrinkCredit||0);
+                        discount5=comboDrinkRe.test(siblingMeta)&&siblingMeta.indexOf('搭配飲料折5元')!==-1
+                            ||(Number.isFinite(siblingCredit)&&siblingCredit>0&&siblingCredit<=5);
+                    }
                     var label=displayLabel||(discount5?'\u642d\u914d\u98f2\u6599\u62985\u5143':'\u5957\u9910\u98f2\u6599');
                     var prefix=chargePrefix||(discount5?'\u98f2\u6599\u52a0\u8cfc$':'\u88dc\u5dee\u50f9$');
                     var chargeText=surcharge>0?(prefix+surcharge):'';
@@ -1542,6 +1580,34 @@
                             return true;
                         })
                     });
+                    if(sibling){
+                        sibling.id=sibling.id||gid+'_drink';
+                        sibling.name=drinkName;
+                        sibling.qty=qty;
+                        sibling.price=surcharge;
+                        sibling.basePrice=fullPrice;
+                        sibling.itemTotal=surcharge*qty;
+                        sibling.subtotal=surcharge*qty;
+                        sibling.note=label;
+                        sibling.size=size;
+                        sibling.temp=temp;
+                        sibling.category=sibling.category||'\u98f2\u6599';
+                        sibling.isComboDrink=true;
+                        sibling.isCombo=false;
+                        sibling.comboGroupId=gid;
+                        sibling.optionGroupSelections=Array.isArray(sibling.optionGroupSelections)?sibling.optionGroupSelections:[];
+                        sibling.options=Array.isArray(sibling.options)?sibling.options:[];
+                        sibling.posExtras=Array.isArray(sibling.posExtras)?sibling.posExtras:[];
+                        sibling.comboDrinkText=comboText;
+                        sibling.comboDrinkFullPrice=fullPrice;
+                        sibling.comboDrinkCredit=credit;
+                        sibling.comboDrinkSurcharge=surcharge;
+                        sibling.comboDrinkDiscount5=discount5;
+                        sibling.comboDrinkLabel=label;
+                        sibling.comboDrinkChargeText=chargeText;
+                        out.push(main);
+                        return;
+                    }
                     var drink={
                         id:gid+'_drink',
                         name:drinkName,
@@ -1972,11 +2038,12 @@
                 var cart=Array.isArray(this.cart)?this.cart.slice():[];
                 if(cart.length<2){this.cart=cart;return;}
                 var removeIdx={};
+                var comboDrinkRe=/套餐飲料|搭配飲料折\s*5\s*元|飲料加購|補差價/;
                 for(var i=0;i<cart.length;i++){
                     if(removeIdx[i])continue;
                     var main=cart[i];
                     if(!main||typeof main!=='object')continue;
-                    if(main.isComboDrink||String(main.note||'').indexOf('\u5957\u9910\u98f2\u6599')!==-1)continue;
+                    if(main.isComboDrink||comboDrinkRe.test(String(main.note||'')))continue;
                     var mainName=String(main.name||'').trim();
                     var mainSels=Array.isArray(main.optionGroupSelections)?main.optionGroupSelections:[];
                     var mainHasUpgrade=mainSels.some(function(s){return String(s&&s.pricing||'')==='mealUpgrade';});
@@ -1987,7 +2054,8 @@
                     for(var j=0;j<cart.length;j++){
                         if(j===i||removeIdx[j])continue;
                         var cand=cart[j];if(!cand||typeof cand!=='object')continue;
-                        var isDrink=!!cand.isComboDrink||String(cand.note||'').indexOf('\u5957\u9910\u98f2\u6599')!==-1;
+                        var candMeta=[cand.note,cand['備註'],cand.comboDrinkLabel,cand.comboDrinkChargeText,cand.comboDrinkText,cand.mealDrink].map(function(v){return String(v||'').trim();}).join(' ');
+                        var isDrink=!!cand.isComboDrink||comboDrinkRe.test(candMeta);
                         if(!isDrink)continue;
                         var cgid=String(cand.comboGroupId||'').trim();
                         if(gid&&cgid&&gid===cgid){sibIdx=j;break;}
@@ -2004,6 +2072,16 @@
                     var sibTotal=Number(sib.itemTotal||(sibUnit*sibQty)||0);
                     var surchargeUnit=Number.isFinite(sibUnit)?sibUnit:0;
                     if(surchargeUnit<=0&&sibQty>0&&Number.isFinite(sibTotal)&&sibTotal>0)surchargeUnit=Math.round(sibTotal/sibQty);
+                    var sibFullPrice=Number(sib.basePrice||sib.comboDrinkFullPrice||sib['原價']||0);
+                    var sibCredit=Number(sib.comboDrinkCredit||0);
+                    if((!Number.isFinite(sibCredit)||sibCredit<0)&&Number.isFinite(sibFullPrice)&&sibFullPrice>0)sibCredit=Math.max(0,sibFullPrice-surchargeUnit);
+                    if((!Number.isFinite(sibFullPrice)||sibFullPrice<=0)&&Number.isFinite(sibCredit)&&sibCredit>=0)sibFullPrice=sibCredit+surchargeUnit;
+                    var sibMeta=[sib.note,sib['備註'],sib.comboDrinkLabel,sib.comboDrinkChargeText].map(function(v){return String(v||'').trim();}).join(' ');
+                    var isDiscount5=String(sib.comboDrinkLabel||'').indexOf('\u642d\u914d\u98f2\u6599\u62985\u5143')!==-1
+                        ||sibMeta.indexOf('\u642d\u914d\u98f2\u6599\u62985\u5143')!==-1
+                        ||(Number.isFinite(sibCredit)&&sibCredit>0&&sibCredit<=5);
+                    var label=String(sib.comboDrinkLabel||sib.note||sib['備註']||'').trim()||(isDiscount5?'\u642d\u914d\u98f2\u6599\u62985\u5143':'\u5957\u9910\u98f2\u6599');
+                    var chargePrefix=isDiscount5?'\u98f2\u6599\u52a0\u8cfc$':'\u88dc\u5dee\u50f9$';
                     var hasSize=mainSels.some(function(s){var g=String(s&&s.groupName||'').toLowerCase();return g.indexOf('size')!==-1||g.indexOf('\u5bb9\u91cf')!==-1;});
                     var hasTemp=mainSels.some(function(s){var g=String(s&&s.groupName||'').toLowerCase();return g.indexOf('temp')!==-1||g.indexOf('\u6eab\u5ea6')!==-1;});
                     var hasDrink=mainSels.some(function(s){
@@ -2016,12 +2094,36 @@
                     if(sibTemp&&!hasTemp)newSels.push({groupName:'\u6eab\u5ea6',name:sibTemp,idx:0,price:0,pricing:'addDelta',baseValue:0});
                     if(sibName&&!hasDrink){
                         var upgrade=Math.max(0,Math.round(surchargeUnit));
-                        newSels.push({groupName:'\u5957\u9910\u98f2\u6599',name:sibName,idx:0,price:upgrade,pricing:'mealUpgrade',baseValue:0});
+                        var baseValue=(Number.isFinite(sibCredit)&&sibCredit>=0)?Math.round(sibCredit):Math.max(0,Math.round((sibFullPrice||0)-upgrade));
+                        newSels.push({
+                            groupName:label,
+                            name:sibName,
+                            idx:0,
+                            price:Number.isFinite(sibFullPrice)&&sibFullPrice>0?Math.round(sibFullPrice):upgrade,
+                            pricing:'mealUpgrade',
+                            baseValue:baseValue,
+                            mealUpgradeDisplayLabel:label,
+                            mealUpgradeChargePrefix:chargePrefix
+                        });
                     }
                     var mainTotal=Number(main.itemTotal||0);
                     if(!Number.isFinite(mainTotal))mainTotal=0;
                     if(!Number.isFinite(sibTotal))sibTotal=0;
-                    var absorbed=Object.assign({},main,{optionGroupSelections:newSels,itemTotal:mainTotal+sibTotal});
+                    var chargeText=surchargeUnit>0?(chargePrefix+Math.round(surchargeUnit)):'';
+                    var comboText=[sibSize,sibTemp,sibName,chargeText].filter(Boolean).join('/');
+                    var absorbed=Object.assign({},main,{
+                        optionGroupSelections:newSels,
+                        itemTotal:mainTotal+sibTotal,
+                        comboGroupId:gid||String(sib.comboGroupId||'').trim(),
+                        comboDrinkText:comboText,
+                        mealDrink:comboText,
+                        comboDrinkFullPrice:Number.isFinite(sibFullPrice)&&sibFullPrice>0?Math.round(sibFullPrice):0,
+                        comboDrinkCredit:(Number.isFinite(sibCredit)&&sibCredit>=0)?Math.round(sibCredit):0,
+                        comboDrinkSurcharge:Math.max(0,Math.round(surchargeUnit)),
+                        comboDrinkDiscount5:isDiscount5,
+                        comboDrinkLabel:label,
+                        comboDrinkChargeText:chargeText
+                    });
                     cart.splice(i,1,absorbed);
                     removeIdx[sibIdx]=true;
                 }
@@ -3653,7 +3755,16 @@ if(realPm==='cash'){
                     s.editingOrder=Object.assign({},s.editingOrder,{status:status});
                 }
                 s.onlineOrders=(s.onlineOrders||[]).map(function(o){return o&&o.id===id?Object.assign({},o,{status:status,_remoteStatusOverride:status}):o;});
-                if(s.isPhoneCommandOrder(targetOrder)||s.isIntegrationReadOnlyOrder(targetOrder)){
+                if(s.isPhoneCommandOrder(targetOrder)){
+                    Promise.all([remotePromise,s.queuePhoneOrderCommand(targetOrder,'set_status',{status:status})]).then(function(){
+                        var m={new:'\u5df2\u9084\u539f\u70ba\u65b0\u8a02\u55ae\uff08\u4e0d\u5217\u5370\uff09',making:'\u2705 \u5df2\u63a5\u55ae\uff08\u4e0d\u5217\u5370\uff09',done:'\u2705 \u51fa\u9910\u5b8c\u6210\uff08\u4e0d\u5217\u5370\uff09',cancelled:'\u5df2\u53d6\u6d88\u986f\u793a\u72c0\u614b'};
+                        s.toast(m[status]||'\u5df2\u66f4\u65b0\u72c0\u614b');
+                    }).catch(function(e){
+                        alert("\u66f4\u65b0\u96fb\u8a71\u8a02\u55ae\u72c0\u614b\u5931\u6557\uff1a"+(e&&e.message?e.message:e));
+                    });
+                    return;
+                }
+                if(s.isIntegrationReadOnlyOrder(targetOrder)){
                     remotePromise.then(function(){
                         var m={new:'\u5df2\u9084\u539f\u70ba\u65b0\u8a02\u55ae\uff08\u4e0d\u5217\u5370\uff09',making:'\u2705 \u5df2\u63a5\u55ae\uff08\u4e0d\u5217\u5370\uff09',done:'\u2705 \u51fa\u9910\u5b8c\u6210\uff08\u4e0d\u5217\u5370\uff09',cancelled:'\u5df2\u53d6\u6d88\u986f\u793a\u72c0\u614b'};
                         s.toast(m[status]||'\u5df2\u66f4\u65b0\u72c0\u614b');

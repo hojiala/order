@@ -797,6 +797,7 @@
                 },
                 isComboDrinkLineForDisplay(item) {
                     if (!item || typeof item !== 'object') return false;
+                    if (item.isCombo && !item.isComboDrink) return false;
                     const note = String(item.note || item['\u5099\u8a3b'] || '').trim();
                     const meta = [
                         note,
@@ -2192,7 +2193,11 @@
                         this.toast('\u26a0\ufe0f \u72c0\u614b\u540c\u6b65\u5931\u6557\uff0c\u672c\u9801\u5df2\u5148\u66f4\u65b0');
                     });
                     if (this.isPhoneSourceOrder(order) || this.isPhoneCommandOrder(order)) {
-                        remotePromise.then(() => this.toast(newStatus === 'done' ? '\u5df2\u6a19\u8a18\u5b8c\u6210\u51fa\u9910\uff08\u4e0d\u5217\u5370\uff09' : '\u5df2\u66f4\u65b0\u72c0\u614b\uff08\u4e0d\u5217\u5370\uff09'));
+                        Promise.all([
+                            remotePromise,
+                            this.queuePhoneOrderCommand(order, 'set_status', { status: newStatus })
+                        ]).then(() => this.toast(newStatus === 'done' ? '\u5df2\u6a19\u8a18\u5b8c\u6210\u51fa\u9910\uff08\u4e0d\u5217\u5370\uff09' : '\u5df2\u66f4\u65b0\u72c0\u614b\uff08\u4e0d\u5217\u5370\uff09'))
+                          .catch(err => this.toast("\u274c \u96fb\u8a71\u8a02\u55ae\u72c0\u614b\u66f4\u65b0\u5931\u6557"));
                         return;
                     }
                     if (this.isIntegrationReadOnlyOrder(order)) {
@@ -2442,7 +2447,10 @@
                     this.orders.forEach(o => {
                         if (o.status !== 'archived' && futureIds.indexOf(o.id) === -1) {
                             if (this.isPhoneCommandOrder(o)) {
-                                phoneCmds.push(this.writeRemoteStatusOverride(o, 'archived'));
+                                phoneCmds.push(Promise.all([
+                                    this.writeRemoteStatusOverride(o, 'archived'),
+                                    this.queuePhoneOrderCommand(o, 'set_status', { status: 'archived' })
+                                ]));
                                 return;
                             }
                             const archivedOrder = Object.assign({}, o, { status: (o.status === 'cancelled' ? 'cancelled' : 'archived') });
