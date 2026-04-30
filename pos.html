@@ -939,6 +939,50 @@
                 }
                 return '';
             },
+            dropZeroDuplicateComboItems:function(items){
+                var list=Array.isArray(items)?items:[];
+                var out=[];var byKey={};
+                function text(v){return String(v===undefined||v===null?'':v).trim();}
+                function totalOf(it){
+                    var vals=[it&&it.itemTotal,it&&it.subtotal,it&&it.total,it&&it['總價'],it&&it['蝮賢']];
+                    for(var i=0;i<vals.length;i++){var n=Number(vals[i]);if(Number.isFinite(n))return n;}
+                    return 0;
+                }
+                function roleOf(it){
+                    var name=text(it&&(it.name||it['品項']||it['??']));
+                    var sels=Array.isArray(it&&it.optionGroupSelections)?it.optionGroupSelections:[];
+                    var hasUpgrade=sels.some(function(sel){return String(sel&&sel.pricing||'')==='mealUpgrade';});
+                    if(it&&((it.isCombo&&!it.isComboDrink)||hasUpgrade||name.indexOf('套餐')!==-1||name.indexOf('拼盤')!==-1))return 'main';
+                    var meta=[it&&it.note,it&&it['備註'],it&&it['?酉'],it&&it.comboDrinkLabel,it&&it.comboDrinkChargeText,it&&it.comboDrinkText,it&&it.mealDrink].map(text).join(' ');
+                    if(it&&(it.isComboDrink||/套餐飲料|搭配飲料折\s*5\s*元|飲料加購|補差價/.test(meta)))return 'drink';
+                    return 'normal';
+                }
+                function keyOf(it){
+                    var role=roleOf(it);
+                    if(role==='normal')return '';
+                    var gid=text(it&&it.comboGroupId);
+                    if(gid)return gid+'|'+role;
+                    return [role,text(it&&(it.name||it['品項']||it['??'])),text(it&&(it.size||it['容量']||it['摰寥?'])),text(it&&(it.temp||it['溫度']||it['皞怠漲'])),text(it&&(it.comboDrinkLabel||it.note||it['備註']||it['?酉'])),text(it&&it.comboDrinkChargeText)].join('|');
+                }
+                list.forEach(function(it){
+                    if(!it||typeof it!=='object')return;
+                    var key=keyOf(it);
+                    if(!key){out.push(it);return;}
+                    if(!byKey[key]){byKey[key]=it;out.push(it);return;}
+                    var prev=byKey[key];
+                    var picked=(totalOf(prev)<=0&&totalOf(it)>0)?it:prev;
+                    var other=(picked===prev)?it:prev;
+                    var merged=Object.assign({},picked);
+                    if(!merged.note&&other&&other.note&&!/套餐飲料|搭配飲料折\s*5\s*元|飲料加購|補差價/.test(String(other.note)))merged.note=other.note;
+                    if(!merged.size&&other&&other.size)merged.size=other.size;
+                    if(!merged.temp&&other&&other.temp)merged.temp=other.temp;
+                    if(!totalOf(merged)&&totalOf(other)){merged.itemTotal=totalOf(other);merged.subtotal=totalOf(other);}
+                    byKey[key]=merged;
+                    var idx=out.findIndex(function(row){return keyOf(row)===key;});
+                    if(idx>=0)out[idx]=merged;
+                });
+                return out;
+            },
             mergeNormalizedOrderItems:function(items){
                 var list=Array.isArray(items)?items:[];
                 var mergedMap={};
@@ -1267,7 +1311,7 @@
                         }
                         return mapped.name?mapped:null;
                     }).filter(function(item){return !!item;});
-                    out.items=self.mergeNormalizedOrderItems(out.items);
+                    out.items=self.dropZeroDuplicateComboItems(self.mergeNormalizedOrderItems(out.items));
                 }
                 if(out.integration&&out._integrationReadOnly===undefined){
                     out._integrationReadOnly=!((out.integration.capabilities||{}).editDirect);
@@ -1489,7 +1533,7 @@
                         if(!cand||typeof cand!=='object')continue;
                         var note=text(cand.note||cand['備註']);
                         var meta=[note,cand.comboDrinkLabel,cand.comboDrinkChargeText,cand.comboDrinkText,cand.mealDrink].map(text).join(' ');
-                        var isDrink=!!cand.isComboDrink||comboDrinkRe.test(meta);
+                        var isDrink=!!cand.isComboDrink||(!(cand.isCombo&&!cand.isComboDrink)&&comboDrinkRe.test(meta));
                         if(!isDrink)continue;
                         if(!firstLoose)firstLoose=cand;
                         var cgid=text(cand.comboGroupId);
@@ -1499,7 +1543,7 @@
                 }
                 src.forEach(function(item,idx){
                     if(!item||typeof item!=='object')return;
-                    if(item.isComboDrink||comboDrinkRe.test(text(item.note||item['備註']||item.comboDrinkLabel||''))){
+                    if(item.isComboDrink||(!(item.isCombo&&!item.isComboDrink)&&comboDrinkRe.test(text(item.note||item['備註']||item.comboDrinkLabel||'')))){
                         out.push(item);
                         return;
                     }
@@ -1742,6 +1786,7 @@
                 }
                 function isComboDrink(it){
                     var meta=comboMeta(it);
+                    if(it&&it.isCombo&&!it.isComboDrink)return false;
                     return !!(it&&it.isComboDrink)||/套餐飲料|搭配飲料折\s*5\s*元|飲料加購|補差價/.test(meta);
                 }
                 function hasDrinkSel(it){
