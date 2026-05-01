@@ -807,6 +807,28 @@
                     return sum+line;
                 },0);
             },
+            preferOrderTotalForDisplay:function(orderHint,currentTotal,incomingTotal,items){
+                var cur=Number(currentTotal);
+                var inc=Number(incomingTotal);
+                var sum=this.sumOrderItemsTotal(items);
+                var finitePos=function(v){return Number.isFinite(v)&&v>0;};
+                var sourcePath=String((orderHint&&((orderHint.integration&&orderHint.integration.sourceRecordPath)||orderHint.sourceRecordPath))||'').toLowerCase();
+                var src=String((orderHint&&orderHint.source)||'').toLowerCase();
+                var sourceRoot=String((orderHint&&orderHint.audit&&orderHint.audit.sourceRoot)||'').toLowerCase();
+                var label=String((orderHint&&(orderHint.sourceLabel||orderHint._integrationSourceLabel))||'').toLowerCase();
+                var isPhoneLike=src==='phone_ai'||src==='pos_local'||sourcePath.indexOf('phone_ai/orders/')===0||sourceRoot.indexOf('phone_ai')===0||label.indexOf('phone')!==-1||label.indexOf('\u96fb\u8a71')!==-1;
+                if(isPhoneLike){
+                    if(finitePos(inc))return inc;
+                    if(finitePos(cur))return cur;
+                    if(finitePos(sum))return sum;
+                    return 0;
+                }
+                var positives=[cur,inc,sum].filter(finitePos);
+                if(positives.length)return Math.max.apply(null,positives);
+                var finiteAny=[cur,inc,sum].filter(function(v){return Number.isFinite(v);});
+                if(finiteAny.length)return Math.max.apply(null,finiteAny);
+                return 0;
+            },
             scoreOrderItemsDetail:function(items){
                 if(!Array.isArray(items))return 0;
                 return items.reduce(function(score,it){
@@ -888,9 +910,7 @@
                     var target=s.onlineOrders.find(function(o){return o&&o.id===orderId;});
                     if(target){
                         target.items=picked.map(function(it){return Object.assign({},it);});
-                        var totals=[Number(target.total||0),Number(sourceNorm.total||0),s.sumOrderItemsTotal(target.items)];
-                        var finiteTotals=totals.filter(function(v){return Number.isFinite(v);});
-                        if(finiteTotals.length)target.total=Math.max.apply(null,finiteTotals);
+                        target.total=s.preferOrderTotalForDisplay(target,Number(target.total||0),Number(sourceNorm.total||0),target.items);
                     }
                     if(s.editingOrder&&s.editingOrder.id===orderId){
                         var nextEditing=Object.assign({},s.editingOrder);
@@ -2019,10 +2039,12 @@
                             var sCharge=parseAmount(text(d.comboDrinkChargeText||d.comboDrinkText||d.mealDrink));
                             var sFull=num(d.comboDrinkFullPrice),sCredit=num(d.comboDrinkCredit);
                             var sLine=explicitLineTotal(d),sq=qtyOf(d);
+                            var sUnit=num((d.price!==undefined)?d.price:((d.unitPrice!==undefined)?d.unitPrice:d['\u55ae\u50f9']));
                             if(sExplicit>0)upgrade=Math.max(upgrade,sExplicit);
                             if(sCharge>0)upgrade=Math.max(upgrade,sCharge);
                             if(sFull>0&&sCredit>0&&sFull>=sCredit)upgrade=Math.max(upgrade,sFull-sCredit);
                             if(sLine>0&&sq>0)upgrade=Math.max(upgrade,sLine/sq);
+                            if(sUnit>0)upgrade=Math.max(upgrade,sUnit);
                         }
                     }
                     if(upgrade<=0){
@@ -2074,6 +2096,10 @@
                         if(charge<=0){
                             var explicitDrinkCharge=num(it&&it.comboDrinkSurcharge);
                             if(explicitDrinkCharge>0)charge=Math.round(explicitDrinkCharge);
+                            else{
+                                var drinkUnit=num((it&&it.price!==undefined)?it.price:((it&&it.unitPrice!==undefined)?it.unitPrice:it&&it['\u55ae\u50f9']));
+                                if(comboLine&&drinkUnit>0)charge=Math.round(drinkUnit);
+                            }
                         }
                         var drinkDiscount5=comboMeta(it).indexOf('\u642d\u914d\u98f2\u6599\u62985\u5143')!==-1
                             ||text(it&&it.comboDrinkChargeText).indexOf('\u98f2\u6599\u52a0\u8cfc')!==-1
@@ -2190,11 +2216,27 @@
                     var mainTotal=Number(main.itemTotal||0);
                     if(!Number.isFinite(mainTotal))mainTotal=0;
                     if(!Number.isFinite(sibTotal))sibTotal=0;
+                    var mainQty=Math.max(1,Number(main.qty||1));
+                    var hasMainMealUpgrade=mainSels.some(function(sel){return String(sel&&sel.pricing||'')==='mealUpgrade';});
+                    var basePerUnit=0;
+                    [main.basePrice,main.originalPrice,main['\u539f\u50f9']].some(function(v){
+                        var n=Number(v);
+                        if(Number.isFinite(n)&&n>0){basePerUnit=n;return true;}
+                        return false;
+                    });
+                    var alreadyIncludesSurcharge=hasMainMealUpgrade&&mainTotal>0;
+                    if(basePerUnit>0&&mainQty>0){
+                        var expectBase=basePerUnit*mainQty;
+                        var expectWithSurcharge=(basePerUnit+Math.max(0,Math.round(surchargeUnit)))*mainQty;
+                        if(Math.abs(mainTotal-expectBase)<=0.6)alreadyIncludesSurcharge=false;
+                        else if(Math.abs(mainTotal-expectWithSurcharge)<=0.6)alreadyIncludesSurcharge=true;
+                    }
+                    var mergedMainTotal=alreadyIncludesSurcharge?mainTotal:(mainTotal+sibTotal);
                     var chargeText=surchargeUnit>0?(chargePrefix+Math.round(surchargeUnit)):'';
                     var comboText=[sibSize,sibTemp,sibName,chargeText].filter(Boolean).join('/');
                     var absorbed=Object.assign({},main,{
                         optionGroupSelections:newSels,
-                        itemTotal:mainTotal+sibTotal,
+                        itemTotal:mergedMainTotal,
                         comboGroupId:gid||String(sib.comboGroupId||'').trim(),
                         comboDrinkText:comboText,
                         mealDrink:comboText,
@@ -2670,9 +2712,7 @@
                     var merged=preferIncoming?Object.assign({},current,incoming):Object.assign({},incoming,current);
                     var bestItems=pickRicherItems(current.items,incoming.items);
                     if(bestItems&&bestItems.length)merged.items=bestItems.map(function(it){return Object.assign({},it);});
-                    var totals=[Number(current.total),Number(incoming.total),sumItems(merged.items)];
-                    var finiteTotals=totals.filter(function(v){return Number.isFinite(v);});
-                    if(finiteTotals.length)merged.total=Math.max.apply(null,finiteTotals);
+                    merged.total=s.preferOrderTotalForDisplay(merged,Number(current.total),Number(incoming.total),merged.items);
                     if(!merged.id)merged.id=preferIncoming?(incoming.id||current.id):(current.id||incoming.id);
                     return merged;
                 };

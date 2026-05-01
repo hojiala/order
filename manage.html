@@ -1785,6 +1785,28 @@ window._doCountUp = function() {
                     return sum + line;
                 }, 0);
             },
+            pickStatsDisplayTotal: function(orderHint, currentTotal, incomingTotal, items) {
+                var cur = Number(currentTotal);
+                var inc = Number(incomingTotal);
+                var sum = this.sumStatsItemsTotal(items);
+                var isPos = function(v) { return Number.isFinite(v) && v > 0; };
+                var sourcePath = String((orderHint && ((orderHint.integration && orderHint.integration.sourceRecordPath) || orderHint.sourceRecordPath)) || '').toLowerCase();
+                var src = String((orderHint && orderHint.source) || '').toLowerCase();
+                var sourceRoot = String(orderHint && orderHint.audit && orderHint.audit.sourceRoot || '').toLowerCase();
+                var label = String((orderHint && (orderHint.sourceLabel || orderHint._integrationSourceLabel)) || '').toLowerCase();
+                var phoneLike = src === 'phone_ai' || src === 'pos_local' || sourcePath.indexOf('phone_ai/orders/') === 0 || sourceRoot.indexOf('phone_ai') === 0 || label.indexOf('phone') >= 0 || label.indexOf('\u96fb\u8a71') >= 0;
+                if (phoneLike) {
+                    if (isPos(inc)) return inc;
+                    if (isPos(cur)) return cur;
+                    if (isPos(sum)) return sum;
+                    return 0;
+                }
+                var positives = [cur, inc, sum].filter(isPos);
+                if (positives.length) return Math.max.apply(null, positives);
+                var finiteAny = [cur, inc, sum].filter(function(v) { return Number.isFinite(v); });
+                if (finiteAny.length) return Math.max.apply(null, finiteAny);
+                return 0;
+            },
             scoreStatsItemsDetail: function(items) {
                 if (!Array.isArray(items)) return 0;
                 return items.reduce(function(score, it) {
@@ -1835,9 +1857,7 @@ window._doCountUp = function() {
                     var picked = this.pickRicherStatsItems(normalized.items, sourceOrder.items, Number(this.getOrderTotalValue(normalized) || 0));
                     var merged = Object.assign({}, normalized);
                     if (picked && picked.length) merged.items = picked.map(function(it) { return Object.assign({}, it); });
-                    var totals = [Number(this.getOrderTotalValue(normalized) || 0), Number(this.getOrderTotalValue(sourceOrder) || 0), this.sumStatsItemsTotal(merged.items)];
-                    var finiteTotals = totals.filter(function(v) { return Number.isFinite(v); });
-                    if (finiteTotals.length) merged.total = Math.max.apply(null, finiteTotals);
+                    merged.total = this.pickStatsDisplayTotal(merged, Number(this.getOrderTotalValue(normalized) || 0), Number(this.getOrderTotalValue(sourceOrder) || 0), merged.items);
                     return merged;
                 } catch (e) {
                     console.warn('enrichStatsOrderFromSource failed:', normalized && normalized.id, e && e.message ? e.message : e);
@@ -2063,15 +2083,9 @@ window._doCountUp = function() {
                     var n = Number(candidates[i]);
                     if (Number.isFinite(n) && n > 0) return n;
                 }
-                var menu = Array.isArray(this.menuItems) ? this.menuItems : [];
-                var itemName = String(item.name || item['\u54c1\u9805'] || '').trim();
-                for (var mi = 0; mi < menu.length; mi++) {
-                    var m = menu[mi] || {};
-                    if (String(m.name || '').trim() === itemName) {
-                        var mp = Number(m.price);
-                        if (Number.isFinite(mp) && mp > 0) return mp;
-                    }
-                }
+                var menuItem = this.findDetailMenuItemByName(item.name || item['\u54c1\u9805']);
+                var menuPrice = Number(menuItem && menuItem.price);
+                if (Number.isFinite(menuPrice) && menuPrice > 0) return menuPrice;
                 var line = this.getDetailLineTotal(item);
                 var qty = this.getDetailItemQty(item);
                 var upgrade = this.getDetailComboUpgrade(item, order, index, true);
@@ -2141,8 +2155,22 @@ window._doCountUp = function() {
             getDetailItemTotal: function(item, order, index) {
                 if (!item) return 0;
                 var qty = this.getDetailItemQty(item);
-                if (this.isDetailComboDrinkLine(item)) return 0;
-                if (this.isDetailComboMainLine(item)) return Math.round(this.getDetailBaseUnit(item, order, index) * qty);
+                if (this.isDetailComboDrinkLine(item)) {
+                    var drinkLine = this.getDetailLineTotal(item);
+                    if (drinkLine > 0) return Math.round(drinkLine);
+                    var drinkUpgrade = this.getDetailComboUpgrade(item, order, index, true);
+                    if (drinkUpgrade > 0) return Math.round(drinkUpgrade * qty);
+                    return Math.round(this.getDetailUnitPrice(item) * qty);
+                }
+                if (this.isDetailComboMainLine(item)) {
+                    var baseUnit = this.getDetailBaseUnit(item, order, index);
+                    if (baseUnit > 0) return Math.round(baseUnit * qty);
+                    var comboLine = this.getDetailLineTotal(item);
+                    var comboUpgrade = this.getDetailComboUpgrade(item, order, index, true);
+                    if (comboLine > 0 && comboUpgrade > 0) return Math.max(0, Math.round(comboLine - comboUpgrade * qty));
+                    if (comboLine > 0) return Math.round(comboLine);
+                    return Math.round(this.getDetailUnitPrice(item) * qty);
+                }
                 var line = this.getDetailLineTotal(item);
                 if (line > 0) return Math.round(line);
                 return Math.round(this.getDetailUnitPrice(item) * qty);
@@ -2256,6 +2284,7 @@ window._doCountUp = function() {
                 }).filter(Boolean);
                 parts = parts.filter(function(part) {
                     if (part === '\u5957\u9910\u98f2\u6599') return false;
+                    if (/^\u642d\u914d\u98f2\u6599\u6298\s*5\s*\u5143$/.test(part)) return false;
                     if (part === '\u73fe\u5834\u55AE' || part === '\u73fe\u5834\u55ae') return false;
                     if (part === '\u96fb\u8a71\u8a02\u55ae') return false;
                     if (part === '\u96fb\u8a71\u8a02\u55ae\u7de8\u8f2f POS') return false;
@@ -3740,9 +3769,7 @@ window._doCountUp = function() {
                     }
                     var bestItems = self.pickRicherStatsItems(current.items, incoming.items, Number(self.getOrderTotalValue(incoming) || self.getOrderTotalValue(current) || 0));
                     if (bestItems && bestItems.length) merged.items = bestItems.map(function(it){ return Object.assign({}, it); });
-                    var totals = [Number(self.getOrderTotalValue(current) || 0), Number(self.getOrderTotalValue(incoming) || 0), self.sumStatsItemsTotal(merged.items)];
-                    var finiteTotals = totals.filter(function(v){ return Number.isFinite(v); });
-                    if (finiteTotals.length) merged.total = Math.max.apply(null, finiteTotals);
+                    merged.total = self.pickStatsDisplayTotal(merged, Number(self.getOrderTotalValue(current) || 0), Number(self.getOrderTotalValue(incoming) || 0), merged.items);
                     map[keepKey] = self.normalizeStatsOrder(merged);
                     aliases.forEach(function(k) {
                         if (k !== keepKey && map[k]) delete map[k];
@@ -3775,9 +3802,7 @@ window._doCountUp = function() {
                             }
                             var bestItems = self.pickRicherStatsItems(existing && existing.items, merged && merged.items, Number(self.getOrderTotalValue(merged) || self.getOrderTotalValue(existing) || 0));
                             if (bestItems && bestItems.length) nextMerged.items = bestItems.map(function(it){ return Object.assign({}, it); });
-                            var totals = [Number(self.getOrderTotalValue(existing) || 0), Number(self.getOrderTotalValue(merged) || 0), self.sumStatsItemsTotal(nextMerged.items)];
-                            var finiteTotals = totals.filter(function(v){ return Number.isFinite(v); });
-                            if (finiteTotals.length) nextMerged.total = Math.max.apply(null, finiteTotals);
+                            nextMerged.total = self.pickStatsDisplayTotal(nextMerged, Number(self.getOrderTotalValue(existing) || 0), Number(self.getOrderTotalValue(merged) || 0), nextMerged.items);
                             merged = self.normalizeStatsOrder(nextMerged);
                         });
                         aliases.forEach(function(k) { aliasMap[k] = merged; });
@@ -3838,9 +3863,7 @@ window._doCountUp = function() {
                         var bestItems = self.pickRicherStatsItems(current.items, order.items, Number(self.getOrderTotalValue(order) || self.getOrderTotalValue(current) || 0));
                         var merged = Object.assign({}, current, order);
                         if (bestItems && bestItems.length) merged.items = bestItems.map(function(it){ return Object.assign({}, it); });
-                        var totals = [Number(self.getOrderTotalValue(current) || 0), Number(self.getOrderTotalValue(order) || 0), self.sumStatsItemsTotal(merged.items)];
-                        var finiteTotals = totals.filter(function(v){ return Number.isFinite(v); });
-                        if (finiteTotals.length) merged.total = Math.max.apply(null, finiteTotals);
+                        merged.total = self.pickStatsDisplayTotal(merged, Number(self.getOrderTotalValue(current) || 0), Number(self.getOrderTotalValue(order) || 0), merged.items);
                         bySig[sig] = self.normalizeStatsOrder(merged);
                     });
                     return Object.keys(bySig).map(function(k){ return bySig[k]; });

@@ -583,6 +583,7 @@
                         .filter((part) => {
                             if (!part) return false;
                             if (part === '\u5957\u9910\u98f2\u6599') return false;
+                            if (/^\u642d\u914d\u98f2\u6599\u6298\s*5\s*\u5143$/.test(part)) return false;
                             if (part === '\u73fe\u5834\u55ae') return false;
                             if (part === '\u96fb\u8a71\u8a02\u55ae') return false;
                             if (part === '\u96fb\u8a71\u8a02\u55ae\u7de8\u8f2f POS') return false;
@@ -1804,6 +1805,28 @@
                             return sum + line;
                         }, 0);
                     };
+                    const pickDisplayTotal = (orderHint, currentTotal, incomingTotal, mergedItems) => {
+                        const cur = Number(currentTotal);
+                        const inc = Number(incomingTotal);
+                        const sum = sumItems(mergedItems);
+                        const isPos = (v) => Number.isFinite(v) && v > 0;
+                        const sourcePath = String((orderHint && ((orderHint.integration && orderHint.integration.sourceRecordPath) || orderHint.sourceRecordPath)) || '').toLowerCase();
+                        const src = String((orderHint && orderHint.source) || '').toLowerCase();
+                        const sourceRoot = String(orderHint && orderHint.audit && orderHint.audit.sourceRoot || '').toLowerCase();
+                        const label = String((orderHint && (orderHint.sourceLabel || orderHint._integrationSourceLabel)) || '').toLowerCase();
+                        const phoneLike = src === 'phone_ai' || src === 'pos_local' || sourcePath.indexOf('phone_ai/orders/') === 0 || sourceRoot.indexOf('phone_ai') === 0 || label.indexOf('phone') >= 0 || label.indexOf('\u96fb\u8a71') >= 0;
+                        if (phoneLike) {
+                            if (isPos(inc)) return inc;
+                            if (isPos(cur)) return cur;
+                            if (isPos(sum)) return sum;
+                            return 0;
+                        }
+                        const positives = [cur, inc, sum].filter(isPos);
+                        if (positives.length) return Math.max(...positives);
+                        const finiteAny = [cur, inc, sum].filter((v) => Number.isFinite(v));
+                        if (finiteAny.length) return Math.max(...finiteAny);
+                        return 0;
+                    };
                     const scoreItemsDetail = (items) => {
                         if (!Array.isArray(items)) return 0;
                         return items.reduce((score, it) => {
@@ -1884,9 +1907,7 @@
                         const merged = preferIncoming ? Object.assign({}, current, incoming) : Object.assign({}, incoming, current);
                         const bestItems = pickRicherItems(current.items, incoming.items);
                         if (bestItems && bestItems.length) merged.items = bestItems.map((it) => Object.assign({}, it));
-                        const totals = [Number(current.total), Number(incoming.total), sumItems(merged.items)];
-                        const finiteTotals = totals.filter((v) => Number.isFinite(v));
-                        if (finiteTotals.length) merged.total = Math.max(...finiteTotals);
+                        merged.total = pickDisplayTotal(merged, Number(current.total), Number(incoming.total), merged.items);
                         if (!merged.id) merged.id = preferIncoming ? (incoming.id || current.id) : (current.id || incoming.id);
                         return merged;
                     };
