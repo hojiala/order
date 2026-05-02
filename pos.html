@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-TW">
 <head>
   <meta charset="UTF-8">
@@ -284,7 +284,13 @@
           <div class="flex-1 min-w-0">
             <p class="font-bold text-gray-800 text-sm">{{ item.name }}</p>
             <div v-if="item.optionGroupSelections && item.optionGroupSelections.length" class="flex flex-wrap gap-1 mt-1">
-              <span v-for="sel in (item.optionGroupSelections||[]).filter(function(s){ return String(s&&s.pricing||'')!=='mealUpgrade'; })" :key="sel.groupName+'_'+sel.name"
+              <span v-for="sel in (item.optionGroupSelections||[]).filter(function(s){
+                if(String(s&&s.pricing||'')==='mealUpgrade')return false;
+                var g=String(s&&s.groupName||'').toLowerCase();
+                var isSizeTemp=(g.indexOf('size')!==-1||g.indexOf('容量')!==-1||g.indexOf('temp')!==-1||g.indexOf('溫度')!==-1);
+                if(isSizeTemp&&item&&item.isCombo&&!item.isComboDrink&&getCartItemMealDrinkText(item,idx))return false;
+                return true;
+              })" :key="sel.groupName+'_'+sel.name"
                 class="text-xs bg-orange-50 text-orange-600 border border-orange-200 px-1.5 py-0.5 rounded">
                 {{ sel.name }}</span></div>
             <div v-if="getCartItemMealDrinkText(item,idx)" class="text-xs text-orange-500 mt-0.5">🧋 {{ getCartItemMealDrinkText(item,idx) }}</div>
@@ -1653,6 +1659,8 @@
                         var p=String(sel&&sel.pricing||'');
                         if(p==='mealUpgrade')return false;
                         if(g.indexOf('drink')!==-1||g.indexOf('\u98f2\u6599')!==-1)return false;
+                        if(g.indexOf('size')!==-1||g.indexOf('\u5bb9\u91cf')!==-1)return false;
+                        if(g.indexOf('temp')!==-1||g.indexOf('\u6eab\u5ea6')!==-1)return false;
                         return true;
                     });
                     out.push(Object.assign({},row,{
@@ -1687,6 +1695,69 @@
                     orderNote:this.editOrderNote||'',
                     status:(targetOrder&&targetOrder.status)||'new'
                 },extra||{});
+            },
+            resetIntegrationOrdersListener:function(){
+                var s=this;
+                try{if(s.integrationOrdersUnsub)s.integrationOrdersUnsub();}catch(e){}
+                s.integrationOrdersUnsub=null;
+            },
+            listenIntegratedOrders:function(){
+                var s=this;
+                s.resetIntegrationOrdersListener();
+                s.listenPhoneOrders();
+                var integrationRef=ref(db,'integration_views/merged_orders_active');
+                s.integrationOrdersUnsub=onValue(integrationRef,function(snap){
+                    var view=snap.exists()?(snap.val()||{}):{};
+                    s.integrationOrdersCache=s.normalizeIncomingOrders(Array.isArray(view.orders)?view.orders.slice():[]).map(function(o){return s.applyStatusOverrideToOrder(o);});
+                    var parsed=s.integrationOrdersCache.slice();
+                    parsed.sort(function(a,b){
+                        var w={new:1,making:2,done:3,cancelled:4};
+                        if(w[a.status]!==w[b.status])return w[a.status]-w[b.status];
+                        var aNo=a.orderNo||0,bNo=b.orderNo||0;
+                        if(aNo!==bNo)return bNo-aNo;
+                        return (b.timestamp||0)-(a.timestamp||0);
+                    });
+                    s.integrationOrdersCache=parsed;
+                    s.useIntegrationView=!!parsed.length;
+                    s.rebuildOnlineOrders();
+                    s.ordersLoading=false;
+                    if(s.editingOrder){
+                        var found=s.onlineOrders.find(function(o){return o.id===s.editingOrder.id;});
+                        if(found)s.editingOrder=found;
+                    }
+                },function(err){
+                    console.error('failed to read integration_views:',err&&err.message?err.message:err);
+                    s.ordersLoading=false;
+                    s.integrationOrdersCache=[];
+                    s.useIntegrationView=false;
+                    s.rebuildOnlineOrders();
+                });
+            },
+            resetPhoneOrdersListener:function(){
+                var s=this;
+                try{if(s.phoneOrdersUnsub)s.phoneOrdersUnsub();}catch(_){}
+                s.phoneOrdersUnsub=null;
+            },
+            listenPhoneOrders:function(){
+                var s=this;
+                s.resetPhoneOrdersListener();
+                var phoneRef=ref(db,'phone_ai/orders');
+                s.phoneOrdersUnsub=onValue(phoneRef,function(snap){
+                    var raw=snap.exists()?(snap.val()||{}):{};
+                    var list=Object.keys(raw).map(function(id){
+                        return Object.assign({
+                            id:id,
+                            source:'phone_ai',
+                            sourceLabel:'\u96fb\u8a71\u9ede\u9910',
+                            sourceRecordPath:'phone_ai/orders/'+id
+                        },raw[id]||{});
+                    });
+                    s.phoneOrdersCache=s.normalizeIncomingOrders(list).map(function(o){return s.applyStatusOverrideToOrder(o);});
+                    s.rebuildOnlineOrders();
+                },function(){
+                    s.phoneOrdersCache=[];
+                    s.rebuildOnlineOrders();
+                });
             },
             collapseCartComboPairs:function(){
                 var cart=Array.isArray(this.cart)?this.cart.slice():[];
@@ -1755,6 +1826,8 @@
                         var p=String(sel&&sel.pricing||'');
                         if(p==='mealUpgrade')return false;
                         if(g.indexOf('drink')!==-1||g.indexOf('\u98f2\u6599')!==-1)return false;
+                        if(g.indexOf('size')!==-1||g.indexOf('\u5bb9\u91cf')!==-1)return false;
+                        if(g.indexOf('temp')!==-1||g.indexOf('\u6eab\u5ea6')!==-1)return false;
                         return true;
                     });
                     var size=text(sib&&(sib.size||sib['\u5bb9\u91cf']));
@@ -1781,13 +1854,13 @@
                         mealUpgradeDisplayLabel:label,
                         mealUpgradeChargePrefix:discount5?'\u98f2\u6599\u52a0\u8cfc$':'\u88dc\u5dee\u50f9$'
                     });
-                    if(size)keep.push({groupName:'\u5bb9\u91cf',name:size,idx:0,price:0,pricing:'addDelta',baseValue:0});
-                    if(temp)keep.push({groupName:'\u6eab\u5ea6',name:temp,idx:0,price:0,pricing:'addDelta',baseValue:0});
                     var combo=[size,temp,drink].filter(Boolean).join('/');
                     if(chargeText)combo+=(combo?'/':'')+chargeText;
                     cart[idx]=Object.assign({},main,{
                         optionGroupSelections:keep,
                         comboGroupId:text(main.comboGroupId)||text(sib.comboGroupId),
+                        size:size,
+                        temp:temp,
                         comboDrinkText:combo,
                         mealDrink:combo,
                         comboDrinkSurcharge:surcharge,
@@ -1867,6 +1940,22 @@
                     var m=text(raw).match(/(?:\u98f2\u6599\u52a0\u8cfc|\u88dc\u5dee\u50f9|\+)\s*\$?\s*(\d+)/);
                     return m&&m[1]?Math.round(num(m[1])):0;
                 }
+                function extractCup(raw){
+                    var s=text(raw);
+                    var m=s.match(/[（(]\s*(\u5927\u676f|\u4e2d\u676f|\u5c0f\u676f)\s*[)）]/);
+                    if(m&&m[1])return m[1];
+                    if(/^(\u5927\u676f|\u4e2d\u676f|\u5c0f\u676f)$/.test(s))return s;
+                    return '';
+                }
+                function stripCup(raw){
+                    return text(raw)
+                        .replace(/[（(]\s*(?:\u5927\u676f|\u4e2d\u676f|\u5c0f\u676f)\s*[)）]/g,'')
+                        .replace(/^\s*(\u5927\u676f|\u4e2d\u676f|\u5c0f\u676f)\s*/,'')
+                        .replace(/\s*(\u5927\u676f|\u4e2d\u676f|\u5c0f\u676f)\s*$/,'')
+                        .trim();
+                }
+                function isCupToken(v){return /^(\u5927\u676f|\u4e2d\u676f|\u5c0f\u676f)$/.test(text(v));}
+                var chargeTagRe=/(?:\u98f2\u6599\u52a0\u8cfc|\u88dc\u5dee\u50f9|\u642d\u914d\u98f2\u6599\u6298\s*5\s*\u5143|\u5957\u9910\u98f2\u6599)/;
                 function isMain(it){
                     var name=text(it&& (it.name||it['\u54c1\u9805']));
                     var sels=Array.isArray(it&&it.optionGroupSelections)?it.optionGroupSelections:[];
@@ -1898,9 +1987,11 @@
 
                 [item.mealDrink,item.comboDrinkText].forEach(function(raw){
                     text(raw).split(/[\/,\u3001]/).map(text).filter(Boolean).forEach(function(part){
-                        if(!size&&(part.indexOf('\u5927\u676f')!==-1||part.indexOf('\u4e2d\u676f')!==-1||part.indexOf('\u5c0f\u676f')!==-1))size=part;
-                        else if(!temp&&(part.indexOf('\u51b0')!==-1||part.indexOf('\u71b1')!==-1||part.indexOf('\u6eab')!==-1||part.indexOf('\u5e38\u6eab')!==-1))temp=part;
-                        else if(!drink&&!/(?:\u98f2\u6599\u52a0\u8cfc|\u88dc\u5dee\u50f9|\u642d\u914d\u98f2\u6599\u6298\s*5\s*\u5143|\u5957\u9910\u98f2\u6599)/.test(part))drink=part;
+                        var cup=extractCup(part);
+                        var clean=stripCup(part);
+                        if(!size&&cup)size=cup;
+                        if(!temp&&(clean.indexOf('\u51b0')!==-1||clean.indexOf('\u71b1')!==-1||clean.indexOf('\u6eab')!==-1||clean.indexOf('\u5e38\u6eab')!==-1))temp=clean;
+                        else if(!drink&&!chargeTagRe.test(clean)&&!isCupToken(clean))drink=clean;
                     });
                     surcharge=Math.max(surcharge,parseAmount(raw));
                 });
@@ -1925,6 +2016,11 @@
                     var inferred=num(item.comboDrinkFullPrice)-num(item.comboDrinkSurcharge);
                     if(inferred>0&&inferred<=5)discount5=true;
                 }
+                var cupInSize=extractCup(size);
+                if(cupInSize)size=cupInSize;
+                var cupInDrink=extractCup(drink);
+                if(!size&&cupInDrink)size=cupInDrink;
+                drink=stripCup(drink);
                 var out=[size,temp,drink].filter(Boolean).join('/');
                 if(!out)return '';
                 if(surcharge>0)out=out+'/'+(discount5?'\u98f2\u6599\u52a0\u8cfc$':'\u88dc\u5dee\u50f9$')+Math.round(surcharge);
@@ -3654,3 +3750,4 @@ if(realPm==='cash'){
 </script>
 </body>
 </html>
+
