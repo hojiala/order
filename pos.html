@@ -2016,6 +2016,24 @@
                 function text(v){return String(v===undefined||v===null?'':v).trim();}
                 function num(v){var n=Number(v);return Number.isFinite(n)?n:0;}
                 var comboDrinkRe=/(?:\u5957\u9910\u98f2\u6599|\u642d\u914d\u98f2\u6599\u6298\s*5\s*\u5143|\u98f2\u6599\u52a0\u8cfc|\u88dc\u5dee\u50f9)/;
+                function stripComboChargeSuffix(rawName){
+                    return String(rawName||'')
+                        .replace(/\s*[\/／]\s*(?:飲料加購|補差價)\s*\$?\s*\d+\s*$/g,'')
+                        .replace(/\s*[\/／]\s*(?:套餐飲料|搭配飲料折\s*5\s*元)\s*$/g,'')
+                        .replace(/\s*(?:飲料加購|補差價)\s*\$?\s*\d+\s*$/g,'')
+                        .replace(/\s*[\/／]\s*(?:飲料加購|補差價)\s*\$?\s*\d+\s*/g,' ')
+                        .trim();
+                }
+                function isCupToken(v){
+                    var t=text(v);
+                    return t==='大杯'||t==='中杯'||t==='小杯'||/^\(?\s*(?:大杯|中杯|小杯)\s*\)?$/.test(t);
+                }
+                function isTempToken(v){
+                    var t=text(v);
+                    return t==='冰'||t==='溫'||t==='熱'||t==='常溫'
+                        ||t.indexOf('去冰')!==-1||t.indexOf('少冰')!==-1||t.indexOf('微冰')!==-1
+                        ||t.indexOf('溫')!==-1||t.indexOf('熱')!==-1;
+                }
                 function hasMealUpgrade(it){
                     var sels=Array.isArray(it&&it.optionGroupSelections)?it.optionGroupSelections:[];
                     return sels.some(function(sel){return String(sel&&sel.pricing||'')==='mealUpgrade';});
@@ -2026,7 +2044,10 @@
                 function isMain(it){
                     if(!it||typeof it!=='object')return false;
                     if(it.isComboDrink)return false;
-                    var name=text(it.name||it['\u54c1\u9805']);
+                    var nameRaw=text(it.name||it['\u54c1\u9805']);
+                    var name=stripComboChargeSuffix(nameRaw);
+                    var hasComboText=!!text(it.comboDrinkText||it.mealDrink||it.comboDrinkChargeText);
+                    if(it&&it.comboGroupId&&!it.isComboDrink&&hasComboText)return true;
                     return !!(it.isCombo&&!it.isComboDrink)||hasMealUpgrade(it)||((name.indexOf('\u5957\u9910')!==-1||name.indexOf('\u62fc\u76e4')!==-1)&&!looksLikeDrinkName(name));
                 }
                 function isDrink(it){
@@ -2075,10 +2096,12 @@
                     var keep=sels.filter(function(sel){
                         var g=String(sel&&sel.groupName||'').toLowerCase();
                         var p=String(sel&&sel.pricing||'');
+                        var n=text(sel&&sel.name);
                         if(p==='mealUpgrade')return false;
                         if(g.indexOf('drink')!==-1||g.indexOf('\u98f2\u6599')!==-1)return false;
                         if(g.indexOf('size')!==-1||g.indexOf('\u5bb9\u91cf')!==-1)return false;
                         if(g.indexOf('temp')!==-1||g.indexOf('\u6eab\u5ea6')!==-1)return false;
+                        if(isCupToken(n)||isTempToken(n))return false;
                         return true;
                     });
                     var size=text(sib&&(sib.size||sib['\u5bb9\u91cf']));
@@ -2119,7 +2142,8 @@
                         comboDrinkLabel:label,
                         comboDrinkChargeText:chargeText,
                         isCombo:true,
-                        isComboDrink:false
+                        isComboDrink:false,
+                        name:stripComboChargeSuffix(text(main.name||main['\u54c1\u9805']))||text(main.name||main['\u54c1\u9805'])
                     });
                     used[sibIdx]=true;
                 }
@@ -2225,6 +2249,27 @@
                         }
                     }
                     return true;
+                });
+                // 即使沒有 sibling 行，也移除主餐上重複顯示的溫度/容量/飲料 chip，
+                // 只保留如蛋熟成度等主餐必要選項。
+                cart=cart.map(function(it){
+                    if(!isMain(it))return it;
+                    var hasComboText=!!text(it.comboDrinkText||it.mealDrink||it.comboDrinkChargeText);
+                    if(!hasComboText)return it;
+                    var sels=Array.isArray(it.optionGroupSelections)?it.optionGroupSelections:[];
+                    var keep=sels.filter(function(sel){
+                        var g=String(sel&&sel.groupName||'').toLowerCase();
+                        var p=String(sel&&sel.pricing||'');
+                        var n=text(sel&&sel.name);
+                        if(p==='mealUpgrade')return false;
+                        if(g.indexOf('drink')!==-1||g.indexOf('\u98f2\u6599')!==-1)return false;
+                        if(g.indexOf('size')!==-1||g.indexOf('\u5bb9\u91cf')!==-1)return false;
+                        if(g.indexOf('temp')!==-1||g.indexOf('\u6eab\u5ea6')!==-1)return false;
+                        if(isCupToken(n)||isTempToken(n))return false;
+                        return true;
+                    });
+                    var cleanedName=stripComboChargeSuffix(text(it.name||it['\u54c1\u9805']))||text(it.name||it['\u54c1\u9805']);
+                    return Object.assign({},it,{name:cleanedName,optionGroupSelections:keep});
                 });
                 this.cart=cart;
             },
@@ -2387,9 +2432,11 @@
                 function isMain(it){
                     if(!it||typeof it!=='object')return false;
                     if(it.isComboDrink)return false;
-                    var name=text(it.name||it['\u54c1\u9805']);
+                    var name=stripComboChargeSuffix(text(it.name||it['\u54c1\u9805']));
                     var sels=Array.isArray(it.optionGroupSelections)?it.optionGroupSelections:[];
                     var hasUpgrade=sels.some(function(sel){return String(sel&&sel.pricing||'')==='mealUpgrade';});
+                    var hasComboText=!!text(it.comboDrinkText||it.mealDrink||it.comboDrinkChargeText);
+                    if(it&&it.comboGroupId&&hasComboText&&!it.isComboDrink)return true;
                     if(it.isCombo&&!it.isComboDrink)return true;
                     if(hasUpgrade)return true;
                     return (name.indexOf('\u5957\u9910')!==-1||name.indexOf('\u62fc\u76e4')!==-1)&&!/(?:\u5496\u5561|\u5976\u8336|\u7d05\u8336|\u7da0\u8336|\u8c46\u6f3f|\u98f2\u6599|\u8336)/.test(name);
@@ -2515,6 +2562,7 @@
                     var it=items[i];
                     if(!it)continue;
                     var name=stripComboChargeSuffix(text(it.name||it['\u54c1\u9805']));
+                    name=name.replace(/\s*[\/／]\s*(?:飲料加購|補差價)\s*\$?\s*\d+\s*/g,' ').trim();
                     if(!name)continue;
                     var qty=qtyOf(it);
                     if(isMain(it)){
@@ -2949,6 +2997,12 @@
                     var phone=String((order.customer&&order.customer.phone)||order.phone||'').trim();
                     var pickup=String(order.pickupTime||order.pickupTimeLabel||'').trim();
                     if(sourceOrderId&&day&&family)return ['oid',family,day,sourceOrderId].join('|');
+                    // 電話單避免用「流水號+金額」合併，否則同日重置或同號不同單會互相覆蓋
+                    if(family==='phone_ai'){
+                        if(sourcePath)return ['path',sourcePath].join('|');
+                        if(order.id)return ['id',family,String(order.id)].join('|');
+                        return '';
+                    }
                     if(no&&day&&family)return ['sig',family,day,no,Number.isFinite(total)?Math.round(total):'',phone,pickup].join('|');
                     if(sourcePath)return ['path',sourcePath].join('|');
                     if(!no||!day||!family)return '';
