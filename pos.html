@@ -1206,7 +1206,9 @@
                         var comboMetaText=[
                             src.note,src['備註'],src['?酉'],src.comboDrinkLabel,src.comboDrinkChargeText,src.comboDrinkText,src.mealDrink
                         ].map(function(v){return String(v||'');}).join(' ');
-                        var comboDrinkHint=!!src.isComboDrink||/套餐飲料|搭配飲料折\s*5\s*元|飲料加購|補差價/.test(comboMetaText);
+                        var nameLooksDrink=/(?:咖啡|紅茶|綠茶|奶茶|鮮奶茶|豆漿|可可|拿鐵|美式|茶|飲料)/.test(String(cleanName||''));
+                        var nameLooksComboMain=(String(cleanName||'').indexOf('套餐')!==-1||String(cleanName||'').indexOf('拼盤')!==-1)&&!nameLooksDrink;
+                        var comboDrinkHint=!nameLooksComboMain&&(!!src.isComboDrink||/套餐飲料|搭配飲料折\s*5\s*元|飲料加購|補差價/.test(comboMetaText));
                         var unitCandidates=[src.price,src['單價'],src.unitPrice,src.basePrice,src['原價']];
                         var unit=NaN;
                         var unitAny=NaN;
@@ -1250,7 +1252,7 @@
                             qty:qty,
                             price:Number(unit||0),
                             itemTotal:Number(lineTotal||0),
-                            isCombo:!!src.isCombo,
+                            isCombo:!!src.isCombo||nameLooksComboMain,
                             note:(src.note!==undefined&&src.note!==null)?String(src.note):(src['備註']||''),
                             size:(src.size!==undefined&&src.size!==null)?String(src.size):(src['容量']||''),
                             temp:(src.temp!==undefined&&src.temp!==null)?String(src.temp):(src['溫度']||''),
@@ -2043,17 +2045,19 @@
                 }
                 function isMain(it){
                     if(!it||typeof it!=='object')return false;
-                    if(it.isComboDrink)return false;
                     var nameRaw=text(it.name||it['\u54c1\u9805']);
                     var name=stripComboChargeSuffix(nameRaw);
+                    var nameLooksMain=(name.indexOf('\u5957\u9910')!==-1||name.indexOf('\u62fc\u76e4')!==-1)&&!looksLikeDrinkName(name);
+                    if(nameLooksMain)return true;
+                    if(it.isComboDrink)return false;
                     var hasComboText=!!text(it.comboDrinkText||it.mealDrink);
                     if(it&&it.comboGroupId&&!it.isComboDrink&&hasComboText)return true;
-                    return !!(it.isCombo&&!it.isComboDrink)||hasMealUpgrade(it)||((name.indexOf('\u5957\u9910')!==-1||name.indexOf('\u62fc\u76e4')!==-1)&&!looksLikeDrinkName(name));
+                    return !!(it.isCombo&&!it.isComboDrink)||hasMealUpgrade(it);
                 }
                 function isDrink(it){
                     if(!it||typeof it!=='object')return false;
-                    if(it.isComboDrink)return true;
                     if(isMain(it))return false;
+                    if(it.isComboDrink)return true;
                     var meta=[it.note,it['\u5099\u8a3b'],it.comboDrinkLabel,it.comboDrinkChargeText,it.comboDrinkText,it.mealDrink].map(text).join(' ');
                     var hasSizeTemp=!!text(it.size||it['\u5bb9\u91cf'])||!!text(it.temp||it['\u6eab\u5ea6']);
                     return comboDrinkRe.test(meta)||(hasSizeTemp&&looksLikeDrinkName(it.name||it['\u54c1\u9805']));
@@ -2116,6 +2120,8 @@
                     var discount5=label.indexOf('\u642d\u914d\u98f2\u6599\u62985\u5143')!==-1
                         ||text(sib.comboDrinkChargeText).indexOf('\u98f2\u6599\u52a0\u8cfc')!==-1
                         ||(num(sib.comboDrinkCredit)>0&&num(sib.comboDrinkCredit)<=5);
+                    var mainNameForDrink=text(main.name||main['\u54c1\u9805']);
+                    if(label.indexOf('\u5957\u9910\u98f2\u6599')!==-1||/^[1-9]\s*\u865f/.test(mainNameForDrink))discount5=false;
                     if(!label)label=discount5?'\u642d\u914d\u98f2\u6599\u62985\u5143':'\u5957\u9910\u98f2\u6599';
                     var chargeText=surcharge>0?((discount5?'\u98f2\u6599\u52a0\u8cfc$':'\u88dc\u5dee\u50f9$')+surcharge):'';
                     keep.push({
@@ -2283,16 +2289,18 @@
                 }
                 function isMain(it){
                     if(!it||typeof it!=='object')return false;
-                    if(it.isComboDrink)return false;
                     var name=text(it.name||it['\u54c1\u9805']);
+                    var nameLooksMain=(name.indexOf('\u5957\u9910')!==-1||name.indexOf('\u62fc\u76e4')!==-1)&&!/(?:\u5496\u5561|\u5976\u8336|\u7d05\u8336|\u7da0\u8336|\u8c46\u6f3f|\u98f2\u6599|\u8336)/.test(name);
+                    if(nameLooksMain)return true;
+                    if(it.isComboDrink)return false;
                     if(it.isCombo&&!it.isComboDrink)return true;
                     if(hasMealUpgrade(it))return true;
-                    return (name.indexOf('\u5957\u9910')!==-1||name.indexOf('\u62fc\u76e4')!==-1)&&!/(?:\u5496\u5561|\u5976\u8336|\u7d05\u8336|\u7da0\u8336|\u8c46\u6f3f|\u98f2\u6599|\u8336)/.test(name);
+                    return false;
                 }
                 function isDrink(it){
                     if(!it||typeof it!=='object')return false;
-                    if(it.isComboDrink)return true;
                     if(isMain(it))return false;
+                    if(it.isComboDrink)return true;
                     var name=text(it.name||it['\u54c1\u9805']);
                     var meta=[it.note,it['\u5099\u8a3b'],it.comboDrinkLabel,it.comboDrinkChargeText,it.comboDrinkText,it.mealDrink].map(text).join(' ');
                     if(/(?:\u5957\u9910\u98f2\u6599|\u642d\u914d\u98f2\u6599\u6298\s*5\s*\u5143|\u98f2\u6599\u52a0\u8cfc|\u88dc\u5dee\u50f9)/.test(meta))return true;
@@ -2401,7 +2409,9 @@
                         var cup=extractCup(part);
                         var clean=stripCup(part);
                         if(!size&&cup)size=cup;
-                        if(!temp&&(clean.indexOf('\u51b0')!==-1||clean.indexOf('\u71b1')!==-1||clean.indexOf('\u6eab')!==-1||clean.indexOf('\u5e38\u6eab')!==-1))temp=clean;
+                        var isTempPart=(clean.indexOf('\u51b0')!==-1||clean.indexOf('\u71b1')!==-1||clean.indexOf('\u6eab')!==-1||clean.indexOf('\u5e38\u6eab')!==-1);
+                        if(!temp&&isTempPart)temp=clean;
+                        else if(isTempPart)return;
                         else if(!drink&&!chargeTagRe.test(clean)&&!isCupToken(clean))drink=clean;
                     });
                     surcharge=Math.max(surcharge,parseAmount(raw));
@@ -2427,6 +2437,11 @@
                     var inferred=num(item.comboDrinkFullPrice)-num(item.comboDrinkSurcharge);
                     if(inferred>0&&inferred<=5)discount5=true;
                 }
+                var mainNameForPrefix=text(item.name||item['\u54c1\u9805']);
+                var labelForPrefix=text(item.comboDrinkLabel||item.note||item['\u5099\u8a3b']);
+                var chargeForPrefix=text(item.comboDrinkChargeText||item.comboDrinkText||item.mealDrink);
+                if(labelForPrefix.indexOf('\u642d\u914d\u98f2\u6599\u62985\u5143')!==-1||chargeForPrefix.indexOf('\u98f2\u6599\u52a0\u8cfc')!==-1)discount5=true;
+                if(labelForPrefix.indexOf('\u5957\u9910\u98f2\u6599')!==-1||/^[1-9]\s*\u865f/.test(mainNameForPrefix))discount5=false;
                 var cupInSize=extractCup(size);
                 if(cupInSize)size=cupInSize;
                 var cupInDrink=extractCup(drink);
@@ -2469,14 +2484,17 @@
                     return sels.some(function(sel){return String(sel&&sel.pricing||'')==='mealUpgrade';});
                 }
                 function isMain(it){
-                    if(!it||typeof it!=='object'||it.isComboDrink)return false;
+                    if(!it||typeof it!=='object')return false;
                     var name=cleanName(it.name||it['\u54c1\u9805']);
-                    return !!(it.isCombo&&!it.isComboDrink)||hasMealUpgrade(it)||((name.indexOf('套餐')!==-1||name.indexOf('拼盤')!==-1)&&!looksLikeDrinkName(name));
+                    var nameLooksMain=(name.indexOf('套餐')!==-1||name.indexOf('拼盤')!==-1)&&!looksLikeDrinkName(name);
+                    if(nameLooksMain)return true;
+                    if(it.isComboDrink)return false;
+                    return !!(it.isCombo&&!it.isComboDrink)||hasMealUpgrade(it);
                 }
                 function isDrink(it){
                     if(!it||typeof it!=='object')return false;
-                    if(it.isComboDrink)return true;
                     if(isMain(it))return false;
+                    if(it.isComboDrink)return true;
                     var meta=[it.note,it['\u5099\u8a3b'],it.comboDrinkLabel,it.comboDrinkChargeText,it.comboDrinkText,it.mealDrink].map(text).join(' ');
                     var hasSizeTemp=!!text(it.size||it['\u5bb9\u91cf'])||!!text(it.temp||it['\u6eab\u5ea6']);
                     return /(?:套餐飲料|搭配飲料折\s*5\s*元|飲料加購|補差價)/.test(meta)||(hasSizeTemp&&looksLikeDrinkName(it.name||it['\u54c1\u9805']));
@@ -2510,7 +2528,10 @@
                             var cm=(part.match(/(大杯|中杯|小杯)/)||[])[1]||part;
                             state.size=cm;return;
                         }
-                        if(!state.temp&&(/去冰|少冰|微冰|冰|溫|熱|常溫/.test(part))){state.temp=part;return;}
+                        if(/去冰|少冰|微冰|冰|溫|熱|常溫/.test(part)){
+                            if(!state.temp)state.temp=part;
+                            return;
+                        }
                         if(!state.drink&&!/(套餐飲料|搭配飲料折\s*5\s*元|飲料加購|補差價)/.test(part))state.drink=stripCup(part);
                     });
                     return state;
