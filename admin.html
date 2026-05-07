@@ -736,13 +736,18 @@
                 },
                 getDisplayItemNote(item, order) {
                     if (!item || this.isComboDrinkLineForDisplay(item)) return '';
+                    const isComboMetaNote = (val) => {
+                        const t = this.cleanDisplayNoteText(val || '');
+                        if (!t) return false;
+                        return /(?:\u5957\u9910\u98f2\u6599|\u642d\u914d\u98f2\u6599\u6298\s*5\s*\u5143|\u98f2\u6599\u52a0\u8cfc|\u88dc\u5dee\u50f9)/.test(t);
+                    };
                     const notes = [];
                     const own = this.cleanDisplayNoteText(item.note || item['\u5099\u8a3b'] || '');
-                    if (own) notes.push(own);
+                    if (own && !isComboMetaNote(own)) notes.push(own);
                     if (this.isComboMainLineForDisplay(item)) {
                         const sibling = this.findComboDrinkSiblingForDisplay(item, order);
                         const sib = this.cleanDisplayNoteText((sibling && (sibling.note || sibling['\u5099\u8a3b'])) || '');
-                        if (sib && notes.indexOf(sib) === -1) notes.push(sib);
+                        if (sib && !isComboMetaNote(sib) && notes.indexOf(sib) === -1) notes.push(sib);
                     }
                     return notes.join('\uFF0C');
                 },
@@ -1502,6 +1507,28 @@
                             item['\u5099\u8a3b'] = cleanedNote;
                         });
                         out.items = this.mergeNormalizedOrderItems(out.items);
+                        if (String(out.source || '').toLowerCase() === 'phone_ai') {
+                            const phoneMainTotal = out.items.reduce((sum, item) => {
+                                if (!item || this.isComboDrinkLineForDisplay(item)) return sum;
+                                let line = Number((item.itemTotal !== undefined) ? item.itemTotal : ((item.total !== undefined) ? item.total : item['\u7e3d\u50f9']));
+                                if (!Number.isFinite(line) || line <= 0) {
+                                    let qty = Number((item.qty !== undefined) ? item.qty : ((item['\u6578\u91cf'] !== undefined) ? item['\u6578\u91cf'] : 1));
+                                    if (!Number.isFinite(qty) || qty <= 0) qty = 1;
+                                    let unit = Number((item.price !== undefined) ? item.price : ((item.unitPrice !== undefined) ? item.unitPrice : item['\u55ae\u50f9']));
+                                    if (!Number.isFinite(unit) || unit < 0) unit = 0;
+                                    line = unit * qty;
+                                }
+                                return sum + (Number.isFinite(line) && line > 0 ? line : 0);
+                            }, 0);
+                            if (Number.isFinite(phoneMainTotal) && phoneMainTotal > 0) {
+                                const currentTotal = Number(out.total);
+                                if (!Number.isFinite(currentTotal) || Math.abs(currentTotal - phoneMainTotal) > 1) {
+                                    out.total = Math.round(phoneMainTotal);
+                                    out['\u7e3d\u91d1\u984d'] = Math.round(phoneMainTotal);
+                                    out.totals = Object.assign({}, out.totals || {}, { finalTotal: Math.round(phoneMainTotal) });
+                                }
+                            }
+                        }
                     }
                     if (out.integration && out._integrationReadOnly === undefined) {
                         out._integrationReadOnly = !((out.integration.capabilities || {}).editDirect);
@@ -2218,11 +2245,11 @@
                         this.toast('\u26a0\ufe0f \u72c0\u614b\u540c\u6b65\u5931\u6557\uff0c\u672c\u9801\u5df2\u5148\u66f4\u65b0');
                     });
                     if (this.isPhoneSourceOrder(order) || this.isPhoneCommandOrder(order)) {
-                        Promise.all([
-                            remotePromise,
-                            this.queuePhoneOrderCommand(order, 'set_status', { status: newStatus })
-                        ]).then(() => this.toast(newStatus === 'done' ? '\u5df2\u6a19\u8a18\u5b8c\u6210\u51fa\u9910\uff08\u4e0d\u5217\u5370\uff09' : '\u5df2\u66f4\u65b0\u72c0\u614b\uff08\u4e0d\u5217\u5370\uff09'))
-                          .catch(err => this.toast("\u274c \u96fb\u8a71\u8a02\u55ae\u72c0\u614b\u66f4\u65b0\u5931\u6557"));
+                        // \u96fb\u8a71\u8a02\u55ae\u7684 new \u2194 making \u2194 done \u7d14\u70ba\u986f\u793a\u5c64\u5207\u63db\uff1a\u53ea\u5beb remote override\uff0c
+                        // \u4e0d\u518d\u5c0d\u96fb\u8a71 Pi \u9001 set_status \u547d\u4ee4\uff08\u907f\u514d\u89f8\u767c \u5132\u5b58\u4fee\u6539V21 \u91cd\u5b58 JSON\u3001\u52a0 \u88dc\u5370/\u4fee\u6539 \u6a19\u8a18\u3001
+                        // \u518d\u7d93 file watcher \u91cd\u8b80\u5c0e\u81f4 phone_ai/orders \u5167\u5bb9\u88ab\u8986\u84cb\u800c\u5f9e admin/pos/manage \u4e09\u908a\u6d88\u5931\uff09\u3002
+                        // \u300c\u53d6\u6d88\u300d\u4ecd\u9700 cancelOrder \u8def\u5f91\u9001 cancel_order \u547d\u4ee4\u5230\u96fb\u8a71\u7aef\uff0c\u4e0d\u53d7\u6b64\u8655\u5f71\u97ff\u3002
+                        remotePromise.then(() => this.toast(newStatus === 'done' ? '\u5df2\u6a19\u8a18\u5b8c\u6210\u51fa\u9910\uff08\u4e0d\u5217\u5370\uff09' : '\u5df2\u66f4\u65b0\u72c0\u614b\uff08\u4e0d\u5217\u5370\uff09'));
                         return;
                     }
                     if (this.isIntegrationReadOnlyOrder(order)) {
