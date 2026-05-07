@@ -3771,6 +3771,21 @@ window._doCountUp = function() {
                     var src = String(order.source || '').toLowerCase().trim();
                     return ['no', day, no, src].join('|');
                 };
+                // ★ 「不能讓空值覆蓋已有非空值」的合併：避免 integration_views（snapshot 過期時可能 tableLabel='', pickupMode='takeout'）
+                //   把 phone_ai/orders 的正確值（tableLabel='9桌', pickupMode='dinein'）蓋掉
+                var preserveNonEmpty = function(merged, current, incoming) {
+                    var keys = ['tableLabel', 'pickupMode', 'pickupTime', 'pickupTimeLabel', 'pickupDate', 'orderNote', 'phone'];
+                    keys.forEach(function(k) {
+                        var inc = incoming && incoming[k];
+                        var cur = current && current[k];
+                        var incEmpty = inc === undefined || inc === null || (typeof inc === 'string' && !inc.trim()) || (k === 'pickupMode' && inc === 'takeout');
+                        var curHas = cur !== undefined && cur !== null && (typeof cur !== 'string' || cur.trim()) && !(k === 'pickupMode' && cur === 'takeout');
+                        if (incEmpty && curHas) merged[k] = cur;
+                    });
+                    // type 也跟 pickupMode 同步：如果 pickupMode='dinein'，type 應為 'dinein'
+                    if (merged.pickupMode === 'dinein' && merged.type !== 'dinein') merged.type = 'dinein';
+                    return merged;
+                };
                 var mergeOrderById = function(map, rawOrder) {
                     if (!rawOrder || typeof rawOrder !== 'object') return;
                     var incoming = self.normalizeStatsOrder(rawOrder);
@@ -3792,6 +3807,7 @@ window._doCountUp = function() {
                     var archivedSource = incoming._statsArchiveRecord ? incoming : (current._statsArchiveRecord ? current : null);
                     var otherSource = incoming._statsArchiveRecord ? current : (current._statsArchiveRecord ? incoming : null);
                     var merged = archivedSource ? Object.assign({}, otherSource || {}, archivedSource) : Object.assign({}, current, incoming);
+                    merged = preserveNonEmpty(merged, current, incoming);
                     if (archivedSource) {
                         if (String(merged.status || '').toLowerCase() !== 'cancelled') {
                             merged.status = 'archived';
@@ -3833,6 +3849,7 @@ window._doCountUp = function() {
                             var archivedSource = merged._statsArchiveRecord ? merged : (existing && existing._statsArchiveRecord ? existing : null);
                             var otherSource = merged._statsArchiveRecord ? existing : (existing && existing._statsArchiveRecord ? merged : null);
                             var nextMerged = archivedSource ? Object.assign({}, otherSource || {}, archivedSource) : Object.assign({}, existing || {}, merged || {});
+                            nextMerged = preserveNonEmpty(nextMerged, existing || {}, merged || {});
                             if (archivedSource) {
                                 if (String(nextMerged.status || '').toLowerCase() !== 'cancelled') {
                                     nextMerged.status = 'archived';
