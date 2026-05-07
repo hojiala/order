@@ -2562,7 +2562,9 @@
                     return state;
                 }
                 function mealDrinkText(main,sib){
-                    var size=text(sib&&(sib.size||sib['\u5bb9\u91cf'])),temp=text(sib&&(sib.temp||sib['\u6eab\u5ea6']));
+                    // \u2605 \u8d77\u59cb size/temp \u540c\u6642\u5f9e main \u8207 sib \u6293\uff08dinein \u4f86\u6e90\u8a02\u55ae\u901a\u5e38\u6c92\u62c6\u51fa sibling\uff0csize \u5728 main \u4e0a\uff09
+                    var size=text((sib&&(sib.size||sib['\u5bb9\u91cf']))||(main&&(main.size||main['\u5bb9\u91cf']))||'');
+                    var temp=text((sib&&(sib.temp||sib['\u6eab\u5ea6']))||(main&&(main.temp||main['\u6eab\u5ea6']))||'');
                     var drink=stripCup(sib&&(sib.name||sib['\u54c1\u9805']));
                     var amount=Math.max(0,Math.round(num(sib&&(sib.comboDrinkSurcharge||sib.price||sib['\u55ae\u50f9']))));
                     [main&&main.mealDrink,main&&main.comboDrinkText,sib&&sib.mealDrink,sib&&sib.comboDrinkText].forEach(function(raw){
@@ -2572,17 +2574,31 @@
                         if(!drink&&parsed.drink)drink=parsed.drink;
                         if(parsed.amount>0)amount=Math.max(amount,parsed.amount);
                     });
-                    var sels=Array.isArray(main&&main.optionGroupSelections)?main.optionGroupSelections:[];
-                    sels.forEach(function(sel){
-                        var g=text(sel&&sel.groupName).toLowerCase();
-                        var n=text(sel&&sel.name);
-                        if(!n)return;
-                        if(!size&&(g.indexOf('size')!==-1||g.indexOf('容量')!==-1||n==='大杯'||n==='中杯'||n==='小杯'))size=n;
-                        else if(!temp&&(g.indexOf('temp')!==-1||g.indexOf('溫度')!==-1||/去冰|少冰|微冰|冰|溫|熱|常溫/.test(n)))temp=n;
-                        else if(!drink&&(String(sel&&sel.pricing||'')==='mealUpgrade'||g.indexOf('drink')!==-1||g.indexOf('飲料')!==-1))drink=stripCup(n);
-                        var p=num(sel&&sel.price),b=num(sel&&sel.baseValue);
-                        if(String(sel&&sel.pricing||'')==='mealUpgrade'&&p>b)amount=Math.max(amount,Math.round(p-b));
-                    });
+                    var scanSels=function(sels){
+                        if(!Array.isArray(sels))return;
+                        sels.forEach(function(sel){
+                            var g=text(sel&&sel.groupName).toLowerCase();
+                            var n=text(sel&&sel.name);
+                            if(!n)return;
+                            if(!size&&(g.indexOf('size')!==-1||g.indexOf('容量')!==-1||n==='大杯'||n==='中杯'||n==='小杯'))size=n;
+                            else if(!temp&&(g.indexOf('temp')!==-1||g.indexOf('溫度')!==-1||/去冰|少冰|微冰|冰|溫|熱|常溫/.test(n)))temp=n;
+                            else if(!drink&&(String(sel&&sel.pricing||'')==='mealUpgrade'||g.indexOf('drink')!==-1||g.indexOf('飲料')!==-1))drink=stripCup(n);
+                            var p=num(sel&&sel.price),b=num(sel&&sel.baseValue);
+                            if(String(sel&&sel.pricing||'')==='mealUpgrade'&&p>b)amount=Math.max(amount,Math.round(p-b));
+                        });
+                    };
+                    scanSels(main&&main.optionGroupSelections);
+                    scanSels(sib&&sib.optionGroupSelections);
+                    // ★ 從 drink 名稱裡 extractCup 保險（例如 "大杯美式咖啡(無糖無奶)" 或 "美式咖啡(大杯)"）
+                    if(!size){
+                        var v=text(drink);
+                        var cm=v.match(/[（(]\s*(大杯|中杯|小杯)\s*[)）]/);
+                        if(!cm)cm=v.match(/^(大杯|中杯|小杯)/);
+                        if(cm&&cm[1]){
+                            size=cm[1];
+                            drink=v.replace(/^(大杯|中杯|小杯)/,'').replace(/[（(]\s*(大杯|中杯|小杯)\s*[)）]/,'').trim();
+                        }
+                    }
                     if(!drink)return '';
                     var line=[size,temp,drink].filter(Boolean).join('/');
                     if(amount>0)line+='/'+prefixFor(main,sib)+amount;
