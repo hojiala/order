@@ -2123,7 +2123,9 @@ window._doCountUp = function() {
                     var sibQty = this.getDetailItemQty(sibling);
                     if (sibLine > 0 && sibQty > 0) upgrade = Math.max(upgrade, sibLine / sibQty);
                 }
-                if (!skipOwnLineFallback) {
+                // \u2605 \u884c\u91d1\u984d\u6263\u9664\u63a8\u7b97\u53ea\u5728\u6c92\u6709\u4efb\u4f55 explicit \u8a0a\u865f\u6642\u624d\u7528\uff0c\u4e14\u5fc5\u9808\u5148\u6263\u6389 options\uff08\u5982 \u52a0\u719f\u86cb\uff09/ posExtras \u7684\u91d1\u984d\uff0c
+                //   \u5426\u5247\u6703\u628a\u9644\u52a0\u54c1\u50f9\u683c\u8aa4\u7b97\u6210\u98f2\u6599\u5347\u7d1a\u5dee\u50f9\uff08\u4f8b\u5982 6\u865f\u5957\u9910 + \u52a0\u719f\u86cb$15 + \u98f2\u6599\u88dc\u5dee\u50f9$20\uff0c\u539f\u672c\u7b97\u6210 $35\uff09\u3002
+                if (!skipOwnLineFallback && upgrade <= 0) {
                     var baseUnit = 0;
                     var baseCandidates = [item.basePrice, item.originalPrice, item['\u539f\u50f9']];
                     for (var i = 0; i < baseCandidates.length; i++) {
@@ -2136,7 +2138,14 @@ window._doCountUp = function() {
                     }
                     var line = this.getDetailLineTotal(item);
                     var qty = this.getDetailItemQty(item);
-                    if (line > 0 && baseUnit > 0 && qty > 0) upgrade = Math.max(upgrade, (line / qty) - baseUnit);
+                    var optionsCost = Array.isArray(item.options) ? item.options.reduce(function(s,o){return s+Number(o&&o.price||0);},0) : 0;
+                    var extrasCost = Array.isArray(item.posExtras) ? item.posExtras.reduce(function(s,e){return s+Number(e&&e.price||0);},0) : 0;
+                    var addonsCost = Array.isArray(item.addons) ? item.addons.reduce(function(s,a){return s+Number(a&&(a.unitPrice!==undefined?a.unitPrice:a.price)||0);},0) : 0;
+                    var sideCost = optionsCost + extrasCost + addonsCost;
+                    if (line > 0 && baseUnit > 0 && qty > 0) {
+                        var adjustedUnit = (line / qty) - sideCost;
+                        upgrade = Math.max(upgrade, adjustedUnit - baseUnit);
+                    }
                     if (upgrade <= 0 && order && Array.isArray(order.items) && baseUnit > 0 && qty > 0) {
                         var orderTotal = Number(this.getOrderTotalValue ? this.getOrderTotalValue(order) : (order.total || 0));
                         var other = 0;
@@ -2146,7 +2155,7 @@ window._doCountUp = function() {
                             if (!otherItem || this.isDetailComboDrinkLine(otherItem)) continue;
                             other += this.getDetailLineTotal(otherItem);
                         }
-                        var rest = orderTotal - other - (baseUnit * qty);
+                        var rest = orderTotal - other - (baseUnit * qty) - (sideCost * qty);
                         if (Number.isFinite(rest) && rest > 0) upgrade = Math.max(upgrade, rest / qty);
                     }
                 }
