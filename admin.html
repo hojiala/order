@@ -2379,8 +2379,21 @@
                 async cancelOrder(order) {
                     if (this.isPhoneCommandOrder(order)) {
                         if (!confirm('確定要取消這筆電話訂單嗎？')) return;
-                        await this.queuePhoneOrderCommand(order, 'cancel_order');
-                        this.toast('✅ 已送出電話訂單取消命令');
+                        // 先寫 display_status_overrides=cancelled，admin/pos/manage 會立刻把卡片轉為「已取消」、隱藏「接單製作」按鈕，
+                        // 不必等到電話 Pi 透過 phone_ai/orders 回灌狀態。
+                        this.applyLocalStatusOverride(order, 'cancelled');
+                        const overridePromise = this.writeRemoteStatusOverride(order, 'cancelled').catch((err) => {
+                            console.warn('cancel display override write failed', err && err.message ? err.message : err);
+                        });
+                        try {
+                            await Promise.all([
+                                overridePromise,
+                                this.queuePhoneOrderCommand(order, 'cancel_order')
+                            ]);
+                            this.toast('✅ 已送出電話訂單取消命令');
+                        } catch (err) {
+                            this.toast('❌ 電話訂單取消失敗：' + (err && err.message ? err.message : err));
+                        }
                         return;
                     }
                     if (this.isIntegrationReadOnlyOrder(order)) {

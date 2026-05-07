@@ -4466,9 +4466,17 @@ if(realPm==='cash'){
                 var s=this;
                 if(s.isPhoneCommandOrder(order)){
                     if(!confirm("確定要取消這筆電話訂單嗎？"))return;
-                    s.queuePhoneOrderCommand(order,'cancel_order')
+                    // 立刻寫 display_status_overrides=cancelled，admin/pos/manage 三邊 UI 即時轉為「已取消」、不必等電話 Pi 回灌
+                    var overridePromise=s.writeRemoteStatusOverride(order,'cancelled').catch(function(e){
+                        console.warn('cancel display override write failed',e&&e.message?e.message:e);
+                    });
+                    s.onlineOrders=(s.onlineOrders||[]).map(function(o){return o&&o.id===order.id?Object.assign({},o,{status:'cancelled',_remoteStatusOverride:'cancelled'}):o;});
+                    if(s.editingOrder&&s.editingOrder.id===order.id){
+                        s.editingOrder=Object.assign({},s.editingOrder,{status:'cancelled'});
+                    }
+                    Promise.all([overridePromise,s.queuePhoneOrderCommand(order,'cancel_order')])
                         .then(function(){s.toast("✅ 已送出電話訂單取消命令");if(s.editingOrder&&s.editingOrder.id===order.id)s.exitOnline();})
-                        .catch(function(e){alert("電話訂單取消失敗："+e.message);});
+                        .catch(function(e){alert("電話訂單取消失敗："+(e&&e.message?e.message:e));});
                     return;
                 }
                 if(s.isIntegrationReadOnlyOrder(order)){
