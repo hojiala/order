@@ -82,7 +82,7 @@
                                 <p class="text-xs text-gray-500 mb-1 font-mono">No.{{ order.orderNo ? String(order.orderNo).padStart(3,"0") : "???" }} &nbsp;<span class="text-gray-400">#{{ order.id.slice(-4).toUpperCase() }}</span></p>
                                 <h2 class="text-xl font-bold text-gray-800">{{ getDisplayCustomerName(order) }}</h2>
                                 <p v-if="order.phone || order.customer?.phone" class="text-sm font-bold text-blue-600 mt-1">📞 {{ order.phone || order.customer?.phone }}</p>
-                                <p class="text-sm text-gray-500 mt-1">取餐：<span class="font-bold text-black">{{ order.pickupDate && order.pickupDate !== todayStr ? order.pickupDate + ' ' : '' }}{{ getDisplayPickupTime(order.pickupTime) }}</span> ({{ order.type === 'dinein' ? '內用' : '外帶' }})</p>
+                                <p class="text-sm text-gray-500 mt-1">取餐：<span class="font-bold text-black">{{ order.pickupDate && order.pickupDate !== todayStr ? order.pickupDate + ' ' : '' }}{{ getDisplayPickupTime(order.pickupTime) }}</span> ({{ (order.type === 'dinein' || order.pickupMode === 'dinein') ? ((typeof order.tableLabel === 'string' && order.tableLabel.trim()) ? '內用 ' + order.tableLabel.trim() : '內用') : '外帶' }})</p>
                                 <p class="text-xs text-gray-500 mt-0.5">下單：<span class="font-bold text-black">{{ formatOrderDateTime(order) }}</span></p>
                             </div>
                             <div class="text-right">
@@ -1034,10 +1034,19 @@
                         const sibQty = this.getDisplayQty(sibling);
                         if (sibLine > 0 && sibQty > 0) upgrade = Math.max(upgrade, sibLine / sibQty);
                     }
-                    const base = this.getDisplayBaseUnit(item);
-                    const line = this.getDisplayLineTotal(item);
-                    const qty = this.getDisplayQty(item);
-                    if (line > 0 && base > 0 && qty > 0) upgrade = Math.max(upgrade, (line / qty) - base);
+                    // ★ 行金額扣掉飲料升級差價的最後手段（heuristic）只在沒有任何明確訊號時才使用，
+                    //   且必須先扣掉 options（如 加熟蛋）/ posExtras（POS 食材加點）的金額，否則會把附加品價格誤算成飲料升級差價。
+                    if (upgrade <= 0) {
+                        const base = this.getDisplayBaseUnit(item);
+                        const line = this.getDisplayLineTotal(item);
+                        const qty = this.getDisplayQty(item);
+                        if (line > 0 && base > 0 && qty > 0) {
+                            const optionsCost = Array.isArray(item.options) ? item.options.reduce((s, o) => s + Number(o && o.price || 0), 0) : 0;
+                            const extrasCost = Array.isArray(item.posExtras) ? item.posExtras.reduce((s, e) => s + Number(e && e.price || 0), 0) : 0;
+                            const adjustedUnit = (line / qty) - optionsCost - extrasCost;
+                            upgrade = Math.max(upgrade, adjustedUnit - base);
+                        }
+                    }
                     return Math.max(0, Math.round(upgrade));
                 },
                 normalizeDisplayDrinkName(name, state) {
