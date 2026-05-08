@@ -3682,7 +3682,11 @@ window._doCountUp = function() {
                         var total = Number(self.getOrderTotalValue(order) || 0);
                         var phone = String((order && order.customer && order.customer.phone) || (order && order.phone) || '').replace(/\D/g, '');
                         var pickup = String((order && order.pickupTime) || (order && order.pickupTimeLabel) || '').trim();
-                        var sig = no && day ? [family, day, no, Number.isFinite(total) ? Math.round(total) : '', phone, pickup].join('|') : '';
+                        var sig = no && day
+                            ? (family === 'phone_ai'
+                                ? [family, day, no, phone, pickup].join('|')
+                                : [family, day, no, Number.isFinite(total) ? Math.round(total) : '', phone, pickup].join('|'))
+                            : '';
                         if (!sig) {
                             bySig['id:' + String((order && order.id) || Math.random())] = order;
                             return;
@@ -3931,11 +3935,19 @@ window._doCountUp = function() {
                     return Object.keys(bySig).map(function(k){ return bySig[k]; });
                 };
 
-                var integrationPromise = get(ref(db, 'integration_views/merged_orders_history_index'))
-                    .then(function(snap) {
-                        if (!snap.exists()) return [];
-                        var view = snap.val() || {};
-                        return Array.isArray(view.orders) ? view.orders : [];
+                var integrationPromise = Promise.all([
+                        get(ref(db, 'integration_views/merged_orders_history_index')),
+                        get(ref(db, 'integration_views/merged_orders_active')),
+                        get(ref(db, 'integration_views/merged_orders_today'))
+                    ])
+                    .then(function(snaps) {
+                        var out = [];
+                        snaps.forEach(function(snap) {
+                            if (!snap.exists()) return;
+                            var view = snap.val() || {};
+                            if (Array.isArray(view.orders)) out = out.concat(view.orders);
+                        });
+                        return collapseMergedStatsValues(out);
                     })
                     .catch(function(e) {
                         console.error('讀取 integration_views 統計失敗:', e);

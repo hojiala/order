@@ -283,7 +283,7 @@
           </div>
           <div class="flex-1 min-w-0">
             <p class="font-bold text-gray-800 text-sm">{{ getCartItemDisplayName(item,idx) }}</p>
-            <div v-if="item.optionGroupSelections && item.optionGroupSelections.length" class="flex flex-wrap gap-1 mt-1">
+            <div v-if="getCartVisibleOptionChips(item,idx).length" class="flex flex-wrap gap-1 mt-1">
               <span v-for="sel in getCartVisibleOptionChips(item,idx)" :key="sel.groupName+'_'+sel.name"
                 class="text-xs bg-orange-50 text-orange-600 border border-orange-200 px-1.5 py-0.5 rounded">
                 {{ sel.name }}</span></div>
@@ -2348,7 +2348,19 @@
             getCartVisibleOptionChips:function(item,idx){
                 var sels=Array.isArray(item&&item.optionGroupSelections)?item.optionGroupSelections:[];
                 var s=this;
-                return sels.filter(function(sel){return s.shouldShowCartOptionChip(item,idx,sel);});
+                var out=sels.filter(function(sel){return s.shouldShowCartOptionChip(item,idx,sel);});
+                if(!item||typeof item!=='object'||s.getCartItemMealDrinkText(item,idx)||item.isComboDrink)return out;
+                function text(v){return String(v===undefined||v===null?'':v).trim();}
+                var name=text(item.name||item['\u54c1\u9805']);
+                var looksDrink=/(?:\u5496\u5561|\u5976\u8336|\u7d05\u8336|\u7da0\u8336|\u8c46\u6f3f|\u98f2\u6599|\u8336|\u9bae\u5976|\u7f8e\u5f0f)/.test(name);
+                if(!looksDrink)return out;
+                var seen={};
+                out.forEach(function(sel){var n=text(sel&&sel.name);if(n)seen[n]=true;});
+                var size=text(item.size||item['\u5bb9\u91cf']);
+                var temp=text(item.temp||item['\u6eab\u5ea6']);
+                if(size&&!seen[size])out.push({groupName:'\u5bb9\u91cf',name:size});
+                if(temp&&!seen[temp])out.push({groupName:'\u6eab\u5ea6',name:temp});
+                return out;
             },
             getCartVisibleNote:function(item,idx){
                 var note=String(item&&(item.note||item['\u5099\u8a3b'])||'').trim();
@@ -2398,7 +2410,7 @@
                 var temp=text(item.temp||item['\u6eab\u5ea6']);
                 var looksDrink=!!(size||temp)&&/(?:\u5496\u5561|\u5976\u8336|\u7d05\u8336|\u7da0\u8336|\u8c46\u6f3f|\u98f2\u6599|\u8336|\u9bae\u5976|\u7f8e\u5f0f)/.test(name);
                 if(!looksDrink)return name;
-                return [size,temp,stripCup(name)||name].filter(Boolean).join('/');
+                return stripCup(name)||name;
             },
             getCartItemMealDrinkText:function(item,idx){
                 try{
@@ -2553,6 +2565,22 @@
                     var m=text(raw).match(/(?:飲料加購|補差價|\+)\s*\$?\s*([\d０-９]+)/);
                     return m&&m[1]?Math.round(num(m[1].replace(/[０-９]/g,function(ch){return '０１２３４５６７８９'.indexOf(ch);} ))):0;
                 }
+                function summaryAddonNames(it){
+                    var out=[];
+                    [it&&it.options,it&&it.addons,it&&it['\u52a0\u6599'],it&&it.posExtras].forEach(function(arr){
+                        if(!Array.isArray(arr))return;
+                        arr.forEach(function(opt){
+                            var n=text(opt&&(opt.name||opt['\u540d\u7a31']||opt.label||opt.value));
+                            n=n.replace(/^\+/,'').replace(/\s*\$?\s*\d+\s*$/,'').trim();
+                            if(n&&out.indexOf(n)===-1)out.push(n);
+                        });
+                    });
+                    out.sort(function(a,b){
+                        var order={'\u52a0\u5976':1,'\u52a0\u7cd6':2};
+                        return (order[a]||99)-(order[b]||99);
+                    });
+                    return out.join(', ');
+                }
                 function isNoMeal(name){
                     return /^[1-9]\s*號/.test(cleanName(name));
                 }
@@ -2591,14 +2619,20 @@
                     var size=text((sib&&(sib.size||sib['\u5bb9\u91cf']))||(main&&(main.size||main['\u5bb9\u91cf']))||'');
                     var temp=text((sib&&(sib.temp||sib['\u6eab\u5ea6']))||(main&&(main.temp||main['\u6eab\u5ea6']))||'');
                     var drink=stripCup(sib&&(sib.name||sib['\u54c1\u9805']));
-                    var amount=Math.max(0,Math.round(num(sib&&(sib.comboDrinkSurcharge||sib.price||sib['\u55ae\u50f9']))));
+                    var comboLike=!!(main||(sib&&sib.isComboDrink));
+                    var amount=comboLike?Math.max(0,Math.round(num(sib&&(sib.comboDrinkSurcharge||sib.price||sib['\u55ae\u50f9'])))):0;
                     [main&&main.mealDrink,main&&main.comboDrinkText,sib&&sib.mealDrink,sib&&sib.comboDrinkText].forEach(function(raw){
                         var parsed=parseComboText(raw,main,sib);
                         if(!size&&parsed.size)size=parsed.size;
                         if(!temp&&parsed.temp)temp=parsed.temp;
                         if(!drink&&parsed.drink)drink=parsed.drink;
-                        if(parsed.amount>0)amount=Math.max(amount,parsed.amount);
+                        if(parsed.amount>0){
+                            comboLike=true;
+                            amount=Math.max(amount,parsed.amount);
+                        }
                     });
+                    var meta=[sib&&sib.note,sib&&sib['\u5099\u8a3b'],sib&&sib.comboDrinkLabel,sib&&sib.comboDrinkChargeText].map(text).join(' ');
+                    if(/(?:套餐飲料|搭配飲料折\s*5\s*元|飲料加購|補差價)/.test(meta))comboLike=true;
                     var extractCupFromText=function(s){
                         s=text(s);
                         var m=s.match(/[（(]\s*(大杯|中杯|小杯)\s*[)）]/);
@@ -2624,7 +2658,10 @@
                             else if(!temp&&(g.indexOf('temp')!==-1||g.indexOf('溫度')!==-1||/去冰|少冰|微冰|冰|溫|熱|常溫/.test(n)))temp=n;
                             else if(!drink&&(String(sel&&sel.pricing||'')==='mealUpgrade'||g.indexOf('drink')!==-1||g.indexOf('飲料')!==-1))drink=stripCup(n);
                             var p=num(sel&&sel.price),b=num(sel&&sel.baseValue);
-                            if(String(sel&&sel.pricing||'')==='mealUpgrade'&&p>b)amount=Math.max(amount,Math.round(p-b));
+                            if(String(sel&&sel.pricing||'')==='mealUpgrade'&&p>b){
+                                comboLike=true;
+                                amount=Math.max(amount,Math.round(p-b));
+                            }
                         });
                     };
                     scanSels(main&&main.optionGroupSelections);
@@ -2659,7 +2696,7 @@
                     }
                     if(!drink)return '';
                     var line=[size,temp,drink].filter(Boolean).join('/');
-                    if(amount>0)line+='/'+prefixFor(main,sib)+amount;
+                    if(comboLike&&amount>0)line+='/'+prefixFor(main,sib)+amount;
                     return line;
                 }
                 var used={};
@@ -2719,10 +2756,16 @@
                     }
                     if(isDrink(it)){
                         var drinkLine=mealDrinkText(null,it);
-                        if(drinkLine)lines.push(qtyOf(it)+'x'+drinkLine);
+                        if(drinkLine){
+                            var standaloneMeta=[it&&it.note,it&&it['\u5099\u8a3b'],it&&it.comboDrinkLabel,it&&it.comboDrinkChargeText,it&&it.comboDrinkText,it&&it.mealDrink].map(text).join(' ');
+                            var standaloneComboLike=!!(it&&it.isComboDrink)||/(?:套餐飲料|搭配飲料折\s*5\s*元|飲料加購|補差價)/.test(standaloneMeta);
+                            var addText=standaloneComboLike?'':summaryAddonNames(it);
+                            lines.push(qtyOf(it)+'x'+drinkLine+(addText?'/'+addText:''));
+                        }
                         else{
                             var dline=[text(it.size||it['\u5bb9\u91cf']),text(it.temp||it['\u6eab\u5ea6']),stripCup(it.name||it['\u54c1\u9805'])].filter(Boolean).join('/');
-                            if(dline)lines.push(qtyOf(it)+'x'+dline);
+                            var addTextFallback=summaryAddonNames(it);
+                            if(dline)lines.push(qtyOf(it)+'x'+dline+(addTextFallback?'/'+addTextFallback:''));
                         }
                         return;
                     }
@@ -2785,6 +2828,22 @@
                 function parseAmount(raw){
                     var m=text(raw).match(/(?:\u98f2\u6599\u52a0\u8cfc|\u88dc\u5dee\u50f9|\+)\s*\$?\s*(\d+)/);
                     return m&&m[1]?Math.round(num(m[1])):0;
+                }
+                function summaryAddonNamesFallback(it){
+                    var out=[];
+                    [it&&it.options,it&&it.addons,it&&it['\u52a0\u6599'],it&&it.posExtras].forEach(function(arr){
+                        if(!Array.isArray(arr))return;
+                        arr.forEach(function(opt){
+                            var n=text(opt&&(opt.name||opt['\u540d\u7a31']||opt.label||opt.value));
+                            n=n.replace(/^\+/,'').replace(/\s*\$?\s*\d+\s*$/,'').trim();
+                            if(n&&out.indexOf(n)===-1)out.push(n);
+                        });
+                    });
+                    out.sort(function(a,b){
+                        var order={'\u52a0\u5976':1,'\u52a0\u7cd6':2};
+                        return (order[a]||99)-(order[b]||99);
+                    });
+                    return out.join(', ');
                 }
                 function findPair(main,mainIdx,used){
                     var gid=text(main&&main.comboGroupId);
@@ -2922,13 +2981,17 @@
                         }
                         var drinkParts=[text(it.size||it['\u5bb9\u91cf']),text(it.temp||it['\u6eab\u5ea6']),name].filter(Boolean);
                         var drinkLine=drinkParts.join('/');
-                        var surcharge=num(it.comboDrinkSurcharge||it.price||0);
-                        if(surcharge<=0)surcharge=parseAmount(it.comboDrinkChargeText||it.comboDrinkText||it.mealDrink);
-                        if(surcharge>0){
+                        var surcharge=comboLike?num(it.comboDrinkSurcharge||it.price||0):0;
+                        if(comboLike&&surcharge<=0)surcharge=parseAmount(it.comboDrinkChargeText||it.comboDrinkText||it.mealDrink);
+                        if(comboLike&&surcharge>0){
                             var discount5=String(it.comboDrinkLabel||'').indexOf('\u642d\u914d\u98f2\u6599\u62985\u5143')!==-1
                                 ||String(it.comboDrinkChargeText||'').indexOf('\u98f2\u6599\u52a0\u8cfc')!==-1
                                 ||(num(it.comboDrinkCredit)>0&&num(it.comboDrinkCredit)<=5);
                             drinkLine=drinkLine+'/'+(discount5?'\u98f2\u6599\u52a0\u8cfc$':'\u88dc\u5dee\u50f9$')+Math.round(surcharge);
+                        }
+                        if(!comboLike){
+                            var addText=summaryAddonNamesFallback(it);
+                            if(addText)drinkLine=drinkLine+'/'+addText;
                         }
                         out.push(qty+'x'+drinkLine);
                         continue;
@@ -2986,10 +3049,16 @@
                     if(o.status==="archived")return;
                     if(s.isPhoneCommandOrder(o)){
                         o.status='archived';
-                        phoneCmds.push(s.writeRemoteStatusOverride(o,'archived').catch(function(err){
-                            console.warn('phone archive status override failed:',err&&err.message?err.message:err);
-                            return false;
-                        }));
+                        phoneCmds.push(Promise.all([
+                            s.writeRemoteStatusOverride(o,'archived').catch(function(err){
+                                console.warn('phone archive status override failed:',err&&err.message?err.message:err);
+                                return false;
+                            }),
+                            s.queuePhoneOrderCommand(o,'set_status',{status:'archived'}).catch(function(err){
+                                console.warn('phone archive command failed:',err&&err.message?err.message:err);
+                                return false;
+                            })
+                        ]));
                         return;
                     }
                     var sourcePath=String((o.integration&&o.integration.sourceRecordPath)||o.sourceRecordPath||'').trim();
