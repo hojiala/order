@@ -1075,7 +1075,7 @@
             </div>
             <div class="flex justify-between items-center">
                 <span class="text-slate-400 text-sm">訂單總額</span>
-                <span class="text-red-400 font-black text-xl">${{ getOrderTotalValue(viewingOrder) }}</span>
+                    <span class="text-red-400 font-black text-xl">${{ getDetailOrderTotal(viewingOrder) }}</span>
             </div>
         </div>
     </div>
@@ -1663,6 +1663,24 @@ window._doCountUp = function() {
                 if (order.totals && Number.isFinite(Number(order.totals.finalTotal))) return Number(order.totals.finalTotal);
                 return 0;
             },
+            getDetailOrderTotal: function(order) {
+                var explicit = Number(this.getOrderTotalValue(order));
+                var displayItems = this.getDisplayDetailItems(order);
+                var detailSum = Array.isArray(displayItems) ? displayItems.reduce(function(sum, item) {
+                    var idx = this.getOriginalDetailItemIndex(order, item);
+                    var line = Number(this.getDetailItemTotal(item, order, idx));
+                    return sum + (Number.isFinite(line) && line > 0 ? line : 0);
+                }.bind(this), 0) : 0;
+                var sourcePath = String((order && ((order.integration && order.integration.sourceRecordPath) || order.sourceRecordPath)) || '').toLowerCase();
+                var source = String(order && order.source || '').toLowerCase();
+                var label = String(order && (order.sourceLabel || order._integrationSourceLabel) || '').toLowerCase();
+                var phoneLike = source === 'phone_ai' || source === 'pos_local' || sourcePath.indexOf('phone_ai/orders/') === 0 || label.indexOf('phone') !== -1 || label.indexOf('\u96fb\u8a71') !== -1;
+                if (phoneLike && Number.isFinite(detailSum) && detailSum > 0 && (!Number.isFinite(explicit) || explicit <= 0 || Math.abs(detailSum - explicit) > 1)) {
+                    return Math.round(detailSum);
+                }
+                if (Number.isFinite(explicit) && explicit > 0) return Math.round(explicit);
+                return Number.isFinite(detailSum) && detailSum > 0 ? Math.round(detailSum) : 0;
+            },
             getOrderPaymentMethodValue: function(order) {
                 if (!order) return '';
                 return order.paymentMethod || (order.payment && order.payment.method) || 'store';
@@ -1960,10 +1978,12 @@ window._doCountUp = function() {
                 var name = String(item.name || item['\u54c1\u9805'] || '').trim();
                 var category = String(item.category || item['\u985e\u5225'] || '').trim();
                 var hasSizeOrTemp = !!String(item.size || item['\u5bb9\u91cf'] || '').trim() || !!String(item.temp || item['\u6eab\u5ea6'] || '').trim();
-                var hasMealHint = name.indexOf('\u5957\u9910') !== -1 || name.indexOf('\u62fc\u76e4') !== -1;
-                var looksLikeDrink = /\u5496\u5561|\u5976\u8336|\u7d05\u8336|\u9bae\u8336|\u932b\u862d|\u8c46\u6f3f|\u6c7d\u6c34|\u98f2\u6599/.test(name) || category.indexOf('\u98f2') !== -1 || hasSizeOrTemp;
-                if (hasMealHint && !looksLikeDrink && !item.isComboDrink) return false;
-                return !!item.isComboDrink
+                var looksLikeDrink = /\u5496\u5561|\u5976\u8336|\u7d05\u8336|\u7da0\u8336|\u9bae\u8336|\u9bae\u5976|\u8c46\u6f3f|\u53ef\u53ef|\u62ff\u9435|\u7f8e\u5f0f|\u6c7d\u6c34|\u98f2\u6599|\u8336/.test(name) || category.indexOf('\u98f2') !== -1 || hasSizeOrTemp;
+                var looksComboMain = (name.indexOf('\u5957\u9910') !== -1 || name.indexOf('\u62fc\u76e4') !== -1 || !!item.isCombo) && !looksLikeDrink;
+                if (looksComboMain) return false;
+                var hasComboDrinkContext = /\u5957\u9910\u98f2\u6599|\u642d\u914d\u98f2\u6599\u6298\s*5\s*\u5143|\u98f2\u6599\u52a0\u8cfc|\u88dc\u5dee\u50f9/.test(meta)
+                    || !!String(item.comboGroupId || '').trim();
+                return (!!item.isComboDrink && hasComboDrinkContext)
                     || /\u5957\u9910\u98f2\u6599|\u642d\u914d\u98f2\u6599\u6298\s*5\s*\u5143|\u98f2\u6599\u52a0\u8cfc|\u88dc\u5dee\u50f9/.test(meta)
                     || (!!String(item.comboGroupId || '').trim() && !String(item.mealDrink || item.comboDrinkText || '').trim() && looksLikeDrink);
             },
@@ -2692,17 +2712,35 @@ window._doCountUp = function() {
                             if (!Number.isFinite(unit) || unit <= 0) unit = Number(src['原價'] || 0);
                         }
 
+                        var roleName = String(nameRaw || '').trim();
+                        var roleCategory = String(src.category || src['\u985e\u5225'] || '').trim();
+                        var roleMeta = [
+                            src.note,
+                            src['\u5099\u8a3b'],
+                            src['?酉'],
+                            src.comboDrinkLabel,
+                            src.comboDrinkChargeText,
+                            src.comboDrinkText,
+                            src.mealDrink
+                        ].map(function(v) { return String(v || '').trim(); }).join(' ');
+                        var roleLooksDrink = /\u5496\u5561|\u5976\u8336|\u7d05\u8336|\u7da0\u8336|\u9bae\u8336|\u9bae\u5976|\u8c46\u6f3f|\u53ef\u53ef|\u62ff\u9435|\u7f8e\u5f0f|\u98f2\u6599|\u8336/.test(roleName)
+                            || roleCategory.indexOf('\u98f2') !== -1;
+                        var roleLooksComboMain = (!!src.isCombo || roleName.indexOf('\u5957\u9910') !== -1 || roleName.indexOf('\u62fc\u76e4') !== -1) && !roleLooksDrink;
+                        var roleHasComboDrinkContext = /(?:\u5957\u9910\u98f2\u6599|\u642d\u914d\u98f2\u6599\u6298\s*5\s*\u5143|\u98f2\u6599\u52a0\u8cfc|\u88dc\u5dee\u50f9)/.test(roleMeta)
+                            || !!String(src.comboGroupId || '').trim();
+                        var roleLooksComboDrink = !roleLooksComboMain && roleHasComboDrinkContext && (roleLooksDrink || !!src.isComboDrink);
+
                         var mappedItem = Object.assign({}, src, {
                             id: src.id || src.productId || src.sku || String(nameRaw || 'item'),
                             name: String(nameRaw || '').trim(),
                             qty: qty,
                             price: Number(unit || 0),
                             itemTotal: Number(lineTotal || 0),
-                            isCombo: !!src.isCombo,
+                            isCombo: roleLooksComboMain,
                             note: (src.note !== undefined && src.note !== null) ? String(src.note) : (src['\u5099\u8a3b'] || src['?酉'] || ''),
                             size: (src.size !== undefined && src.size !== null) ? String(src.size) : (src['\u5bb9\u91cf'] || src['摰寥?'] || ''),
                             temp: (src.temp !== undefined && src.temp !== null) ? String(src.temp) : (src['\u6eab\u5ea6'] || src['皞怠漲'] || ''),
-                            isComboDrink: !src.isCombo && !!(src.isComboDrink || String(src['\u5099\u8a3b'] || src['?酉'] || '').indexOf('\u5957\u9910\u98f2\u6599') !== -1 || String(src.comboDrinkLabel || src.comboDrinkChargeText || '').indexOf('\u98f2\u6599') !== -1),
+                            isComboDrink: roleLooksComboDrink,
                             comboGroupId: src.comboGroupId || '',
                             mealDrink: (src.mealDrink !== undefined && src.mealDrink !== null) ? String(src.mealDrink) : '',
                             comboDrinkText: (src.comboDrinkText !== undefined && src.comboDrinkText !== null) ? String(src.comboDrinkText) : '',
