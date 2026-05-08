@@ -364,6 +364,7 @@
                         const phone = String((order.customer && order.customer.phone) || order.phone || '').replace(/\D/g, '');
                         const pickup = String(order.pickupTime || order.pickupTimeLabel || '').trim();
                         if (!no || !day) return '';
+                        if (family === 'phone_ai') return [family, day, no, phone, pickup].join('|');
                         return [family, day, no, Number.isFinite(total) ? Math.round(total) : '', phone, pickup].join('|');
                     };
                     const score = (order) => {
@@ -1852,9 +1853,8 @@
                         const label = String((orderHint && (orderHint.sourceLabel || orderHint._integrationSourceLabel)) || '').toLowerCase();
                         const phoneLike = src === 'phone_ai' || src === 'pos_local' || sourcePath.indexOf('phone_ai/orders/') === 0 || sourceRoot.indexOf('phone_ai') === 0 || label.indexOf('phone') >= 0 || label.indexOf('\u96fb\u8a71') >= 0;
                         if (phoneLike) {
-                            if (isPos(inc)) return inc;
-                            if (isPos(cur)) return cur;
-                            if (isPos(sum)) return sum;
+                            const phoneTotals = [cur, inc, sum].filter(isPos);
+                            if (phoneTotals.length) return Math.max(...phoneTotals);
                             return 0;
                         }
                         const positives = [cur, inc, sum].filter(isPos);
@@ -2015,6 +2015,7 @@
                         const phone = String((order.customer && order.customer.phone) || order.phone || '').trim();
                         const pickup = String(order.pickupTime || order.pickupTimeLabel || '').trim();
                         if (sourceOrderId && day && family) return ['oid', family, day, sourceOrderId].join('|');
+                        if (family === 'phone_ai' && no && day) return ['sig', family, day, no, phone, pickup].join('|');
                         if (no && day && family) return ['sig', family, day, no, Number.isFinite(total) ? Math.round(total) : '', phone, pickup].join('|');
                         if (sourcePath) return ['path', sourcePath].join('|');
                         if (!no || !day || !family) return '';
@@ -2521,9 +2522,16 @@
                     this.orders.forEach(o => {
                         if (o.status !== 'archived' && futureIds.indexOf(o.id) === -1) {
                             if (this.isPhoneCommandOrder(o)) {
+                                this.applyLocalStatusOverride(o, 'archived');
                                 phoneCmds.push(Promise.all([
-                                    this.writeRemoteStatusOverride(o, 'archived'),
-                                    this.queuePhoneOrderCommand(o, 'set_status', { status: 'archived' })
+                                    this.writeRemoteStatusOverride(o, 'archived').catch(err => {
+                                        console.warn('phone archive status override failed', err && err.message ? err.message : err);
+                                        return false;
+                                    }),
+                                    this.queuePhoneOrderCommand(o, 'set_status', { status: 'archived' }).catch(err => {
+                                        console.warn('phone archive command failed', err && err.message ? err.message : err);
+                                        return false;
+                                    })
                                 ]));
                                 return;
                             }

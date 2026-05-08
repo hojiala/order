@@ -282,7 +282,7 @@
             <button @click.stop="moveCartItem(idx,1)" :disabled="idx===cart.length-1" class="text-gray-400 hover:text-gray-700 disabled:opacity-20 text-xs leading-none">▼</button>
           </div>
           <div class="flex-1 min-w-0">
-            <p class="font-bold text-gray-800 text-sm">{{ item.name }}</p>
+            <p class="font-bold text-gray-800 text-sm">{{ getCartItemDisplayName(item,idx) }}</p>
             <div v-if="item.optionGroupSelections && item.optionGroupSelections.length" class="flex flex-wrap gap-1 mt-1">
               <span v-for="sel in getCartVisibleOptionChips(item,idx)" :key="sel.groupName+'_'+sel.name"
                 class="text-xs bg-orange-50 text-orange-600 border border-orange-200 px-1.5 py-0.5 rounded">
@@ -826,9 +826,8 @@
                 var label=String((orderHint&&(orderHint.sourceLabel||orderHint._integrationSourceLabel))||'').toLowerCase();
                 var isPhoneLike=src==='phone_ai'||src==='pos_local'||sourcePath.indexOf('phone_ai/orders/')===0||sourceRoot.indexOf('phone_ai')===0||label.indexOf('phone')!==-1||label.indexOf('\u96fb\u8a71')!==-1;
                 if(isPhoneLike){
-                    if(finitePos(inc))return inc;
-                    if(finitePos(cur))return cur;
-                    if(finitePos(sum))return sum;
+                    var phoneTotals=[cur,inc,sum].filter(finitePos);
+                    if(phoneTotals.length)return Math.max.apply(null,phoneTotals);
                     return 0;
                 }
                 var positives=[cur,inc,sum].filter(finitePos);
@@ -2317,6 +2316,7 @@
                     if(gid&&cgid&&gid===cgid)return cand;
                     if(!gid&&!fallback)fallback=cand;
                 }
+                if(gid)return null;
                 if(fallback)return fallback;
                 for(var f=Number(idx)+1;f<list.length;f++){
                     if(isMain(list[f]))break;
@@ -2363,6 +2363,13 @@
                     var n=String(part||'').trim();
                     if(n)hidden[n]=true;
                 });
+                [item&&item.options,item&&item.posExtras,item&&item.addons].forEach(function(arr){
+                    if(!Array.isArray(arr))return;
+                    arr.forEach(function(opt){
+                        var n=String(opt&&(opt.name||opt['\u540d\u7a31'])||'').trim();
+                        if(n)hidden[n]=true;
+                    });
+                });
                 var parts=note.split(/[\uFF0C\u3001,\/]+/).map(function(v){
                     return String(v||'').trim().replace(/^[:\uFF1A\s]+|[:\uFF1A\s]+$/g,'');
                 }).filter(Boolean);
@@ -2374,6 +2381,24 @@
                     return true;
                 });
                 return parts.join('\uFF0C');
+            },
+            getCartItemDisplayName:function(item,idx){
+                if(!item||typeof item!=='object')return '';
+                function text(v){return String(v===undefined||v===null?'':v).trim();}
+                function stripCup(raw){
+                    return text(raw)
+                        .replace(/[（(]\s*(?:\u5927\u676f|\u4e2d\u676f|\u5c0f\u676f)\s*[)）]/g,'')
+                        .replace(/^\s*(?:\u5927\u676f|\u4e2d\u676f|\u5c0f\u676f)\s*/,'')
+                        .trim();
+                }
+                var name=text(item.name||item['\u54c1\u9805']);
+                if(this.getCartItemMealDrinkText(item,idx))return name;
+                if(item.isComboDrink)return name;
+                var size=text(item.size||item['\u5bb9\u91cf']);
+                var temp=text(item.temp||item['\u6eab\u5ea6']);
+                var looksDrink=!!(size||temp)&&/(?:\u5496\u5561|\u5976\u8336|\u7d05\u8336|\u7da0\u8336|\u8c46\u6f3f|\u98f2\u6599|\u8336|\u9bae\u5976|\u7f8e\u5f0f)/.test(name);
+                if(!looksDrink)return name;
+                return [size,temp,stripCup(name)||name].filter(Boolean).join('/');
             },
             getCartItemMealDrinkText:function(item,idx){
                 try{
@@ -2647,6 +2672,7 @@
                             if(i===mainIdx||used[i])continue;
                             if(isDrink(items[i])&&text(items[i]&&items[i].comboGroupId)===gid)return i;
                         }
+                        return -1;
                     }
                     for(var f=mainIdx+1;f<items.length;f++){
                         if(used[f])continue;
@@ -2959,7 +2985,11 @@
                     if(futureIds.indexOf(o.id)!==-1)return;
                     if(o.status==="archived")return;
                     if(s.isPhoneCommandOrder(o)){
-                        phoneCmds.push(s.writeRemoteStatusOverride(o,'archived'));
+                        o.status='archived';
+                        phoneCmds.push(s.writeRemoteStatusOverride(o,'archived').catch(function(err){
+                            console.warn('phone archive status override failed:',err&&err.message?err.message:err);
+                            return false;
+                        }));
                         return;
                     }
                     var sourcePath=String((o.integration&&o.integration.sourceRecordPath)||o.sourceRecordPath||'').trim();
