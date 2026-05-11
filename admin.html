@@ -1025,37 +1025,47 @@
                 },
                 getComboUpgradeForDisplay(item, order) {
                     if (!item || typeof item !== 'object') return 0;
-                    let upgrade = 0;
+                    let reliableUpgrade = 0;
+                    let fallbackUpgrade = 0;
                     const parseAmount = (raw) => {
                         const s = String(raw || '');
                         const m = s.match(/(?:\u88dc\u5dee\u50f9|\u98f2\u6599\u52a0\u8cfc|\u88dc|\+)\s*\$?\s*(\d+)/);
                         return m && m[1] ? Number(m[1]) : 0;
                     };
+                    const setReliable = (value) => {
+                        const n = Number(value);
+                        if (Number.isFinite(n) && n > 0) reliableUpgrade = Math.max(reliableUpgrade, n);
+                    };
+                    const setFallback = (value) => {
+                        const n = Number(value);
+                        if (Number.isFinite(n) && n > 0) fallbackUpgrade = Math.max(fallbackUpgrade, n);
+                    };
                     const sels = Array.isArray(item.optionGroupSelections) ? item.optionGroupSelections : [];
                     sels.forEach((sel) => {
-                        upgrade = Math.max(upgrade, parseAmount(sel && sel.name));
+                        setFallback(parseAmount(sel && sel.name));
                         const pricing = String(sel && sel.pricing || '');
                         const price = Number(sel && sel.price);
                         const base = Number(sel && sel.baseValue);
-                        if (pricing === 'mealUpgrade' && Number.isFinite(price) && Number.isFinite(base) && price > base) upgrade = Math.max(upgrade, price - base);
+                        if (pricing === 'mealUpgrade' && Number.isFinite(price) && Number.isFinite(base) && price > base) setReliable(price - base);
                     });
-                    [item.mealDrink, item.comboDrinkText].forEach((txt) => { upgrade = Math.max(upgrade, parseAmount(txt)); });
+                    [item.mealDrink, item.comboDrinkText].forEach((txt) => { setFallback(parseAmount(txt)); });
                     const explicit = Number(item.comboDrinkSurcharge || 0);
-                    if (Number.isFinite(explicit) && explicit > 0) upgrade = Math.max(upgrade, explicit);
+                    if (Number.isFinite(explicit) && explicit > 0) setReliable(explicit);
                     const full = Number(item.comboDrinkFullPrice || 0);
                     const credit = Number(item.comboDrinkCredit || 0);
-                    if (Number.isFinite(full) && full > 0 && Number.isFinite(credit) && credit > 0 && full >= credit) upgrade = Math.max(upgrade, full - credit);
+                    if (Number.isFinite(full) && full > 0 && Number.isFinite(credit) && credit > 0 && full >= credit) setReliable(full - credit);
                     const sibling = this.findComboDrinkSiblingForDisplay(item, order);
                     if (sibling) {
                         const sibExplicit = Number(sibling.comboDrinkSurcharge || 0);
-                        if (Number.isFinite(sibExplicit) && sibExplicit > 0) upgrade = Math.max(upgrade, sibExplicit);
+                        if (Number.isFinite(sibExplicit) && sibExplicit > 0) setReliable(sibExplicit);
                         const sibFull = Number(sibling.comboDrinkFullPrice || 0);
                         const sibCredit = Number(sibling.comboDrinkCredit || 0);
-                        if (Number.isFinite(sibFull) && sibFull > 0 && Number.isFinite(sibCredit) && sibCredit > 0 && sibFull >= sibCredit) upgrade = Math.max(upgrade, sibFull - sibCredit);
+                        if (Number.isFinite(sibFull) && sibFull > 0 && Number.isFinite(sibCredit) && sibCredit > 0 && sibFull >= sibCredit) setReliable(sibFull - sibCredit);
                         const sibLine = this.getDisplayLineTotal(sibling);
                         const sibQty = this.getDisplayQty(sibling);
-                        if (sibLine > 0 && sibQty > 0) upgrade = Math.max(upgrade, sibLine / sibQty);
+                        if (sibLine > 0 && sibQty > 0) setReliable(sibLine / sibQty);
                     }
+                    let upgrade = reliableUpgrade > 0 ? reliableUpgrade : fallbackUpgrade;
                     // ★ 行金額扣掉飲料升級差價的最後手段（heuristic）只在沒有任何明確訊號時才使用，
                     //   且必須先扣掉 options（如 加熟蛋）/ posExtras（POS 食材加點）的金額，否則會把附加品價格誤算成飲料升級差價。
                     if (upgrade <= 0) {
@@ -1163,7 +1173,7 @@
                         let parsedComboDrink = '';
                         String(raw || '').split(/[\/\u3001,]+/).map((v) => String(v || '').trim()).filter(Boolean).forEach((part) => {
                             const m = part.match(/(?:\u88dc\u5dee\u50f9|\u98f2\u6599\u52a0\u8cfc|\u88dc|\+)\s*\$?\s*(\d+)/);
-                            if (m && m[1]) { upgrade = Math.max(upgrade, Number(m[1])); return; }
+                            if (m && m[1]) { if (upgrade <= 0) upgrade = Number(m[1]); return; }
                             if (!parsedComboState.size && (part === '\u5927\u676f' || part === '\u4e2d\u676f')) parsedComboState.size = part;
                             else if (!parsedComboState.temp && /\u51b0|\u71b1|\u6eab/.test(part)) parsedComboState.temp = part;
                             else if (!parsedComboDrink) parsedComboDrink = this.normalizeDisplayDrinkName(part, parsedComboState);
@@ -1174,9 +1184,9 @@
                     });
                     const sibling = this.findComboDrinkSiblingForDisplay(item, order);
                     const explicitCharge = String(item && item.comboDrinkChargeText || sibling && sibling.comboDrinkChargeText || '').trim();
-                    if (explicitCharge) {
+                    if (explicitCharge && upgrade <= 0) {
                         const m = explicitCharge.match(/(?:\u88dc\u5dee\u50f9|\u98f2\u6599\u52a0\u8cfc)\s*\$?\s*(\d+)/);
-                        if (m && m[1]) upgrade = Math.max(upgrade, Number(m[1]));
+                        if (m && m[1]) upgrade = Number(m[1]);
                     }
                     if (sibling && (!drinkName || !state.size || !state.temp)) {
                         drinkName = drinkName || this.normalizeDisplayDrinkName(sibling.name || sibling['\u54c1\u9805'] || '', state);
@@ -1375,6 +1385,33 @@
                     if(out._integrationOriginal&&Array.isArray(out._integrationOriginal['\u8a02\u55ae'])&&out._integrationOriginal['\u8a02\u55ae'].length>rawOrderItems.length)rawOrderItems=out._integrationOriginal['\u8a02\u55ae'];
                     if(out._integrationOriginal&&Array.isArray(out._integrationOriginal['訂單'])&&out._integrationOriginal['訂單'].length>rawOrderItems.length)rawOrderItems=out._integrationOriginal['訂單'];
                     if(rawOrderItems.length&&(!Array.isArray(out.items)||rawOrderItems.length>out.items.length))out.items=rawOrderItems;
+                    const scoreRawItems = (rows) => {
+                        const list = Array.isArray(rows) ? rows : [];
+                        return list.length * 100 + list.reduce((sum, it) => {
+                            if (!it || typeof it !== 'object') return sum;
+                            return sum
+                                + (it.comboDrinkText || it.mealDrink ? 8 : 0)
+                                + (it.comboDrinkLabel ? 4 : 0)
+                                + (it.comboDrinkChargeText ? 4 : 0)
+                                + (Array.isArray(it.optionGroupSelections) ? it.optionGroupSelections.length * 3 : 0)
+                                + (Array.isArray(it['\u9078\u9805\u7fa4\u7d44']) ? it['\u9078\u9805\u7fa4\u7d44'].length * 3 : 0)
+                                + (Array.isArray(it.options) ? it.options.length * 2 : 0)
+                                + (Array.isArray(it.posExtras) ? it.posExtras.length * 2 : 0);
+                        }, 0);
+                    };
+                    const collectRawItemCandidates = (host) => {
+                        if (!host || typeof host !== 'object') return [];
+                        return ['items','orderItems','lineItems','cartItems','cart','\u8a02\u55ae','\u9078\u8cfc\u9805\u76ee','\u95ae\ue3d8\ue845'].map((key) => host[key]).filter((rows) => Array.isArray(rows) && rows.length);
+                    };
+                    const rawCandidates = []
+                        .concat(collectRawItemCandidates(out))
+                        .concat(collectRawItemCandidates(out._integrationOriginal))
+                        .concat(collectRawItemCandidates(out.original))
+                        .concat(collectRawItemCandidates(out._original));
+                    rawCandidates.forEach((rows) => {
+                        if (!Array.isArray(rows) || !rows.length) return;
+                        if (!Array.isArray(out.items) || scoreRawItems(rows) > scoreRawItems(out.items)) out.items = rows;
+                    });
                     if (Array.isArray(out.items)) {
                         out.items = out.items.map((item) => {
                             if (!item || typeof item !== 'object') return item;

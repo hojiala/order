@@ -1450,9 +1450,9 @@ window._doCountUp = function() {
                     dailyThemes: { 0:'#64748B', 1:'#3B82F6', 2:'#10B981', 3:'#F59E0B', 4:'#8B5CF6', 5:'#EC4899', 6:'#EF4444' },
                     categories: ['套餐','單點','蛋餅、燒餅','漢堡、蝸牛堡','吐司、厚片','其它、飲品'],
                     stations: [
-                        { name: '湯麵', ip: '10.0.1.8' },
+                        { name: '湯麵', ip: '192.168.0.6' },
                         { name: '麵包台', ip: '192.168.0.7' },
-                        { name: '飲料台', ip: '10.0.1.6' }
+                        { name: '飲料台', ip: '192.168.0.8' }
                     ],
                     storeInfo: '',
                     storePhone: '',
@@ -2121,35 +2121,45 @@ window._doCountUp = function() {
             },
             getDetailComboUpgrade: function(item, order, index, skipOwnLineFallback) {
                 if (!item || typeof item !== 'object') return 0;
-                var upgrade = 0;
+                var reliableUpgrade = 0;
+                var fallbackUpgrade = 0;
+                var setReliable = function(value) {
+                    var n = Number(value);
+                    if (Number.isFinite(n) && n > 0) reliableUpgrade = Math.max(reliableUpgrade, n);
+                };
+                var setFallback = function(value) {
+                    var n = Number(value);
+                    if (Number.isFinite(n) && n > 0) fallbackUpgrade = Math.max(fallbackUpgrade, n);
+                };
                 var sels = Array.isArray(item.optionGroupSelections) ? item.optionGroupSelections : [];
                 sels.forEach(function(sel) {
                     var name = String(sel && sel.name || '').trim();
                     var match = name.match(/(?:\u88dc\u5dee\u50f9|\u98f2\u6599\u52a0\u8cfc|\u88dc|\+)\s*\$?\s*(\d+)/);
-                    if (match && match[1]) upgrade = Math.max(upgrade, Number(match[1] || 0));
+                    if (match && match[1]) setFallback(Number(match[1] || 0));
                     var pricing = String(sel && sel.pricing || '');
                     var price = Number(sel && sel.price);
                     var base = Number(sel && sel.baseValue);
                     if (pricing === 'mealUpgrade' && Number.isFinite(price) && Number.isFinite(base) && price > base) {
-                        upgrade = Math.max(upgrade, price - base);
+                        setReliable(price - base);
                     }
                 });
                 var explicit = Number(item.comboDrinkSurcharge || 0);
-                if (Number.isFinite(explicit) && explicit > 0) upgrade = Math.max(upgrade, explicit);
+                if (Number.isFinite(explicit) && explicit > 0) setReliable(explicit);
                 var full = Number(item.comboDrinkFullPrice || 0);
                 var credit = Number(item.comboDrinkCredit || 0);
-                if (Number.isFinite(full) && full > 0 && Number.isFinite(credit) && credit > 0 && full >= credit) upgrade = Math.max(upgrade, full - credit);
+                if (Number.isFinite(full) && full > 0 && Number.isFinite(credit) && credit > 0 && full >= credit) setReliable(full - credit);
                 var sibling = this.findComboDrinkSibling(order, item, index);
                 if (sibling) {
                     var sibExplicit = Number(sibling.comboDrinkSurcharge || 0);
-                    if (Number.isFinite(sibExplicit) && sibExplicit > 0) upgrade = Math.max(upgrade, sibExplicit);
+                    if (Number.isFinite(sibExplicit) && sibExplicit > 0) setReliable(sibExplicit);
                     var sibFull = Number(sibling.comboDrinkFullPrice || 0);
                     var sibCredit = Number(sibling.comboDrinkCredit || 0);
-                    if (Number.isFinite(sibFull) && sibFull > 0 && Number.isFinite(sibCredit) && sibCredit > 0 && sibFull >= sibCredit) upgrade = Math.max(upgrade, sibFull - sibCredit);
+                    if (Number.isFinite(sibFull) && sibFull > 0 && Number.isFinite(sibCredit) && sibCredit > 0 && sibFull >= sibCredit) setReliable(sibFull - sibCredit);
                     var sibLine = this.getDetailLineTotal(sibling);
                     var sibQty = this.getDetailItemQty(sibling);
-                    if (sibLine > 0 && sibQty > 0) upgrade = Math.max(upgrade, sibLine / sibQty);
+                    if (sibLine > 0 && sibQty > 0) setReliable(sibLine / sibQty);
                 }
+                var upgrade = reliableUpgrade > 0 ? reliableUpgrade : fallbackUpgrade;
                 // \u2605 \u884c\u91d1\u984d\u6263\u9664\u63a8\u7b97\u53ea\u5728\u6c92\u6709\u4efb\u4f55 explicit \u8a0a\u865f\u6642\u624d\u7528\uff0c\u4e14\u5fc5\u9808\u5148\u6263\u6389 options\uff08\u5982 \u52a0\u719f\u86cb\uff09/ posExtras \u7684\u91d1\u984d\uff0c
                 //   \u5426\u5247\u6703\u628a\u9644\u52a0\u54c1\u50f9\u683c\u8aa4\u7b97\u6210\u98f2\u6599\u5347\u7d1a\u5dee\u50f9\uff08\u4f8b\u5982 6\u865f\u5957\u9910 + \u52a0\u719f\u86cb$15 + \u98f2\u6599\u88dc\u5dee\u50f9$20\uff0c\u539f\u672c\u7b97\u6210 $35\uff09\u3002
                 if (!skipOwnLineFallback && upgrade <= 0) {
@@ -2286,7 +2296,7 @@ window._doCountUp = function() {
                         if (!text) return;
                         var m = text.match(/(?:\u88dc\u5dee\u50f9|\u98f2\u6599\u52a0\u8cfc|\u88dc|\+)\s*\$?\s*(\d+)/);
                         if (m && m[1]) {
-                            upgrade = Math.max(upgrade, Number(m[1] || 0));
+                            if (upgrade <= 0) upgrade = Number(m[1] || 0);
                             return;
                         }
                         if (!parsedComboState.size && (text === '\u5927\u676f' || text === '\u4e2d\u676f')) parsedComboState.size = text;
@@ -2299,9 +2309,9 @@ window._doCountUp = function() {
                 }
                 var sibling = this.findComboDrinkSibling(order, item, index);
                 var explicitCharge = String(item.comboDrinkChargeText || sibling && sibling.comboDrinkChargeText || '').trim();
-                if (explicitCharge) {
+                if (explicitCharge && upgrade <= 0) {
                     var em = explicitCharge.match(/(?:\u88dc\u5dee\u50f9|\u98f2\u6599\u52a0\u8cfc)\s*\$?\s*(\d+)/);
-                    if (em && em[1]) upgrade = Math.max(upgrade, Number(em[1] || 0));
+                    if (em && em[1]) upgrade = Number(em[1] || 0);
                 }
                 if (sibling && (!drink || !state.size || !state.temp)) {
                     drink = drink || this.normalizeDetailDrinkName(sibling.name || sibling['\u54c1\u9805'] || '', state);
@@ -2675,6 +2685,35 @@ window._doCountUp = function() {
                 if(out._integrationOriginal&&Array.isArray(out._integrationOriginal['\u8a02\u55ae'])&&out._integrationOriginal['\u8a02\u55ae'].length>rawOrderItems.length)rawOrderItems=out._integrationOriginal['\u8a02\u55ae'];
                 if(out._integrationOriginal&&Array.isArray(out._integrationOriginal['訂單'])&&out._integrationOriginal['訂單'].length>rawOrderItems.length)rawOrderItems=out._integrationOriginal['訂單'];
                 if(rawOrderItems.length&&(!Array.isArray(out.items)||rawOrderItems.length>out.items.length))out.items=rawOrderItems;
+                var scoreRawItems = function(rows) {
+                    var list = Array.isArray(rows) ? rows : [];
+                    return list.length * 100 + list.reduce(function(sum, it) {
+                        if (!it || typeof it !== 'object') return sum;
+                        return sum
+                            + (it.comboDrinkText || it.mealDrink ? 8 : 0)
+                            + (it.comboDrinkLabel ? 4 : 0)
+                            + (it.comboDrinkChargeText ? 4 : 0)
+                            + (Array.isArray(it.optionGroupSelections) ? it.optionGroupSelections.length * 3 : 0)
+                            + (Array.isArray(it['\u9078\u9805\u7fa4\u7d44']) ? it['\u9078\u9805\u7fa4\u7d44'].length * 3 : 0)
+                            + (Array.isArray(it.options) ? it.options.length * 2 : 0)
+                            + (Array.isArray(it.posExtras) ? it.posExtras.length * 2 : 0);
+                    }, 0);
+                };
+                var collectRawItemCandidates = function(host) {
+                    if (!host || typeof host !== 'object') return [];
+                    return ['items','orderItems','lineItems','cartItems','cart','\u8a02\u55ae','\u9078\u8cfc\u9805\u76ee','閮'].map(function(key) {
+                        return host[key];
+                    }).filter(function(rows) { return Array.isArray(rows) && rows.length; });
+                };
+                var rawCandidates = []
+                    .concat(collectRawItemCandidates(out))
+                    .concat(collectRawItemCandidates(out._integrationOriginal))
+                    .concat(collectRawItemCandidates(out.original))
+                    .concat(collectRawItemCandidates(out._original));
+                rawCandidates.forEach(function(rows) {
+                    if (!Array.isArray(rows) || !rows.length) return;
+                    if (!Array.isArray(out.items) || scoreRawItems(rows) > scoreRawItems(out.items)) out.items = rows;
+                });
                 if (!Array.isArray(out.items) && Array.isArray(out['訂單'])) out.items = out['訂單'];
                 if ((out.timestamp === undefined || out.timestamp === null || out.timestamp === 0)) {
                     var ts = this.getOrderTimestamp(out);
