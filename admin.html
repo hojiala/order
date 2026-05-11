@@ -838,8 +838,9 @@
                     const category = String(item.category || item['\u985e\u5225'] || '').trim();
                     const hasSizeOrTemp = !!String(item.size || item['\u5bb9\u91cf'] || '').trim() || !!String(item.temp || item['\u6eab\u5ea6'] || '').trim();
                     const hasMealHint = name.indexOf('\u5957\u9910') !== -1 || name.indexOf('\u62fc\u76e4') !== -1;
-                    const looksLikeDrink = /\u5496\u5561|\u5976\u8336|\u7d05\u8336|\u9bae\u8336|\u932b\u862d|\u8c46\u6f3f|\u6c7d\u6c34|\u98f2\u6599/.test(name) || category.indexOf('\u98f2') !== -1 || hasSizeOrTemp;
-                    if (hasMealHint && !looksLikeDrink && !item.isComboDrink) return false;
+                    const nameLooksDrink = /\u5496\u5561|\u5976\u8336|\u7d05\u8336|\u9bae\u8336|\u932b\u862d|\u8c46\u6f3f|\u6c7d\u6c34|\u98f2\u6599/.test(name) || category.indexOf('\u98f2') !== -1;
+                    const looksLikeDrink = nameLooksDrink || (!hasMealHint && hasSizeOrTemp);
+                    if (hasMealHint && !nameLooksDrink && !item.isComboDrink) return false;
                     return !!item.isComboDrink
                         || /\u5957\u9910\u98f2\u6599|\u642d\u914d\u98f2\u6599\u6298\s*5\s*\u5143|\u98f2\u6599\u52a0\u8cfc|\u88dc\u5dee\u50f9/.test(meta)
                         || (!!String(item.comboGroupId || '').trim() && !String(item.mealDrink || item.comboDrinkText || '').trim() && looksLikeDrink);
@@ -967,7 +968,7 @@
                         if (i === selfIndex) continue;
                         const candidate = items[i];
                         if (!candidate) continue;
-                        const candidateIsDrink = this.isComboDrinkLineForDisplay(candidate) || looksLikeDrink(candidate);
+                        const candidateIsDrink = this.isComboDrinkLineForDisplay(candidate);
                         if (!candidateIsDrink) continue;
                         if (!comboId && !first) first = candidate;
                         const gid = String(candidate.comboGroupId || '').trim();
@@ -978,13 +979,13 @@
                         const candidate = items[i];
                         if (!candidate) continue;
                         if (this.isComboMainLineForDisplay(candidate)) break;
-                        if (this.isComboDrinkLineForDisplay(candidate) || looksLikeDrink(candidate)) return candidate;
+                        if (this.isComboDrinkLineForDisplay(candidate)) return candidate;
                     }
                     for (let i = selfIndex - 1; i >= 0; i--) {
                         const candidate = items[i];
                         if (!candidate) continue;
                         if (this.isComboMainLineForDisplay(candidate)) break;
-                        if (this.isComboDrinkLineForDisplay(candidate) || looksLikeDrink(candidate)) return candidate;
+                        if (this.isComboDrinkLineForDisplay(candidate)) return candidate;
                     }
                     return first;
                 },
@@ -1066,6 +1067,17 @@
                         if (sibLine > 0 && sibQty > 0) setReliable(sibLine / sibQty);
                     }
                     let upgrade = reliableUpgrade > 0 ? reliableUpgrade : fallbackUpgrade;
+                    if (upgrade > 0 && reliableUpgrade <= 0) {
+                        const base = this.getDisplayBaseUnit(item);
+                        const line = this.getDisplayLineTotal(item);
+                        const qty = this.getDisplayQty(item);
+                        if (line > 0 && base > 0 && qty > 0) {
+                            const optionsCost = Array.isArray(item.options) ? item.options.reduce((s, o) => s + Number(o && o.price || 0), 0) : 0;
+                            const extrasCost = Array.isArray(item.posExtras) ? item.posExtras.reduce((s, e) => s + Number(e && e.price || 0), 0) : 0;
+                            const lineDelta = Math.max(0, (line / qty) - base - optionsCost - extrasCost);
+                            if (lineDelta > 0 && lineDelta + 0.01 < upgrade) upgrade = lineDelta;
+                        }
+                    }
                     // ★ 行金額扣掉飲料升級差價的最後手段（heuristic）只在沒有任何明確訊號時才使用，
                     //   且必須先扣掉 options（如 加熟蛋）/ posExtras（POS 食材加點）的金額，否則會把附加品價格誤算成飲料升級差價。
                     if (upgrade <= 0) {
