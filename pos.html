@@ -4449,11 +4449,76 @@
                     upd.pickupTime=s.editPickupTime||'';
                     upd.pickupTimeLabel=s.editPickupTime||'';
                     if(s.editOrderNote!==undefined)upd.orderNote=s.editOrderNote;
-                    var writeEditPrintTask=async function(){
+                    var qtyOfPrintItem=function(item){
+                        var q=Number(item&&((item.qty!==undefined)?item.qty:((item['\u6578\u91cf']!==undefined)?item['\u6578\u91cf']:item.quantity)));
+                        return Number.isFinite(q)&&q>0?q:1;
+                    };
+                    var cleanPrintText=function(v){return String(v===undefined||v===null?'':v).trim();};
+                    var stablePrintList=function(arr,mapper){
+                        if(!Array.isArray(arr))return [];
+                        return arr.map(mapper).filter(Boolean).sort();
+                    };
+                    var editPrintKey=function(item){
+                        item=item||{};
+                        return JSON.stringify({
+                            id:cleanPrintText(item.id||item.productId||''),
+                            name:cleanPrintText(item.name||item['\u54c1\u9805']||item.itemName||''),
+                            station:cleanPrintText(item.station||item['\u5de5\u4f5c\u7ad9']||''),
+                            note:cleanPrintText(item.note||item['\u5099\u8a3b']||''),
+                            size:cleanPrintText(item.size||item['\u5bb9\u91cf']||''),
+                            temp:cleanPrintText(item.temp||item['\u6eab\u5ea6']||''),
+                            comboGroupId:cleanPrintText(item.comboGroupId||''),
+                            comboDrinkText:cleanPrintText(item.comboDrinkText||item.mealDrink||''),
+                            comboDrinkLabel:cleanPrintText(item.comboDrinkLabel||''),
+                            comboDrinkChargeText:cleanPrintText(item.comboDrinkChargeText||''),
+                            optionGroups:stablePrintList(item.optionGroupSelections,function(sel){
+                                return [cleanPrintText(sel&&sel.groupName),cleanPrintText(sel&&sel.name),cleanPrintText(sel&&sel.pricing),Number(sel&&sel.price||0),Number(sel&&sel.baseValue||0)].join('|');
+                            }),
+                            options:stablePrintList(item.options,function(opt){
+                                return [cleanPrintText(opt&&opt.name),Number(opt&&opt.price||0)].join('|');
+                            }),
+                            posExtras:stablePrintList(item.posExtras,function(ex){
+                                return [cleanPrintText(ex&&ex.name),Number(ex&&ex.price||0)].join('|');
+                            })
+                        });
+                    };
+                    var lineTotalOfPrintItem=function(item){
+                        var total=Number(item&&((item.itemTotal!==undefined)?item.itemTotal:((item.total!==undefined)?item.total:item['\u7e3d\u50f9'])));
+                        if(Number.isFinite(total)&&total>=0)return total;
+                        var unit=Number(item&&((item.price!==undefined)?item.price:((item.unitPrice!==undefined)?item.unitPrice:item['\u55ae\u50f9'])));
+                        return (Number.isFinite(unit)&&unit>=0)?unit*qtyOfPrintItem(item):0;
+                    };
+                    var buildAddedPrintItems=function(oldItems,newItems){
+                        var remain={};
+                        (Array.isArray(oldItems)?oldItems:[]).forEach(function(item){
+                            var key=editPrintKey(item);
+                            remain[key]=(remain[key]||0)+qtyOfPrintItem(item);
+                        });
+                        var added=[];
+                        (Array.isArray(newItems)?newItems:[]).forEach(function(item){
+                            var key=editPrintKey(item);
+                            var qty=qtyOfPrintItem(item);
+                            var oldQty=remain[key]||0;
+                            var matched=Math.min(qty,oldQty);
+                            var delta=qty-matched;
+                            remain[key]=Math.max(0,oldQty-qty);
+                            if(delta>0){
+                                var clone=Object.assign({},item);
+                                clone.qty=delta;
+                                clone['\u6578\u91cf']=delta;
+                                var unit=qty>0?lineTotalOfPrintItem(item)/qty:0;
+                                if(Number.isFinite(unit)&&unit>=0)clone.itemTotal=Math.round(unit*delta);
+                                added.push(clone);
+                            }
+                        });
+                        return added;
+                    };
+                    var addedPrintItems=buildAddedPrintItems((targetOrder&&targetOrder.items)||[],upd.items||[]);
+                    var writeEditPrintTask=async function(itemsForPrint){
                         var editTask='kitchen_edit_'+Date.now();
-                        var printOrder=Object.assign({},targetOrder,upd,{id:id,print_task:editTask});
-                        await remove(taskRef);
-                        await set(taskRef,editTask);
+                        var printItems=(Array.isArray(itemsForPrint)&&itemsForPrint.length)?itemsForPrint:(upd.items||[]);
+                        var printTotal=printItems.reduce(function(sum,item){return sum+lineTotalOfPrintItem(item);},0);
+                        var printOrder=Object.assign({},targetOrder,upd,{id:id,items:printItems,total:printTotal||upd.total,print_task:editTask});
                         s.writeToPrintQueue(id,editTask,printOrder);
                         return editTask;
                     };
@@ -4472,7 +4537,7 @@
                         upd.paymentMethod='cash';
                         upd.paymentStatus='paid';
                         await s.updateOrderMirror(id,upd,targetOrder);
-                        await writeEditPrintTask();
+                        await writeEditPrintTask(addedPrintItems);
                         s.toast('✅ 已改為現金已付款，重新列印中...');
                         s.exitOnline();
                         return;
@@ -4482,7 +4547,7 @@
                         upd.paymentMethod='store';
                         upd.paymentStatus='pending';
                         await s.updateOrderMirror(id,upd,targetOrder);
-                        await writeEditPrintTask();
+                        await writeEditPrintTask(addedPrintItems);
                         s.toast('✅ 已改為未付款，重新列印中...');
                         s.exitOnline();
                         return;
@@ -4513,7 +4578,7 @@
                             upd.paymentMethod='linepay';
                             upd.paymentStatus='paid';
                             await s.updateOrderMirror(id,upd,targetOrder);
-                            await writeEditPrintTask();
+                            await writeEditPrintTask(addedPrintItems);
                             s.toast('✅ LINE Pay 已付清，重新列印中...');
                             s.exitOnline();
                             return;
@@ -4610,7 +4675,7 @@
                     }
 
                     await s.updateOrderMirror(id,upd,targetOrder);
-                    await writeEditPrintTask();
+                    await writeEditPrintTask(addedPrintItems);
                     s.toast('✅ 修改已儲存，重新列印中...');
                     s.exitOnline();
                 }catch(e){
