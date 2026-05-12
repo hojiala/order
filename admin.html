@@ -2293,6 +2293,18 @@
                         const order = orderObj || this.findOrderById(orderId) || {};
                         const queueData = Object.assign({}, order);
                         delete queueData.id;
+                        delete queueData.stationMap;
+                        delete queueData.stationSettings;
+                        const withLatestStations = (data) => get(ref(db, 'settings/stations')).then((snap) => {
+                            const rows = snap.exists() && Array.isArray(snap.val()) ? snap.val() : [];
+                            const stations = rows.filter((st) => st && String(st.name || '').trim() && String(st.ip || '').trim())
+                                .map((st) => ({ name: String(st.name || '').trim(), ip: String(st.ip || '').trim() }));
+                            if (stations.length) {
+                                data.stationMap = stations;
+                                data.stationSettings = stations;
+                            }
+                            return data;
+                        }).catch(() => data);
                         const pm = queueData.paymentMethod || '';
                         const txnState = (this.lpStatus && this.lpStatus[orderId]) || '';
                         if (pm === 'linepay' || pm === 'linepay_offline' || pm === 'linepay_refund') {
@@ -2308,7 +2320,8 @@
                         const qRef = ref(db, 'print_queue/' + orderId);
                         remove(qRef).catch(() => {})
                             .then(() => new Promise(r => setTimeout(r, 120)))
-                            .then(() => set(qRef, queueData))
+                            .then(() => withLatestStations(queueData))
+                            .then((data) => set(qRef, data))
                             .catch(e => console.warn('print_queue 寫入失敗:', e.message));
                     } catch(e) { console.warn('print_queue error:', e); }
                 },

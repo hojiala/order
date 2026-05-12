@@ -597,7 +597,7 @@
                 lpStatus:{},
                 lpConfirmAt:{},
                 lpQueueResent:{},
-                menu:[],menuItems:[],menuLoading:true,filterCat:"",settings:{categories:[],stations:[{name:'湯麵',ip:'10.0.1.8'},{name:'麵包台',ip:'192.168.0.7'},{name:'飲料台',ip:'10.0.1.6'}]},
+                menu:[],menuItems:[],menuLoading:true,filterCat:"",settings:{categories:[],stations:[{name:'湯麵',ip:'192.168.0.6'},{name:'麵包台',ip:'192.168.0.7'},{name:'飲料台',ip:'192.168.0.8'}]},settingsStationsLoaded:false,
                 activeView:"menu",editMode:false,
                 cart:[],custName:"",custPhone:"",isSubmitting:false,
                 posMetaExpanded:false,showStorePayChoiceModal:false,showLinePayChoiceModal:false,posOrderNote:"",
@@ -3576,9 +3576,11 @@
                 });
                 onValue(ref(db,"settings"),function(snap){
                     if(snap.exists()){var v=snap.val();
-                        var defaultStations=[{name:'湯麵',ip:'10.0.1.8'},{name:'麵包台',ip:'192.168.0.7'},{name:'飲料台',ip:'10.0.1.6'}];
+                        var defaultStations=[{name:'湯麵',ip:'192.168.0.6'},{name:'麵包台',ip:'192.168.0.7'},{name:'飲料台',ip:'192.168.0.8'}];
+                        var hasStationSettings=!!(v.stations&&v.stations.length);
                         s.settings={categories:v.categories||[],hideAllTab:!!v.hideAllTab,posOnlyCategories:v.posOnlyCategories||[],
-                            stations:(v.stations&&v.stations.length)?v.stations:defaultStations};
+                            stations:hasStationSettings?v.stations:defaultStations};
+                        s.settingsStationsLoaded=hasStationSettings;
                         s.linePayServerUrl=v.linePayServerUrl||'';s.linePayConfirmUrl=v.linePayConfirmUrl||'';s.posTables=v.posTables||[];}
                 });
                 s.ordersLoading=true;
@@ -4100,7 +4102,7 @@
                     timestamp:Date.now(),source:"pos",
                     paymentMethod:isLinePay?"linepay":(isCash?"cash":"store"),
                     paymentStatus:isLinePay?"pending":(isCash?"paid":"unpaid"),
-                    stationMap:s.settings.stations||[]};
+                    stationMap:s.settingsStationsLoaded?(s.settings.stations||[]):[]};
                 if(s.posOrderType==='dinein'&&s.posTableLabel)o.tableLabel=s.posTableLabel;
                 runTransaction(ref(db,"settings/orderCounter"),function(cur){return(cur||0)+1;})
                     .then(function(result){
@@ -4372,6 +4374,15 @@
                 try{
                     var order=orderObj||this.findOrderById(orderId)||{};
                     var queueData=Object.assign({},order);
+                    delete queueData.stationMap;
+                    delete queueData.stationSettings;
+                    var latestStations=(this.settingsStationsLoaded&&this.settings&&Array.isArray(this.settings.stations))?this.settings.stations.filter(function(st){
+                        return st&&String(st.name||'').trim()&&String(st.ip||'').trim();
+                    }).map(function(st){return {name:String(st.name||'').trim(),ip:String(st.ip||'').trim()};}):[];
+                    if(latestStations.length){
+                        queueData.stationMap=latestStations;
+                        queueData.stationSettings=latestStations;
+                    }
                     delete queueData.id;
                     var pm=queueData.paymentMethod||'';
                     var txnState=(this.lpStatus&&this.lpStatus[orderId])||'';
