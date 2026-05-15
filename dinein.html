@@ -100,25 +100,29 @@
         <p class="text-gray-400 text-sm">菜單載入中...</p>
     </div>
 
-    <div v-else-if="!settings.isOpen" class="flex-1 w-full bg-[#fdfaf7] flex flex-col items-center justify-center min-h-screen md:min-h-0 overflow-hidden">
-        <div class="relative w-full max-w-5xl mx-auto">
-            <img src="./images/pause-order-dinein.webp" alt="暫停接單中" class="w-full h-auto object-contain block">
-            <div class="absolute w-full flex justify-center" style="bottom: 15%;">
-                <div class="bg-white/95 backdrop-blur-sm border border-orange-100 rounded-full px-6 py-2.5 md:px-8 md:py-3 text-sm md:text-base text-orange-600 font-bold shadow-xl flex items-center gap-2 transition hover:scale-105">
-                    <span class="text-lg md:text-xl">🕐</span> 營業時間 {{ settings.openTime || '06:00' }} ～ {{ settings.closeTime || '13:15' }}
+    <div v-else-if="!settings.isOpen" class="fixed inset-0 z-[100] bg-[#fdfaf7] flex items-center justify-center overflow-y-auto">
+        <div class="relative w-full max-w-2xl mx-auto px-5 md:px-0 py-10 flex flex-col items-center justify-center min-h-full">
+            <div class="relative w-full rounded-2xl md:rounded-3xl shadow-2xl">
+                <img src="./images/pause-order-dinein.webp" alt="暫停接單中" class="w-full h-auto block rounded-2xl md:rounded-3xl">
+                <div class="absolute w-full flex justify-center" style="bottom: 12%;">
+                    <div class="bg-white/95 backdrop-blur-sm border border-orange-100 rounded-full px-5 py-2.5 md:px-8 md:py-3 text-[13px] md:text-base text-orange-600 font-bold shadow-xl flex items-center gap-1.5 whitespace-nowrap transform hover:scale-105 transition">
+                        <span class="text-base md:text-xl">🕐</span> 營業時間 {{ settings.openTime || '06:00' }} ～ {{ settings.closeTime || '13:15' }}
+                    </div>
                 </div>
             </div>
         </div>
     </div>
 
-    <div v-else-if="outsideBusinessHours" class="flex-1 w-full bg-[#fdfaf7] flex flex-col items-center justify-center min-h-screen md:min-h-0 overflow-hidden">
-        <div class="relative w-full max-w-5xl mx-auto">
-            <img src="./images/Currently%20Closed.webp" alt="非營業時間" class="w-full h-auto object-contain block">
-            <div class="absolute w-full flex flex-col items-center justify-center" style="bottom: 15%;">
-                <div class="bg-white/95 backdrop-blur-sm border border-orange-100 rounded-full px-6 py-2.5 md:px-8 md:py-3 text-sm md:text-base text-orange-600 font-bold shadow-xl flex items-center gap-2 transition hover:scale-105">
-                    <span class="text-lg md:text-xl">🕐</span> 營業時間 {{ settings.openTime || '06:00' }} ～ {{ settings.closeTime || '13:15' }}
+    <div v-else-if="outsideBusinessHours" class="fixed inset-0 z-[100] bg-[#fdfaf7] flex items-center justify-center overflow-y-auto">
+        <div class="relative w-full max-w-2xl mx-auto px-5 md:px-0 py-10 flex flex-col items-center justify-center min-h-full">
+            <div class="relative w-full rounded-2xl md:rounded-3xl shadow-2xl">
+                <img src="./images/Currently%20Closed.webp" alt="非營業時間" class="w-full h-auto block rounded-2xl md:rounded-3xl">
+                <div class="absolute w-full flex flex-col items-center" style="bottom: 8.5%;">
+                    <div class="bg-white/95 backdrop-blur-sm border border-orange-100 rounded-full px-5 py-2.5 md:px-8 md:py-3 text-[13px] md:text-base text-orange-600 font-bold shadow-xl flex items-center gap-1.5 whitespace-nowrap transform hover:scale-105 transition mb-1 md:mb-2">
+                        <span class="text-base md:text-xl">🕐</span> 營業時間 {{ settings.openTime || '06:00' }} ～ {{ settings.closeTime || '13:15' }}
+                    </div>
+                    <p class="text-gray-500 font-bold text-xs md:text-sm drop-shadow-sm">{{ deviceLabel }}</p>
                 </div>
-                <p class="text-gray-500 font-bold text-xs md:text-sm mt-3" style="text-shadow: 0 1px 2px rgba(255,255,255,0.8);">{{ deviceLabel }}</p>
             </div>
         </div>
     </div>
@@ -630,6 +634,7 @@
             // 優先檢查 URL 參數 ?deviceId=（LINE Pay 付款後返回時帶入）
             var urlDeviceId = new URLSearchParams(window.location.search).get('deviceId');
             if(urlDeviceId){
+                // ★ 直接解析 deviceId 格式（table_8, kiosk_1, takeout_1）不需查 Firebase
                 var parts=urlDeviceId.split('_');
                 var dtype=parts[0]; var dnum=parts[1]||'';
                 if(dtype==='table'){
@@ -734,6 +739,7 @@
                             weeklyDaysOff:Array.isArray(v.weeklyDaysOff)?v.weeklyDaysOff:(v.weeklyDaysOff?Object.values(v.weeklyDaysOff):[]),holidays:v.holidays||[],dailyHours:v.dailyHours||{},pickupInterval:v.pickupInterval||15,linePayServerUrl:v.linePayServerUrl||'',linePayConfirmUrl:v.linePayConfirmUrl||'',announcements:v.announcements||[],stations:hasStationSettings?v.stations:defaultStations,posOnlyCategories:v.posOnlyCategories||[]};
                         s.settingsStationsLoaded=hasStationSettings;
                         // ★ 設定更新時，自動重新檢查當前分類的公告（即時開啟/關閉公告視窗）
+                        // 只有在初始化完成後才重新檢查，避免初次 onValue 觸發把全站公告關掉
                         if(s._settingsLoaded && s.currentCategory){
                             s.$nextTick(function(){s.checkAnnouncements(s.currentCategory);});
                         }
@@ -785,18 +791,23 @@
             },
             listenOrders:function(){
                 var s=this;
+                // ★ 先從 localStorage 載入本桌訂單記錄
                 s.loadLocalOrders();
+                // ★ 嘗試從 Firebase 讀取（可能因權限失敗）
                 var dayKey=(function(){var d=new Date();return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);})();
                 onValue(query(ref(db,'orders/'+dayKey), orderByChild('tableDevice'), equalTo(s.deviceId), limitToLast(50)),function(snap){
                     if(!snap.exists()){s.pendingCount=0;return}
                     var all=Object.entries(snap.val()).filter(function(e){return e[1]&&e[1].status}).map(function(e){return Object.assign({id:e[0]},e[1])});
                     s.allOrders=all;
+                    // 本桌訂單（今日）- Firebase 有最新狀態
                     var today=new Date();today.setHours(0,0,0,0);
                     var fbOrders=all.filter(function(o){
                         return o.tableDevice===s.deviceId&&o.timestamp>=today.getTime()&&o.status!=='archived'
                     }).sort(function(a,b){return b.timestamp-a.timestamp});
                     if(fbOrders.length>0)s.myOrders=fbOrders;
+                    // ★ 只查詢本桌未完成 LINE Pay 訂單，避免下載整包 linepay_transactions
                     s.refreshLinePayConfirmed(fbOrders);
+                    // ★ 自動更新 lastOrderNo（後台補發流水號時即時顯示）
                     if(s.lastOrderIdRef){
                         var latest=all.find(function(o){return o.id===s.lastOrderIdRef});
                         if(latest&&latest.orderNo&&!s.lastOrderNo){
@@ -804,10 +815,13 @@
                             s.updateLocalOrderNo(s.lastOrderIdRef,latest.orderNo);
                         }
                     }
+                    // 同步更新 localStorage
                     s.syncLocalOrders(fbOrders);
+                    // 記錄進行中訂單數（estimatedWait 由 computed 自動反應）
                     var pending=all.filter(function(o){return o.status==='new'||o.status==='making'});
                     s.pendingCount=pending.length;
                 },function(err){
+                    // Firebase 讀取失敗（權限不足），使用 localStorage + 定時輪詢
                     console.warn('Firebase orders read failed:',err.message);
                     s.startOrderPolling();
                 });
@@ -822,6 +836,7 @@
                 var isLinePay=(pm==='linepay'||pm==='linepay_offline'||pm==='linepay_refund');
                 return isLinePay&&ps!=='paid'&&ps!=='refunded'&&ps!=='cancelled';
             },
+            // ★ 定時輪詢：當 onValue 失敗時，逐筆讀取訂單狀態
             startOrderPolling:function(){
                 var s=this;
                 if(s.pollTimer)return;
@@ -871,6 +886,7 @@
                             if(s.pollErrorCount>=3&&s.pollTimer){
                                 clearInterval(s.pollTimer);
                                 s.pollTimer=null;
+                                console.warn('dinein polling stopped after repeated permission denied');
                             }
                         }else if(deniedCount===0){
                             s.pollErrorCount=0;
@@ -884,6 +900,7 @@
                     if(!saved){this.myOrders=[];return}
                     var all=JSON.parse(saved);
                     var today=new Date();today.setHours(0,0,0,0);
+                    // ★ 依 id 去重（保留 timestamp 較新的那筆）：清掉先前殘留的重複資料
                     var byId={};
                     (Array.isArray(all)?all:[]).forEach(function(o){
                         if(!o||!o.id)return;
@@ -901,10 +918,13 @@
                     var saved=localStorage.getItem(key);
                     var all=saved?JSON.parse(saved):[];
                     var entry=Object.assign({id:orderId},data);
+                    // ★ 防重：若 Firebase listener (line 822) 已經透過 syncLocalOrders 把該 orderId 寫入 localStorage，
+                    //   再 push 會造成同 id 訂單出現兩筆。先找到既有索引：有就 replace、沒有才 push。
                     var existingIdx=-1;
                     for(var i=0;i<all.length;i++){if(all[i]&&all[i].id===orderId){existingIdx=i;break;}}
                     if(existingIdx>=0){all[existingIdx]=Object.assign({},all[existingIdx],entry);}
                     else{all.push(entry);}
+                    // 只保留 3 天內
                     var cutoff=Date.now()-3*24*3600*1000;
                     all=all.filter(function(o){return o.timestamp>=cutoff});
                     localStorage.setItem(key,JSON.stringify(all));
@@ -941,6 +961,7 @@
             // ── 菜單操作 ──
             getQty:function(id){return this.cart.filter(function(i){return i.id===id}).reduce(function(s,i){return s+i.qty},0)},
             quickAdd:function(item){
+                // ★ 快速加入：使用選項群組預設值直接加入
                 var basePrice=item.price,extra=0,ogSels=[];
                 (item.optionGroups||[]).forEach(function(grp,gi){
                     var idx=grp.defaultIdx||0;
@@ -962,20 +983,22 @@
                 this.toast('🛒 已加入：'+item.name);
             },
             openDetail:function(item){
-                this.editingIdx=-1; 
+                this.editingIdx=-1; // 新增模式
                 this.activeItem=item;this.tempQty=1;this.tempNote='';this.tempSels=[];
                 var og={};(item.optionGroups||[]).forEach(function(g,gi){og[gi]=g.type==='checkbox'?[]:(g.defaultIdx||0)});
                 this.tempOG=og;this.currentView='detail';
             },
             editCartItem:function(idx){
+                // ★ 點擊購物車品項 → 進入編輯模式
                 var cartItem=this.cart[idx];
                 var menuItem=this.menu.find(function(m){return m.id===cartItem.id});
-                if(!menuItem){return} 
+                if(!menuItem){return} // 找不到對應菜單項
                 this.editingIdx=idx;
                 this.activeItem=menuItem;
                 this.tempQty=cartItem.qty;
                 this.tempNote=cartItem.note||'';
                 this.tempSels=(cartItem.options||[]).slice();
+                // 恢復選項群組的選擇狀態
                 var og={};
                 (menuItem.optionGroups||[]).forEach(function(g,gi){
                     if(g.type==='checkbox'){og[gi]=[];return}
@@ -1005,10 +1028,12 @@
                     }
                 });
                 e+=(s.tempSels||[]).reduce(function(x,o){return x+o.price},0);
+                // ★ 從 ogSels 重建 optionSelections/selectedOptions，避免舊值殘留導致 print_order.py 一次印出新舊兩個選項
                 var rebuiltOptionSelections={};
                 ogSels.forEach(function(sel){if(sel&&sel.groupName&&sel.name)rebuiltOptionSelections[sel.groupName]=sel.name;});
                 var newItem={id:item.id,name:item.name,price:item.price,station:item.station||s.getDefaultStationName(),qty:s.tempQty,note:s.tempNote,
                     options:s.tempSels.slice(),optionGroupSelections:ogSels,optionSelections:rebuiltOptionSelections,selectedOptions:Object.assign({},rebuiltOptionSelections),itemTotal:(b+e)*s.tempQty};
+                // ★ 編輯模式：替換；新增模式：加入
                 if(s.editingIdx>=0&&s.editingIdx<s.cart.length){
                     s.cart.splice(s.editingIdx,1,newItem);
                     s.toast('✏️ 已更新：'+item.name);
@@ -1092,6 +1117,7 @@
                     s.toast('⚠️ 請先在設定中填入 LINE Pay 確認頁網址');
                     return;
                 }
+                // 先送出訂單，再取得 QR Code URL
                 s.submitOrder('linepay_qr');
             },
             openQRModal:function(orderId, amount, qrUrl, orderDateKey){
@@ -1103,6 +1129,7 @@
                 s.qrErrorMsg='';
                 s.qrCountdown=120;
                 s.showQRModal=true;
+                // 等 DOM 渲染後產生 QR Code
                 s.$nextTick(function(){
                     var container=document.getElementById('qrcode');
                     if(container){
@@ -1118,21 +1145,25 @@
                             container.innerHTML='<p style="color:red;font-size:12px">QR Code 產生失敗</p>';
                         }
                     }
+                    // 開始輪詢付款狀態
                     s.startQRPolling();
                 });
             },
             startQRPolling:function(){
                 var s=this;
                 s.qrPolling=true;
+                // 倒數計時
                 s.qrCountdownTimer=setInterval(function(){
                     if(s.qrCountdown>0){s.qrCountdown--;}
                     else{s.stopQRPolling();s.qrErrorMsg='付款逾時，請重新操作';}
                 },1000);
+                // ★ 監聽 linepay_transactions（完全開放讀取，不受 orders 規則限制）
                 s.qrUnsubscribe=onValue(ref(db,'linepay_transactions/'+s.qrOrderId+'/status'),function(snap){
                     var val=snap.val();
                     if(val==='confirmed'){
                         s.stopQRPolling();
                         s.qrPaidMsg='付款成功！感謝您的消費 🎉';
+                        // ★ 列印由 linepay_server confirm_worker 觸發（有完整寫入權限）
                         setTimeout(function(){s.closeQRModal(true);},2000);
                     }
                 });
@@ -1148,6 +1179,7 @@
                 s.stopQRPolling();
                 s.showQRModal=false;
                 if(paid){
+                    // 付款成功：清空購物車，顯示成功畫面
                     s.lastPayment='linepay_qr';
                     s.cart=[];s.orderNote='';
                     s.saveCart();
@@ -1162,6 +1194,7 @@
             cancelQRPay:function(){
                 var s=this;
                 s.stopQRPolling();
+                // 更新 Firebase 訂單付款狀態為取消
                 if(s.qrOrderId){
                     var dk=s.qrOrderDateKey||(function(){var d=new Date();return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);})();
                     update(ref(db,'orders/'+dk+'/'+s.qrOrderId),{paymentStatus:'cancelled'}).catch(function(){});
@@ -1195,23 +1228,28 @@
                     orderNote:s.orderNote||'',
                     orderDateKey:todayStr
                 };
+                // ★ 先取流水號，再送出訂單（確保訂單一建立就有 orderNo）
                 var orderDateKey=orderData.pickupDate||todayStr;
                 orderData.orderDateKey=orderDateKey;
                 var orderId=push(ref(db,'orders/'+orderDateKey)).key;
                 var bucketOrderRef=ref(db,'orders/'+orderDateKey+'/'+orderId);
+                // ★ 先用 runTransaction 取得流水號
                 runTransaction(ref(db,'settings/orderCounter'),function(cur){return(cur||0)+1;})
                 .then(function(result){
                     var assignedNo=result.snapshot.val();
                     orderData.orderNo=assignedNo;
+                    // 非 LINE Pay 訂單：同時寫入 print_task 觸發列印
                     if(payMethod!=='linepay'&&payMethod!=='linepay_qr'){
                         orderData.print_task='kitchen_'+Date.now();
                     }
                     return set(bucketOrderRef,orderData).then(function(){return assignedNo;});
                 })
                 .catch(function(){
+                    // 取流水號失敗（權限等），仍送出訂單但不含 orderNo（後台補發）
                     return set(bucketOrderRef,orderData).then(function(){return null;});
                 })
                 .then(function(assignedNo){
+                    // ★ 非 LINE Pay 且有 print_task：寫入 print_queue 觸發 Node-RED 列印
                     if(assignedNo&&orderData.print_task){
                         try{
                             var queueData=Object.assign({},orderData);
@@ -1223,8 +1261,10 @@
                     s.lastOrderNo=assignedNo||null;
                     s.lastPayment=payMethod;
 
+                    // ★ LINE Pay 付款流程（情境1 手機跳轉 / 情境2 QR Code）
                     if((payMethod==='linepay'||payMethod==='linepay_qr') && s.settings.linePayConfirmUrl){
                         s.toast('⏳ 正在連接 LINE Pay...');
+                        // Firebase 中介：把請求寫入 Firebase，樹莓派背景工作處理後回寫 paymentUrl
                         set(ref(db,'linepay_requests/'+orderId),{
                             amount:orderData.total,
                             items:orderData.items,
@@ -1240,9 +1280,9 @@
                             var poll=setInterval(function(){
                                 tries++;
                                 get(ref(db,'linepay_requests/'+orderId)).then(function(snap){
-                                    if(!snap.exists()) return; 
+                                    if(!snap.exists()) return; // 節點暫時不存在，繼續等待
                                     var r=snap.val();
-                                    if(!r || !r.status) return; 
+                                    if(!r || !r.status) return; // status 欄位尚未寫入，繼續等待
                                     if(r.status==='ready' && r.paymentUrl){
                                         clearInterval(poll);
                                         if(payMethod==='linepay_qr'){
@@ -1250,6 +1290,7 @@
                                             s.openQRModal(orderId, orderData.total, r.qrCodeUrl||r.paymentUrl, orderDateKey);
                                         }else{
                                             try{localStorage.setItem('linepay_return_url',window.location.href)}catch(e){}
+                                            // ★ 清空購物車（付款後返回時不顯示舊購物車）
                                             try{localStorage.removeItem('dinein_cart_'+s.deviceId);}catch(e){}
                                             window.location.href=r.paymentUrl;
                                         }
@@ -1271,6 +1312,7 @@
                         return;
                     }
 
+                    // 一般付款：顯示成功畫面
                     s.showSuccess=true;
                     s.cart=[];s.orderNote='';s.currentView='menu';
                     s.saveCart();
@@ -1279,6 +1321,7 @@
                     alert('送出失敗：'+e.message);
                 }).finally(function(){s.isSubmitting=false});
             },
+            // ── 工具 ──
             updateLocalOrderNo:function(orderId,no){
                 try{
                     var key='dinein_orders_'+this.deviceId;
@@ -1300,10 +1343,12 @@
                 var msgs=[];
                 anns.forEach(function(a){
                     if(cat){
+                        // 分類公告：只要active就每次切換都彈出（固定彈出）
                         if(a.category===cat){
                             msgs.push(a.text);
                         }
                     }else{
+                        // 全站公告（進站時）：同一 session 只彈一次
                         var key='__global__'+(a.text||'');
                         if(!a.category && !s.shownAnnCats[key]){
                             msgs.push(a.text);
@@ -1315,21 +1360,26 @@
                     s.annModalText=msgs.join('\n\n');
                     s.showAnnModal=true;
                 }
+                // 注意：不在此處自動關閉，避免誤關全站公告
             }
         },
         watch:{
             currentView:function(nv,ov){
+                // 推送瀏覽記錄，讓返回鍵可用
                 if(nv!==ov && !this._poppingState){
                     history.pushState({view:nv},'');
                 }
             },
             currentCategory:function(nv){
+                // ★ 只有用戶主動切換分類時才觸發公告（避免初始載入時關閉全站公告）
                 if(nv && this._menuLoaded) this.checkAnnouncements(nv);
             }
         },
         mounted:function(){
             var s=this;
+            // 初始狀態
             history.replaceState({view:'menu'},'');
+            // 監聽返回鍵（安卓三角形 / 瀏覽器上一頁）
             window.addEventListener('popstate',function(e){
                 s._poppingState=true;
                 var st=e.state;
@@ -1337,6 +1387,7 @@
                     s.currentView=st.view;
                     if(st.view!=='detail'){s.activeItem=null;s.editingIdx=-1;}
                 }else{
+                    // 如果在 detail → 回 menu, 在 cart → 回 menu
                     if(s.currentView==='detail'){s.currentView='menu';s.activeItem=null;s.editingIdx=-1;}
                     else if(s.currentView==='cart'){s.currentView='menu';}
                 }
