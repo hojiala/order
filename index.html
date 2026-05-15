@@ -64,10 +64,14 @@
         <p class="text-gray-400 text-sm font-medium">菜單載入中...</p>
     </div>
 
-    <div v-else-if="!settings.isOpen" class="flex-1 flex flex-col items-center justify-center bg-gray-50/50 p-6 text-center min-h-[80vh]">
-        <img src="./images/pause-order-bg.webp" alt="暫停接單中" class="w-full max-w-md mx-auto shadow-2xl rounded-2xl mb-6 object-contain border border-gray-100">
-        <div class="bg-white border border-orange-100 rounded-full px-6 py-3 text-sm text-orange-600 font-bold shadow-md flex items-center gap-2">
-            <span class="text-lg">🕐</span> 營業時間 {{ settings.openTime || '06:00' }} ～ {{ settings.closeTime || '13:15' }}
+    <div v-else-if="!settings.isOpen" class="flex-1 w-full bg-[#fdfaf7] flex flex-col items-center justify-center min-h-screen md:min-h-0 overflow-hidden">
+        <div class="relative w-full max-w-5xl mx-auto">
+            <img src="./images/pause-order-bg.webp" alt="暫停接單中" class="w-full h-auto object-contain block">
+            <div class="absolute w-full flex justify-center" style="bottom: 15%;">
+                <div class="bg-white/95 backdrop-blur-sm border border-orange-100 rounded-full px-6 py-2.5 md:px-8 md:py-3 text-sm md:text-base text-orange-600 font-bold shadow-xl flex items-center gap-2 transition hover:scale-105">
+                    <span class="text-lg md:text-xl">🕐</span> 營業時間 {{ settings.openTime || '06:00' }} ～ {{ settings.closeTime || '13:15' }}
+                </div>
+            </div>
         </div>
     </div>
 
@@ -355,7 +359,7 @@
             </div>
         </div>
     </div>
-    
+
     <div v-if="toastItem"
          class="fixed z-[998] pointer-events-none"
          style="bottom:6rem;left:50%;transform:translateX(-50%);width:calc(100% - 2.5rem);max-width:22rem;">
@@ -674,6 +678,7 @@
             }
         },
         watch: {
+            // ★ Fix5: 購物車變更時儲存到 localStorage，重新整理不消失
             cart: {
                 deep: true,
                 handler: function(val) {
@@ -681,19 +686,23 @@
                 }
             },
             currentCategory: function(nv) {
+                // ★ 只有用戶主動切換分類時才觸發公告（避免初始載入時關閉全站公告）
                 if (nv && this._menuLoaded) this.checkAnnouncements(nv);
             }
         },
         created: function() {
+            // ★ 裝置識別碼（用於追蹤點餐記錄）
             try {
                 var did = localStorage.getItem('online_device_id');
                 if (!did) { did = 'web_' + Date.now() + '_' + Math.random().toString(36).slice(2,8); localStorage.setItem('online_device_id', did); }
                 this.deviceId = did;
             } catch(e) { this.deviceId = 'web_' + Date.now(); }
+            // ★ 從 localStorage 恢復購物車
             try {
                 var saved = localStorage.getItem('cart_items');
                 if (saved) this.cart = JSON.parse(saved);
             } catch(e) { this.cart = []; }
+            // ★ 從 localStorage 讀取點餐記錄
             this.loadMyOrders();
             this.startAutoRefresh();
             this.init();
@@ -766,6 +775,7 @@
                         self.storePhone = s.storePhone || '';
                         self.storeAddress = s.storeAddress || '';
                         self.storeInfoExtra = s.storeInfoExtra || '';
+                        // ★ 自動從設定計算營業時間陣列
                         var dayNames = ['日','一','二','三','四','五','六'];
                         var daysOff = s.weeklyDaysOff || [];
                         var dh = s.dailyHours || {};
@@ -778,6 +788,8 @@
                             return { day: '週'+n, time: o + ' ~ ' + cl, off: false };
                         });
                         if (!wasOpen && self.settings.isOpen) self.initDateTime();
+                        // ★ 設定更新時，自動重新檢查當前分類的公告（即時開啟/關閉公告視窗）
+                        // 只有在初始化完成後（_settingsLoaded=true）才重新檢查，避免初次 onValue 觸發把全站公告關掉
                         if (self._settingsLoaded && self.currentCategory) {
                             self.$nextTick(function() {
                                 self.checkAnnouncements(self.currentCategory);
@@ -817,6 +829,7 @@
                             posOnlyCategories: s.posOnlyCategories || [],
                             cancelLimitMinutes: s.cancelLimitMinutes || 15
                         };
+                        // ★ 顯示全站公告
                         self.$nextTick(function() { self.checkAnnouncements(); });
                     }
                 }).catch(function(e) { console.warn('設定讀取失敗，使用預設值', e); });
@@ -873,9 +886,12 @@
                     var mm = ('0' + (d.getMonth()+1)).slice(-2);
                     var dd2 = ('0' + d.getDate()).slice(-2);
                     var val = yyyy + '-' + mm + '-' + dd2;
+                    // 跳過特定公休日
                     if (holidays.indexOf(val) !== -1) continue;
+                    // 跳過固定公休星期（0=日,1=一,...,6=六）
                     if (weeklyDaysOff.indexOf(d.getDay()) !== -1) continue;
                     var n = dates.length;
+                    // ★ 用「實際距今天數」決定標籤，不受公休跳過影響
                     var todayMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
                     var dMidnight = new Date(d.getFullYear(), d.getMonth(), d.getDate());
                     var diffDays = Math.round((dMidnight - todayMidnight) / 86400000);
@@ -906,9 +922,11 @@
                 var cTotal = parseInt(cParts[0]) * 60 + parseInt(cParts[1]);
                 var interval = this.settings.pickupInterval || 30;
                 var times = [];
+                // 現在時間無條件進位到最近5分，加緩衝 = 最早可取餐時間
                 var nowMin = now.getHours() * 60 + now.getMinutes();
                 var nowCeil5 = Math.ceil(nowMin / 5) * 5;
                 var earliest = isToday ? (nowCeil5 + interval) : oTotal;
+                // 從 earliest 開始，每15分鐘一格（不依賴固定格點，15:40也能出現）
                 var firstSlot = isToday ? Math.ceil(earliest / 5) * 5 : oTotal;
                 for (var t = firstSlot; t <= cTotal; t += 15) {
                     var h = Math.floor(t / 60);
@@ -921,9 +939,11 @@
                         this.pickupTime = times[0];
                     }
                 } else if (isToday && this.availableDates.length > 1) {
+                    // 今天已過點餐時間 → 自動切換到明天
                     this.pickupDate = this.availableDates[1].value;
-                    this.updateAvailableTimes();
+                    this.updateAvailableTimes(); // 遞迴呼叫，這次 isToday=false，會列出明天所有時段
                 } else {
+                    // 真的沒有可用時段（例如只有今天且已過）
                     this.availableTimes = ['已過點餐時間'];
                     this.pickupTime = '已過點餐時間';
                 }
@@ -933,6 +953,7 @@
                 this.currentView = 'cart';
             },
             handleCardClick: function(item, event) {
+                // + 按鈕已有 @click.stop 自行處理，此處僅處理卡片點擊→開啟詳細
                 this.openItemDetail(item);
             },
             openItemDetail: function(item) {
@@ -943,6 +964,7 @@
                 this.tempSelections = [];
                 this.tempMealDrink = (item.mealOptions && item.mealOptions.length) ? item.mealOptions[0].name : '';
                 this.editIndex = -1;
+                // 初始化選項群組（新系統）
                 var og = {};
                 (item.optionGroups || []).forEach(function(grp, gi) {
                     og[gi] = grp.type === 'checkbox' ? [] : (grp.defaultIdx || 0);
@@ -966,6 +988,7 @@
                 this.tempNote = cartItem.note;
                 this.tempSelections = cartItem.options.slice();
                 this.tempMealDrink = cartItem.mealDrink || '';
+                // 恢復選項群組
                 var og = {};
                 (found.optionGroups || []).forEach(function(grp, gi) {
                     og[gi] = grp.type === 'checkbox' ? [] : (grp.defaultIdx || 0);
@@ -983,6 +1006,7 @@
                 this.currentView = 'detail';
             },
             confirmAddToCart: function() {
+                // 整理選項群組的選擇結果
                 var self = this;
                 var ogSels = [];
                 (this.activeItem.optionGroups || []).forEach(function(grp, gi) {
@@ -1024,10 +1048,12 @@
                 var msgs = [];
                 anns.forEach(function(a) {
                     if (cat) {
+                        // 分類公告：只要active就每次切換都彈出（固定彈出）
                         if (a.category === cat) {
                             msgs.push(a.text);
                         }
                     } else {
+                        // 全站公告（進站時）：同一 session 只彈一次
                         var key = '__global__' + (a.text || '');
                         if (!a.category && !s.shownAnnCats[key]) {
                             msgs.push(a.text);
@@ -1039,6 +1065,8 @@
                     s.annModalText = msgs.join('\n\n');
                     s.showAnnModal = true;
                 }
+                // 注意：不在此處關閉公告視窗，避免誤關全站公告
+                // 無對應公告的分類切換，靜默處理（顧客按「我知道了」自行關閉）
             },
             showAlertModal: function(title, msg) {
                 this.alertDialogTitle = title;
@@ -1048,10 +1076,13 @@
             getItemQty: function(id) {
                 return this.cart.filter(function(c) { return c.id === id; }).reduce(function(s, c) { return s + c.qty; }, 0);
             },
+            // ★ Fix6: 判斷是否有選項，決定直接加入或開詳細頁
             quickAddOrDetail: function(item) {
+                // ★ 快速加入：永遠直接加入購物車，有選項的使用預設值
                 var basePrice = item.price;
                 var extra = 0;
                 var ogSels = [];
+                // 使用選項群組預設值
                 (item.optionGroups || []).forEach(function(grp, gi) {
                     var idx = grp.defaultIdx || 0;
                     var ch = (grp.choices || [])[idx];
@@ -1063,6 +1094,7 @@
                 });
                 var mealDrink = (item.mealOptions && item.mealOptions.length) ? item.mealOptions[0].name : '';
                 var unitPrice = basePrice + extra;
+                // 找已有的相同項目（無備註、無加料、相同選項）
                 var ogKey = JSON.stringify(ogSels);
                 var existing = null;
                 for (var i = 0; i < this.cart.length; i++) {
@@ -1101,6 +1133,7 @@
                     var saved = localStorage.getItem('my_orders');
                     if (!saved) { this.myOrders = []; return; }
                     var all = JSON.parse(saved);
+                    // 只顯示最近 7 天的訂單
                     var cutoff = Date.now() - 7 * 24 * 3600 * 1000;
                     this.myOrders = all.filter(function(o) { return o.timestamp >= cutoff; })
                         .sort(function(a,b) { return (b.timestamp||0) - (a.timestamp||0); });
@@ -1111,6 +1144,7 @@
                     var saved = localStorage.getItem('my_orders');
                     var all = saved ? JSON.parse(saved) : [];
                     all.push(Object.assign({ id: orderId }, orderData));
+                    // 只保留最近 7 天
                     var cutoff = Date.now() - 7 * 24 * 3600 * 1000;
                     all = all.filter(function(o) { return o.timestamp >= cutoff; });
                     localStorage.setItem('my_orders', JSON.stringify(all));
@@ -1138,6 +1172,7 @@
                 var isLinePay = (pm === 'linepay' || pm === 'linepay_offline' || pm === 'linepay_refund');
                 return isLinePay && ps !== 'paid' && ps !== 'refunded' && ps !== 'cancelled';
             },
+            // ★ 嘗試從 Firebase 讀取訂單狀態更新（可能因權限失敗）
             tryRefreshOrderStatus: function() {
                 var self = this;
                 if (!self.myOrders.length) return;
@@ -1194,6 +1229,7 @@
                         if (self.refreshErrorCount >= 3 && self.refreshTimer) {
                             clearInterval(self.refreshTimer);
                             self.refreshTimer = null;
+                            console.warn('order status polling stopped after repeated permission denied');
                         }
                     } else if (deniedCount === 0) {
                         self.refreshErrorCount = 0;
@@ -1258,6 +1294,8 @@
             },
             submitToFirebase: function(payMethod) {
                 var self = this;
+                // ★ Fix4: 所有驗證改用自訂 modal，不用 alert()
+                // 檢查冷卻時間，防止惡意下單
                 var lastOrder = ''; try{ lastOrder = localStorage.getItem('lastOrderTime'); }catch(e){}
                 var cooldownEnabled = self.settings.orderCooldownEnabled !== false;
                 var cooldownSecs = self.settings.orderCooldownSecs || 300;
@@ -1271,16 +1309,19 @@
                     this.showAlertModal('提醒', '請輸入取餐姓名！');
                     return;
                 }
+                // 驗證台灣手機號碼（09開頭，共10碼）
                 var phoneReg = /^09\d{8}$/;
                 if (!this.inputPhone || !phoneReg.test(this.inputPhone.replace(/[-\s]/g, ''))) {
                     this.showAlertModal('提醒', '請輸入有效的手機號碼（09 開頭，共 10 碼）');
                     return;
                 }
+                // ★ 取餐時間若為「已過點餐時間」直接攔截
                 if (this.pickupTime === '已過點餐時間' || !this.pickupTime) {
                     this.initDateTime();
                     this.showAlertModal('無法送出', '今日點餐時間已結束，已自動切換至明日時段，請確認取餐時間後再送出。');
                     return;
                 }
+                // ★ Fix3: 重新驗算取餐時間是否仍然有效（防止放太久再送出）
                 var isToday = this.availableDates.length > 0
                     && this.pickupDate === this.availableDates[0].value
                     && this.availableDates[0].label.indexOf('今天') !== -1;
@@ -1325,23 +1366,28 @@
                     timestamp: Date.now(),
                     orderDateKey: this.pickupDate
                 };
+                // ★ 先取流水號，再送出訂單（確保訂單一建立就有 orderNo + print_task）
                 var orderDateKey = orderData.pickupDate || (function(){ var d=new Date(orderData.timestamp || Date.now()); return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); })();
                 orderData.orderDateKey = orderDateKey;
                 var orderId = push(ref(db, 'orders/' + orderDateKey)).key;
                 var bucketOrderRef = ref(db, 'orders/' + orderDateKey + '/' + orderId);
+                // ★ 先取得流水號
                 runTransaction(ref(db, 'settings/orderCounter'), function(cur) { return (cur || 0) + 1; })
                 .then(function(result) {
                     var assignedNo = result.snapshot.val();
                     orderData.orderNo = assignedNo;
+                    // 非 LINE Pay 訂單：同時寫入 print_task 觸發列印
                     if (payMethod !== 'linepay') {
                         orderData.print_task = 'kitchen_' + Date.now();
                     }
                     return set(bucketOrderRef, orderData).then(function() { return assignedNo; });
                 })
                 .catch(function() {
+                    // 流水號取得失敗，仍送出訂單（後台補發）
                     return set(bucketOrderRef, orderData).then(function() { return null; });
                 })
                 .then(function(assignedNo) {
+                    // ★ 非 LINE Pay 且有 print_task：寫入 print_queue 觸發 Node-RED 列印
                     if (assignedNo && payMethod !== 'linepay' && orderData.print_task) {
                         try {
                             var queueData = Object.assign({}, orderData);
@@ -1350,6 +1396,7 @@
                     }
                     self.saveMyOrder(orderId, orderData);
 
+                    // ★ LINE Pay 付款流程（Firebase 中介，解決 HTTPS→HTTP 問題）
                     var confirmBase = (self.settings.linePayConfirmUrl || '').trim();
                     if(confirmBase){
                         if(!/\/linepay-confirm\.html(\?|$)/i.test(confirmBase)){
@@ -1361,6 +1408,7 @@
                         }
                     }                    if(payMethod==='linepay' && confirmBase){
                         self.isSubmitting=false;
+                        // 把請求寫入 Firebase，樹莓派背景工作會自動處理並把 paymentUrl 寫回
                         set(ref(db, 'linepay_requests/' + orderId), {
                             amount: orderData.total,
                             items: orderData.items,
@@ -1371,7 +1419,9 @@
                             status: 'pending',
                             createdAt: Date.now()
                         }).then(function() {
+                            // 顯示等待畫面
                             self.showAlertModal('LINE Pay', '正在建立付款連結，請稍候...');
+                            // 輪詢 Firebase 等待樹莓派回寫 paymentUrl（最多 20 秒）
                             var tries = 0;
                             var poll = setInterval(function() {
                                 tries++;
@@ -1401,6 +1451,7 @@
                         return;
                     }
 
+                    // 一般付款：顯示成功畫面
                     var now = new Date();
                     var hh = ('0'+now.getHours()).slice(-2);
                     var mm = ('0'+now.getMinutes()).slice(-2);
@@ -1424,6 +1475,7 @@
         }
     }).mount('#app');
 
+    // ★ Fix3: 安卓/iOS 系統返回鍵 → 回到上一頁而非離開
     window.addEventListener('popstate', function() {
         var vueInstance = document.getElementById('app').__vue_app__;
         if (!vueInstance) return;
@@ -1434,10 +1486,12 @@
         } else if (vm.currentView === 'cart') {
             vm.currentView = 'menu';
         } else {
+            // 已在菜單頁，讓瀏覽器正常處理
             history.back();
         }
     });
 
+    // ★ Fix1: 滑鼠拖曳滾動時間選擇區（電腦版）
     document.addEventListener('DOMContentLoaded', function() {
         var initDrag = function() {
             var el = document.querySelector('.time-chip-scroll');
@@ -1458,6 +1512,7 @@
                 var x = e.pageX - el.offsetLeft;
                 el.scrollLeft = scrollLeft - (x - startX) * 1.2;
             });
+            // 滑鼠滾輪也可橫向滾動
             el.addEventListener('wheel', function(e) {
                 if (e.deltaY !== 0) { e.preventDefault(); el.scrollLeft += e.deltaY * 0.8; }
             }, { passive: false });
