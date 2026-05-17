@@ -53,6 +53,15 @@
         input[type="radio"] { accent-color: #f97316; }
         @keyframes fadeInUp { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
         .time-chip-active { background:#f97316; color:white; font-weight:700; }
+        /* ── 對齊 AI 電話點餐 現場點餐的選項 pill 樣式（不含食材加點） ── */
+        .modal-addon-wrap{display:grid;gap:8px;padding:16px 20px;border-bottom:1px solid #f3f4f6}
+        .addon-title{color:#475569;font-size:13px;font-weight:800;margin-bottom:0}
+        .addon-title .addon-required{color:#f59e0b;font-weight:700;font-size:11px;margin-left:2px}
+        .addon-list{display:flex;flex-wrap:wrap;gap:6px}
+        .addon-btn{border:1px solid #dbe2ea;background:#fff;color:#475569;padding:6px 12px;border-radius:999px;font-size:12px;font-weight:800;cursor:pointer;transition:all .12s}
+        .addon-btn:hover{border-color:#cbd5e1}
+        .addon-btn.active{background:#f97316;border-color:#f97316;color:#fff}
+        .addon-btn .addon-btn-extra{margin-left:4px;font-weight:700;opacity:.85}
     </style>
 </head>
 <body class="bg-gray-100">
@@ -184,57 +193,87 @@
                     </div>
                     <p v-if="activeItem.desc" class="text-gray-400 text-sm mt-2" style="line-height:1.7;">{{ activeItem.desc }}</p>
                 </div>
-                <div v-if="activeItem.options && activeItem.options.length > 0" class="px-5 py-4 border-b border-gray-100">
-                    <p class="text-gray-700 font-bold text-sm mb-3">加料選項</p>
-                    <label v-for="(opt, idx) in activeItem.options" :key="idx"
-                        class="flex items-center justify-between py-3 border-b border-gray-50 cursor-pointer" style="last-child:border-bottom:none;">
-                        <div class="flex items-center gap-3">
-                            <input type="checkbox" v-model="tempSelections" :value="opt" class="w-5 h-5">
-                            <span class="text-gray-700 text-sm">{{ opt.name }}</span>
-                        </div>
-                        <span class="text-orange-400 text-sm font-bold">+${{ opt.price }}</span>
-                    </label>
+                <!-- 加料（對齊 AI 電話點餐 現場點餐 pill 樣式） -->
+                <div v-if="activeItem.options && activeItem.options.length > 0" class="modal-addon-wrap">
+                    <div class="addon-title">加料</div>
+                    <div class="addon-list">
+                        <button v-for="(opt, idx) in activeItem.options" :key="idx"
+                            type="button"
+                            :class="['addon-btn',{active: tempSelections.indexOf(opt) >= 0}]"
+                            @click="toggleTempSel(opt)">
+                            {{ opt.name }}<span class="addon-btn-extra">+${{ opt.price }}</span>
+                        </button>
+                    </div>
                 </div>
-                <div v-if="activeItem.mealOptions && activeItem.mealOptions.length > 0" class="px-5 py-4 border-b border-gray-100">
-                    <p class="text-gray-700 font-bold text-sm mb-3">套餐飲料 <span class="text-orange-400 font-normal text-xs">（必選一）</span></p>
-                    <label v-for="(opt, idx) in activeItem.mealOptions" :key="idx"
-                        class="flex items-center gap-3 py-3 border-b border-gray-50 cursor-pointer">
-                        <input type="radio" v-model="tempMealDrink" :value="opt.name" class="w-5 h-5">
-                        <span class="text-gray-700 text-sm">{{ opt.name }}</span>
-                    </label>
+                <!-- 套餐飲料（舊版資料用，新版以 optionGroups mealUpgrade 為主） -->
+                <div v-if="activeItem.mealOptions && activeItem.mealOptions.length > 0" class="modal-addon-wrap">
+                    <div class="addon-title">套餐飲料 <span class="addon-required">（必選一）</span></div>
+                    <div class="addon-list">
+                        <button v-for="(opt, idx) in activeItem.mealOptions" :key="idx"
+                            type="button"
+                            :class="['addon-btn',{active: tempMealDrink === opt.name}]"
+                            @click="tempMealDrink = opt.name">{{ opt.name }}</button>
+                    </div>
                 </div>
-                <template v-for="(grp, gi) in (activeItem.optionGroups || [])" :key="gi">
-                    <div class="border-b border-gray-100">
-                        <div class="px-5 py-2" style="background:#f0f9ff;">
-                            <p class="text-gray-700 font-bold text-sm">{{ grp.groupName }}
-                                <span class="text-orange-400 font-normal text-xs ml-1">（必選）</span>
-                            </p>
+                <!-- 選項群組（pill 化，套餐飲料 group 拆成 容量 + 飲料名稱 + 飲料加料） -->
+                <template v-for="(grp, gi) in (activeItem.optionGroups || [])" :key="'og_'+gi">
+                    <template v-if="isComboDrinkGroup(grp)">
+                        <div class="modal-addon-wrap">
+                            <div class="addon-title">容量</div>
+                            <div class="addon-list">
+                                <button v-for="sz in comboSizesFor(grp)" :key="'sz_'+gi+'_'+sz"
+                                    type="button"
+                                    :class="['addon-btn',{active: currentComboSize(gi,grp)===sz}]"
+                                    @click="setComboSize(gi,grp,sz)">{{ sz }}</button>
+                            </div>
                         </div>
-                        <template v-if="grp.type === 'radio'">
-                            <label v-for="(ch, ci) in (grp.choices || [])" :key="ci"
-                                class="flex items-center justify-between px-5 py-3 border-b border-gray-50 cursor-pointer">
-                                <div class="flex items-center gap-3">
-                                    <input type="radio" v-model="tempOptionGroups[gi]" :value="ci" class="w-5 h-5">
-                                    <span class="text-gray-700 text-sm">{{ ch.name }}</span>
-                                </div>
-                                <span v-if="grp.pricing === 'setPrice'" class="text-gray-600 text-sm font-bold">${{ ch.price }}</span>
-                                <span v-else-if="grp.pricing === 'addDelta' && ch.price > 0" class="text-orange-400 text-sm font-bold">+${{ ch.price }}</span>
-                                <span v-else-if="grp.pricing === 'mealUpgrade'" class="text-sm font-bold">
-                                    <span v-if="ch.price > (grp.baseValue || 0)" class="text-orange-500">{{ ((grp.groupName || '').includes('折5') || ((grp.baseValue || 0) > 0 && (grp.baseValue || 0) <= 5)) ? '飲料加購$' : '補差價$' }}{{ ch.price - (grp.baseValue || 0) }}</span>
-                                    <span v-else class="text-gray-400">$0</span>
-                                </span>
-                            </label>
-                        </template>
-                        <template v-if="grp.type === 'checkbox'">
-                            <label v-for="(ch, ci) in (grp.choices || [])" :key="ci"
-                                class="flex items-center justify-between px-5 py-3 border-b border-gray-50 cursor-pointer">
-                                <div class="flex items-center gap-3">
-                                    <input type="checkbox" v-model="tempOptionGroups[gi]" :value="ci" class="w-5 h-5">
-                                    <span class="text-gray-700 text-sm">{{ ch.name }}</span>
-                                </div>
-                                <span v-if="ch.price > 0" class="text-orange-400 text-sm font-bold">+${{ ch.price }}</span>
-                            </label>
-                        </template>
+                        <div class="modal-addon-wrap">
+                            <div class="addon-title">飲料名稱 <span class="addon-required">（必選）</span></div>
+                            <div class="addon-list">
+                                <button v-for="base in comboDrinkBasesFor(grp, currentComboSize(gi,grp))" :key="'db_'+gi+'_'+base"
+                                    type="button"
+                                    :class="['addon-btn',{active: selectedComboBase(gi,grp)===base}]"
+                                    @click="setComboDrinkBase(gi,grp,base)">
+                                    {{ base }}<span v-if="comboBasePrice(grp, base, currentComboSize(gi,grp)) > 0" class="addon-btn-extra">+${{ comboBasePrice(grp, base, currentComboSize(gi,grp)) }}</span>
+                                </button>
+                            </div>
+                        </div>
+                        <div v-if="currentDrinkAddonOptions(gi,grp).length" class="modal-addon-wrap">
+                            <div class="addon-title">飲料加料</div>
+                            <div class="addon-list">
+                                <button v-for="(opt,oi) in currentDrinkAddonOptions(gi,grp)" :key="'da_'+gi+'_'+oi+'_'+opt.name"
+                                    type="button"
+                                    :class="['addon-btn',{active: isDrinkAddonActive(opt)}]"
+                                    @click="toggleDrinkAddon(opt)">
+                                    {{ opt.name }}<span v-if="(opt.price||0)>0" class="addon-btn-extra">+${{ opt.price }}</span>
+                                </button>
+                            </div>
+                        </div>
+                    </template>
+                    <div v-else class="modal-addon-wrap">
+                        <div class="addon-title">{{ grp.groupName }} <span class="addon-required">（必選）</span></div>
+                        <div class="addon-list">
+                            <template v-if="grp.type === 'checkbox'">
+                                <button v-for="(ch, ci) in (grp.choices || [])" :key="ci"
+                                    type="button"
+                                    :class="['addon-btn',{active: Array.isArray(tempOptionGroups[gi]) && tempOptionGroups[gi].indexOf(ci) >= 0}]"
+                                    @click="toggleOGChoice(gi,ci)">
+                                    {{ ch.name }}<span v-if="ch.price>0" class="addon-btn-extra">+${{ ch.price }}</span>
+                                </button>
+                            </template>
+                            <template v-else>
+                                <button v-for="(ch, ci) in (grp.choices || [])" :key="ci"
+                                    type="button"
+                                    :class="['addon-btn',{active: tempOptionGroups[gi]===ci}]"
+                                    @click="tempOptionGroups[gi]=ci">
+                                    {{ ch.name }}<span v-if="(grp.pricing==='setPrice')||(grp.pricing==='addDelta'&&ch.price>0)||(grp.pricing==='mealUpgrade'&&ch.price>(grp.baseValue||0))" class="addon-btn-extra">
+                                        <span v-if="grp.pricing==='setPrice'">${{ ch.price }}</span>
+                                        <span v-else-if="grp.pricing==='addDelta'">+${{ ch.price }}</span>
+                                        <span v-else-if="grp.pricing==='mealUpgrade'">+${{ ch.price-(grp.baseValue||0) }}</span>
+                                    </span>
+                                </button>
+                            </template>
+                        </div>
                     </div>
                 </template>
 
@@ -283,6 +322,7 @@
                                 {{ sel.groupName }}：{{ sel.name }}<span v-if="sel.pricing==='mealUpgrade' && sel.price > sel.baseValue" class="text-orange-400">（{{ sel.mealUpgradeChargePrefix || (((sel.groupName || '').includes('折5') || ((sel.baseValue || 0) > 0 && (sel.baseValue || 0) <= 5)) ? '飲料加購$' : '補差價$') }}{{ sel.price - sel.baseValue }}）</span>
                             </p>
                             <p v-for="opt in item.options" :key="opt.name" class="text-xs text-gray-400 mt-0.5">＋ {{ opt.name }}</p>
+                            <p v-if="item.comboDrinkAddons && item.comboDrinkAddons.length" class="text-xs text-orange-400 mt-0.5">＋ {{ item.comboDrinkAddons.map(function(o){return o.name+(o.price>0?(' +$'+o.price):'');}).join(', ') }}</p>
                             <p v-if="item.mealDrink" class="text-xs text-orange-400 mt-0.5">🥤 {{ item.mealDrink }}</p>
                             <p v-if="item.note" class="text-xs text-blue-400 mt-0.5">📝 {{ item.note }}</p>
                         </div>
@@ -621,6 +661,8 @@
                 cart: [],
                 toastItem: '',
                 tempOptionGroups: {},
+                tempComboSize: {},
+                tempDrinkAddons: [],
                 showSuccessModal: false,
                 showAlertDialog: false,
                 alertDialogTitle: '',
@@ -677,6 +719,8 @@
                 });
                 // 舊版加料選項（checkbox）
                 extra += this.tempSelections.reduce(function(s, o) { return s + o.price; }, 0);
+                // ☕ 飲料加料（comboDrinkAddons）
+                extra += (this.tempDrinkAddons || []).reduce(function(s, o) { return s + Number(o && o.price || 0); }, 0);
                 return (basePrice + extra) * this.tempQty;
             }
         },
@@ -959,12 +1003,140 @@
                 // + 按鈕已有 @click.stop 自行處理，此處僅處理卡片點擊→開啟詳細
                 this.openItemDetail(item);
             },
+            // ── pill 選項切換 / 套餐飲料拆解 helpers（對齊 AI 電話點餐 現場點餐） ──
+            toggleTempSel: function(opt) {
+                var i = this.tempSelections.indexOf(opt);
+                if (i >= 0) this.tempSelections.splice(i, 1); else this.tempSelections.push(opt);
+            },
+            toggleOGChoice: function(gi, ci) {
+                var arr = this.tempOptionGroups[gi]; if (!Array.isArray(arr)) arr = [];
+                var i = arr.indexOf(ci);
+                if (i >= 0) arr.splice(i, 1); else arr.push(ci);
+                this.tempOptionGroups[gi] = arr.slice();
+            },
+            splitDrinkName: function(name) {
+                var m = String(name||'').match(/^(.+?)[（(]\s*(大杯|中杯|小杯)\s*[）)]\s*$/);
+                if (m) return { base: m[1].trim(), size: m[2].trim() };
+                return { base: String(name||'').trim(), size: '' };
+            },
+            isComboDrinkGroup: function(grp) {
+                if (!grp || grp.pricing !== 'mealUpgrade') return false;
+                var arr = grp.choices || [];
+                for (var i=0;i<arr.length;i++) if (/[（(]\s*(大杯|中杯|小杯)\s*[）)]/.test(String(arr[i]&&arr[i].name||''))) return true;
+                return false;
+            },
+            comboSizesFor: function(grp) {
+                var s=this, sizes=[];
+                (grp.choices || []).forEach(function(c){
+                    var p = s.splitDrinkName(c&&c.name);
+                    if (p.size && sizes.indexOf(p.size) < 0) sizes.push(p.size);
+                });
+                return sizes;
+            },
+            defaultComboSize: function(grp) {
+                var ch = (grp.choices || [])[grp.defaultIdx || 0];
+                if (ch) { var p = this.splitDrinkName(ch.name); if (p.size) return p.size; }
+                return this.comboSizesFor(grp)[0] || '';
+            },
+            currentComboSize: function(gi, grp) {
+                return this.tempComboSize[gi] || this.defaultComboSize(grp);
+            },
+            comboDrinkBasesFor: function(grp, size) {
+                var s=this, bases=[];
+                (grp.choices || []).forEach(function(c){
+                    var p = s.splitDrinkName(c&&c.name);
+                    if ((!size || p.size === size) && bases.indexOf(p.base) < 0) bases.push(p.base);
+                });
+                return bases;
+            },
+            comboBasePrice: function(grp, base, size) {
+                var s=this, match=null;
+                (grp.choices || []).forEach(function(c){
+                    var p = s.splitDrinkName(c&&c.name);
+                    if (p.base === base && p.size === size) match = c;
+                });
+                return match ? Number(match.price || 0) : 0;
+            },
+            selectedComboBase: function(gi, grp) {
+                var ci = this.tempOptionGroups[gi]; if (ci === undefined || ci === null) ci = grp.defaultIdx || 0;
+                var ch = (grp.choices || [])[ci];
+                return ch ? this.splitDrinkName(ch.name).base : '';
+            },
+            findComboChoiceIdx: function(grp, base, size) {
+                var s=this, idx=-1;
+                (grp.choices || []).forEach(function(c, ci){
+                    if (idx >= 0) return;
+                    var p = s.splitDrinkName(c&&c.name);
+                    if (p.base === base && p.size === size) idx = ci;
+                });
+                return idx;
+            },
+            setComboSize: function(gi, grp, size) {
+                this.tempComboSize[gi] = size;
+                var base = this.selectedComboBase(gi, grp);
+                var ci = this.findComboChoiceIdx(grp, base, size);
+                if (ci < 0) {
+                    var s=this;
+                    (grp.choices || []).forEach(function(c, k){
+                        if (ci < 0 && s.splitDrinkName(c&&c.name).size === size) ci = k;
+                    });
+                }
+                if (ci >= 0) this.tempOptionGroups[gi] = ci;
+            },
+            setComboDrinkBase: function(gi, grp, base) {
+                var size = this.currentComboSize(gi, grp);
+                var ci = this.findComboChoiceIdx(grp, base, size);
+                if (ci >= 0) this.tempOptionGroups[gi] = ci;
+                // 切換飲料後，剔除新飲料沒有的加料
+                var validOpts = this.currentDrinkAddonOptions(gi, grp);
+                var validNames = {};
+                validOpts.forEach(function(o){ validNames[String(o&&o.name||'').trim()] = true; });
+                this.tempDrinkAddons = this.tempDrinkAddons.filter(function(o){ return validNames[String(o&&o.name||'').trim()]; });
+            },
+            initTempComboSizes: function(item) {
+                var s=this, map={};
+                (item.optionGroups || []).forEach(function(g, gi){
+                    if (!s.isComboDrinkGroup(g)) return;
+                    var ci = s.tempOptionGroups[gi]; if (ci === undefined || ci === null) ci = g.defaultIdx || 0;
+                    var ch = (g.choices || [])[ci];
+                    map[gi] = ch ? (s.splitDrinkName(ch.name).size || s.defaultComboSize(g)) : s.defaultComboSize(g);
+                });
+                this.tempComboSize = map;
+            },
+            findDrinkMenuItem: function(base) {
+                var name = String(base||'').trim(); if (!name) return null;
+                for (var i=0;i<this.menu.length;i++) {
+                    var m = this.menu[i]; if (!m) continue;
+                    if (String(m.name||'').trim() === name) return m;
+                }
+                return null;
+            },
+            currentDrinkAddonOptions: function(gi, grp) {
+                var base = this.selectedComboBase(gi, grp);
+                var m = this.findDrinkMenuItem(base);
+                if (!m || !Array.isArray(m.options)) return [];
+                return m.options.filter(function(o){ return o && o.name; });
+            },
+            isDrinkAddonActive: function(opt) {
+                var key = String(opt&&opt.name||'').trim();
+                return this.tempDrinkAddons.some(function(o){ return String(o&&o.name||'').trim() === key; });
+            },
+            toggleDrinkAddon: function(opt) {
+                var key = String(opt&&opt.name||'').trim();
+                var i = -1;
+                for (var k=0;k<this.tempDrinkAddons.length;k++) {
+                    if (String(this.tempDrinkAddons[k]&&this.tempDrinkAddons[k].name||'').trim() === key) { i = k; break; }
+                }
+                if (i >= 0) this.tempDrinkAddons.splice(i, 1);
+                else this.tempDrinkAddons.push({ name: opt.name, price: Number(opt.price||0) });
+            },
             openItemDetail: function(item) {
                 history.pushState({ view: 'detail' }, '');
                 this.activeItem = item;
                 this.tempQty = 1;
                 this.tempNote = '';
                 this.tempSelections = [];
+                this.tempDrinkAddons = [];
                 this.tempMealDrink = (item.mealOptions && item.mealOptions.length) ? item.mealOptions[0].name : '';
                 this.editIndex = -1;
                 // 初始化選項群組（新系統）
@@ -973,6 +1145,7 @@
                     og[gi] = grp.type === 'checkbox' ? [] : (grp.defaultIdx || 0);
                 });
                 this.tempOptionGroups = og;
+                this.initTempComboSizes(item);
                 this.currentView = 'detail';
             },
             closeItemDetail: function() {
@@ -1005,6 +1178,8 @@
                     });
                 });
                 this.tempOptionGroups = og;
+                this.tempDrinkAddons = (cartItem.comboDrinkAddons || []).slice();
+                this.initTempComboSizes(found);
                 this.editIndex = index;
                 this.currentView = 'detail';
             },
@@ -1034,6 +1209,7 @@
                     note: this.tempNote,
                     options: this.tempSelections.slice(),
                     mealDrink: this.tempMealDrink,
+                    comboDrinkAddons: (this.tempDrinkAddons || []).slice(),
                     optionGroupSelections: ogSels,
                     itemTotal: this.tempTotalPrice
                 };
