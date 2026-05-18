@@ -326,6 +326,7 @@
             <div v-if="item.options && item.options.length" class="text-xs text-gray-400 mt-0.5">{{ item.options.map(function(o){return "+"+o.name+" $"+(o.price||0);}).join(" ") }}</div>
             <div v-if="item.posExtras && item.posExtras.length" class="text-xs text-purple-500 mt-0.5">🔧 {{ item.posExtras.map(function(e){return e.name+" $"+(e.price||0);}).join(', ') }}</div>
             <div v-if="getCartVisibleNote(item,idx)" class="text-xs text-blue-500 mt-0.5">&#128221; {{ getCartVisibleNote(item,idx) }}</div>
+            <div v-if="item.drinkNote" class="text-xs text-blue-500 mt-0.5">&#129371; {{ item.drinkNote }}</div>
             <p class="text-orange-500 font-black text-sm mt-1">${{ item.itemTotal }}</p>
           </div>
           <div class="flex items-center gap-1 flex-shrink-0 mt-0.5">
@@ -532,8 +533,9 @@
           </button>
         </div>
       </div>
-      <!-- 單項備註 -->
-      <textarea v-model="tempNote" class="editor-note" placeholder="單項備註"></textarea>
+      <!-- 主餐備註 + 飲料備註（套餐才顯示飲料備註） -->
+      <textarea v-model="tempNote" class="editor-note" :placeholder="hasComboDrinkGroup(activeItem) ? '主餐備註（例：不要胡椒）' : '單項備註'"></textarea>
+      <textarea v-if="hasComboDrinkGroup(activeItem)" v-model="tempDrinkNote" class="editor-note" placeholder="飲料備註（例：不用吸管 / 攪拌棒*1）"></textarea>
     </div>
     <div class="editor-modal-actions">
       <div class="editor-qty">
@@ -703,7 +705,7 @@
                 orderMode:"pos",editingOrder:null,
                 onlineOrders:[],ordersLoading:false,assigningNos:{},orderBuckets:{},orderBucketUnsubs:[],integrationOrdersUnsub:null,integrationOrdersCache:[],phoneOrdersUnsub:null,phoneOrdersCache:[],useIntegrationView:false,remoteStatusOverrides:{},remoteStatusOverridesUnsub:null,orderHydrateInFlight:{},orderHydrateDone:{},
                 orderSearch:"",
-                activeItem:null,tempQty:1,tempNote:"",tempSels:[],tempOG:{},tempPosExtras:[],tempComboSize:{},tempDrinkAddons:[],
+                activeItem:null,tempQty:1,tempNote:"",tempDrinkNote:"",tempSels:[],tempOG:{},tempPosExtras:[],tempComboSize:{},tempDrinkAddons:[],
                 toastMsg:"",toastTimer:null,lastOrderId:null,
                 activeMenu:null,menuPos:null,activeMenuOrder:null,
                 archiveConfirm:false,resetConfirm:false,
@@ -4012,7 +4014,7 @@
                 if((item.optionGroups&&item.optionGroups.length)||(item.options&&item.options.length))this.openDetail(item);else this.quickAdd(item);
             },
             openDetail:function(item){
-                this.activeItem=item;this.tempQty=1;this.tempNote="";this.tempSels=[];this.tempPosExtras=[];this.tempDrinkAddons=[];this.editingCartIdx=-1;
+                this.activeItem=item;this.tempQty=1;this.tempNote="";this.tempDrinkNote="";this.tempSels=[];this.tempPosExtras=[];this.tempDrinkAddons=[];this.editingCartIdx=-1;
                 var og={};(item.optionGroups||[]).forEach(function(g,gi){og[gi]=g.type==='checkbox'?[]:g.defaultIdx||0;});this.tempOG=og;
                 this.initTempComboSizes(item);
             },
@@ -4033,6 +4035,7 @@
                 this.tempSels=(cartItem.options||[]).slice();
                 this.tempPosExtras=(cartItem.posExtras||[]).slice();
                 this.tempDrinkAddons=(cartItem.comboDrinkAddons||[]).slice();
+                this.tempDrinkNote=String(cartItem.drinkNote||"");
                 this.editingCartIdx=idx;
                 // 恢復選項群組選擇
                 var og={};
@@ -4061,6 +4064,13 @@
                 for(var i=0;i<arr.length;i++){
                     if(/[（(]\s*(大杯|中杯|小杯)\s*[）)]/.test(String(arr[i]&&arr[i].name||'')))return true;
                 }
+                return false;
+            },
+            // ★ 該品項是否屬於套餐(主餐+飲料)：用以決定 popup 是否顯示「飲料備註」獨立欄位
+            hasComboDrinkGroup:function(item){
+                if(!item)return false;
+                var grps=Array.isArray(item.optionGroups)?item.optionGroups:[];
+                for(var i=0;i<grps.length;i++)if(this.isComboDrinkGroup(grps[i]))return true;
                 return false;
             },
             comboSizesFor:function(grp){
@@ -4203,7 +4213,7 @@
                 // ★ 從 sels 重建 optionSelections/selectedOptions（dict 形式），避免舊值殘留導致 print_order.py 一次印出新舊兩個選項
                 var rebuiltOptionSelections={};
                 sels.forEach(function(sel){if(sel&&sel.groupName&&sel.name)rebuiltOptionSelections[sel.groupName]=sel.name;});
-                var newItem={id:item.id,name:item.name,price:item.price,station:item.station||s.getDefaultStationName(),qty:s.tempQty,note:s.tempNote,options:s.tempSels.slice(),posExtras:(s.tempPosExtras||[]).slice(),comboDrinkAddons:(s.tempDrinkAddons||[]).slice(),optionGroupSelections:sels,optionSelections:rebuiltOptionSelections,selectedOptions:Object.assign({},rebuiltOptionSelections),itemTotal:(b+e)*s.tempQty};
+                var newItem={id:item.id,name:item.name,price:item.price,station:item.station||s.getDefaultStationName(),qty:s.tempQty,note:s.tempNote,drinkNote:String(s.tempDrinkNote||''),options:s.tempSels.slice(),posExtras:(s.tempPosExtras||[]).slice(),comboDrinkAddons:(s.tempDrinkAddons||[]).slice(),optionGroupSelections:sels,optionSelections:rebuiltOptionSelections,selectedOptions:Object.assign({},rebuiltOptionSelections),itemTotal:(b+e)*s.tempQty};
                 if(s.editingCartIdx>=0&&s.editingCartIdx<s.cart.length){
                     // 修改已有品項
                     s.cart.splice(s.editingCartIdx,1,newItem);
