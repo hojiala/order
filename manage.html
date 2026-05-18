@@ -1045,7 +1045,7 @@
                     <p class="text-orange-400 font-bold text-sm ml-2 flex-shrink-0">${{ getDetailItemTotal(item, viewingOrder, getOriginalDetailItemIndex(viewingOrder, item)) }}</p>
                 </div>
                 <div v-if="getDetailEggDoneness(item, viewingOrder, getOriginalDetailItemIndex(viewingOrder, item))" class="text-xs text-slate-300 mt-1">
-                    蛋熟成度：{{ getDetailEggDoneness(item, viewingOrder, getOriginalDetailItemIndex(viewingOrder, item)) }}
+                    {{ getDetailEggGroupLabel(item) }}：{{ getDetailEggDoneness(item, viewingOrder, getOriginalDetailItemIndex(viewingOrder, item)) }}
                 </div>
                 <div v-if="getDetailOptionSelections(item, viewingOrder, getOriginalDetailItemIndex(viewingOrder, item)).length" class="flex flex-wrap gap-1 mt-1.5">
                     <span v-for="sel in getDetailOptionSelections(item, viewingOrder, getOriginalDetailItemIndex(viewingOrder, item))" :key="sel.groupName"
@@ -2517,6 +2517,22 @@ window._doCountUp = function() {
                 if (sibling) this.collectDetailTextValuesForEgg(sibling, texts, 0);
                 return texts;
             },
+            getDetailEggGroupLabel: function(item) {
+                // ★ 對齊菜單管理裡的群組命名（蛋品選擇/加蛋/...），fallback 為「蛋熟成度」
+                var menuItem = this.findDetailMenuItemByName(item && (item.name || item['品項']));
+                var groups = Array.isArray(menuItem && menuItem.optionGroups) ? menuItem.optionGroups : [];
+                for (var i = 0; i < groups.length; i++) {
+                    var group = groups[i] || {};
+                    var groupName = String(group.groupName || group.name || '').trim();
+                    var choices = this.getDetailEggChoicesFromGroup(group);
+                    var hasEggGroup = groupName.indexOf('蛋') !== -1 || choices.some(function(ch){ return this.extractEggDonenessFromText(ch && (ch.name || ch.value || ch.label)); }.bind(this));
+                    if (hasEggGroup && groupName) return groupName;
+                }
+                return '蛋熟成度';
+            },
+            hasDetailNoEggNote: function(item) {
+                return /不加蛋/.test(String((item && (item.note || item['備註'])) || ''));
+            },
             getDetailEggDoneness: function(item, order, index) {
                 var explicit = this.extractEggDonenessFromText(item && (item.eggDoneness || item['\u86cb\u719f\u6210\u5ea6'] || item.egg || ''));
                 if (explicit) return explicit;
@@ -2525,10 +2541,19 @@ window._doCountUp = function() {
                     var egg = this.extractEggDonenessFromText(texts[i]);
                     if (egg) return egg;
                 }
-                // \u2605 \u50c5\u5728\u5957\u9910/\u62fc\u76e4\u7b49\u5be6\u969b\u542b\u86cb\u985e\u9078\u9805\u7684\u54c1\u9805\u624d\u56de\u9000\u5230\u83dc\u55ae\u9810\u8a2d\uff1b\u55ae\u9ede\u54c1\u9805\u4e0d\u518d\u5f37\u52a0\u86cb\u719f\u6210\u5ea6
+                // \u2605 \u4e0d\u52a0\u86cb \u2192 \u4e0d\u986f\u793a
+                var noteText = String((item && (item.note || item['\u5099\u8a3b'])) || '');
+                if (/\u4e0d\u52a0\u86cb/.test(noteText)) return '';
                 var nm = String((item && (item.name || item['\u54c1\u9805'])) || '');
                 var isComboLike = !!(item && (item.isCombo || item.isComboDrink || item.comboDrinkText || item.mealDrink || nm.indexOf('\u5957\u9910') !== -1 || nm.indexOf('\u62fc\u76e4') !== -1));
-                if (!isComboLike) return '';
+                if (!isComboLike) {
+                    // \u2605 \u55ae\u9ede\u54c1\u9805\uff1anote \u6c92\u5beb\u660e\u4f46\u6709\u5be6\u969b\u52a0\u50f9 \u2192 \u7528\u83dc\u55ae\u9810\u8a2d\u86cb\u7a2e\u56de\u586b\uff1b\u7121\u52a0\u50f9\u4ee3\u8868\u6c92\u52a0\u86cb
+                    var unitPrice = Number((item && item.price) || 0);
+                    var qty = Math.max(1, Number((item && item.qty) || 1));
+                    var total = Number((item && (item.itemTotal || item['\u7e3d\u50f9'] || item['\u5c0f\u8a08'])) || 0);
+                    var surcharge = total - unitPrice * qty;
+                    if (!(surcharge > 0)) return '';
+                }
                 return this.getDetailMenuDefaultEggDoneness(item);
             },
             getDetailItemNote: function(item, order, index) {
@@ -2551,7 +2576,8 @@ window._doCountUp = function() {
                 collectNames(item.addons, ['name', '名稱']);
                 var stripAddonTokens = function(text) {
                     if (!text) return '';
-                    return String(text).split(/[，,、]/).map(function(s) { return s.trim(); }).filter(function(s) { return s && !addonNames.has(s); }).join('，');
+                    // ★ 不加蛋已由獨立 chip 顯示，這裡從 備註 row 移除避免重複
+                    return String(text).split(/[，,、]/).map(function(s) { return s.trim(); }).filter(function(s) { return s && !addonNames.has(s) && s !== '不加蛋'; }).join('，');
                 };
                 var notes = [];
                 var own = stripAddonTokens(this.cleanDetailNoteText(item.note || item['備註'] || ''));
