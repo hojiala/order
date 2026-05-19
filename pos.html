@@ -725,7 +725,12 @@
             cartTotal:function(){return this.cart.reduce(function(s,i){return s+(Number(i.itemTotal)||0);},0);},
             cartCount:function(){return this.cart.reduce(function(s,i){return s+i.qty;},0);},
             activeOrderCount:function(){
-                try{return (this.onlineOrders||[]).filter(function(o){return o&&(o.status==='new'||o.status==='making');}).length;}
+                try{return (this.onlineOrders||[]).filter(function(o){
+                    if(!o)return false;
+                    // ★ 同步過濾掉 `online_` 鏡像條目（即使前面 listener 漏網也擋住）
+                    if(typeof o.id==='string' && o.id.indexOf('online_')===0)return false;
+                    return o.status==='new'||o.status==='making';
+                }).length;}
                 catch(e){console.warn('activeOrderCount failed:',e&&e.message?e.message:e);return 0;}
             },
             filteredOrders:function(){
@@ -2081,7 +2086,11 @@
                 var integrationRef=ref(db,'integration_views/merged_orders_active');
                 s.integrationOrdersUnsub=onValue(integrationRef,function(snap){
                     var view=snap.exists()?(snap.val()||{}):{};
-                    s.integrationOrdersCache=s.normalizeIncomingOrders(Array.isArray(view.orders)?view.orders.slice():[]).map(function(o){return s.applyStatusOverrideToOrder(o);});
+                    // ★ 過濾掉 `online_` 前綴的鏡像條目（不明背景服務鏡像）
+                    var rawOrders=(Array.isArray(view.orders)?view.orders.slice():[]).filter(function(o){
+                        return o && typeof o==='object' && typeof o.id==='string' && o.id.indexOf('online_')!==0;
+                    });
+                    s.integrationOrdersCache=s.normalizeIncomingOrders(rawOrders).map(function(o){return s.applyStatusOverrideToOrder(o);});
                     var parsed=s.integrationOrdersCache.slice();
                     parsed.sort(function(a,b){
                         var w={new:1,making:2,done:3,cancelled:4};
@@ -2117,7 +2126,10 @@
                 var phoneRef=ref(db,'phone_ai/orders');
                 s.phoneOrdersUnsub=onValue(phoneRef,function(snap){
                     var raw=snap.exists()?(snap.val()||{}):{};
-                    var list=Object.keys(raw).map(function(id){
+                    var list=Object.keys(raw)
+                        // \u2605 \u904e\u6ffe\u6389 `online_` \u524d\u7db4\u7684\u93e1\u50cf\u689d\u76ee
+                        .filter(function(id){return typeof id==='string' && id.indexOf('online_')!==0;})
+                        .map(function(id){
                         return Object.assign({
                             id:id,
                             source:'phone_ai',
