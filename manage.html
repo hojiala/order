@@ -3865,6 +3865,104 @@ window._doCountUp = function() {
                 base.channel_compare.items = this.normalizeReportItems((raw.channel_compare && raw.channel_compare.items) || [], 'value');
                 return base;
             },
+            reportHasData: function(report) {
+                var data = report || this.reportDashboard || {};
+                var revenue = (data.revenue_series || {});
+                if (Array.isArray(revenue.today) && revenue.today.length) return true;
+                if (Array.isArray(revenue.week) && revenue.week.length) return true;
+                if (Array.isArray(revenue.month) && revenue.month.length) return true;
+                if (Array.isArray(data.orders_by_hour && data.orders_by_hour.labels) && data.orders_by_hour.labels.length) return true;
+                if (Array.isArray(data.orders_by_source && data.orders_by_source.items) && data.orders_by_source.items.length) return true;
+                if (Array.isArray(data.payments && data.payments.items) && data.payments.items.length) return true;
+                if (Array.isArray(data.top_items && data.top_items.items) && data.top_items.items.length) return true;
+                if (Array.isArray(data.channel_compare && data.channel_compare.items) && data.channel_compare.items.length) return true;
+                return false;
+            },
+            buildDashboardReportFromOrders: function(list) {
+                var orders = (Array.isArray(list) ? list : []).filter(function(order) { return order && order.status && order.status !== 'cancelled' && !order.wasCancelled; });
+                var report = this.createEmptyReportDashboard();
+                report.updatedAt = Date.now();
+                if (!orders.length) return report;
+                var pad = function(v) { return ('0' + v).slice(-2); };
+                var now = new Date();
+                var todayKey = now.getFullYear() + '-' + pad(now.getMonth() + 1) + '-' + pad(now.getDate());
+                var weekKeys = [];
+                for (var i = 6; i >= 0; i--) {
+                    var d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
+                    weekKeys.push(d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()));
+                }
+                var monthPrefix = now.getFullYear() + '-' + pad(now.getMonth() + 1);
+                var monthDays = [];
+                var cursor = new Date(now.getFullYear(), now.getMonth(), 1);
+                while (cursor.getMonth() === now.getMonth()) {
+                    monthDays.push(cursor.getFullYear() + '-' + pad(cursor.getMonth() + 1) + '-' + pad(cursor.getDate()));
+                    cursor.setDate(cursor.getDate() + 1);
+                }
+                var revenueToday = {};
+                var hourCounts = {};
+                for (var h = 0; h < 24; h++) {
+                    revenueToday[pad(h) + ':00'] = 0;
+                    hourCounts[pad(h)] = 0;
+                }
+                var revenueWeek = {};
+                weekKeys.forEach(function(key) { revenueWeek[key] = 0; });
+                var revenueMonth = {};
+                monthDays.forEach(function(key) { revenueMonth[key] = 0; });
+                var sourceMap = {};
+                var paymentMap = {};
+                var channelMap = { '外帶': 0, '內用': 0, '電話': 0, '線上': 0 };
+                var topItemsMap = {};
+                orders.forEach(function(order) {
+                    var dateKey = this.getOrderDate(order);
+                    var ts = Number(this.getOrderTimestamp(order) || 0);
+                    var total = Number(this.getOrderTotalValue(order) || 0);
+                    if (dateKey === todayKey) {
+                        var d = ts ? new Date(ts) : new Date();
+                        var hour = pad(d.getHours());
+                        revenueToday[hour + ':00'] += total;
+                        hourCounts[hour] += 1;
+                    }
+                    if (revenueWeek[dateKey] !== undefined) revenueWeek[dateKey] += total;
+                    if (revenueMonth[dateKey] !== undefined) revenueMonth[dateKey] += total;
+                    var source = String(order.sourceLabel || order._integrationSourceLabel || order.source || '').trim() || '線上';
+                    sourceMap[source] = (sourceMap[source] || 0) + 1;
+                    var payment = this.statsPaymentBadgeText ? this.statsPaymentBadgeText(order) : (order.paymentMethod || '店內付款');
+                    paymentMap[payment] = (paymentMap[payment] || 0) + 1;
+                    var mode = String(order.pickupMode || order.type || '').toLowerCase();
+                    var src = String(order.source || '').toLowerCase();
+                    if (mode.indexOf('dinein') !== -1 || mode.indexOf('內用') !== -1) channelMap['內用'] += 1;
+                    else channelMap['外帶'] += 1;
+                    if (src === 'phone_ai' || src === 'pos_local') channelMap['電話'] += 1;
+                    if (src === 'web' || src === 'online' || src === 'line' || src === 'web_liff' || (!src && String(order.sourceLabel || '').indexOf('線上') !== -1)) channelMap['線上'] += 1;
+                    (Array.isArray(order.items) ? order.items : []).forEach(function(item) {
+                        if (!item) return;
+                        var name = String(item.name || item['品項'] || '').trim();
+                        if (!name) return;
+                        if (!topItemsMap[name]) topItemsMap[name] = { name: name, qty: 0, amount: 0 };
+                        var qty = Number(item.qty !== undefined ? item.qty : (item['數量'] !== undefined ? item['數量'] : 1)) || 1;
+                        var amount = Number(item.itemTotal !== undefined ? item.itemTotal : (item.total !== undefined ? item.total : (item['總價'] !== undefined ? item['總價'] : 0))) || 0;
+                        topItemsMap[name].qty += qty;
+                        topItemsMap[name].amount += amount;
+                    });
+                }.bind(this));
+                report.revenue_series.today = Object.keys(revenueToday).map(function(label) { return { label: label, amount: Math.round(revenueToday[label] || 0) }; });
+                report.revenue_series.week = weekKeys.map(function(key) { return { label: key.slice(5), amount: Math.round(revenueWeek[key] || 0) }; });
+                report.revenue_series.month = monthDays.map(function(key) { return { label: key.slice(5), amount: Math.round(revenueMonth[key] || 0) }; });
+                report.orders_by_hour = { labels: Object.keys(hourCounts), values: Object.keys(hourCounts).map(function(hour) { return hourCounts[hour]; }) };
+                report.orders_by_source.items = Object.keys(sourceMap).map(function(name) { return { name: name, value: sourceMap[name] }; }).sort(function(a, b) { return b.value - a.value; });
+                report.payments.items = Object.keys(paymentMap).map(function(name) { return { name: name, value: paymentMap[name] }; }).sort(function(a, b) { return b.value - a.value; });
+                report.top_items.items = Object.keys(topItemsMap).map(function(name) { return topItemsMap[name]; }).sort(function(a, b) { if (b.qty !== a.qty) return b.qty - a.qty; return b.amount - a.amount; }).slice(0, 10);
+                report.channel_compare.items = Object.keys(channelMap).map(function(name) { return { name: name, value: channelMap[name] }; });
+                return report;
+            },
+            applyReportFallbackFromStats: function() {
+                if (this.reportHasData(this.reportDashboard)) return;
+                var derived = this.buildDashboardReportFromOrders(this.statsOrders || []);
+                if (this.reportHasData(derived)) {
+                    this.reportDashboard = derived;
+                    this.scheduleReportChartRender();
+                }
+            },
             loadDashboardReports: function(force) {
                 var self = this;
                 self.reportLoading = true;
@@ -3872,11 +3970,16 @@ window._doCountUp = function() {
                     .then(function(snap) {
                         var raw = snap.exists() ? snap.val() : {};
                         self.reportDashboard = self.normalizeReportDashboard(raw);
-                        self.scheduleReportChartRender();
+                        if (!self.reportHasData(self.reportDashboard)) {
+                            self.applyReportFallbackFromStats();
+                        } else {
+                            self.scheduleReportChartRender();
+                        }
                     })
                     .catch(function(err) {
                         console.error('讀取 reports/dashboard 失敗:', err);
                         self.reportDashboard = self.createEmptyReportDashboard();
+                        self.applyReportFallbackFromStats();
                         self.scheduleReportChartRender();
                     })
                     .finally(function() {
@@ -4190,7 +4293,7 @@ window._doCountUp = function() {
                     return dateSet.has(orderDate);
                 });
                 self.statsLoading = false;
-                // ★ DOM 更新後觸發數字跳動動畫
+                self.applyReportFallbackFromStats();
                 self.$nextTick(function(){ if(window._doCountUp) window._doCountUp(); });
             },
             statsSort: function(key) {
