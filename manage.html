@@ -3812,6 +3812,16 @@ window._doCountUp = function() {
                 this.statsMode = mode;
                 this.loadStats();
             },
+            getReportRevenueModeForStats: function(dateList) {
+                var list = Array.isArray(dateList) ? dateList.filter(Boolean) : this.buildDateListForStatsMode(this.statsMode);
+                var mode = String(this.statsMode || 'today');
+                if (mode === 'today' || mode === 'tomorrow' || mode === 'yesterday' || mode === 'dayBefore' || mode === 'single') return 'today';
+                if (mode === 'last7') return 'week';
+                if (mode === 'thisMonth' || mode === 'lastMonth' || mode === 'range') return list.length <= 7 ? 'week' : 'month';
+                if (list.length <= 1) return 'today';
+                if (list.length <= 7) return 'week';
+                return 'month';
+            },
             refreshStats: function() {
                 this.allOrdersCache = null;
                 this.loadStats();
@@ -3886,36 +3896,34 @@ window._doCountUp = function() {
             buildDashboardReportFromOrders: function(list) {
                 var orders = (Array.isArray(list) ? list : []).filter(function(order) { return order && order.status && order.status !== 'cancelled' && !order.wasCancelled; });
                 var report = this.createEmptyReportDashboard();
-                report.updatedAt = Date.now();
-                if (!orders.length) return report;
                 var pad = function(v) { return ('0' + v).slice(-2); };
-                var now = new Date();
-                var todayKey = now.getFullYear() + '-' + pad(now.getMonth() + 1) + '-' + pad(now.getDate());
-                var weekKeys = [];
-                for (var i = 6; i >= 0; i--) {
-                    var d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
-                    weekKeys.push(d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()));
+                var dateList = this.buildDateListForStatsMode(this.statsMode);
+                var modeForRevenue = this.getReportRevenueModeForStats(dateList);
+                var dateSet = new Set(dateList);
+                var dateKeys = dateList.length ? dateList.slice() : [];
+                if (!dateKeys.length) {
+                    orders.forEach(function(order) {
+                        var key = this.getOrderDate(order);
+                        if (key && dateKeys.indexOf(key) === -1) dateKeys.push(key);
+                    }.bind(this));
+                    dateKeys.sort();
                 }
-                var monthDays = [];
-                var cursor = new Date(now.getFullYear(), now.getMonth(), 1);
-                while (cursor.getMonth() === now.getMonth()) {
-                    monthDays.push(cursor.getFullYear() + '-' + pad(cursor.getMonth() + 1) + '-' + pad(cursor.getDate()));
-                    cursor.setDate(cursor.getDate() + 1);
+                report.updatedAt = Date.now();
+                report._mode = modeForRevenue;
+                if (!orders.length) {
+                    report.revenue_series.today = [];
+                    report.revenue_series.week = [];
+                    report.revenue_series.month = [];
+                    return report;
                 }
-                var revenueToday = {};
-                for (var hr = 0; hr < 24; hr++) {
-                    revenueToday[pad(hr) + ':00'] = 0;
-                }
-                var revenueWeek = {};
-                weekKeys.forEach(function(key) { revenueWeek[key] = 0; });
-                var revenueMonth = {};
-                monthDays.forEach(function(key) { revenueMonth[key] = 0; });
                 var sourceMap = {};
                 var paymentMap = {};
                 var channelOrder = ['外帶', '內用', '電話', '線上', '內用桌邊點餐', '內用掃碼點餐', '外帶自助點餐', '外帶掃碼點餐'];
                 var channelMap = {};
                 channelOrder.forEach(function(name) { channelMap[name] = 0; });
                 var topItemsMap = {};
+                var dayRevenueMap = {};
+                dateKeys.forEach(function(key) { dayRevenueMap[key] = 0; });
                 var hourRevenue = {};
                 var hourCounts = {};
                 var minHour = null;
@@ -3926,19 +3934,19 @@ window._doCountUp = function() {
                 }
                 orders.forEach(function(order) {
                     var dateKey = this.getOrderDate(order);
+                    if (dateSet.size && !dateSet.has(dateKey)) return;
                     var ts = Number(this.getOrderTimestamp(order) || 0);
                     var total = Number(this.getOrderTotalValue(order) || 0);
-                    var stamp = ts ? new Date(ts) : new Date();
-                    var hourIndex = stamp.getHours();
+                    var stamp = ts ? new Date(ts) : new Date((dateKey || this.getTodayStr()) + 'T00:00:00');
+                    var hourIndex = Number(stamp.getHours());
                     hourRevenue[hourIndex] += total;
                     hourCounts[hourIndex] += 1;
                     if (minHour === null || hourIndex < minHour) minHour = hourIndex;
                     if (maxHour === null || hourIndex > maxHour) maxHour = hourIndex;
-                    if (dateKey === todayKey) {
-                        revenueToday[pad(hourIndex) + ':00'] += total;
+                    if (dateKey) {
+                        if (dayRevenueMap[dateKey] === undefined) dayRevenueMap[dateKey] = 0;
+                        dayRevenueMap[dateKey] += total;
                     }
-                    if (revenueWeek[dateKey] !== undefined) revenueWeek[dateKey] += total;
-                    if (revenueMonth[dateKey] !== undefined) revenueMonth[dateKey] += total;
                     var source = String(order.sourceLabel || order._integrationSourceLabel || order.source || '').trim() || '線上';
                     sourceMap[source] = (sourceMap[source] || 0) + 1;
                     var payment = this.statsPaymentBadgeText ? this.statsPaymentBadgeText(order) : (order.paymentMethod || '店內付款');
@@ -3954,24 +3962,34 @@ window._doCountUp = function() {
                     if (isOnline) channelMap['線上'] += 1;
                     if (src === 'qrcode' || label.indexOf('掃碼內用') !== -1) channelMap['內用掃碼點餐'] += 1;
                     else if (src === 'qr_takeout' || label.indexOf('掃碼外帶') !== -1) channelMap['外帶掃碼點餐'] += 1;
+                    else if (label.indexOf('自助') !== -1) channelMap['外帶自助點餐'] += 1;
                     else if (src === 'dinein' || label.indexOf('桌邊') !== -1) channelMap[isDineIn ? '內用桌邊點餐' : '外帶自助點餐'] += 1;
-                    else if (src === 'pos' || label.indexOf('pos') !== -1 || label.indexOf('現場') !== -1) channelMap[isDineIn ? '內用桌邊點餐' : '外帶自助點餐'] += 1;
+                    else if (src === 'pos' && !isPhone && !isOnline) channelMap[isDineIn ? '內用桌邊點餐' : '外帶自助點餐'] += 1;
                     (Array.isArray(order.items) ? order.items : []).forEach(function(item) {
                         if (!item) return;
                         var name = String(item.name || item['品項'] || '').trim();
                         if (!name) return;
-                        if (!topItemsMap[name]) topItemsMap[name] = { name: name, qty: 0, amount: 0 };
+                        if (!topItemsMap[name]) topItemsMap[name] = { name: name, qty: 0, amount: 0, value: 0 };
                         var qty = Number(item.qty !== undefined ? item.qty : (item['數量'] !== undefined ? item['數量'] : 1)) || 1;
                         var amount = Number(item.itemTotal !== undefined ? item.itemTotal : (item.total !== undefined ? item.total : (item['總價'] !== undefined ? item['總價'] : 0))) || 0;
                         topItemsMap[name].qty += qty;
                         topItemsMap[name].amount += amount;
+                        topItemsMap[name].value += qty;
                     });
                 }.bind(this));
-                report.revenue_series.today = Object.keys(revenueToday).map(function(label) { return { label: label, amount: Math.round(revenueToday[label] || 0) }; });
-                report.revenue_series.week = weekKeys.map(function(key) { return { label: key.slice(5), amount: Math.round(revenueWeek[key] || 0) }; });
-                report.revenue_series.month = monthDays.map(function(key) { return { label: key.slice(5), amount: Math.round(revenueMonth[key] || 0) }; });
-                var startHour = minHour === null ? 6 : minHour;
-                var endHour = maxHour === null ? 21 : maxHour;
+                var todaySeries = [];
+                for (var hour = 0; hour < 24; hour++) {
+                    var hourLabel = pad(hour) + ':00';
+                    todaySeries.push({ label: hourLabel, amount: Math.round(hourRevenue[hour] || 0) });
+                }
+                var dailySeries = dateKeys.map(function(key) {
+                    return { label: key.slice(5), amount: Math.round(dayRevenueMap[key] || 0) };
+                });
+                report.revenue_series.today = modeForRevenue === 'today' ? todaySeries : dailySeries.slice();
+                report.revenue_series.week = dailySeries.slice();
+                report.revenue_series.month = dailySeries.slice();
+                var startHour = minHour === null ? 0 : minHour;
+                var endHour = maxHour === null ? 23 : maxHour;
                 if (endHour < startHour) endHour = startHour;
                 var labels = [];
                 var revenueValues = [];
@@ -3994,12 +4012,13 @@ window._doCountUp = function() {
                 return report;
             },
             applyReportFallbackFromStats: function() {
-                if (this.reportHasData(this.reportDashboard)) return;
-                var derived = this.buildDashboardReportFromOrders(this.statsOrders || []);
-                if (this.reportHasData(derived)) {
-                    this.reportDashboard = derived;
-                    this.scheduleReportChartRender();
+                var derived = this.normalizeReportDashboard(this.buildDashboardReportFromOrders(this.statsOrders || []));
+                if (this.reportDashboardSource && this.reportDashboardSource.updatedAt) {
+                    derived.updatedAt = this.reportDashboardSource.updatedAt;
                 }
+                this.reportDashboard = derived;
+                this.reportRevenueMode = this.getReportRevenueModeForStats();
+                this.scheduleReportChartRender();
             },
             loadDashboardReports: function(force) {
                 var self = this;
@@ -4007,18 +4026,18 @@ window._doCountUp = function() {
                 return get(ref(db, 'reports/dashboard'))
                     .then(function(snap) {
                         var raw = snap.exists() ? snap.val() : {};
-                        self.reportDashboard = self.normalizeReportDashboard(raw);
-                        if (!self.reportHasData(self.reportDashboard)) {
-                            self.applyReportFallbackFromStats();
-                        } else {
+                        self.reportDashboardSource = self.normalizeReportDashboard(raw);
+                        if (self.statsLoading) {
+                            self.reportDashboard = self.reportHasData(self.reportDashboardSource) ? self.reportDashboardSource : self.createEmptyReportDashboard();
                             self.scheduleReportChartRender();
+                        } else {
+                            self.applyReportFallbackFromStats();
                         }
                     })
                     .catch(function(err) {
                         console.error('讀取 reports/dashboard 失敗:', err);
-                        self.reportDashboard = self.createEmptyReportDashboard();
+                        self.reportDashboardSource = self.createEmptyReportDashboard();
                         self.applyReportFallbackFromStats();
-                        self.scheduleReportChartRender();
                     })
                     .finally(function() {
                         self.reportLoading = false;
@@ -4085,24 +4104,27 @@ window._doCountUp = function() {
                     if (!revenueRows.length) self.setEmptyReportChart(revenueChart, '營業額折線圖');
                     else revenueChart.setOption({
                         backgroundColor: 'transparent',
-                        tooltip: { trigger: 'axis' },
+                        tooltip: { trigger: 'axis', triggerOn: 'mousemove|click', confine: true },
                         grid: { left: 50, right: 20, top: 24, bottom: 42 },
-                        xAxis: Object.assign({ type: 'category', data: revenueRows.map(function(r) { return r.label; }) }, axisStyle),
+                        xAxis: Object.assign({ type: 'category', data: revenueRows.map(function(r) { return r.label; }), axisLabel: { color: '#cbd5e1', interval: 0 } }, axisStyle),
                         yAxis: Object.assign({ type: 'value' }, axisStyle),
-                        series: [{ type: 'line', smooth: true, data: revenueRows.map(function(r) { return r.amount; }), showSymbol: true, symbolSize: 7, lineStyle: { width: 3, color: '#34d399' }, itemStyle: { color: '#34d399' }, areaStyle: { color: 'rgba(52, 211, 153, 0.16)' } }]
+                        series: [{ type: 'line', smooth: true, data: revenueRows.map(function(r) { return Number(r.amount || 0); }), showSymbol: true, symbolSize: 7, lineStyle: { width: 3, color: '#34d399' }, itemStyle: { color: '#34d399' }, areaStyle: { color: 'rgba(52, 211, 153, 0.16)' } }]
                     }, true);
 
                     var hour = (self.reportDashboard || {}).orders_by_hour || { labels: [], revenueValues: [], orderCounts: [], values: [] };
                     var hourLabels = Array.isArray(hour.labels) ? hour.labels : [];
-                    var hourRevenueValues = Array.isArray(hour.revenueValues) ? hour.revenueValues : [];
-                    var hourOrderCounts = Array.isArray(hour.orderCounts) && hour.orderCounts.length ? hour.orderCounts : (Array.isArray(hour.values) ? hour.values : []);
+                    var hourRevenueValues = Array.isArray(hour.revenueValues) ? hour.revenueValues.map(function(v) { return Number(v || 0); }) : [];
+                    var hourOrderCounts = Array.isArray(hour.orderCounts) && hour.orderCounts.length ? hour.orderCounts.map(function(v) { return Number(v || 0); }) : (Array.isArray(hour.values) ? hour.values.map(function(v) { return Number(v || 0); }) : []);
                     var hourChart = self.getOrCreateReportChart('report-orders-hour-chart');
                     if (!hourLabels.length) self.setEmptyReportChart(hourChart, '時段分析');
                     else hourChart.setOption({
                         backgroundColor: 'transparent',
                         tooltip: {
+                            show: true,
                             trigger: 'axis',
-                            axisPointer: { type: 'shadow' },
+                            triggerOn: 'mousemove|click',
+                            confine: true,
+                            axisPointer: { type: 'cross' },
                             formatter: function(params) {
                                 var title = (params && params[0] && params[0].axisValueLabel) ? params[0].axisValueLabel : '';
                                 var revenueVal = 0;
@@ -4116,14 +4138,14 @@ window._doCountUp = function() {
                         },
                         legend: { bottom: 0, textStyle: { color: '#cbd5e1' } },
                         grid: { left: 60, right: 60, top: 20, bottom: 52 },
-                        xAxis: Object.assign({ type: 'category', data: hourLabels }, axisStyle),
+                        xAxis: Object.assign({ type: 'category', data: hourLabels, axisLabel: { color: '#cbd5e1', interval: 0 } }, axisStyle),
                         yAxis: [
                             Object.assign({ type: 'value', name: '營業額', axisLabel: { color: '#cbd5e1', formatter: function(value) { return '$' + Number(value || 0).toLocaleString(); } } }, axisStyle),
-                            Object.assign({ type: 'value', name: '訂單量', splitLine: { show: false }, axisLabel: { color: '#cbd5e1', formatter: function(value) { return Number(value || 0); } } }, axisStyle)
+                            Object.assign({ type: 'value', name: '訂單量', minInterval: 1, splitLine: { show: false }, axisLabel: { color: '#cbd5e1', formatter: function(value) { return Number(value || 0); } } }, axisStyle)
                         ],
                         series: [
                             { name: '營業額', type: 'bar', data: hourRevenueValues, itemStyle: { color: '#38bdf8', borderRadius: [6, 6, 0, 0] }, barMaxWidth: 28 },
-                            { name: '訂單量', type: 'line', yAxisIndex: 1, data: hourOrderCounts, smooth: true, symbol: 'circle', symbolSize: 8, lineStyle: { width: 3, color: '#f59e0b' }, itemStyle: { color: '#f59e0b' } }
+                            { name: '訂單量', type: 'line', yAxisIndex: 1, data: hourOrderCounts, smooth: false, symbol: 'circle', symbolSize: 8, lineStyle: { width: 3, color: '#f59e0b' }, itemStyle: { color: '#f59e0b' } }
                         ]
                     }, true);
 
@@ -4131,16 +4153,16 @@ window._doCountUp = function() {
                     var sourceChart = self.getOrCreateReportChart('report-source-chart');
                     if (!sourceItems.length) self.setEmptyReportChart(sourceChart, '訂單來源占比');
                     else sourceChart.setOption({
-                        backgroundColor: 'transparent', tooltip: { trigger: 'item' }, legend: { bottom: 0, textStyle: { color: '#cbd5e1' } },
-                        series: [{ type: 'pie', radius: ['38%', '70%'], center: ['50%', '45%'], data: sourceItems.map(function(item, idx) { return { value: item.value, name: item.name, itemStyle: { color: palette[idx % palette.length] } }; }), label: { color: '#e2e8f0' } }]
+                        backgroundColor: 'transparent', tooltip: { trigger: 'item', triggerOn: 'mousemove|click', confine: true }, legend: { bottom: 0, textStyle: { color: '#cbd5e1' } },
+                        series: [{ type: 'pie', radius: ['38%', '70%'], center: ['50%', '45%'], data: sourceItems.map(function(item, idx) { return { value: Number(item.value || 0), name: item.name, itemStyle: { color: palette[idx % palette.length] } }; }), label: { color: '#e2e8f0' } }]
                     }, true);
 
                     var paymentItems = (((self.reportDashboard || {}).payments || {}).items || []);
                     var paymentChart = self.getOrCreateReportChart('report-payment-chart');
                     if (!paymentItems.length) self.setEmptyReportChart(paymentChart, '付款方式占比');
                     else paymentChart.setOption({
-                        backgroundColor: 'transparent', tooltip: { trigger: 'item' }, legend: { bottom: 0, textStyle: { color: '#cbd5e1' } },
-                        series: [{ type: 'pie', radius: ['38%', '70%'], center: ['50%', '45%'], data: paymentItems.map(function(item, idx) { return { value: item.value, name: item.name, itemStyle: { color: palette[(idx + 2) % palette.length] } }; }), label: { color: '#e2e8f0' } }]
+                        backgroundColor: 'transparent', tooltip: { trigger: 'item', triggerOn: 'mousemove|click', confine: true }, legend: { bottom: 0, textStyle: { color: '#cbd5e1' } },
+                        series: [{ type: 'pie', radius: ['38%', '70%'], center: ['50%', '45%'], data: paymentItems.map(function(item, idx) { return { value: Number(item.value || 0), name: item.name, itemStyle: { color: palette[(idx + 2) % palette.length] } }; }), label: { color: '#e2e8f0' } }]
                     }, true);
 
                     var topItems = (((self.reportDashboard || {}).top_items || {}).items || []).slice(0, 10);
@@ -4150,14 +4172,16 @@ window._doCountUp = function() {
                         backgroundColor: 'transparent',
                         tooltip: {
                             trigger: 'axis',
+                            triggerOn: 'mousemove|click',
+                            confine: true,
                             formatter: function(params) {
                                 var row = (params && params[0]) || {};
                                 var item = topItems[topItems.length - 1 - Number(row.dataIndex || 0)] || {};
-                                return String(item.name || '') + '<br/>數量：' + Number(item.value || 0) + '<br/>金額：$' + Number(item.amount || 0).toLocaleString();
+                                return String(item.name || '') + '<br/>數量：' + Number(item.value !== undefined ? item.value : (item.qty || 0)) + '<br/>金額：$' + Number(item.amount || 0).toLocaleString();
                             }
                         },
                         grid: { left: 210, right: 52, top: 18, bottom: 18 },
-                        xAxis: Object.assign({ type: 'value', axisLabel: { color: '#cbd5e1', formatter: function(value) { return value; } } }, axisStyle),
+                        xAxis: Object.assign({ type: 'value', minInterval: 1, axisLabel: { color: '#cbd5e1', formatter: function(value) { return value; } } }, axisStyle),
                         yAxis: Object.assign({
                             type: 'category',
                             data: topItems.map(function(item) { return item.name; }).reverse(),
@@ -4168,21 +4192,23 @@ window._doCountUp = function() {
                                 formatter: function(value) { return wrapAxisLabel(value, 8); }
                             }
                         }, axisStyle),
-                        series: [{ type: 'bar', data: topItems.map(function(item) { return Number(item.value || 0); }).reverse(), itemStyle: { color: '#f59e0b', borderRadius: [0, 6, 6, 0] }, label: { show: true, position: 'right', color: '#f8fafc' } }]
+                        series: [{ type: 'bar', data: topItems.map(function(item) { return Number(item.value !== undefined ? item.value : (item.qty || 0)); }).reverse(), itemStyle: { color: '#f59e0b', borderRadius: [0, 6, 6, 0] }, label: { show: true, position: 'right', color: '#f8fafc' } }]
                     }, true);
 
                     var channelItems = (((self.reportDashboard || {}).channel_compare || {}).items || []);
                     var channelChart = self.getOrCreateReportChart('report-channel-chart');
                     if (!channelItems.length) self.setEmptyReportChart(channelChart, '來源比較圖');
                     else channelChart.setOption({
-                        backgroundColor: 'transparent', tooltip: { trigger: 'axis' }, grid: { left: 56, right: 20, top: 18, bottom: 48 },
-                        xAxis: Object.assign({
+                        backgroundColor: 'transparent',
+                        tooltip: { trigger: 'axis', triggerOn: 'mousemove|click', confine: true },
+                        grid: { left: 180, right: 20, top: 18, bottom: 18 },
+                        xAxis: Object.assign({ type: 'value', minInterval: 1 }, axisStyle),
+                        yAxis: Object.assign({
                             type: 'category',
-                            data: channelItems.map(function(item) { return item.name; }),
-                            axisLabel: { color: '#cbd5e1', interval: 0, formatter: function(value) { return wrapAxisLabel(value, 6); } }
+                            data: channelItems.map(function(item) { return item.name; }).reverse(),
+                            axisLabel: { color: '#cbd5e1', width: 150, formatter: function(value) { return wrapAxisLabel(value, 6); } }
                         }, axisStyle),
-                        yAxis: Object.assign({ type: 'value' }, axisStyle),
-                        series: [{ type: 'bar', data: channelItems.map(function(item, idx) { return { value: item.value, itemStyle: { color: palette[idx % palette.length], borderRadius: [6, 6, 0, 0] } }; }) }]
+                        series: [{ type: 'bar', data: channelItems.map(function(item, idx) { return { value: Number(item.value || 0), itemStyle: { color: palette[idx % palette.length], borderRadius: [0, 6, 6, 0] } }; }).reverse() }]
                     }, true);
 
                     Object.keys(self.reportCharts || {}).forEach(function(key) {
@@ -4405,6 +4431,7 @@ window._doCountUp = function() {
                     self.statsDate = self.getTodayStr();
                 }
                 var datesToFetch = self.buildDateListForStatsMode(self.statsMode);
+                self.reportRevenueMode = self.getReportRevenueModeForStats(datesToFetch);
 
                 var resolveMergeKey = function(order) {
                     if (!order || typeof order !== 'object') return '';
