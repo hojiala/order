@@ -17,6 +17,7 @@
     <meta name="theme-color" content="#F59E0B">
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
     <style>
         [v-cloak] { display: none; }
         * { box-sizing: border-box; }
@@ -43,6 +44,12 @@
         .day-on { background:#1e293b; color:#94a3b8; border-color:#374151; }
         .compress-bar { height:6px; background:#1e293b; border-radius:3px; overflow:hidden; margin-top:6px; }
         .compress-fill { height:100%; background:linear-gradient(90deg,#10b981,#34d399); border-radius:3px; transition:width 0.4s; }
+        .chart-canvas { width: 100%; height: 320px; }
+        .chart-canvas-sm { height: 280px; }
+        @media (max-width: 768px) {
+            .chart-canvas { height: 260px; }
+            .chart-canvas-sm { height: 240px; }
+        }
     </style>
 </head>
 <body class="bg-slate-900 text-slate-100 min-h-screen">
@@ -506,6 +513,56 @@
                 </div>
             </div>
             <!-- ★ 第1排：4卡片 -->
+            <div class="grid grid-cols-1 xl:grid-cols-2 gap-4 mb-6">
+                <div class="bg-slate-800 rounded-xl border border-slate-700 p-5 xl:col-span-2">
+                    <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+                        <div>
+                            <p class="text-white font-bold text-base">新增報表</p>
+                            <p class="text-slate-400 text-xs mt-1">Node-RED 彙總後寫入 Firebase reports/dashboard，只讀小型 JSON</p>
+                        </div>
+                        <div class="text-right">
+                            <p class="text-slate-500 text-xs">最後更新</p>
+                            <p class="text-slate-300 text-xs font-mono">{{ formatReportUpdatedAt(reportDashboard.updatedAt) }}</p>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                        <div class="bg-slate-900/60 rounded-xl border border-slate-700 p-4 xl:col-span-2">
+                            <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+                                <div>
+                                    <p class="text-white font-bold">營業額折線圖</p>
+                                    <p class="text-slate-400 text-xs mt-1">今天 / 本週 / 本月</p>
+                                </div>
+                                <div class="flex gap-2 flex-wrap">
+                                    <button @click="reportRevenueMode = 'today'; scheduleReportChartRender()" :class="reportRevenueMode === 'today' ? 'bg-emerald-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'" class="px-3 py-1.5 rounded-lg text-xs font-bold transition">今天</button>
+                                    <button @click="reportRevenueMode = 'week'; scheduleReportChartRender()" :class="reportRevenueMode === 'week' ? 'bg-emerald-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'" class="px-3 py-1.5 rounded-lg text-xs font-bold transition">本週</button>
+                                    <button @click="reportRevenueMode = 'month'; scheduleReportChartRender()" :class="reportRevenueMode === 'month' ? 'bg-emerald-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'" class="px-3 py-1.5 rounded-lg text-xs font-bold transition">本月</button>
+                                </div>
+                            </div>
+                            <div id="report-revenue-chart" class="chart-canvas"></div>
+                        </div>
+                        <div class="bg-slate-900/60 rounded-xl border border-slate-700 p-4">
+                            <p class="text-white font-bold mb-3">每小時訂單量柱狀圖</p>
+                            <div id="report-orders-hour-chart" class="chart-canvas chart-canvas-sm"></div>
+                        </div>
+                        <div class="bg-slate-900/60 rounded-xl border border-slate-700 p-4">
+                            <p class="text-white font-bold mb-3">訂單來源占比 Pie Chart</p>
+                            <div id="report-source-chart" class="chart-canvas chart-canvas-sm"></div>
+                        </div>
+                        <div class="bg-slate-900/60 rounded-xl border border-slate-700 p-4">
+                            <p class="text-white font-bold mb-3">付款方式占比 Pie Chart</p>
+                            <div id="report-payment-chart" class="chart-canvas chart-canvas-sm"></div>
+                        </div>
+                        <div class="bg-slate-900/60 rounded-xl border border-slate-700 p-4">
+                            <p class="text-white font-bold mb-3">熱門品項 Top 10 柱狀圖</p>
+                            <div id="report-top-items-chart" class="chart-canvas chart-canvas-sm"></div>
+                        </div>
+                        <div class="bg-slate-900/60 rounded-xl border border-slate-700 p-4 xl:col-span-2">
+                            <p class="text-white font-bold mb-3">外帶 / 內用 / 電話 / 線上來源比較圖</p>
+                            <div id="report-channel-chart" class="chart-canvas chart-canvas-sm"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
             <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-3">
                 <div class="bg-slate-800 rounded-xl border border-slate-700 p-5">
                     <p class="text-slate-400 text-xs font-bold uppercase tracking-wider mb-2">總營業額</p>
@@ -1443,6 +1500,21 @@ window._doCountUp = function() {
                 viewingOrder: null,
                 lpConfirmed: {},
                 lpTxnState: {},
+                reportLoading: false,
+                reportRevenueMode: 'today',
+                reportDashboard: {
+                    updatedAt: 0,
+                    revenue_series: { today: [], week: [], month: [] },
+                    orders_by_hour: { labels: [], values: [] },
+                    orders_by_source: { items: [] },
+                    payments: { items: [] },
+                    top_items: { items: [] },
+                    channel_compare: { items: [] }
+                },
+                reportCharts: {},
+                reportRenderTimer: null,
+                reportChartResizeHandler: null,
+
                 // Settings
                 settings: {
                     isOpen: true,
@@ -1596,6 +1668,7 @@ window._doCountUp = function() {
                     self.loadMenu();
                     self.loadSettings();
                     self.loadStats();
+                    self.loadDashboardReports();
                     self.loadTemplates();
                     self.loadStandardDrinks();
                     // ★ 監聽 linepay_transactions — 改用 child 事件，只下載變更的單筆
@@ -1623,7 +1696,14 @@ window._doCountUp = function() {
 
         watch: {
             activeTab: function(newTab) {
-                if (newTab === 'stats') this.loadStats();
+                if (newTab === 'stats') {
+                    this.loadStats();
+                    this.loadDashboardReports();
+                    this.scheduleReportChartRender();
+                }
+            },
+            reportRevenueMode: function() {
+                this.scheduleReportChartRender();
             },
             menuSubTab: function(newSub) {
                 if (newSub === 'templates' && this.optionTemplates.length === 0) this.loadTemplates();
@@ -3735,6 +3815,184 @@ window._doCountUp = function() {
             refreshStats: function() {
                 this.allOrdersCache = null;
                 this.loadStats();
+                this.loadDashboardReports(true);
+            },
+            createEmptyReportDashboard: function() {
+                return {
+                    updatedAt: 0,
+                    revenue_series: { today: [], week: [], month: [] },
+                    orders_by_hour: { labels: [], values: [] },
+                    orders_by_source: { items: [] },
+                    payments: { items: [] },
+                    top_items: { items: [] },
+                    channel_compare: { items: [] }
+                };
+            },
+            normalizeReportSeries: function(value) {
+                if (!Array.isArray(value)) return [];
+                return value.map(function(entry) {
+                    if (!entry || typeof entry !== 'object') return null;
+                    var label = String(entry.label || entry.name || entry.date || entry.hour || '').trim();
+                    var amount = Number(entry.amount !== undefined ? entry.amount : (entry.value !== undefined ? entry.value : 0)) || 0;
+                    return label ? { label: label, amount: amount } : null;
+                }).filter(Boolean);
+            },
+            normalizeReportItems: function(value, valueKey, amountKey) {
+                if (!Array.isArray(value)) return [];
+                return value.map(function(entry) {
+                    if (!entry || typeof entry !== 'object') return null;
+                    var name = String(entry.name || entry.label || '').trim();
+                    if (!name) return null;
+                    var out = { name: name, value: Number(entry[valueKey] !== undefined ? entry[valueKey] : (entry.value !== undefined ? entry.value : 0)) || 0 };
+                    if (amountKey) out.amount = Number(entry[amountKey] !== undefined ? entry[amountKey] : (entry.amount !== undefined ? entry.amount : 0)) || 0;
+                    return out;
+                }).filter(Boolean);
+            },
+            normalizeReportDashboard: function(raw) {
+                var base = this.createEmptyReportDashboard();
+                if (!raw || typeof raw !== 'object') return base;
+                base.updatedAt = Number(raw.updatedAt || raw.generatedAt || 0) || 0;
+                var revenue = raw.revenue_series || {};
+                base.revenue_series.today = this.normalizeReportSeries(revenue.today);
+                base.revenue_series.week = this.normalizeReportSeries(revenue.week);
+                base.revenue_series.month = this.normalizeReportSeries(revenue.month);
+                var byHour = raw.orders_by_hour || {};
+                base.orders_by_hour.labels = Array.isArray(byHour.labels) ? byHour.labels.map(function(v) { return String(v); }) : [];
+                base.orders_by_hour.values = Array.isArray(byHour.values) ? byHour.values.map(function(v) { return Number(v) || 0; }) : [];
+                base.orders_by_source.items = this.normalizeReportItems((raw.orders_by_source && raw.orders_by_source.items) || [], 'value');
+                base.payments.items = this.normalizeReportItems((raw.payments && raw.payments.items) || [], 'value');
+                base.top_items.items = this.normalizeReportItems((raw.top_items && raw.top_items.items) || [], 'qty', 'amount');
+                base.channel_compare.items = this.normalizeReportItems((raw.channel_compare && raw.channel_compare.items) || [], 'value');
+                return base;
+            },
+            loadDashboardReports: function(force) {
+                var self = this;
+                self.reportLoading = true;
+                return get(ref(db, 'reports/dashboard'))
+                    .then(function(snap) {
+                        var raw = snap.exists() ? snap.val() : {};
+                        self.reportDashboard = self.normalizeReportDashboard(raw);
+                        self.scheduleReportChartRender();
+                    })
+                    .catch(function(err) {
+                        console.error('讀取 reports/dashboard 失敗:', err);
+                        self.reportDashboard = self.createEmptyReportDashboard();
+                        self.scheduleReportChartRender();
+                    })
+                    .finally(function() {
+                        self.reportLoading = false;
+                    });
+            },
+            formatReportUpdatedAt: function(ts) {
+                var n = Number(ts || 0);
+                if (!n) return '-';
+                var d = new Date(n);
+                var pad = function(v) { return ('0' + v).slice(-2); };
+                return d.getFullYear() + '/' + pad(d.getMonth() + 1) + '/' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+            },
+            scheduleReportChartRender: function() {
+                var self = this;
+                clearTimeout(self.reportRenderTimer);
+                self.reportRenderTimer = setTimeout(function() {
+                    self.renderDashboardCharts();
+                }, 80);
+            },
+            getOrCreateReportChart: function(id) {
+                if (typeof echarts === 'undefined') return null;
+                var el = document.getElementById(id);
+                if (!el) return null;
+                if (!this.reportCharts[id]) {
+                    this.reportCharts[id] = echarts.init(el, null, { renderer: 'canvas' });
+                }
+                return this.reportCharts[id];
+            },
+            setEmptyReportChart: function(chart, title) {
+                if (!chart) return;
+                chart.setOption({
+                    backgroundColor: 'transparent',
+                    title: { text: '暫無資料', left: 'center', top: 'center', textStyle: { color: '#94a3b8', fontSize: 14, fontWeight: 'normal' }, subtext: title || '', subtextStyle: { color: '#64748b' } },
+                    xAxis: { show: false }, yAxis: { show: false }, series: []
+                }, true);
+            },
+            renderDashboardCharts: function() {
+                if (this.activeTab !== 'stats') return;
+                var self = this;
+                this.$nextTick(function() {
+                    if (typeof echarts === 'undefined') return;
+                    if (!self.reportChartResizeHandler) {
+                        self.reportChartResizeHandler = function() {
+                            Object.keys(self.reportCharts || {}).forEach(function(key) {
+                                if (self.reportCharts[key] && typeof self.reportCharts[key].resize === 'function') self.reportCharts[key].resize();
+                            });
+                        };
+                        window.addEventListener('resize', self.reportChartResizeHandler);
+                    }
+                    var palette = ['#34d399', '#60a5fa', '#f59e0b', '#f87171', '#a78bfa', '#22c55e', '#38bdf8', '#fb7185'];
+                    var axisStyle = { axisLine: { lineStyle: { color: '#475569' } }, axisLabel: { color: '#cbd5e1' }, splitLine: { lineStyle: { color: 'rgba(71,85,105,0.35)' } } };
+
+                    var revenueMode = self.reportRevenueMode === 'week' ? 'week' : (self.reportRevenueMode === 'month' ? 'month' : 'today');
+                    var revenueRows = (((self.reportDashboard || {}).revenue_series || {})[revenueMode] || []);
+                    var revenueChart = self.getOrCreateReportChart('report-revenue-chart');
+                    if (!revenueRows.length) self.setEmptyReportChart(revenueChart, '營業額折線圖');
+                    else revenueChart.setOption({
+                        backgroundColor: 'transparent',
+                        tooltip: { trigger: 'axis' },
+                        grid: { left: 50, right: 20, top: 24, bottom: 42 },
+                        xAxis: Object.assign({ type: 'category', data: revenueRows.map(function(r) { return r.label; }) }, axisStyle),
+                        yAxis: Object.assign({ type: 'value' }, axisStyle),
+                        series: [{ type: 'line', smooth: true, data: revenueRows.map(function(r) { return r.amount; }), showSymbol: true, symbolSize: 7, lineStyle: { width: 3, color: '#34d399' }, itemStyle: { color: '#34d399' }, areaStyle: { color: 'rgba(52, 211, 153, 0.16)' } }]
+                    }, true);
+
+                    var hour = (self.reportDashboard || {}).orders_by_hour || { labels: [], values: [] };
+                    var hourChart = self.getOrCreateReportChart('report-orders-hour-chart');
+                    if (!hour.labels.length) self.setEmptyReportChart(hourChart, '每小時訂單量');
+                    else hourChart.setOption({
+                        backgroundColor: 'transparent', tooltip: { trigger: 'axis' }, grid: { left: 46, right: 16, top: 18, bottom: 38 },
+                        xAxis: Object.assign({ type: 'category', data: hour.labels }, axisStyle),
+                        yAxis: Object.assign({ type: 'value' }, axisStyle),
+                        series: [{ type: 'bar', data: hour.values, itemStyle: { color: '#60a5fa', borderRadius: [6, 6, 0, 0] } }]
+                    }, true);
+
+                    var sourceItems = (((self.reportDashboard || {}).orders_by_source || {}).items || []);
+                    var sourceChart = self.getOrCreateReportChart('report-source-chart');
+                    if (!sourceItems.length) self.setEmptyReportChart(sourceChart, '訂單來源占比');
+                    else sourceChart.setOption({
+                        backgroundColor: 'transparent', tooltip: { trigger: 'item' }, legend: { bottom: 0, textStyle: { color: '#cbd5e1' } },
+                        series: [{ type: 'pie', radius: ['38%', '70%'], center: ['50%', '45%'], data: sourceItems.map(function(item, idx) { return { value: item.value, name: item.name, itemStyle: { color: palette[idx % palette.length] } }; }), label: { color: '#e2e8f0' } }]
+                    }, true);
+
+                    var paymentItems = (((self.reportDashboard || {}).payments || {}).items || []);
+                    var paymentChart = self.getOrCreateReportChart('report-payment-chart');
+                    if (!paymentItems.length) self.setEmptyReportChart(paymentChart, '付款方式占比');
+                    else paymentChart.setOption({
+                        backgroundColor: 'transparent', tooltip: { trigger: 'item' }, legend: { bottom: 0, textStyle: { color: '#cbd5e1' } },
+                        series: [{ type: 'pie', radius: ['38%', '70%'], center: ['50%', '45%'], data: paymentItems.map(function(item, idx) { return { value: item.value, name: item.name, itemStyle: { color: palette[(idx + 2) % palette.length] } }; }), label: { color: '#e2e8f0' } }]
+                    }, true);
+
+                    var topItems = (((self.reportDashboard || {}).top_items || {}).items || []).slice(0, 10);
+                    var topChart = self.getOrCreateReportChart('report-top-items-chart');
+                    if (!topItems.length) self.setEmptyReportChart(topChart, '熱門品項 Top 10');
+                    else topChart.setOption({
+                        backgroundColor: 'transparent', tooltip: { trigger: 'axis' }, grid: { left: 120, right: 20, top: 18, bottom: 18 },
+                        xAxis: Object.assign({ type: 'value' }, axisStyle),
+                        yAxis: Object.assign({ type: 'category', data: topItems.map(function(item) { return item.name; }).reverse(), axisLabel: { color: '#cbd5e1', width: 110, overflow: 'truncate' } }, axisStyle),
+                        series: [{ type: 'bar', data: topItems.map(function(item) { return item.value; }).reverse(), itemStyle: { color: '#f59e0b', borderRadius: [0, 6, 6, 0] }, label: { show: true, position: 'right', color: '#f8fafc' } }]
+                    }, true);
+
+                    var channelItems = (((self.reportDashboard || {}).channel_compare || {}).items || []);
+                    var channelChart = self.getOrCreateReportChart('report-channel-chart');
+                    if (!channelItems.length) self.setEmptyReportChart(channelChart, '來源比較圖');
+                    else channelChart.setOption({
+                        backgroundColor: 'transparent', tooltip: { trigger: 'axis' }, grid: { left: 50, right: 16, top: 18, bottom: 36 },
+                        xAxis: Object.assign({ type: 'category', data: channelItems.map(function(item) { return item.name; }) }, axisStyle),
+                        yAxis: Object.assign({ type: 'value' }, axisStyle),
+                        series: [{ type: 'bar', data: channelItems.map(function(item, idx) { return { value: item.value, itemStyle: { color: palette[idx % palette.length], borderRadius: [6, 6, 0, 0] } }; }) }]
+                    }, true);
+
+                    Object.keys(self.reportCharts || {}).forEach(function(key) {
+                        if (self.reportCharts[key] && typeof self.reportCharts[key].resize === 'function') self.reportCharts[key].resize();
+                    });
+                });
             },
             // ★ 取得訂單的「營業日」：有 pickupDate 用 pickupDate，否則用 timestamp 日期
             getOrderDate: function(o) {
