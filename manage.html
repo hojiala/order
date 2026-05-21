@@ -599,9 +599,16 @@
                 </div>
             </div>
             <div class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
-                <div class="px-5 py-4 border-b border-slate-700 flex items-center justify-between">
+                <div class="px-5 py-4 border-b border-slate-700 flex flex-wrap items-center justify-between gap-3">
                     <p class="font-bold text-white text-sm">訂單明細</p>
-                    <p class="text-slate-400 text-sm">共 {{ statsOrders.length }} 筆（有效 {{ statsValidCount }} 筆）</p>
+                    <div class="flex flex-wrap items-center gap-3">
+                        <p class="text-slate-400 text-sm">共 {{ statsOrders.length }} 筆（有效 {{ statsValidCount }} 筆）</p>
+                        <button @click="exportStatsCsv"
+                            :disabled="statsLoading || statsOrders.length === 0"
+                            class="bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 disabled:text-slate-500 disabled:cursor-not-allowed text-white font-bold px-3 py-1.5 rounded-lg transition text-xs border border-emerald-500/50 disabled:border-slate-600">
+                            匯出 CSV
+                        </button>
+                    </div>
                 </div>
                 <div v-if="statsLoading" class="text-center text-slate-400 py-10">載入中...</div>
                 <div v-else-if="statsOrders.length === 0" class="text-center text-slate-500 py-10">此時段無訂單紀錄</div>
@@ -1697,9 +1704,7 @@ window._doCountUp = function() {
         watch: {
             activeTab: function(newTab) {
                 if (newTab === 'stats') {
-                    this.loadStats();
-                    this.loadDashboardReports();
-                    this.scheduleReportChartRender();
+                    this.activateStatsView();
                 }
             },
             reportRevenueMode: function() {
@@ -3812,6 +3817,19 @@ window._doCountUp = function() {
                 this.statsMode = mode;
                 this.loadStats();
             },
+            activateStatsView: function() {
+                var self = this;
+                this.$nextTick(function() {
+                    Promise.all([
+                        self.loadStats(),
+                        self.loadDashboardReports(true)
+                    ]).finally(function() {
+                        self.$nextTick(function() {
+                            self.renderDashboardCharts();
+                        });
+                    });
+                });
+            },
             getReportRevenueModeForStats: function(dateList) {
                 var list = Array.isArray(dateList) ? dateList.filter(Boolean) : this.buildDateListForStatsMode(this.statsMode);
                 var mode = String(this.statsMode || 'today');
@@ -3823,9 +3841,102 @@ window._doCountUp = function() {
                 return 'month';
             },
             refreshStats: function() {
+                var self = this;
                 this.allOrdersCache = null;
-                this.loadStats();
-                this.loadDashboardReports(true);
+                Promise.all([
+                    this.loadStats(),
+                    this.loadDashboardReports(true)
+                ]).finally(function() {
+                    self.$nextTick(function() {
+                        self.renderDashboardCharts();
+                    });
+                });
+            },
+            getStatsExportStoreName: function() {
+                return String((this.settings && (this.settings.storeName || this.settings.storeTitle)) || '元氣善化中山店').trim() || '元氣善化中山店';
+            },
+            getStatsExportTimestamp: function() {
+                var d = new Date();
+                var pad = function(v) { return String(v).padStart(2, '0'); };
+                return d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + '_' + pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds());
+            },
+            escapeCsvCell: function(value) {
+                var text = String(value === undefined || value === null ? '' : value);
+                return '"' + text.replace(/"/g, '""') + '"';
+            },
+            getStatsExportStatusText: function(order) {
+                if (!order) return '';
+                if (order.status === 'archived') return order.wasCancelled ? '已取消' : '已完成';
+                return ({ new: '新訂單', making: '製作中', done: '已完成', cancelled: '已取消' }[order.status] || order.status || '');
+            },
+            formatStatsCsvTimestamp: function(order) {
+                var ts = this.getOrderTimestamp(order);
+                if (!ts) return '';
+                var d = new Date(ts);
+                if (Number.isNaN(d.getTime())) return '';
+                var pad = function(v) { return String(v).padStart(2, '0'); };
+                return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+            },
+            getStatsCsvItemSummary: function(order) {
+                var self = this;
+                var items = this.getDisplayDetailItems(order || {});
+                if (!Array.isArray(items) || !items.length) return '';
+                return items.map(function(item) {
+                    var idx = self.getOriginalDetailItemIndex(order, item);
+                    var parts = [];
+                    parts.push(self.getDetailItemQty(item) + 'x ' + self.getDetailItemName(item));
+                    var selections = self.getDetailOptionSelections(item, order, idx).map(function(sel) {
+                        return self.getDisplayOptionGroupName(sel.groupName) + ':' + sel.name;
+                    });
+                    if (selections.length) parts.push(selections.join('/'));
+                    var mealDrink = self.getDetailMealDrink(item);
+                    if (mealDrink) parts.push('飲料:' + mealDrink);
+                    if (Array.isArray(item.comboDrinkAddons) && item.comboDrinkAddons.length) {
+                        parts.push('加料:' + item.comboDrinkAddons.map(function(da) { return da.name + (Number(da.price || 0) > 0 ? '+$' + da.price : ''); }).join('/'));
+                    }
+                    if (Array.isArray(item.options) && item.options.length) {
+                        parts.push('加購:' + item.options.map(function(opt) { return opt.name + '+$' + (opt.price || 0); }).join('/'));
+                    }
+                    if (Array.isArray(item.posExtras) && item.posExtras.length) {
+                        parts.push('POS:' + item.posExtras.map(function(ex) { return ex.name + '+$' + (ex.price || 0); }).join('/'));
+                    }
+                    var note = self.getDetailItemNote(item, order, idx);
+                    if (note) parts.push('備註:' + note);
+                    return parts.join('；') + '；小計:$' + self.getDetailItemTotal(item, order, idx);
+                }).join('\n');
+            },
+            exportStatsCsv: function() {
+                var rows = this.statsSortedOrders || [];
+                if (!rows.length) return;
+                var headers = ['單號', '下單時間', '客戶', '電話', '取餐日期', '取餐時間', '狀態', '金額', '付款方式', '訂單明細', '訂單備註'];
+                var csvRows = [headers.map(this.escapeCsvCell).join(',')];
+                rows.forEach(function(order) {
+                    var orderNo = order && order.orderNo ? 'No.' + String(order.orderNo).padStart(3, '0') : '';
+                    var line = [
+                        orderNo,
+                        this.formatStatsCsvTimestamp(order),
+                        this.getDisplayCustomerName(order),
+                        (order && (order.phone || (order.customer && order.customer.phone))) || '',
+                        this.getOrderDate(order),
+                        order && order.pickupTime ? this.getDisplayPickupTime(order.pickupTime) : '',
+                        this.getStatsExportStatusText(order),
+                        this.getOrderTotalValue(order),
+                        this.statsPaymentBadgeText(order),
+                        this.getStatsCsvItemSummary(order),
+                        this.getDetailOrderNote(order)
+                    ];
+                    csvRows.push(line.map(this.escapeCsvCell).join(','));
+                }.bind(this));
+                var filename = this.getStatsExportStoreName() + '-銷售報表_' + this.getStatsExportTimestamp() + '.csv';
+                var blob = new Blob(['\ufeff' + csvRows.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
+                var url = URL.createObjectURL(blob);
+                var link = document.createElement('a');
+                link.href = url;
+                link.download = filename;
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                URL.revokeObjectURL(url);
             },
             createEmptyReportDashboard: function() {
                 return {
@@ -3847,11 +3958,48 @@ window._doCountUp = function() {
                     return label ? { label: label, amount: amount } : null;
                 }).filter(Boolean);
             },
-            normalizeReportItems: function(value, valueKey, amountKey) {
+            translateReportSourceName: function(name) {
+                var raw = String(name || '').trim();
+                var key = raw.toLowerCase().replace(/[\s_-]+/g, '');
+                var map = {
+                    online: '線上點餐',
+                    web: '線上點餐',
+                    webliff: 'LINE 線上點餐',
+                    line: 'LINE 線上點餐',
+                    qrcode: '掃碼點餐',
+                    qr: '掃碼點餐',
+                    qrtakeout: '外帶掃碼點餐',
+                    dinein: '桌邊點餐',
+                    pos: '店內點餐',
+                    poslocal: '電話點餐',
+                    phone: '電話點餐',
+                    phoneai: '電話點餐',
+                    takeout: '外帶',
+                    store: '店內點餐',
+                    counter: '櫃台點餐'
+                };
+                return map[key] || raw || '線上點餐';
+            },
+            translateReportPaymentName: function(name) {
+                var raw = String(name || '').trim();
+                var key = raw.toLowerCase().replace(/[\s_-]+/g, '');
+                var map = {
+                    cash: '現金付款',
+                    store: '店內付款',
+                    instore: '店內付款',
+                    linepay: 'LINE Pay',
+                    linepayoffline: 'LINE Pay 處理中',
+                    paid: '已付款',
+                    unpaid: '未付款'
+                };
+                return map[key] || raw || '店內付款';
+            },
+            normalizeReportItems: function(value, valueKey, amountKey, labelFormatter) {
                 if (!Array.isArray(value)) return [];
                 return value.map(function(entry) {
                     if (!entry || typeof entry !== 'object') return null;
                     var name = String(entry.name || entry.label || '').trim();
+                    if (typeof labelFormatter === 'function') name = labelFormatter(name);
                     if (!name) return null;
                     var out = { name: name, value: Number(entry[valueKey] !== undefined ? entry[valueKey] : (entry.value !== undefined ? entry.value : 0)) || 0 };
                     if (amountKey) out.amount = Number(entry[amountKey] !== undefined ? entry[amountKey] : (entry.amount !== undefined ? entry.amount : 0)) || 0;
@@ -3874,8 +4022,8 @@ window._doCountUp = function() {
                     base.orders_by_hour.orderCounts = byHour.values.map(function(v) { return Number(v) || 0; });
                 }
                 base.orders_by_hour.values = base.orders_by_hour.orderCounts.slice();
-                base.orders_by_source.items = this.normalizeReportItems((raw.orders_by_source && raw.orders_by_source.items) || [], 'value');
-                base.payments.items = this.normalizeReportItems((raw.payments && raw.payments.items) || [], 'value');
+                base.orders_by_source.items = this.normalizeReportItems((raw.orders_by_source && raw.orders_by_source.items) || [], 'value', null, this.translateReportSourceName.bind(this));
+                base.payments.items = this.normalizeReportItems((raw.payments && raw.payments.items) || [], 'value', null, this.translateReportPaymentName.bind(this));
                 base.top_items.items = this.normalizeReportItems((raw.top_items && raw.top_items.items) || [], 'qty', 'amount');
                 base.channel_compare.items = this.normalizeReportItems((raw.channel_compare && raw.channel_compare.items) || [], 'value');
                 return base;
@@ -3947,9 +4095,9 @@ window._doCountUp = function() {
                         if (dayRevenueMap[dateKey] === undefined) dayRevenueMap[dateKey] = 0;
                         dayRevenueMap[dateKey] += total;
                     }
-                    var source = String(order.sourceLabel || order._integrationSourceLabel || order.source || '').trim() || '線上';
+                    var source = this.translateReportSourceName(order.sourceLabel || order._integrationSourceLabel || order.source || '線上');
                     sourceMap[source] = (sourceMap[source] || 0) + 1;
-                    var payment = this.statsPaymentBadgeText ? this.statsPaymentBadgeText(order) : (order.paymentMethod || '店內付款');
+                    var payment = this.translateReportPaymentName(this.statsPaymentBadgeText ? this.statsPaymentBadgeText(order) : (order.paymentMethod || '店內付款'));
                     paymentMap[payment] = (paymentMap[payment] || 0) + 1;
                     var mode = String(order.pickupMode || order.type || '').toLowerCase();
                     var src = String(order.source || '').toLowerCase();
@@ -4061,7 +4209,13 @@ window._doCountUp = function() {
                 if (typeof echarts === 'undefined') return null;
                 var el = document.getElementById(id);
                 if (!el) return null;
-                if (!this.reportCharts[id]) {
+                var chart = this.reportCharts[id];
+                if (chart && typeof chart.getDom === 'function' && chart.getDom() !== el) {
+                    try { chart.dispose(); } catch (e) {}
+                    chart = null;
+                    this.reportCharts[id] = null;
+                }
+                if (!chart) {
                     this.reportCharts[id] = echarts.init(el, null, { renderer: 'canvas' });
                 }
                 return this.reportCharts[id];
@@ -4087,7 +4241,7 @@ window._doCountUp = function() {
                         };
                         window.addEventListener('resize', self.reportChartResizeHandler);
                     }
-                    var palette = ['#34d399', '#60a5fa', '#f59e0b', '#f87171', '#a78bfa', '#22c55e', '#38bdf8', '#fb7185'];
+                    var palette = ['#34d399', '#60a5fa', '#f59e0b', '#f87171', '#a78bfa', '#22c55e', '#38bdf8', '#fb7185', '#f472b6', '#c084fc'];
                     var axisStyle = { axisLine: { lineStyle: { color: '#475569' } }, axisLabel: { color: '#cbd5e1' }, splitLine: { lineStyle: { color: 'rgba(71,85,105,0.35)' } } };
                     var wrapAxisLabel = function(text, limit) {
                         var raw = String(text || '');
@@ -4104,11 +4258,23 @@ window._doCountUp = function() {
                     if (!revenueRows.length) self.setEmptyReportChart(revenueChart, '營業額折線圖');
                     else revenueChart.setOption({
                         backgroundColor: 'transparent',
-                        tooltip: { trigger: 'axis', triggerOn: 'mousemove|click', confine: true },
+                        tooltip: {
+                            show: true,
+                            trigger: 'axis',
+                            triggerOn: 'mousemove|click',
+                            confine: true,
+                            appendToBody: true,
+                            formatter: function(params) {
+                                var row = Array.isArray(params) ? params[0] : params;
+                                var label = row && (row.axisValueLabel || row.name || row.axisValue) ? (row.axisValueLabel || row.name || row.axisValue) : '';
+                                var value = row ? Number(row.value || 0) : 0;
+                                return label + '<br/>營業額：$' + value.toLocaleString();
+                            }
+                        },
                         grid: { left: 50, right: 20, top: 24, bottom: 42 },
                         xAxis: Object.assign({ type: 'category', data: revenueRows.map(function(r) { return r.label; }), axisLabel: { color: '#cbd5e1', interval: 0 } }, axisStyle),
                         yAxis: Object.assign({ type: 'value' }, axisStyle),
-                        series: [{ type: 'line', smooth: true, data: revenueRows.map(function(r) { return Number(r.amount || 0); }), showSymbol: true, symbolSize: 7, lineStyle: { width: 3, color: '#34d399' }, itemStyle: { color: '#34d399' }, areaStyle: { color: 'rgba(52, 211, 153, 0.16)' } }]
+                        series: [{ name: '營業額', type: 'line', smooth: true, data: revenueRows.map(function(r) { return Number(r.amount || 0); }), showSymbol: true, symbolSize: 7, lineStyle: { width: 3, color: '#34d399' }, itemStyle: { color: '#34d399' }, areaStyle: { color: 'rgba(52, 211, 153, 0.16)' } }]
                     }, true);
 
                     var hour = (self.reportDashboard || {}).orders_by_hour || { labels: [], revenueValues: [], orderCounts: [], values: [] };
@@ -4124,6 +4290,7 @@ window._doCountUp = function() {
                             trigger: 'axis',
                             triggerOn: 'mousemove|click',
                             confine: true,
+                            appendToBody: true,
                             axisPointer: { type: 'cross' },
                             formatter: function(params) {
                                 var title = (params && params[0] && params[0].axisValueLabel) ? params[0].axisValueLabel : '';
@@ -4153,16 +4320,20 @@ window._doCountUp = function() {
                     var sourceChart = self.getOrCreateReportChart('report-source-chart');
                     if (!sourceItems.length) self.setEmptyReportChart(sourceChart, '訂單來源占比');
                     else sourceChart.setOption({
-                        backgroundColor: 'transparent', tooltip: { trigger: 'item', triggerOn: 'mousemove|click', confine: true }, legend: { bottom: 0, textStyle: { color: '#cbd5e1' } },
-                        series: [{ type: 'pie', radius: ['38%', '70%'], center: ['50%', '45%'], data: sourceItems.map(function(item, idx) { return { value: Number(item.value || 0), name: item.name, itemStyle: { color: palette[idx % palette.length] } }; }), label: { color: '#e2e8f0' } }]
+                        backgroundColor: 'transparent',
+                        tooltip: { trigger: 'item', triggerOn: 'mousemove|click', confine: true, appendToBody: true, formatter: function(p) { return p.marker + ' ' + p.name + '<br/>訂單量：' + Number(p.value || 0) + ' 筆<br/>占比：' + Number(p.percent || 0).toFixed(1) + '%'; } },
+                        legend: { bottom: 0, textStyle: { color: '#cbd5e1' } },
+                        series: [{ type: 'pie', radius: ['38%', '70%'], center: ['50%', '45%'], data: sourceItems.map(function(item, idx) { return { value: Number(item.value || 0), name: self.translateReportSourceName(item.name), itemStyle: { color: palette[idx % palette.length] } }; }), label: { color: '#e2e8f0', formatter: '{b}\n{d}%' } }]
                     }, true);
 
                     var paymentItems = (((self.reportDashboard || {}).payments || {}).items || []);
                     var paymentChart = self.getOrCreateReportChart('report-payment-chart');
                     if (!paymentItems.length) self.setEmptyReportChart(paymentChart, '付款方式占比');
                     else paymentChart.setOption({
-                        backgroundColor: 'transparent', tooltip: { trigger: 'item', triggerOn: 'mousemove|click', confine: true }, legend: { bottom: 0, textStyle: { color: '#cbd5e1' } },
-                        series: [{ type: 'pie', radius: ['38%', '70%'], center: ['50%', '45%'], data: paymentItems.map(function(item, idx) { return { value: Number(item.value || 0), name: item.name, itemStyle: { color: palette[(idx + 2) % palette.length] } }; }), label: { color: '#e2e8f0' } }]
+                        backgroundColor: 'transparent',
+                        tooltip: { trigger: 'item', triggerOn: 'mousemove|click', confine: true, appendToBody: true, formatter: function(p) { return p.marker + ' ' + p.name + '<br/>訂單量：' + Number(p.value || 0) + ' 筆<br/>占比：' + Number(p.percent || 0).toFixed(1) + '%'; } },
+                        legend: { bottom: 0, textStyle: { color: '#cbd5e1' } },
+                        series: [{ type: 'pie', radius: ['38%', '70%'], center: ['50%', '45%'], data: paymentItems.map(function(item, idx) { return { value: Number(item.value || 0), name: self.translateReportPaymentName(item.name), itemStyle: { color: palette[(idx + 2) % palette.length] } }; }), label: { color: '#e2e8f0', formatter: '{b}\n{d}%' } }]
                     }, true);
 
                     var topItems = (((self.reportDashboard || {}).top_items || {}).items || []).slice(0, 10);
@@ -4192,7 +4363,7 @@ window._doCountUp = function() {
                                 formatter: function(value) { return wrapAxisLabel(value, 8); }
                             }
                         }, axisStyle),
-                        series: [{ type: 'bar', data: topItems.map(function(item) { return Number(item.value !== undefined ? item.value : (item.qty || 0)); }).reverse(), itemStyle: { color: '#f59e0b', borderRadius: [0, 6, 6, 0] }, label: { show: true, position: 'right', color: '#f8fafc' } }]
+                        series: [{ type: 'bar', data: topItems.map(function(item, idx) { return { value: Number(item.value !== undefined ? item.value : (item.qty || 0)), itemStyle: { color: palette[(idx + 2) % palette.length], borderRadius: [0, 6, 6, 0] } }; }).reverse(), label: { show: true, position: 'right', color: '#f8fafc' } }]
                     }, true);
 
                     var channelItems = (((self.reportDashboard || {}).channel_compare || {}).items || []);
@@ -4403,7 +4574,8 @@ window._doCountUp = function() {
                 if (!dateList.length) {
                     self.statsOrders = [];
                     self.statsLoading = false;
-                    return;
+                    self.applyReportFallbackFromStats();
+                    return Promise.resolve([]);
                 }
                 var dateSet = new Set(dateList);
                 self.statsOrders = collapseVisibleStatsOrders(all).filter(function(o) {
@@ -4723,7 +4895,7 @@ window._doCountUp = function() {
                     });
                 })();
 
-                Promise.all([integrationPromise, bucketPromise, phonePromise, overridesPromise]).then(function(parts) {
+                return Promise.all([integrationPromise, bucketPromise, phonePromise, overridesPromise]).then(function(parts) {
                     var integrationOrders = Array.isArray(parts[0]) ? parts[0] : [];
                     var bucketOrders = Array.isArray(parts[1]) ? parts[1] : [];
                     var phoneOrders = Array.isArray(parts[2]) ? parts[2] : [];
@@ -4734,10 +4906,13 @@ window._doCountUp = function() {
                     bucketOrders.forEach(function(o){ mergeOrderById(mergedMap, o); });
                     self.allOrdersCache = collapseStatsByDisplaySignature(collapseMergedStatsValues(Object.values(mergedMap))).map(function(o) { return self.applyStatusOverrideToOrder(o); });
                     self.doFilter();
+                    return self.statsOrders;
                 }).catch(function(e) {
                     console.error('讀取統計失敗:', e);
                     self.statsOrders = [];
                     self.statsLoading = false;
+                    self.applyReportFallbackFromStats();
+                    return [];
                 });
             },
             formatTimestamp: function(ts) {
