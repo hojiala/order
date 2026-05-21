@@ -338,13 +338,11 @@
                          class="flex items-start px-4 py-3 border-b border-gray-50 cursor-pointer hover:bg-gray-50">
                         <div class="bg-orange-100 text-orange-600 rounded-lg flex items-center justify-center font-bold text-sm mr-3 mt-0.5" style="width:1.75rem;height:1.75rem;flex-shrink:0;">{{ item.qty }}</div>
                         <div class="flex-1" style="min-width:0;">
-                            <p class="font-semibold text-gray-800 text-sm">{{ item.name }}</p>
-                            <p v-for="sel in (item.optionGroupSelections || [])" :key="sel.groupName" class="text-xs text-gray-500 mt-0.5">
-                                {{ sel.mealUpgradeDisplayLabel || sel.groupName }}：{{ sel.name }}<span v-if="sel.pricing==='mealUpgrade' && sel.price > sel.baseValue" class="text-orange-400">（{{ (String(sel.mealUpgradeChargePrefix||'').trim() || (((sel.groupName||'').includes('折5') || ((sel.baseValue||0)>0 && (sel.baseValue||0)<=5)) ? '飲料加購$' : '補差價$')) }}{{ sel.price - sel.baseValue }}）</span>
-                            </p>
-                            <p v-for="opt in item.options" :key="opt.name" class="text-xs text-gray-400 mt-0.5">＋ {{ opt.name }}</p>
-                            <p v-if="item.comboDrinkAddons && item.comboDrinkAddons.length" class="text-xs text-orange-400 mt-0.5">＋ {{ item.comboDrinkAddons.map(function(o){return o.name+(o.price>0?(' +$'+o.price):'');}).join(', ') }}</p>
-                            <p v-if="item.mealDrink" class="text-xs text-orange-400 mt-0.5">🥤 {{ item.mealDrink }}</p>
+                            <p class="font-semibold text-gray-800 text-sm">{{ item.name }} <span v-if="formatItemOptionSummary(item)" class="text-xs text-gray-400">（{{ formatItemOptionSummary(item) }}）</span></p>
+                            <p v-if="formatMealUpgradeCharge(item)" class="text-xs text-orange-400 mt-0.5">（{{ formatMealUpgradeCharge(item) }}）</p>
+                            <p v-if="formatAddonLine(item.options)" class="text-xs text-orange-400 mt-0.5">＋ {{ formatAddonLine(item.options) }}</p>
+                            <p v-if="formatAddonLine(item.comboDrinkAddons)" class="text-xs text-orange-400 mt-0.5">＋ {{ formatAddonLine(item.comboDrinkAddons) }}</p>
+                            <p v-if="item.mealDrink && !hasMealUpgradeSelection(item)" class="text-xs text-orange-400 mt-0.5">🥤 {{ item.mealDrink }}</p>
                             <p v-if="item.note" class="text-xs text-blue-400 mt-0.5">📝 {{ item.note }}</p>
                             <p v-if="item.drinkNote" class="text-xs text-blue-400 mt-0.5">🥤 {{ item.drinkNote }}</p>
                         </div>
@@ -412,10 +410,10 @@
                     <div v-for="(item,i) in (order.items||[])" :key="i" class="text-sm text-gray-600 mb-1">
                         <div>
                             <span class="text-gray-800 font-medium">{{ item.qty }}x</span> {{ item.name }}
-                            <span v-if="item.optionGroupSelections&&item.optionGroupSelections.length" class="text-gray-400 text-xs">({{ item.optionGroupSelections.map(function(s){return s.name}).join(', ') }})</span>
+                            <span v-if="formatItemOptionSummary(item)" class="text-gray-400 text-xs">（{{ formatItemOptionSummary(item) }}）</span>
                         </div>
-                        <div v-if="item.options && item.options.length" class="text-xs text-orange-500 pl-5">＋ {{ item.options.map(function(o){return o.name+((o.price||0)>0?(' +$'+o.price):'')}).join(', ') }}</div>
-                        <div v-if="item.comboDrinkAddons && item.comboDrinkAddons.length" class="text-xs text-orange-500 pl-5">＋ {{ item.comboDrinkAddons.map(function(o){return o.name+((o.price||0)>0?(' +$'+o.price):'')}).join(', ') }}</div>
+                        <div v-if="formatAddonLine(item.options)" class="text-xs text-orange-500 pl-5">＋ {{ formatAddonLine(item.options) }}</div>
+                        <div v-if="formatAddonLine(item.comboDrinkAddons)" class="text-xs text-orange-500 pl-5">＋ {{ formatAddonLine(item.comboDrinkAddons) }}</div>
                         <div v-if="item.note" class="text-xs text-blue-500 pl-5">📝 {{ item.note }}</div>
                         <div v-if="item.drinkNote" class="text-xs text-blue-500 pl-5">🥤 {{ item.drinkNote }}</div>
                     </div>
@@ -1049,6 +1047,14 @@
             toggleTempSel:function(opt){var i=this.tempSels.indexOf(opt);if(i>=0)this.tempSels.splice(i,1);else this.tempSels.push(opt);},
             toggleOGChoice:function(gi,ci){var arr=this.tempOG[gi];if(!Array.isArray(arr))arr=[];var i=arr.indexOf(ci);if(i>=0)arr.splice(i,1);else arr.push(ci);this.tempOG[gi]=arr.slice();},
             splitDrinkName:function(name){var m=String(name||'').match(/^(.+?)[（(]\s*(大杯|中杯|小杯)\s*[）)]\s*$/);if(m)return{base:m[1].trim(),size:m[2].trim()};return{base:String(name||'').trim(),size:''};},
+            addonDisplayPriority:function(name){var n=String(name||'').trim();if(n==='加糖')return 10;if(n==='加奶')return 20;return 100;},
+            formatAddonLine:function(addons){var s=this;var arr=Array.isArray(addons)?addons.slice():[];arr.sort(function(a,b){var pa=s.addonDisplayPriority(a&&a.name);var pb=s.addonDisplayPriority(b&&b.name);return pa!==pb?pa-pb:0});return arr.map(function(o){var name=String(o&&o.name||'').trim();if(!name)return '';var price=Number(o&&o.price||0);return name+(price>0?(' +$'+price):'')}).filter(Boolean).join(', ');},
+            isMealUpgradeSelection:function(sel){if(!sel)return false;var label=String(sel.groupName||'')+' '+String(sel.mealUpgradeDisplayLabel||'');return sel.pricing==='mealUpgrade'||/(搭配飲料|套餐飲料|飲料折|飲料加購)/.test(label);},
+            isTempSelection:function(sel){var label=String(sel&&sel.groupName||'');var name=String(sel&&sel.name||'');return label.indexOf('溫度')>=0||/^(去冰|少冰|微冰|正常冰|常溫|溫飲|熱飲|溫|熱)$/.test(name);},
+            formatMealDrinkName:function(name){var p=this.splitDrinkName(name);return p.base+(p.size?(' '+p.size):'');},
+            hasMealUpgradeSelection:function(item){var sels=Array.isArray(item&&item.optionGroupSelections)?item.optionGroupSelections:[];for(var i=0;i<sels.length;i++){if(this.isMealUpgradeSelection(sels[i]))return true}return false;},
+            formatMealUpgradeCharge:function(item){var sels=Array.isArray(item&&item.optionGroupSelections)?item.optionGroupSelections:[];var charges=[];for(var i=0;i<sels.length;i++){var sel=sels[i];if(!this.isMealUpgradeSelection(sel))continue;var price=Number(sel&&sel.price||0);var base=Number(sel&&sel.baseValue||0);if(price<=base)continue;var label=String(sel.groupName||'')+' '+String(sel.mealUpgradeDisplayLabel||'');var prefix=String(sel.mealUpgradeChargePrefix||'').trim();if(!prefix)prefix=(label.indexOf('折5')>=0||(base>0&&base<=5))?'飲料加購$':'補差價$';charges.push(prefix+(price-base))}return charges.join('、');},
+            formatItemOptionSummary:function(item){var sels=Array.isArray(item&&item.optionGroupSelections)?item.optionGroupSelections:[];if(!sels.length)return '';var hasMealDrink=this.hasMealUpgradeSelection(item);if(!hasMealDrink){return sels.map(function(sel){return String(sel&&sel.name||'').trim()}).filter(Boolean).join('、')}var mainParts=[],drinkPart='',tempParts=[];for(var i=0;i<sels.length;i++){var sel=sels[i];var name=String(sel&&sel.name||'').trim();if(!name)continue;if(this.isMealUpgradeSelection(sel)){if(!drinkPart)drinkPart=this.formatMealDrinkName(name)}else if(this.isTempSelection(sel)){tempParts.push(name)}else{mainParts.push(name)}}return mainParts.concat(drinkPart?[drinkPart]:[]).concat(tempParts).join('、');},
             isComboDrinkGroup:function(grp){if(!grp||grp.pricing!=='mealUpgrade')return false;var arr=grp.choices||[];for(var i=0;i<arr.length;i++)if(/[（(]\s*(大杯|中杯|小杯)\s*[）)]/.test(String(arr[i]&&arr[i].name||'')))return true;return false;},
             hasComboDrinkGroup:function(item){if(!item)return false;var grps=Array.isArray(item.optionGroups)?item.optionGroups:[];for(var i=0;i<grps.length;i++)if(this.isComboDrinkGroup(grps[i]))return true;return false;},
             comboSizesFor:function(grp){var s=this,sizes=[];(grp.choices||[]).forEach(function(c){var p=s.splitDrinkName(c&&c.name);if(p.size&&sizes.indexOf(p.size)<0)sizes.push(p.size)});return sizes;},
@@ -1157,8 +1163,10 @@
                 order.items.forEach(function(item){
                     s.cart.push({
                         id:item.id,name:item.name,price:item.price,
-                        qty:item.qty,note:item.note||'',
+                        qty:item.qty,note:item.note||'',drinkNote:item.drinkNote||'',
                         options:item.options||[],
+                        mealDrink:item.mealDrink||'',
+                        comboDrinkAddons:Array.isArray(item.comboDrinkAddons)?item.comboDrinkAddons.slice():[],
                         optionGroupSelections:item.optionGroupSelections||[],
                         itemTotal:item.itemTotal
                     });
