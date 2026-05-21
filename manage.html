@@ -44,8 +44,28 @@
         .day-on { background:#1e293b; color:#94a3b8; border-color:#374151; }
         .compress-bar { height:6px; background:#1e293b; border-radius:3px; overflow:hidden; margin-top:6px; }
         .compress-fill { height:100%; background:linear-gradient(90deg,#10b981,#34d399); border-radius:3px; transition:width 0.4s; }
-        .chart-canvas { width: 100%; height: 320px; }
+        .chart-canvas { width: 100%; height: 320px; position: relative; }
         .chart-canvas-sm { height: 280px; }
+        .report-hover-tooltip {
+            position: absolute;
+            display: none;
+            min-width: 148px;
+            max-width: 240px;
+            background: rgba(248, 250, 252, 0.98);
+            color: #0f172a;
+            border: 1px solid #cbd5e1;
+            border-radius: 6px;
+            box-shadow: 0 8px 18px rgba(15, 23, 42, 0.28);
+            padding: 8px 10px;
+            font-size: 12px;
+            line-height: 1.45;
+            pointer-events: none;
+            z-index: 20;
+            white-space: nowrap;
+        }
+        .report-hover-tooltip-title { font-weight: 800; margin-bottom: 2px; color: #111827; }
+        .report-hover-tooltip-row { display: flex; align-items: center; gap: 5px; }
+        .report-hover-tooltip-dot { width: 8px; height: 8px; border-radius: 999px; flex: 0 0 auto; }
         @media (max-width: 768px) {
             .chart-canvas { height: 260px; }
             .chart-canvas-sm { height: 240px; }
@@ -1519,6 +1539,7 @@ window._doCountUp = function() {
                     channel_compare: { items: [] }
                 },
                 reportCharts: {},
+                reportChartTooltipHandlers: {},
                 reportRenderTimer: null,
                 reportChartResizeHandler: null,
 
@@ -4228,6 +4249,93 @@ window._doCountUp = function() {
                     xAxis: { show: false }, yAxis: { show: false }, series: []
                 }, true);
             },
+            escapeReportTooltipHtml: function(value) {
+                return String(value === undefined || value === null ? '' : value)
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;')
+                    .replace(/"/g, '&quot;')
+                    .replace(/'/g, '&#39;');
+            },
+            formatReportCurrency: function(value) {
+                return '$' + Number(value || 0).toLocaleString();
+            },
+            buildReportTooltipHtml: function(title, rows) {
+                var self = this;
+                var html = '<div class="report-hover-tooltip-title">' + self.escapeReportTooltipHtml(title) + '</div>';
+                (rows || []).forEach(function(row) {
+                    html += '<div class="report-hover-tooltip-row"><span class="report-hover-tooltip-dot" style="background:' + self.escapeReportTooltipHtml(row.color || '#38bdf8') + '"></span><span>' + self.escapeReportTooltipHtml(row.label || '') + '：<b>' + self.escapeReportTooltipHtml(row.value || '') + '</b></span></div>';
+                });
+                return html;
+            },
+            bindReportAxisHoverTooltip: function(chart, id, getContent, itemSeriesIndex) {
+                if (!chart || typeof chart.getZr !== 'function') return;
+                var dom = chart.getDom && chart.getDom();
+                if (!dom) return;
+                var old = this.reportChartTooltipHandlers && this.reportChartTooltipHandlers[id];
+                if (old) {
+                    try {
+                        old.zr.off('mousemove', old.move);
+                        old.zr.off('mouseout', old.hide);
+                        old.zr.off('globalout', old.hide);
+                        if (old.chartMove && typeof chart.off === 'function') chart.off('mousemove', old.chartMove);
+                    } catch (e) {}
+                }
+                if (!this.reportChartTooltipHandlers) this.reportChartTooltipHandlers = {};
+                if (window.getComputedStyle(dom).position === 'static') dom.style.position = 'relative';
+                var tip = dom.querySelector('.report-hover-tooltip');
+                if (!tip) {
+                    tip = document.createElement('div');
+                    tip.className = 'report-hover-tooltip';
+                    dom.appendChild(tip);
+                }
+                var self = this;
+                var zr = chart.getZr();
+                var hide = function() {
+                    tip.style.display = 'none';
+                    try { chart.dispatchAction({ type: 'hideTip' }); } catch (e) {}
+                };
+                var show = function(offsetX, offsetY, idx) {
+                    var content = getContent(idx);
+                    if (!content) {
+                        hide();
+                        return;
+                    }
+                    tip.innerHTML = content.html;
+                    tip.style.display = 'block';
+                    var left = Number(offsetX || 0) + 14;
+                    var top = Number(offsetY || 0) + 14;
+                    var maxLeft = Math.max(8, dom.clientWidth - tip.offsetWidth - 8);
+                    var maxTop = Math.max(8, dom.clientHeight - tip.offsetHeight - 8);
+                    if (left > maxLeft) left = Number(offsetX || 0) - tip.offsetWidth - 14;
+                    if (top > maxTop) top = Number(offsetY || 0) - tip.offsetHeight - 14;
+                    tip.style.left = Math.max(8, left) + 'px';
+                    tip.style.top = Math.max(8, top) + 'px';
+                    try {
+                        chart.dispatchAction({ type: 'showTip', seriesIndex: Number(itemSeriesIndex || 0), dataIndex: content.dataIndex });
+                    } catch (e) {}
+                };
+                var chartMove = function(params) {
+                    if (!params || !Number.isFinite(Number(params.dataIndex))) return;
+                    var event = params.event || {};
+                    show(Number(event.offsetX || 0), Number(event.offsetY || 0), Number(params.dataIndex));
+                };
+                var move = function(evt) {
+                    var point = [evt.offsetX, evt.offsetY];
+                    if (!chart.containPixel || !chart.convertFromPixel || !chart.containPixel({ gridIndex: 0 }, point)) {
+                        hide();
+                        return;
+                    }
+                    var converted = chart.convertFromPixel({ xAxisIndex: 0 }, point);
+                    var idx = Math.round(Number(Array.isArray(converted) ? converted[0] : converted));
+                    show(evt.offsetX, evt.offsetY, idx);
+                };
+                if (typeof chart.on === 'function') chart.on('mousemove', chartMove);
+                zr.on('mousemove', move);
+                zr.on('mouseout', hide);
+                zr.on('globalout', hide);
+                this.reportChartTooltipHandlers[id] = { zr: zr, move: move, chartMove: chartMove, hide: hide };
+            },
             renderDashboardCharts: function() {
                 if (this.activeTab !== 'stats') return;
                 var self = this;
@@ -4255,11 +4363,13 @@ window._doCountUp = function() {
                     var revenueMode = self.reportRevenueMode === 'week' ? 'week' : (self.reportRevenueMode === 'month' ? 'month' : 'today');
                     var revenueRows = (((self.reportDashboard || {}).revenue_series || {})[revenueMode] || []);
                     var revenueChart = self.getOrCreateReportChart('report-revenue-chart');
-                    if (!revenueRows.length) self.setEmptyReportChart(revenueChart, '營業額折線圖');
-                    else revenueChart.setOption({
+                    if (!revenueRows.length) {
+                        self.setEmptyReportChart(revenueChart, '營業額折線圖');
+                        self.bindReportAxisHoverTooltip(revenueChart, 'report-revenue-chart', function() { return null; }, 0);
+                    } else revenueChart.setOption({
                         backgroundColor: 'transparent',
                         tooltip: {
-                            show: true,
+                            show: false,
                             trigger: 'axis',
                             triggerOn: 'mousemove|click',
                             confine: true,
@@ -4276,17 +4386,31 @@ window._doCountUp = function() {
                         yAxis: Object.assign({ type: 'value' }, axisStyle),
                         series: [{ name: '營業額', type: 'line', smooth: true, data: revenueRows.map(function(r) { return Number(r.amount || 0); }), showSymbol: true, symbolSize: 7, lineStyle: { width: 3, color: '#34d399' }, itemStyle: { color: '#34d399' }, areaStyle: { color: 'rgba(52, 211, 153, 0.16)' } }]
                     }, true);
+                    if (revenueRows.length) {
+                        self.bindReportAxisHoverTooltip(revenueChart, 'report-revenue-chart', function(idx) {
+                            if (idx < 0 || idx >= revenueRows.length) return null;
+                            var row = revenueRows[idx] || {};
+                            return {
+                                dataIndex: idx,
+                                html: self.buildReportTooltipHtml(row.label || '', [
+                                    { color: '#34d399', label: '營業額', value: self.formatReportCurrency(row.amount) }
+                                ])
+                            };
+                        }, 0);
+                    }
 
                     var hour = (self.reportDashboard || {}).orders_by_hour || { labels: [], revenueValues: [], orderCounts: [], values: [] };
                     var hourLabels = Array.isArray(hour.labels) ? hour.labels : [];
                     var hourRevenueValues = Array.isArray(hour.revenueValues) ? hour.revenueValues.map(function(v) { return Number(v || 0); }) : [];
                     var hourOrderCounts = Array.isArray(hour.orderCounts) && hour.orderCounts.length ? hour.orderCounts.map(function(v) { return Number(v || 0); }) : (Array.isArray(hour.values) ? hour.values.map(function(v) { return Number(v || 0); }) : []);
                     var hourChart = self.getOrCreateReportChart('report-orders-hour-chart');
-                    if (!hourLabels.length) self.setEmptyReportChart(hourChart, '時段分析');
-                    else hourChart.setOption({
+                    if (!hourLabels.length) {
+                        self.setEmptyReportChart(hourChart, '時段分析');
+                        self.bindReportAxisHoverTooltip(hourChart, 'report-orders-hour-chart', function() { return null; }, 0);
+                    } else hourChart.setOption({
                         backgroundColor: 'transparent',
                         tooltip: {
-                            show: true,
+                            show: false,
                             trigger: 'axis',
                             triggerOn: 'mousemove|click',
                             confine: true,
@@ -4315,6 +4439,18 @@ window._doCountUp = function() {
                             { name: '訂單量', type: 'line', yAxisIndex: 1, data: hourOrderCounts, smooth: false, symbol: 'circle', symbolSize: 8, lineStyle: { width: 3, color: '#f59e0b' }, itemStyle: { color: '#f59e0b' } }
                         ]
                     }, true);
+                    if (hourLabels.length) {
+                        self.bindReportAxisHoverTooltip(hourChart, 'report-orders-hour-chart', function(idx) {
+                            if (idx < 0 || idx >= hourLabels.length) return null;
+                            return {
+                                dataIndex: idx,
+                                html: self.buildReportTooltipHtml(hourLabels[idx], [
+                                    { color: '#38bdf8', label: '營業額', value: self.formatReportCurrency(hourRevenueValues[idx]) },
+                                    { color: '#f59e0b', label: '訂單量', value: Number(hourOrderCounts[idx] || 0).toLocaleString() + ' 筆' }
+                                ])
+                            };
+                        }, 0);
+                    }
 
                     var sourceItems = (((self.reportDashboard || {}).orders_by_source || {}).items || []);
                     var sourceChart = self.getOrCreateReportChart('report-source-chart');
