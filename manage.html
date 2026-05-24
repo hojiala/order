@@ -722,11 +722,18 @@
             </div>
             <div class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
                 <div class="px-5 py-4 border-b border-slate-700 flex flex-wrap items-center justify-between gap-3">
-                    <p class="font-bold text-white text-sm">訂單明細</p>
-                    <div class="flex flex-wrap items-center gap-3">
-                        <p class="text-slate-400 text-sm">共 {{ statsOrders.length }} 筆（有效 {{ statsValidCount }} 筆）</p>
+                    <div>
+                        <p class="font-bold text-white text-sm">訂單明細</p>
+                        <p class="text-slate-400 text-xs mt-1">顯示 {{ statsFilteredOrders.length }} / 共 {{ statsOrders.length }} 筆（有效 {{ statsValidCount }} 筆）</p>
+                    </div>
+                    <div class="flex flex-wrap items-center gap-3 w-full sm:w-auto">
+                        <label class="relative flex-1 min-w-[220px] sm:w-80">
+                            <span class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm">🔎</span>
+                            <input v-model.trim="statsSearch" type="search" placeholder="搜尋單號、客戶、電話、餐點、備註"
+                                class="w-full bg-slate-700 border border-slate-600 rounded-lg pl-9 pr-3 py-2 text-white text-sm placeholder-slate-400 focus:outline-none focus:border-orange-500">
+                        </label>
                         <button @click="exportStatsCsv"
-                            :disabled="statsLoading || statsOrders.length === 0"
+                            :disabled="statsLoading || statsSortedOrders.length === 0"
                             class="bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 disabled:text-slate-500 disabled:cursor-not-allowed text-white font-bold px-3 py-1.5 rounded-lg transition text-xs border border-emerald-500/50 disabled:border-slate-600">
                             匯出 CSV
                         </button>
@@ -734,6 +741,7 @@
                 </div>
                 <div v-if="statsLoading" class="text-center text-slate-400 py-10">載入中...</div>
                 <div v-else-if="statsOrders.length === 0" class="text-center text-slate-500 py-10">此時段無訂單紀錄</div>
+                <div v-else-if="statsFilteredOrders.length === 0" class="text-center text-slate-500 py-10">找不到符合搜尋的訂單</div>
                 <div v-else class="overflow-x-auto">
                     <table class="w-full text-sm">
                         <thead class="bg-slate-700/50">
@@ -877,17 +885,31 @@
             </div>
             <div class="space-y-4">
 
-                <!-- 接單開關 -->
+                <!-- 線上點餐接單開關 -->
                 <div class="bg-slate-800 rounded-xl border border-slate-700 p-5">
                     <div class="flex items-center justify-between">
                         <div>
-                            <p class="font-bold text-white">接單開關</p>
-                            <p class="text-slate-400 text-sm mt-1">關閉後，前台顯示「訂單滿載，暫停接單」</p>
+                            <p class="font-bold text-white">線上點餐接單開關</p>
+                            <p class="text-slate-400 text-sm mt-1">控制 index 線上點餐；關閉後顯示「訂單滿載，暫停接單」</p>
                         </div>
                         <label class="toggle-switch"><input type="checkbox" v-model="settings.isOpen"><span class="toggle-slider"></span></label>
                     </div>
                     <div v-if="!settings.isOpen" class="mt-3 bg-red-900/30 border border-red-800 rounded-lg p-3">
-                        <p class="text-red-400 text-sm">⚠️ 目前已暫停接單。顧客無法送出訂單。</p>
+                        <p class="text-red-400 text-sm">⚠️ 目前已暫停線上點餐。index 顧客無法送出訂單，桌邊點餐不受影響。</p>
+                    </div>
+                </div>
+
+                <!-- 桌邊點餐接單開關 -->
+                <div class="bg-slate-800 rounded-xl border border-slate-700 p-5">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="font-bold text-white">桌邊點餐接單開關</p>
+                            <p class="text-slate-400 text-sm mt-1">控制 dinein 桌邊點餐；關閉後顯示「暫停接單中」</p>
+                        </div>
+                        <label class="toggle-switch"><input type="checkbox" v-model="settings.dineinIsOpen"><span class="toggle-slider"></span></label>
+                    </div>
+                    <div v-if="!settings.dineinIsOpen" class="mt-3 bg-red-900/30 border border-red-800 rounded-lg p-3">
+                        <p class="text-red-400 text-sm">⚠️ 目前已暫停桌邊點餐。內用顧客無法送出桌邊訂單。</p>
                     </div>
                 </div>
 
@@ -1633,6 +1655,7 @@ window._doCountUp = function() {
                 })(),
                 statsStart: '', statsEnd: '',
                 statsOrders: [], statsLoading: false, allOrdersCache: null,
+                statsSearch: '',
                 remoteStatusOverrides: {},
                 statsSortKey: 'timestamp', statsSortDir: -1,
                 viewingOrder: null,
@@ -1657,6 +1680,7 @@ window._doCountUp = function() {
                 // Settings
                 settings: {
                     isOpen: true,
+                    dineinIsOpen: true,
                     openTime: '06:00', closeTime: '13:15',
                     dailyHours: {},
                     pickupDays: 3, pickupInterval: 30, linePayServerUrl: '', linePayConfirmUrl: '', announcements: [],
@@ -1780,11 +1804,37 @@ window._doCountUp = function() {
                     .filter(function(o){ var pm=this.getOrderPaymentMethodValue(o); return o.status !== 'cancelled' && !o.wasCancelled && (pm === 'linepay' || pm === 'linepay_offline' || pm === 'linepay_refund'); }.bind(this))
                     .reduce(function(s,o){ return s + (Number(this.getOrderTotalValue(o))||0); }.bind(this), 0);
             },
+            statsFilteredOrders: function() {
+                var keyword = String(this.statsSearch || '').trim().toLowerCase();
+                var rows = this.statsOrders || [];
+                if (!keyword) return rows;
+                return rows.filter(function(order) {
+                    var id = order && order.id ? String(order.id) : '';
+                    var orderNo = order && order.orderNo ? 'No.' + String(order.orderNo).padStart(3, '0') : '';
+                    var phone = order && (order.phone || (order.customer && order.customer.phone)) ? (order.phone || (order.customer && order.customer.phone)) : '';
+                    var fields = [
+                        orderNo,
+                        id,
+                        this.formatTimestamp(order && order.timestamp),
+                        this.getDisplayCustomerName(order || {}),
+                        phone,
+                        order && order.pickupDate ? order.pickupDate : '',
+                        this.getDisplayPickupTime(order && order.pickupTime),
+                        this.getStatsExportStatusText(order || {}),
+                        this.getOrderTotalValue(order || {}),
+                        this.statsPaymentBadgeText(order || {}),
+                        this.getStatsCsvItemSummary(order || {}),
+                        this.getDetailOrderNote(order || {})
+                    ].join(' ').toLowerCase();
+                    return fields.indexOf(keyword) !== -1;
+                }.bind(this));
+            },
             statsSortedOrders: function() {
                 var key = this.statsSortKey;
                 var dir = this.statsSortDir;
-                if (!key) return this.statsOrders;
-                return this.statsOrders.slice().sort(function(a, b) {
+                var rows = this.statsFilteredOrders || [];
+                if (!key) return rows;
+                return rows.slice().sort(function(a, b) {
                     var av, bv;
                     if (key === 'orderNo' || key === 'total') {
                         av = key === 'total' ? (Number(this.getOrderTotalValue(a)) || 0) : (Number(a[key]) || 0);
@@ -5241,6 +5291,7 @@ window._doCountUp = function() {
                         var wd = self.normalizeWeekDays(s.weeklyDaysOff);
                         self.settings = {
                             isOpen: s.isOpen !== false,
+                            dineinIsOpen: s.dineinIsOpen !== false,
                             openTime: s.openTime || '06:00',
                             closeTime: s.closeTime || '13:15',
                             dailyHours: s.dailyHours || {},
@@ -5276,6 +5327,7 @@ window._doCountUp = function() {
                 self.settingsSaving = true; self.settingsSaved = false;
                 update(ref(db, 'settings'), {
                     isOpen: self.settings.isOpen,
+                    dineinIsOpen: self.settings.dineinIsOpen !== false,
                     openTime: self.settings.openTime,
                     closeTime: self.settings.closeTime,
                     dailyHours: self.settings.dailyHours || {},
