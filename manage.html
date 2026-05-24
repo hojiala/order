@@ -280,7 +280,7 @@
                             </span>
                         </div>
                         <div class="p-3 flex-1 flex flex-col">
-                            <p class="text-xs text-emerald-400 font-bold mb-1">{{ item.category }}</p>
+                            <p class="text-xs text-emerald-400 font-bold mb-1">{{ item.category }}<span v-if="item.subCategory" class="text-slate-400"> / {{ item.subCategory }}</span></p>
                             <h3 class="font-bold text-white text-sm mb-1 flex-1">{{ item.name }}</h3>
                             <p class="text-red-400 font-bold text-base">${{ item.price }}</p>
                         </div>
@@ -301,10 +301,10 @@
             </div>
 
             <!-- ▸ 分類管理 (moved from settings) -->
-            <div v-if="menuSubTab==='categories'" class="max-w-xl">
+            <div v-if="menuSubTab==='categories'" class="max-w-4xl">
                 <div class="bg-slate-800 rounded-xl border border-slate-700 p-5">
                     <div class="flex items-center gap-2 mb-1"><span class="text-blue-400 text-lg">🏷️</span><p class="font-bold text-white">菜單分類管理</p></div>
-                    <p class="text-slate-400 text-sm mb-4">新增或刪除分類，拖曳或按↑↓調整順序。</p>
+                    <p class="text-slate-400 text-sm mb-4">新增或刪除大分類，也可在大分類下建立子分類。</p>
                     <div class="flex gap-2 mb-4">
                         <input v-model="newCategoryName" type="text" placeholder="輸入新分類名稱（例：燒肉飯）"
                             @keyup.enter="addCategory"
@@ -313,27 +313,47 @@
                     </div>
                     <div class="space-y-2">
                         <div v-for="(cat, idx) in allCategories" :key="cat"
-                             class="flex items-center justify-between bg-slate-700 rounded-lg px-3 py-2.5 drag-item"
+                             class="bg-slate-700 rounded-lg px-3 py-3 drag-item"
                              :class="{'ring-2 ring-blue-400 opacity-60': dragIdx===idx && dragType==='cat', 'ring-1 ring-slate-500': dragIdx!==null && dragIdx!==idx && dragType==='cat'}"
                              draggable="true"
                              @dragstart="catDragStart($event, idx)"
                              @dragover.prevent="dragOverIdx=idx; dragType='cat'"
                              @drop.prevent="catDrop($event, idx)"
                              @dragend="dragIdx=null; dragOverIdx=null">
-                            <div class="flex items-center gap-2">
-                                <span class="text-slate-500 cursor-grab text-sm">⠿</span>
-                                <div class="flex flex-col gap-0.5">
-                                    <button @click="moveCatUp(idx)" :disabled="idx===0" class="text-slate-500 hover:text-white disabled:opacity-20 text-xs leading-none transition">▲</button>
-                                    <button @click="moveCatDown(idx)" :disabled="idx===allCategories.length-1" class="text-slate-500 hover:text-white disabled:opacity-20 text-xs leading-none transition">▼</button>
+                            <div class="flex items-center justify-between gap-3">
+                                <div class="flex items-center gap-2 min-w-0">
+                                    <span class="text-slate-500 cursor-grab text-sm">⠿</span>
+                                    <div class="flex flex-col gap-0.5">
+                                        <button @click="moveCatUp(idx)" :disabled="idx===0" class="text-slate-500 hover:text-white disabled:opacity-20 text-xs leading-none transition">▲</button>
+                                        <button @click="moveCatDown(idx)" :disabled="idx===allCategories.length-1" class="text-slate-500 hover:text-white disabled:opacity-20 text-xs leading-none transition">▼</button>
+                                    </div>
+                                    <span class="text-white text-sm font-medium truncate">{{ cat }}</span>
+                                    <span class="text-slate-500 text-xs flex-shrink-0">（{{ menuItems.filter(function(i){return i.category===cat;}).length }} 項）</span>
+                                    <button @click="togglePosOnly(cat)" :class="(settings.posOnlyCategories||[]).indexOf(cat)!==-1?'bg-purple-600 text-white':'bg-slate-600 text-slate-400'" class="text-xs px-2 py-0.5 rounded-full font-bold transition ml-1 flex-shrink-0">{{ (settings.posOnlyCategories||[]).indexOf(cat)!==-1?'🔒POS專用':'👁️公開' }}</button>
                                 </div>
-                                <span class="text-white text-sm font-medium">{{ cat }}</span>
-                                <span class="text-slate-500 text-xs">（{{ menuItems.filter(function(i){return i.category===cat;}).length }} 項）</span>
-                                <button @click="togglePosOnly(cat)" :class="(settings.posOnlyCategories||[]).indexOf(cat)!==-1?'bg-purple-600 text-white':'bg-slate-600 text-slate-400'" class="text-xs px-2 py-0.5 rounded-full font-bold transition ml-1">{{ (settings.posOnlyCategories||[]).indexOf(cat)!==-1?'🔒POS專用':'👁️公開' }}</button>
+                                <button @click="removeCategory(cat, idx)" class="text-slate-400 hover:text-red-400 transition text-lg leading-none flex-shrink-0">×</button>
                             </div>
-                            <button @click="removeCategory(cat, idx)" class="text-slate-400 hover:text-red-400 transition text-lg leading-none">×</button>
+                            <div class="mt-3 pl-7 border-l border-slate-600/70" @mousedown.stop @touchstart.stop @dragstart.stop>
+                                <div v-if="subCategoriesFor(cat).length" class="flex flex-wrap gap-2 mb-3">
+                                    <span v-for="(sub, si) in subCategoriesFor(cat)" :key="cat + '-' + sub"
+                                          class="inline-flex items-center gap-1 bg-slate-800 text-slate-200 border border-slate-600 rounded-full px-3 py-1 text-xs">
+                                        <button @click="moveSubCategory(cat, si, -1)" :disabled="si===0" class="text-slate-500 hover:text-white disabled:opacity-20">▲</button>
+                                        <button @click="moveSubCategory(cat, si, 1)" :disabled="si===subCategoriesFor(cat).length-1" class="text-slate-500 hover:text-white disabled:opacity-20">▼</button>
+                                        <span>{{ sub }}</span>
+                                        <span class="text-slate-500">({{ menuItems.filter(function(i){return i.category===cat && i.subCategory===sub;}).length }})</span>
+                                        <button @click="removeSubCategory(cat, sub)" class="text-slate-500 hover:text-red-400 ml-1">×</button>
+                                    </span>
+                                </div>
+                                <div class="flex gap-2">
+                                    <input v-model="newSubCategoryNames[cat]" type="text" placeholder="新增子分類（例：新品上市）"
+                                        @keyup.enter="addSubCategory(cat)"
+                                        class="flex-1 min-w-0 bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-white text-xs placeholder-slate-500 focus:outline-none focus:border-emerald-500">
+                                    <button @click="addSubCategory(cat)" class="bg-emerald-700 hover:bg-emerald-600 text-white px-3 py-2 rounded-lg font-bold transition text-xs">新增子分類</button>
+                                </div>
+                            </div>
                         </div>
                     </div>
-                    <p class="text-slate-500 text-xs mt-3">＊ 分類順序將在點擊「儲存設定」後寫入 Firebase</p>
+                    <p class="text-slate-500 text-xs mt-3">＊ 大分類與子分類順序將在點擊「儲存分類」後寫入 Firebase</p>
                     <button @click="saveSettings" :disabled="settingsSaving" class="mt-3 bg-blue-700 hover:bg-blue-600 disabled:opacity-50 text-white font-bold px-6 py-2 rounded-lg text-sm transition">
                         <span v-if="settingsSaving">儲存中...</span><span v-else-if="settingsSaved">✅ 已儲存</span><span v-else>儲存分類</span>
                     </button>
@@ -1313,10 +1333,19 @@
                 </div>
                 <div>
                     <label class="block text-slate-400 text-xs font-bold uppercase tracking-wider mb-2">分類 *</label>
-                    <select v-model="form.category"
+                    <select v-model="form.category" @change="syncFormSubCategory"
                         class="w-full bg-slate-700 border border-slate-600 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:border-emerald-500 text-sm">
                         <option v-for="cat in allCategories" :key="cat" :value="cat">{{ cat }}</option>
                     </select>
+                </div>
+                <div>
+                    <label class="block text-slate-400 text-xs font-bold uppercase tracking-wider mb-2">子分類</label>
+                    <select v-model="form.subCategory" :disabled="subCategoriesFor(form.category).length === 0"
+                        class="w-full bg-slate-700 border border-slate-600 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:border-emerald-500 text-sm disabled:opacity-50">
+                        <option value="">不指定子分類</option>
+                        <option v-for="sub in subCategoriesFor(form.category)" :key="form.category + '-' + sub" :value="sub">{{ sub }}</option>
+                    </select>
+                    <p class="text-slate-500 text-xs mt-1">先到「分類管理」在大分類底下新增子分類，這裡就能指定。</p>
                 </div>
                 <div>
                     <label class="block text-slate-400 text-xs font-bold uppercase tracking-wider mb-2">工作站</label>
@@ -1587,7 +1616,7 @@ window._doCountUp = function() {
                 menuItems: [], menuLoading: true, filterCat: '',
                 // Modal
                 showModal: false, isEditing: false, isSaving: false,
-                form: { id:null, name:'', price:'', category:'蛋餅、燒餅', desc:'', img:'', options:[], optionGroups:[], posExtras:[], station:'麵包台', availableAfter:'', active:true },
+                form: { id:null, name:'', price:'', category:'蛋餅、燒餅', subCategory:'', desc:'', img:'', options:[], optionGroups:[], posExtras:[], station:'麵包台', availableAfter:'', active:true },
                 // Templates
                 optionTemplates: [],
                 showTemplateDropdown: false,
@@ -1635,6 +1664,7 @@ window._doCountUp = function() {
                     weeklyDaysOff: [0],
                     dailyThemes: { 0:'#64748B', 1:'#3B82F6', 2:'#10B981', 3:'#F59E0B', 4:'#8B5CF6', 5:'#EC4899', 6:'#EF4444' },
                     categories: ['套餐','單點','蛋餅、燒餅','漢堡、蝸牛堡','吐司、厚片','其它、飲品'],
+                    categorySubcategories: {},
                     stations: [
                         { name: '湯麵', ip: '192.168.0.6' },
                         { name: '麵包台', ip: '192.168.0.7' },
@@ -1668,6 +1698,7 @@ window._doCountUp = function() {
                 menuAliasEditIdx: -1,
                 menuAliasForm: { alias: '', official: '' },
                 newCategoryName: '',
+                newSubCategoryNames: {},
                 newPosTable: '',
                 newStationName: '',
                 newStationIp: '',
@@ -3288,7 +3319,7 @@ window._doCountUp = function() {
             },
             openAddModal: function() {
                 this.form = {
-                    id:null, name:'', price:'', category: this.allCategories[0]||'蛋餅、燒餅',
+                    id:null, name:'', price:'', category: this.allCategories[0]||'蛋餅、燒餅', subCategory:'',
                     desc:'', img:'', options:[], optionGroups:[], posExtras:[],
                     station: this.getDefaultStationName(), availableAfter:'', active:true
                 };
@@ -3299,6 +3330,7 @@ window._doCountUp = function() {
                 this.form = {
                     id: item.id, name: item.name||'', price: item.price||'',
                     category: item.category||this.allCategories[0]||'蛋餅、燒餅',
+                    subCategory: this.normalizeItemSubCategory(item.category||this.allCategories[0]||'蛋餅、燒餅', item.subCategory),
                     desc: item.desc||'', img: item.img||'',
                     options: item.options ? JSON.parse(JSON.stringify(item.options)) : [],
                     optionGroups: item.optionGroups ? JSON.parse(JSON.stringify(item.optionGroups)) : [],
@@ -3375,6 +3407,7 @@ window._doCountUp = function() {
                     name: this.form.name.trim(),
                     price: Number(this.form.price),
                     category: this.form.category,
+                    subCategory: this.normalizeItemSubCategory(this.form.category, this.form.subCategory),
                     desc: this.form.desc.trim(),
                     img: this.form.img || '',
                     options: this.form.options.filter(function(o) { return o.name.trim(); }),
@@ -5217,6 +5250,7 @@ window._doCountUp = function() {
                             weeklyDaysOff: wd,
                             dailyThemes: (s.dailyThemes && typeof s.dailyThemes === 'object') ? s.dailyThemes : { 0:'#64748B', 1:'#3B82F6', 2:'#10B981', 3:'#F59E0B', 4:'#8B5CF6', 5:'#EC4899', 6:'#EF4444' },
                             categories: s.categories || ['套餐','單點','蛋餅、燒餅','漢堡、蝸牛堡','吐司、厚片','其它、飲品'],
+                            categorySubcategories: self.normalizeCategorySubcategories(s.categorySubcategories, s.categories || ['套餐','單點','蛋餅、燒餅','漢堡、蝸牛堡','吐司、厚片','其它、飲品']),
                             stations: (s.stations && s.stations.length) ? s.stations : (self.settings.stations || []),
                             storeInfo: s.storeInfo || '',
                             storePhone: s.storePhone || '',
@@ -5251,6 +5285,7 @@ window._doCountUp = function() {
                     weeklyDaysOff: self.normalizeWeekDays(self.settings.weeklyDaysOff),
                     dailyThemes: self.settings.dailyThemes || { 0:'#64748B', 1:'#3B82F6', 2:'#10B981', 3:'#F59E0B', 4:'#8B5CF6', 5:'#EC4899', 6:'#EF4444' },
                     categories: self.settings.categories || [],
+                    categorySubcategories: self.normalizeCategorySubcategories(self.settings.categorySubcategories, self.settings.categories || []),
                     storeInfo: self.settings.storeInfo || '',
                     storePhone: self.settings.storePhone || '',
                     storeAddress: self.settings.storeAddress || '',
@@ -5345,12 +5380,70 @@ window._doCountUp = function() {
                 else if (!isNaN(day)) arr.push(day);
             },
             // 分類管理
+            normalizeCategorySubcategories: function(raw, categories) {
+                var source = (raw && typeof raw === 'object') ? raw : {};
+                var cats = Array.isArray(categories) ? categories : [];
+                var result = {};
+                cats.forEach(function(cat) {
+                    var list = source[cat];
+                    if (!Array.isArray(list) && list && typeof list === 'object') list = Object.values(list);
+                    if (!Array.isArray(list)) list = [];
+                    var seen = {};
+                    result[cat] = list.map(function(v) { return String(v || '').trim(); })
+                        .filter(function(v) {
+                            if (!v || seen[v]) return false;
+                            seen[v] = true;
+                            return true;
+                        });
+                });
+                return result;
+            },
+            subCategoriesFor: function(cat) {
+                var map = this.settings.categorySubcategories || {};
+                var list = map[cat];
+                return Array.isArray(list) ? list : [];
+            },
+            normalizeItemSubCategory: function(cat, sub) {
+                var name = String(sub || '').trim();
+                if (!name) return '';
+                return this.subCategoriesFor(cat).indexOf(name) !== -1 ? name : '';
+            },
+            syncFormSubCategory: function() {
+                this.form.subCategory = this.normalizeItemSubCategory(this.form.category, this.form.subCategory);
+            },
             addCategory: function() {
                 var name = (this.newCategoryName || '').trim();
                 if (!name) return;
                 if (this.settings.categories.indexOf(name) !== -1) { alert('此分類已存在'); return; }
                 this.settings.categories.push(name);
+                if (!this.settings.categorySubcategories) this.settings.categorySubcategories = {};
+                this.settings.categorySubcategories[name] = [];
                 this.newCategoryName = '';
+            },
+            addSubCategory: function(cat) {
+                var name = String((this.newSubCategoryNames && this.newSubCategoryNames[cat]) || '').trim();
+                if (!name) return;
+                if (!this.settings.categorySubcategories) this.settings.categorySubcategories = {};
+                if (!Array.isArray(this.settings.categorySubcategories[cat])) this.settings.categorySubcategories[cat] = [];
+                if (this.settings.categorySubcategories[cat].indexOf(name) !== -1) { alert('此子分類已存在'); return; }
+                this.settings.categorySubcategories[cat].push(name);
+                this.newSubCategoryNames[cat] = '';
+            },
+            removeSubCategory: function(cat, sub) {
+                var count = this.menuItems.filter(function(i) { return i.category === cat && i.subCategory === sub; }).length;
+                var msg = count > 0
+                    ? ('刪除「' + cat + ' / ' + sub + '」？\n此子分類有 ' + count + ' 項餐點，餐點不會被刪除，但會保留目前子分類文字。')
+                    : ('確定刪除子分類「' + sub + '」？');
+                if (!confirm(msg)) return;
+                if (!this.settings.categorySubcategories || !Array.isArray(this.settings.categorySubcategories[cat])) return;
+                this.settings.categorySubcategories[cat] = this.settings.categorySubcategories[cat].filter(function(s) { return s !== sub; });
+            },
+            moveSubCategory: function(cat, idx, dir) {
+                if (!this.settings.categorySubcategories || !Array.isArray(this.settings.categorySubcategories[cat])) return;
+                var arr = this.settings.categorySubcategories[cat];
+                var to = idx + dir;
+                if (to < 0 || to >= arr.length) return;
+                var tmp = arr[to]; arr[to] = arr[idx]; arr[idx] = tmp;
             },
             removeCategory: function(cat) {
                 var count = this.menuItems.filter(function(i) { return i.category === cat; }).length;
@@ -5359,6 +5452,8 @@ window._doCountUp = function() {
                     : ('確定刪除分類「' + cat + '」？');
                 if (!confirm(msg)) return;
                 this.settings.categories = this.settings.categories.filter(function(c) { return c !== cat; });
+                if (this.settings.categorySubcategories) delete this.settings.categorySubcategories[cat];
+                if (this.settings.posOnlyCategories) this.settings.posOnlyCategories = this.settings.posOnlyCategories.filter(function(c) { return c !== cat; });
             },
             moveCatUp: function(idx) {
                 if (idx === 0) return;

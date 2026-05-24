@@ -177,20 +177,25 @@
                 <div v-if="filteredMenu.length===0" class="text-center py-20 text-gray-300">
                     <div class="text-4xl mb-2">🍽️</div><p class="text-sm">此分類暫無餐點</p>
                 </div>
-                <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 md:gap-4 lg:gap-5">
-                    <div v-for="item in filteredMenu" :key="item.id"
-                         class="card bg-white rounded-2xl overflow-hidden border border-gray-100 shadow-sm relative cursor-pointer"
-                         @click="openDetail(item)">
-                        <div v-if="getQty(item.id)>0" class="qty-badge">{{ getQty(item.id) }}</div>
-                        <div class="bg-gray-100 overflow-hidden" style="aspect-ratio:4/3">
-                            <img v-if="item.img" :src="item.img" class="w-full h-full object-cover" loading="lazy">
-                            <div v-else class="w-full h-full flex items-center justify-center text-gray-200 text-3xl">🍽️</div>
-                        </div>
-                        <div class="p-3">
-                            <h3 class="font-bold text-gray-800 text-sm mb-1" style="display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;line-height:1.4">{{ item.name }}</h3>
-                            <div class="flex items-center justify-between">
-                                <span class="text-orange-500 font-black text-base">${{ item.price }}</span>
-                                <button @click.stop="quickAdd(item)" class="w-9 h-9 active:scale-90 rounded-full flex items-center justify-center text-white shadow-md text-xl transition" style="flex-shrink:0;background:var(--day-theme,#f97316);">+</button>
+                <div v-for="group in groupedCurrentMenu" :key="group.label || '__main__'" class="mb-8">
+                    <div v-if="group.label" class="mb-4 border-b border-gray-200">
+                        <span class="inline-block text-gray-700 text-sm font-bold pb-2 border-b-4" style="border-color:var(--day-theme,#f97316);">{{ group.label }}</span>
+                    </div>
+                    <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 md:gap-4 lg:gap-5">
+                        <div v-for="item in group.items" :key="item.id"
+                             class="card bg-white rounded-2xl overflow-hidden border border-gray-100 shadow-sm relative cursor-pointer"
+                             @click="openDetail(item)">
+                            <div v-if="getQty(item.id)>0" class="qty-badge">{{ getQty(item.id) }}</div>
+                            <div class="bg-gray-100 overflow-hidden" style="aspect-ratio:4/3">
+                                <img v-if="item.img" :src="item.img" class="w-full h-full object-cover" loading="lazy">
+                                <div v-else class="w-full h-full flex items-center justify-center text-gray-200 text-3xl">🍽️</div>
+                            </div>
+                            <div class="p-3">
+                                <h3 class="font-bold text-gray-800 text-sm mb-1" style="display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;line-height:1.4">{{ item.name }}</h3>
+                                <div class="flex items-center justify-between">
+                                    <span class="text-orange-500 font-black text-base">${{ item.price }}</span>
+                                    <button @click.stop="quickAdd(item)" class="w-9 h-9 active:scale-90 rounded-full flex items-center justify-center text-white shadow-md text-xl transition" style="flex-shrink:0;background:var(--day-theme,#f97316);">+</button>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -586,7 +591,7 @@
             isLoading:true,
             settings:{isOpen:true,openTime:'06:00',closeTime:'13:15',weeklyDaysOff:[],holidays:[],dailyHours:{},pickupInterval:15,linePayServerUrl:'',linePayConfirmUrl:'',announcements:[]},settingsStationsLoaded:false,
             // 菜單
-            categories:[], currentCategory:'', menu:[],
+            categories:[], currentCategory:'', menu:[], categorySubcategories:{},
             // 點餐
             currentView:'menu', activeItem:null,
             showAnnModal:false, annModalText:'', shownAnnCats:{},
@@ -627,6 +632,25 @@
                 return hhmm<open||hhmm>=close;
             },
             filteredMenu:function(){var s=this;return s.menu.filter(function(i){return i.category===s.currentCategory&&s.isItemAvailable(i)})},
+            groupedCurrentMenu:function(){
+                var items=this.filteredMenu||[];
+                var order=((this.categorySubcategories||{})[this.currentCategory]||[]).slice();
+                var hasSub=items.some(function(item){return order.indexOf(String((item&&item.subCategory)||'').trim())!==-1});
+                if(!hasSub)return[{label:'',items:items}];
+                var buckets={};
+                items.forEach(function(item){
+                    var rawLabel=String((item&&item.subCategory)||'').trim();
+                    var label=order.indexOf(rawLabel)!==-1?rawLabel:'';
+                    if(!buckets[label]){
+                        buckets[label]=[];
+                    }
+                    buckets[label].push(item);
+                });
+                var groups=[];
+                if(buckets[''])groups.push({label:'',items:buckets['']});
+                order.forEach(function(label){if(buckets[label]&&buckets[label].length)groups.push({label:label,items:buckets[label]})});
+                return groups;
+            },
             cartCount:function(){return this.cart.reduce(function(s,i){return s+i.qty},0)},
             cartTotal:function(){return this.cart.reduce(function(s,i){return s+(Number(i.itemTotal)||0)},0)},
             estimatedWait:function(){return this.pendingCount>0?(this.settings.pickupInterval||15):0},
@@ -722,6 +746,23 @@
             }
         },
         methods:{
+            normalizeCategorySubcategories:function(raw,categories){
+                var source=(raw&&typeof raw==='object')?raw:{};
+                var cats=Array.isArray(categories)?categories:[];
+                var result={};
+                cats.forEach(function(cat){
+                    var list=source[cat];
+                    if(!Array.isArray(list)&&list&&typeof list==='object')list=Object.values(list);
+                    if(!Array.isArray(list))list=[];
+                    var seen={};
+                    result[cat]=list.map(function(v){return String(v||'').trim()}).filter(function(v){
+                        if(!v||seen[v])return false;
+                        seen[v]=true;
+                        return true;
+                    });
+                });
+                return result;
+            },
             getDefaultStationName:function(){
                 var sts=this.settings.stations||[];
                 for(var i=0;i<sts.length;i++){
@@ -798,6 +839,7 @@
                         var hasStationSettings=!!(v.stations&&v.stations.length);
                         s.settings={isOpen:v.isOpen!==false,openTime:v.openTime||'06:00',closeTime:v.closeTime||'13:15',
                             weeklyDaysOff:Array.isArray(v.weeklyDaysOff)?v.weeklyDaysOff:(v.weeklyDaysOff?Object.values(v.weeklyDaysOff):[]),holidays:v.holidays||[],dailyHours:v.dailyHours||{},pickupInterval:v.pickupInterval||15,linePayServerUrl:v.linePayServerUrl||'',linePayConfirmUrl:v.linePayConfirmUrl||'',announcements:v.announcements||[],stations:hasStationSettings?v.stations:defaultStations,posOnlyCategories:v.posOnlyCategories||[]};
+                        s.categorySubcategories=s.normalizeCategorySubcategories(v.categorySubcategories,v.categories||s.categories);
                         s.settingsStationsLoaded=hasStationSettings;
                         // ★ 設定更新時，自動重新檢查當前分類的公告（即時開啟/關閉公告視窗）
                         // 只有在初始化完成後才重新檢查，避免初次 onValue 觸發把全站公告關掉
@@ -816,6 +858,7 @@
                         var hasStationSettings=!!(v.stations&&v.stations.length);
                         s.settings={isOpen:v.isOpen!==false,openTime:v.openTime||'06:00',closeTime:v.closeTime||'13:15',
                             weeklyDaysOff:Array.isArray(v.weeklyDaysOff)?v.weeklyDaysOff:(v.weeklyDaysOff?Object.values(v.weeklyDaysOff):[]),holidays:v.holidays||[],dailyHours:v.dailyHours||{},pickupInterval:v.pickupInterval||15,linePayServerUrl:v.linePayServerUrl||'',linePayConfirmUrl:v.linePayConfirmUrl||'',announcements:v.announcements||[],stations:hasStationSettings?v.stations:defaultStations,posOnlyCategories:v.posOnlyCategories||[]};
+                        s.categorySubcategories=s.normalizeCategorySubcategories(v.categorySubcategories,v.categories||s.categories);
                         s.settingsStationsLoaded=hasStationSettings;
                         s.devicePassword=v.dineinPassword||'0000';
                         // ★ 顯示全站公告
@@ -838,6 +881,7 @@
                     return get(ref(db,'settings')).then(function(sv2){
                         var sv=sv2.exists()?sv2.val():{};
                         var ORDER=sv.categories||['套餐','單點','蛋餅、燒餅','漢堡、蝸牛堡','吐司、厚片','其它、飲品'];
+                        s.categorySubcategories=s.normalizeCategorySubcategories(sv.categorySubcategories,ORDER);
                         var posOnly=sv.posOnlyCategories||[];
                         var found=[];
                         items.forEach(function(i){if(i.category&&found.indexOf(i.category)===-1)found.push(i.category)});

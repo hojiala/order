@@ -141,22 +141,27 @@
                     <div style="font-size:3rem;margin-bottom:0.75rem;">🍽</div>
                     <p class="text-sm">此分類暫無餐點</p>
                 </div>
-                <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 md:gap-4 lg:gap-5">
-                    <div v-for="item in filteredMenu" :key="item.id"
-                         class="menu-card bg-white rounded-2xl overflow-hidden border border-gray-100 shadow-sm relative cursor-pointer"
-                         @click="handleCardClick(item, $event)">
-                        <div v-if="getItemQty(item.id) > 0" class="qty-badge">{{ getItemQty(item.id) }}</div>
-                        <div class="bg-gray-100 overflow-hidden" style="aspect-ratio:4/3;">
-                            <img v-if="item.img" :src="item.img" class="w-full h-full object-cover" loading="lazy" decoding="async" style="display:block;">
-                            <div v-else class="w-full h-full flex items-center justify-center text-gray-200" style="font-size:2rem;">🍽</div>
-                        </div>
-                        <div class="p-3">
-                            <h3 class="font-bold text-gray-800 text-sm mb-1" style="line-height:1.4;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;">{{ item.name }}</h3>
-                            <p class="text-gray-400 text-xs mb-2" style="overflow:hidden;display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;">{{ item.desc }}</p>
-                            <div class="flex items-center justify-between">
-                                <span class="text-orange-500 font-black text-base">${{ item.price }}</span>
-                                <button @click.stop="quickAddOrDetail(item)" class="plus-btn w-9 h-9 active:scale-90 rounded-full flex items-center justify-center text-white shadow-md"
-                                    style="font-size:1.5rem;line-height:1;flex-shrink:0;touch-action:manipulation;background:var(--day-theme,#f97316);">+</button>
+                <div v-for="group in groupedCurrentMenu" :key="group.label || '__main__'" class="mb-8">
+                    <div v-if="group.label" class="mb-4 border-b border-gray-200">
+                        <span class="inline-block text-gray-700 text-sm font-bold pb-2 border-b-4" style="border-color:var(--day-theme,#f97316);">{{ group.label }}</span>
+                    </div>
+                    <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 md:gap-4 lg:gap-5">
+                        <div v-for="item in group.items" :key="item.id"
+                             class="menu-card bg-white rounded-2xl overflow-hidden border border-gray-100 shadow-sm relative cursor-pointer"
+                             @click="handleCardClick(item, $event)">
+                            <div v-if="getItemQty(item.id) > 0" class="qty-badge">{{ getItemQty(item.id) }}</div>
+                            <div class="bg-gray-100 overflow-hidden" style="aspect-ratio:4/3;">
+                                <img v-if="item.img" :src="item.img" class="w-full h-full object-cover" loading="lazy" decoding="async" style="display:block;">
+                                <div v-else class="w-full h-full flex items-center justify-center text-gray-200" style="font-size:2rem;">🍽</div>
+                            </div>
+                            <div class="p-3">
+                                <h3 class="font-bold text-gray-800 text-sm mb-1" style="line-height:1.4;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;">{{ item.name }}</h3>
+                                <p class="text-gray-400 text-xs mb-2" style="overflow:hidden;display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;">{{ item.desc }}</p>
+                                <div class="flex items-center justify-between">
+                                    <span class="text-orange-500 font-black text-base">${{ item.price }}</span>
+                                    <button @click.stop="quickAddOrDetail(item)" class="plus-btn w-9 h-9 active:scale-90 rounded-full flex items-center justify-center text-white shadow-md"
+                                        style="font-size:1.5rem;line-height:1;flex-shrink:0;touch-action:manipulation;background:var(--day-theme,#f97316);">+</button>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -651,7 +656,7 @@
                 currentView: 'menu',
                 categories: [],
                 currentCategory: '',
-                menu: [],
+                menu: [], categorySubcategories: {},
                 orderType: 'takeout',
                 pickupDate: '',
                 pickupTime: '',
@@ -698,6 +703,29 @@
                 return this.menu.filter(function(i) {
                     return i.category === this.currentCategory && this.isItemAvailable(i);
                 }.bind(this));
+            },
+            groupedCurrentMenu: function() {
+                var items = this.filteredMenu || [];
+                var order = ((this.categorySubcategories || {})[this.currentCategory] || []).slice();
+                var hasSub = items.some(function(item) {
+                    return order.indexOf(String((item && item.subCategory) || '').trim()) !== -1;
+                });
+                if (!hasSub) return [{ label: '', items: items }];
+                var buckets = {};
+                items.forEach(function(item) {
+                    var rawLabel = String((item && item.subCategory) || '').trim();
+                    var label = order.indexOf(rawLabel) !== -1 ? rawLabel : '';
+                    if (!buckets[label]) {
+                        buckets[label] = [];
+                    }
+                    buckets[label].push(item);
+                });
+                var groups = [];
+                if (buckets['']) groups.push({ label: '', items: buckets[''] });
+                order.forEach(function(label) {
+                    if (buckets[label] && buckets[label].length) groups.push({ label: label, items: buckets[label] });
+                });
+                return groups;
             },
             cartCount: function() {
                 return this.cart.reduce(function(s, i) { return s + i.qty; }, 0);
@@ -765,6 +793,24 @@
             this.init();
         },
         methods: {
+            normalizeCategorySubcategories: function(raw, categories) {
+                var source = (raw && typeof raw === 'object') ? raw : {};
+                var cats = Array.isArray(categories) ? categories : [];
+                var result = {};
+                cats.forEach(function(cat) {
+                    var list = source[cat];
+                    if (!Array.isArray(list) && list && typeof list === 'object') list = Object.values(list);
+                    if (!Array.isArray(list)) list = [];
+                    var seen = {};
+                    result[cat] = list.map(function(v) { return String(v || '').trim(); })
+                        .filter(function(v) {
+                            if (!v || seen[v]) return false;
+                            seen[v] = true;
+                            return true;
+                        });
+                });
+                return result;
+            },
             getDefaultStationName: function() {
                 var sts = this.settings.stations || [];
                 for (var i = 0; i < sts.length; i++) {
@@ -828,6 +874,7 @@
                             posOnlyCategories: s.posOnlyCategories || [],
                             cancelLimitMinutes: s.cancelLimitMinutes || 15
                         };
+                        self.categorySubcategories = self.normalizeCategorySubcategories(s.categorySubcategories, s.categories || self.categories);
                         self.storeInfo = s.storeInfo || '';
                         self.storePhone = s.storePhone || '';
                         self.storeAddress = s.storeAddress || '';
@@ -886,6 +933,7 @@
                             posOnlyCategories: s.posOnlyCategories || [],
                             cancelLimitMinutes: s.cancelLimitMinutes || 15
                         };
+                        self.categorySubcategories = self.normalizeCategorySubcategories(s.categorySubcategories, s.categories || self.categories);
                         // ★ 顯示全站公告
                         self.$nextTick(function() { self.checkAnnouncements(); });
                     }
@@ -913,6 +961,7 @@
                         get(ref(db, 'settings')).then(function(setSnap) {
                             var sv = setSnap.exists() ? setSnap.val() : {};
                             var ORDER = sv.categories || ['套餐','單點','蛋餅、燒餅','漢堡、蝸牛堡','吐司、厚片','其它、飲品'];
+                            self.categorySubcategories = self.normalizeCategorySubcategories(sv.categorySubcategories, ORDER);
                             var posOnly = sv.posOnlyCategories || [];
                             var found = [];
                             items.forEach(function(i) { if (i.category && found.indexOf(i.category) === -1) found.push(i.category); });
