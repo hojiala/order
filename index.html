@@ -68,7 +68,7 @@
 
 <div id="app" v-cloak class="w-full lg:max-w-6xl mx-auto min-h-screen bg-white md:shadow-2xl relative md:my-4 md:rounded-2xl md:overflow-hidden border border-gray-100 flex flex-col">
 
-    <div v-if="isLoading" class="flex-1 flex flex-col items-center justify-center bg-white min-h-[80vh]">
+    <div v-if="isLoading || !menuReady" class="flex-1 flex flex-col items-center justify-center bg-white min-h-[80vh]">
         <div class="w-14 h-14 border-4 border-orange-200 border-t-orange-500 rounded-full spin mb-5"></div>
         <p class="text-gray-400 text-sm font-medium">菜單載入中...</p>
     </div>
@@ -644,6 +644,7 @@
         data() {
             return {
                 isLoading: true,
+                menuReady: false,
                 settings: {
                     isOpen: true,
                     openTime: '06:00',
@@ -903,6 +904,7 @@
                     });
                 }).catch(function(e) {
                     console.error('init error:', e);
+                    self.menuReady = true;
                     self.isLoading = false;
                     self.initDateTime();
                 });
@@ -941,39 +943,54 @@
             },
             loadMenu: function() {
                 var self = this;
+                self.menuReady = false;
+                var applyMenuSettings = function(items, sv) {
+                    sv = sv || {};
+                    var ORDER = sv.categories || ['套餐','單點','蛋餅、燒餅','漢堡、蝸牛堡','吐司、厚片','其它、飲品'];
+                    self.categorySubcategories = self.normalizeCategorySubcategories(sv.categorySubcategories, ORDER);
+                    var posOnly = sv.posOnlyCategories || [];
+                    var found = [];
+                    items.forEach(function(i) { if (i.category && found.indexOf(i.category) === -1) found.push(i.category); });
+                    var cats = ORDER.filter(function(c) { return found.indexOf(c) !== -1 && posOnly.indexOf(c) === -1; });
+                    found.forEach(function(c) { if (cats.indexOf(c) === -1 && posOnly.indexOf(c) === -1) cats.push(c); });
+                    self.menu = posOnly.length ? items.filter(function(i) { return posOnly.indexOf(i.category) === -1; }) : items;
+                    self.categories = cats;
+                    self.currentCategory = cats.length ? cats[0] : '';
+                    self.$nextTick(function() { self._menuLoaded = true; });
+                };
                 return get(ref(db, 'menu')).then(function(snap) {
-                    if (snap.exists()) {
-                        var data = snap.val();
-                        var items = [];
-                        for (var id in data) {
-                            if (data[id] && data[id].active !== false) {
-                                var item = Object.assign({ id: id }, data[id]);
-                                items.push(item);
-                            }
-                        }
-                        items.sort(function(a, b) {
-                            if (a.sortOrder !== undefined && b.sortOrder !== undefined) return a.sortOrder - b.sortOrder;
-                            if (a.sortOrder !== undefined) return -1;
-                            if (b.sortOrder !== undefined) return 1;
-                            return (a.createdAt || 0) - (b.createdAt || 0);
-                        });
-                        self.menu = items;
-                        get(ref(db, 'settings')).then(function(setSnap) {
-                            var sv = setSnap.exists() ? setSnap.val() : {};
-                            var ORDER = sv.categories || ['套餐','單點','蛋餅、燒餅','漢堡、蝸牛堡','吐司、厚片','其它、飲品'];
-                            self.categorySubcategories = self.normalizeCategorySubcategories(sv.categorySubcategories, ORDER);
-                            var posOnly = sv.posOnlyCategories || [];
-                            var found = [];
-                            items.forEach(function(i) { if (i.category && found.indexOf(i.category) === -1) found.push(i.category); });
-                            var cats = ORDER.filter(function(c) { return found.indexOf(c) !== -1 && posOnly.indexOf(c) === -1; });
-                            found.forEach(function(c) { if (cats.indexOf(c) === -1 && posOnly.indexOf(c) === -1) cats.push(c); });
-                            if (posOnly.length) { self.menu = items.filter(function(i) { return posOnly.indexOf(i.category) === -1; }); }
-                            self.categories = cats;
-                            if (cats.length) self.currentCategory = cats[0];
-                            self.$nextTick(function() { self._menuLoaded = true; });
-                        });
+                    if (!snap.exists()) {
+                        self.menu = [];
+                        self.categories = [];
+                        self.currentCategory = '';
+                        self.categorySubcategories = {};
+                        return;
                     }
-                }).catch(function(e) { console.warn('菜單讀取失敗', e); });
+                    var data = snap.val();
+                    var items = [];
+                    for (var id in data) {
+                        if (data[id] && data[id].active !== false) {
+                            var item = Object.assign({ id: id }, data[id]);
+                            items.push(item);
+                        }
+                    }
+                    items.sort(function(a, b) {
+                        if (a.sortOrder !== undefined && b.sortOrder !== undefined) return a.sortOrder - b.sortOrder;
+                        if (a.sortOrder !== undefined) return -1;
+                        if (b.sortOrder !== undefined) return 1;
+                        return (a.createdAt || 0) - (b.createdAt || 0);
+                    });
+                    return get(ref(db, 'settings')).then(function(setSnap) {
+                        applyMenuSettings(items, setSnap.exists() ? setSnap.val() : {});
+                    }).catch(function(e) {
+                        console.warn('分類設定讀取失敗，使用菜單分類', e);
+                        applyMenuSettings(items, {});
+                    });
+                }).catch(function(e) {
+                    console.warn('菜單讀取失敗', e);
+                }).then(function() {
+                    self.menuReady = true;
+                });
             },
             initDateTime: function() {
                 var now = new Date();

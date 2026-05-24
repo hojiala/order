@@ -104,7 +104,7 @@
 
 <div v-else class="w-full lg:max-w-6xl mx-auto min-h-screen bg-white md:shadow-2xl relative md:my-4 md:rounded-2xl md:overflow-hidden border border-gray-100 flex flex-col">
 
-    <div v-if="isLoading" class="flex-1 flex flex-col items-center justify-center bg-white min-h-[80vh]">
+    <div v-if="isLoading || !menuReady" class="flex-1 flex flex-col items-center justify-center bg-white min-h-[80vh]">
         <div class="w-14 h-14 border-4 border-orange-200 border-t-orange-500 rounded-full spin mb-5"></div>
         <p class="text-gray-400 text-sm">菜單載入中...</p>
     </div>
@@ -588,7 +588,7 @@
             showPinVerify:false, pinInput:'', pinError:'', storePin:'',
             deviceId:'', deviceLabel:'', deviceType:'',
             // 設定
-            isLoading:true,
+            isLoading:true, menuReady:false,
             settings:{isOpen:true,dineinIsOpen:true,openTime:'06:00',closeTime:'13:15',weeklyDaysOff:[],holidays:[],dailyHours:{},pickupInterval:15,linePayServerUrl:'',linePayConfirmUrl:'',announcements:[]},settingsStationsLoaded:false,
             // 菜單
             categories:[], currentCategory:'', menu:[], categorySubcategories:{},
@@ -848,7 +848,7 @@
                         }
                         s._settingsLoaded=true;
                     });
-                }).catch(function(e){console.error(e);s.isLoading=false});
+                }).catch(function(e){console.error(e);s.menuReady=true;s.isLoading=false});
             },
             loadSettings:function(){
                 var s=this;
@@ -868,8 +868,26 @@
             },
             loadMenu:function(){
                 var s=this;
+                s.menuReady=false;
+                var applyMenuSettings=function(items,sv){
+                    sv=sv||{};
+                    var ORDER=sv.categories||['套餐','單點','蛋餅、燒餅','漢堡、蝸牛堡','吐司、厚片','其它、飲品'];
+                    s.categorySubcategories=s.normalizeCategorySubcategories(sv.categorySubcategories,ORDER);
+                    var posOnly=sv.posOnlyCategories||[];
+                    var found=[];
+                    items.forEach(function(i){if(i.category&&found.indexOf(i.category)===-1)found.push(i.category)});
+                    var cats=ORDER.filter(function(c){return found.indexOf(c)!==-1&&posOnly.indexOf(c)===-1});
+                    found.forEach(function(c){if(cats.indexOf(c)===-1&&posOnly.indexOf(c)===-1)cats.push(c)});
+                    s.menu=posOnly.length?items.filter(function(i){return posOnly.indexOf(i.category)===-1}):items;
+                    s.categories=cats;
+                    s.currentCategory=cats.length?cats[0]:'';
+                    s.$nextTick(function(){s._menuLoaded=true;});
+                };
                 return get(ref(db,'menu')).then(function(snap){
-                    if(!snap.exists())return;
+                    if(!snap.exists()){
+                        s.menu=[];s.categories=[];s.currentCategory='';s.categorySubcategories={};
+                        return;
+                    }
                     var d=snap.val(),items=[];
                     for(var id in d){if(d[id]&&d[id].active!==false)items.push(Object.assign({id:id},d[id]))}
                     items.sort(function(a,b){
@@ -877,21 +895,16 @@
                         if(a.sortOrder!==undefined)return-1;if(b.sortOrder!==undefined)return 1;
                         return(a.createdAt||0)-(b.createdAt||0)
                     });
-                    s.menu=items;
                     return get(ref(db,'settings')).then(function(sv2){
-                        var sv=sv2.exists()?sv2.val():{};
-                        var ORDER=sv.categories||['套餐','單點','蛋餅、燒餅','漢堡、蝸牛堡','吐司、厚片','其它、飲品'];
-                        s.categorySubcategories=s.normalizeCategorySubcategories(sv.categorySubcategories,ORDER);
-                        var posOnly=sv.posOnlyCategories||[];
-                        var found=[];
-                        items.forEach(function(i){if(i.category&&found.indexOf(i.category)===-1)found.push(i.category)});
-                        var cats=ORDER.filter(function(c){return found.indexOf(c)!==-1&&posOnly.indexOf(c)===-1});
-                        found.forEach(function(c){if(cats.indexOf(c)===-1&&posOnly.indexOf(c)===-1)cats.push(c)});
-                        if(posOnly.length){s.menu=items.filter(function(i){return posOnly.indexOf(i.category)===-1})}
-                        s.categories=cats;
-                        if(cats.length)s.currentCategory=cats[0];
-                        s.$nextTick(function(){s._menuLoaded=true;});
+                        applyMenuSettings(items,sv2.exists()?sv2.val():{});
+                    }).catch(function(e){
+                        console.warn('分類設定讀取失敗，使用菜單分類',e);
+                        applyMenuSettings(items,{});
                     });
+                }).catch(function(e){
+                    console.warn('菜單讀取失敗',e);
+                }).then(function(){
+                    s.menuReady=true;
                 });
             },
             listenOrders:function(){
