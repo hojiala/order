@@ -714,7 +714,7 @@
                             <div id="report-top-items-chart" class="chart-canvas chart-canvas-sm"></div>
                         </div>
                         <div class="bg-slate-900/60 rounded-xl border border-slate-700 p-4 xl:col-span-2">
-                            <p class="text-white font-bold mb-3">外帶 / 內用 / 電話 / 線上 / 店內POS / 掃碼 / 桌邊來源比較圖</p>
+                            <p class="text-white font-bold mb-3">外帶 / 內用 / 電話 / 線上 / 掃碼 / 桌邊來源比較圖</p>
                             <div id="report-channel-chart" class="chart-canvas chart-canvas-sm"></div>
                         </div>
                     </div>
@@ -772,7 +772,7 @@
                             </tr>
                         </thead>
                         <tbody class="divide-y divide-slate-700">
-                            <tr v-for="order in statsSortedOrders" :key="orderListKey(order)" class="hover:bg-slate-700/30 transition">
+                            <tr v-for="order in statsSortedOrders" :key="order.id" class="hover:bg-slate-700/30 transition">
                                 <td class="px-3 py-3">
                                     <span class="text-orange-400 font-black text-xs">No.{{ order.orderNo ? String(order.orderNo).padStart(3,"0") : "???" }}</span>
                                     <span class="block text-gray-500 font-mono text-xs">#{{ order.id.slice(-4).toUpperCase() }}</span>
@@ -1908,15 +1908,6 @@ window._doCountUp = function() {
         },
 
         methods: {
-            orderListKey: function(order) {
-                if (!order) return Math.random();
-                if (this.statusOverrideRawKeys) {
-                    var keys = this.statusOverrideRawKeys(order);
-                    if (keys && keys.length && String(keys[0]).indexOf('phone_ai/orders/') === 0) return 'phone:' + keys[0];
-                }
-                var sourcePath = this.resolveStatsSourceOrderPath ? this.resolveStatsSourceOrderPath(order) : '';
-                return [order.source || '', sourcePath || '', order.id || '', order.orderNo || '', order.timestamp || order.createdAt || ''].join('|');
-            },
             // ── AUTH ──
             login: function() {
                 var self = this;
@@ -1963,7 +1954,6 @@ window._doCountUp = function() {
                 var source = String(order && order.source || '').toLowerCase();
                 var label = String(order && (order.sourceLabel || order._integrationSourceLabel) || '').toLowerCase();
                 var phoneLike = source === 'phone_ai' || source === 'pos_local' || sourcePath.indexOf('phone_ai/orders/') === 0 || label.indexOf('phone') !== -1 || label.indexOf('\u96fb\u8a71') !== -1;
-                if (order && order._phoneDirectSource && Number.isFinite(explicit) && explicit > 0) return Math.round(explicit);
                 if (phoneLike && Number.isFinite(detailSum) && detailSum > 0 && (!Number.isFinite(explicit) || explicit <= 0 || Math.abs(detailSum - explicit) > 1)) {
                     return Math.round(detailSum);
                 }
@@ -2111,18 +2101,8 @@ window._doCountUp = function() {
                 var label = String((orderHint && (orderHint.sourceLabel || orderHint._integrationSourceLabel)) || '').toLowerCase();
                 var phoneLike = src === 'phone_ai' || src === 'pos_local' || sourcePath.indexOf('phone_ai/orders/') === 0 || sourceRoot.indexOf('phone_ai') === 0 || label.indexOf('phone') >= 0 || label.indexOf('\u96fb\u8a71') >= 0;
                 if (phoneLike) {
-                    if (orderHint && orderHint._phoneDirectSource) {
-                        var direct = Number((orderHint.total !== undefined) ? orderHint.total : ((orderHint.totals && orderHint.totals.finalTotal) || orderHint['總金額']));
-                        if (isPos(direct)) return Math.round(direct);
-                        if (isPos(inc)) return Math.round(inc);
-                        if (isPos(cur)) return Math.round(cur);
-                        if (isPos(sum)) return Math.round(sum);
-                    }
-                    if (isPos(inc) && sum > 0 && Math.abs(inc - sum) <= 1) return Math.round(inc);
-                    if (isPos(cur) && sum > 0 && Math.abs(cur - sum) <= 1) return Math.round(cur);
-                    if (isPos(sum)) return Math.round(sum);
-                    if (isPos(inc)) return Math.round(inc);
-                    if (isPos(cur)) return Math.round(cur);
+                    var phoneTotals = [cur, inc, sum].filter(isPos);
+                    if (phoneTotals.length) return Math.max.apply(null, phoneTotals);
                     return 0;
                 }
                 var positives = [cur, inc, sum].filter(isPos);
@@ -2174,129 +2154,16 @@ window._doCountUp = function() {
             enrichStatsOrderFromSource: async function(order) {
                 var normalized = this.normalizeStatsOrder(order || {});
                 var sourcePath = this.resolveStatsSourceOrderPath(normalized);
-                var candidates = [normalized];
-                var self = this;
-                var phoneLike = function(o) {
-                    var path = self.resolveStatsSourceOrderPath(o);
-                    var src = String(o && o.source || '').toLowerCase();
-                    var label = String(o && (o.sourceLabel || o._integrationSourceLabel) || '').toLowerCase();
-                    return path.indexOf('phone_ai/orders/') === 0 || src === 'phone_ai' || src === 'pos_local' || label.indexOf('phone') !== -1 || label.indexOf('\u96fb\u8a71') !== -1;
-                };
-                var phoneScopedKey = function(o) {
-                    if (!phoneLike(o)) return '';
-                    try {
-                        var rawKeys = self.statusOverrideRawKeys ? self.statusOverrideRawKeys(o) : [];
-                        if (rawKeys && rawKeys.length) return String(rawKeys[0]);
-                    } catch(_) {}
-                    var path = self.resolveStatsSourceOrderPath(o);
-                    var match = String(path || '').match(/(?:^|\/)phone_ai\/orders\/([^\/?#]+)/);
-                    var id = match && match[1] ? String(match[1]) : String((o && (o.id || o.sourceOrderId || o.orderId)) || 'unknown').trim().replace(/^No\.?\s*/i, '');
-                    if (!id) id = 'unknown';
-                    var stamp = '';
-                    [
-                        o && o.timestamp, o && o.submittedAt, o && o.createdAt, o && o.created_at,
-                        o && o.createdAtDisplay, o && o.submittedAtDisplay, o && o.orderDateKey,
-                        o && o.pickupDate, o && o.orderNo, o && o.serialNumber
-                    ].some(function(v) {
-                        var raw = String(v || '').trim();
-                        if (!raw) return false;
-                        var n = Number(raw);
-                        if (Number.isFinite(n) && n > 0) stamp = String(Math.round(n < 1000000000000 ? n * 1000 : n));
-                        else {
-                            var ms = Date.parse(raw.replace(/\//g, '-').replace(' ', 'T'));
-                            stamp = Number.isFinite(ms) ? String(ms) : raw.replace(/[^\w\u4e00-\u9fff-]+/g, '_');
-                        }
-                        return !!stamp;
-                    });
-                    if (!stamp) stamp = String(id || 'unknown');
-                    return 'phone_ai/orders/' + id + '#' + stamp;
-                };
-                var sameStatsOrder = function(a, b) {
-                    if (!a || !b) return false;
-                    var aPhone = phoneLike(a);
-                    var bPhone = phoneLike(b);
-                    if (aPhone || bPhone) {
-                        if (!(aPhone && bPhone)) return false;
-                        var ak = phoneScopedKey(a);
-                        var bk = phoneScopedKey(b);
-                        if (ak && bk) return ak === bk;
-                    }
-                    var aid = String(a.id || '').trim();
-                    var bid = String(b.id || '').trim();
-                    if (aid && bid && aid === bid) return true;
-                    var aoid = String(a.sourceOrderId || a.orderId || '').trim();
-                    var boid = String(b.sourceOrderId || b.orderId || '').trim();
-                    if (aoid && boid && aoid === boid) return true;
-                    var ano = String(a.orderNo || a.serialNumber || '').trim();
-                    var bno = String(b.orderNo || b.serialNumber || '').trim();
-                    var aday = self.getOrderDate(a);
-                    var bday = self.getOrderDate(b);
-                    if (ano && bno && ano === bno && aday && bday && aday === bday && phoneLike(a) && phoneLike(b)) return true;
-                    return false;
-                };
-                var addCandidate = function(raw) {
-                    if (!raw || typeof raw !== 'object') return;
-                    var cand = self.normalizeStatsOrder(raw);
-                    if (sameStatsOrder(normalized, cand)) candidates.push(cand);
-                };
-                var readViewCandidates = async function(path) {
-                    try {
-                        var snap = await get(ref(db, path));
-                        if (!snap.exists()) return;
-                        var val = snap.val() || {};
-                        var rows = Array.isArray(val.orders)
-                            ? val.orders
-                            : Object.keys(val).map(function(k) { return Object.assign({ id: k }, val[k] || {}); });
-                        rows.forEach(addCandidate);
-                    } catch (e) {
-                        console.warn('enrichStatsOrderFromSource view failed:', path, e && e.message ? e.message : e);
-                    }
-                };
+                if (!sourcePath) return normalized;
                 try {
-                    if (sourcePath) {
-                        var snap = await get(ref(db, sourcePath));
-                        if (snap.exists()) {
-                            var sourceRaw = snap.val() || {};
-                            if (String(sourcePath || '').indexOf('phone_ai/orders/') === 0) {
-                                addCandidate(Object.assign({}, sourceRaw, {
-                                    id: normalized.id,
-                                    source: 'phone_ai',
-                                    sourceLabel: '電話點餐',
-                                    sourceRecordPath: sourcePath,
-                                    integration: Object.assign({}, sourceRaw.integration || {}, { sourceRecordPath: sourcePath }),
-                                    _phoneDirectSource: true
-                                }));
-                            } else {
-                                addCandidate(Object.assign({ id: normalized.id, sourceRecordPath: sourcePath }, sourceRaw));
-                            }
-                        }
-                    }
-                    await Promise.all([
-                        readViewCandidates('integration_views/merged_orders_active'),
-                        readViewCandidates('integration_views/merged_orders_today'),
-                        readViewCandidates('integration_views/merged_orders_history_index')
-                    ]);
-                    var best = normalized;
-                    candidates.forEach(function(cand) {
-                        if (!cand) return;
-                        var bestTotal = Number(self.getOrderTotalValue(best) || 0);
-                        var candTotal = Number(self.getOrderTotalValue(cand) || 0);
-                        var directBest = !!(best && best._phoneDirectSource);
-                        var directCand = !!(cand && cand._phoneDirectSource);
-                        var preferCand = directCand && !directBest;
-                        if (!directBest && !directCand) {
-                            preferCand = candTotal > bestTotal + 0.01 || self.scoreStatsItemsDetail(cand.items) > self.scoreStatsItemsDetail(best.items);
-                        }
-                        var merged = preferCand ? Object.assign({}, best, cand) : Object.assign({}, cand, best);
-                        var targetTotal = directCand ? candTotal : (directBest ? bestTotal : Math.max(bestTotal || 0, candTotal || 0));
-                        var picked = self.pickRicherStatsItems(best.items, cand.items, targetTotal);
-                        if (directCand && Array.isArray(cand.items) && cand.items.length) picked = cand.items;
-                        else if (directBest && Array.isArray(best.items) && best.items.length) picked = best.items;
-                        if (picked && picked.length) merged.items = picked.map(function(it) { return Object.assign({}, it); });
-                        merged.total = self.pickStatsDisplayTotal(merged, bestTotal, candTotal, merged.items);
-                        best = self.normalizeStatsOrder(merged);
-                    });
-                    return best;
+                    var snap = await get(ref(db, sourcePath));
+                    if (!snap.exists()) return normalized;
+                    var sourceOrder = this.normalizeStatsOrder(Object.assign({ id: normalized.id }, snap.val() || {}));
+                    var picked = this.pickRicherStatsItems(normalized.items, sourceOrder.items, Number(this.getOrderTotalValue(normalized) || 0));
+                    var merged = Object.assign({}, normalized);
+                    if (picked && picked.length) merged.items = picked.map(function(it) { return Object.assign({}, it); });
+                    merged.total = this.pickStatsDisplayTotal(merged, Number(this.getOrderTotalValue(normalized) || 0), Number(this.getOrderTotalValue(sourceOrder) || 0), merged.items);
+                    return merged;
                 } catch (e) {
                     console.warn('enrichStatsOrderFromSource failed:', normalized && normalized.id, e && e.message ? e.message : e);
                     return normalized;
@@ -2628,26 +2495,6 @@ window._doCountUp = function() {
                         }
                         var rest = orderTotal - other - (baseUnit * qty) - (sideCost * qty);
                         if (Number.isFinite(rest) && rest > 0) upgrade = Math.max(upgrade, rest / qty);
-                    }
-                }
-                if (upgrade > 0 && this.isDetailDiscount5Meal(item, order, index)) {
-                    var discountSibling = this.findComboDrinkSibling(order, item, index);
-                    var discountSiblingLine = discountSibling ? this.getDetailLineTotal(discountSibling) : 0;
-                    var discountSiblingQty = discountSibling ? this.getDetailItemQty(discountSibling) : 0;
-                    var discountSiblingUnit = discountSiblingLine > 0 && discountSiblingQty > 0 ? (discountSiblingLine / discountSiblingQty) : 0;
-                    if (discountSiblingUnit > 0 && discountSiblingUnit < upgrade && upgrade - discountSiblingUnit <= 5) {
-                        upgrade = discountSiblingUnit;
-                    } else {
-                        var menuMeta = this.getDetailMealUpgradeMetaFromMenu(item.name || item['\u54c1\u9805'] || '');
-                        var discountFullCandidates = [item.comboDrinkFullPrice, discountSibling && discountSibling.comboDrinkFullPrice];
-                        var discountCreditCandidates = [item.comboDrinkCredit, discountSibling && discountSibling.comboDrinkCredit, menuMeta && menuMeta.baseValue, 5];
-                        var discountFull = discountFullCandidates.map(Number).find(function(v) {
-                            return Number.isFinite(v) && v > 0 && Math.round(v) === Math.round(upgrade);
-                        });
-                        var discountCredit = discountCreditCandidates.map(Number).find(function(v) {
-                            return Number.isFinite(v) && v > 0 && v <= 5;
-                        });
-                        if (discountFull && discountCredit && upgrade > discountCredit) upgrade = discountFull - discountCredit;
                     }
                 }
                 return Math.max(0, Math.round(upgrade));
@@ -3010,12 +2857,6 @@ window._doCountUp = function() {
                             else push(da.name || da['\u540d\u7a31'] || da.label || da.value, da.price || da['\u52a0\u50f9']);
                         });
                     });
-                    if (Array.isArray(src.optionGroupSelections)) {
-                        src.optionGroupSelections.forEach(function(sel) {
-                            var token = String(sel && sel.name || '').trim();
-                            if (token === '\u52a0\u7cd6' || token === '\u52a0\u5976') push(token, sel && sel.price);
-                        });
-                    }
                     var shouldParseNote = self.isDetailComboMainLine(src) || self.isDetailComboDrinkLine(src) || Array.isArray(src.comboDrinkAddons);
                     if (shouldParseNote) {
                         String(src.note || src['\u5099\u8a3b'] || src.drinkNote || '').split(/[\uFF0C,\u3001]/).forEach(function(part) {
@@ -3158,33 +2999,15 @@ window._doCountUp = function() {
             normalizeStatsOrder: function(order) {
                 if (!order || typeof order !== 'object') return order;
                 var out = Object.assign({}, order);
-                var sourcePath = String((out.integration && out.integration.sourceRecordPath) || out.sourceRecordPath || '').trim().replace(/^\/+/, '');
+                var sourcePath = String((out.integration && out.integration.sourceRecordPath) || out.sourceRecordPath || '').trim();
                 var sourceRaw = String(out.source || '').toLowerCase();
                 var sourceLabelRaw = String(out.sourceLabel || '').toLowerCase();
-                var sourceIdentityRaw = [
-                    out.id,
-                    out.sourceOrderId,
-                    out.orderId,
-                    out.audit && out.audit.originalSourceSnapshotId,
-                    out.audit && out.audit.sourceRoot,
-                    out.phoneAi && out.phoneAi.rawJsonPath,
-                    sourcePath
-                ].map(function(v){ return String(v || ''); }).join(' ').toLowerCase();
-                if (sourcePath.indexOf('phone_ai/orders/') === 0
-                    || sourceRaw === 'phone_ai'
-                    || sourceRaw === 'pos_local'
-                    || sourceRaw.indexOf('phone') >= 0
-                    || sourceRaw.indexOf('call') >= 0
-                    || sourceLabelRaw.indexOf('phone') >= 0
-                    || sourceLabelRaw.indexOf('\u96fb\u8a71') >= 0
-                    || sourceIdentityRaw.indexOf('phone_ai/orders/') >= 0
-                    || sourceIdentityRaw.indexOf('phone_ai') >= 0) {
+                if (sourcePath.indexOf('phone_ai/orders/') === 0 || sourceRaw.indexOf('phone') >= 0 || sourceLabelRaw.indexOf('電話') >= 0) {
                     out.source = 'phone_ai';
                     out.sourceLabel = '電話點餐';
                 } else if (!sourceRaw || sourceRaw === 'unknown') {
                     if (sourcePath.indexOf('orders/') === 0 || sourcePath.indexOf('orders_archive/') === 0) out.source = 'web';
                 }
-                if (out.source === 'phone_ai' && (!out.status || !String(out.status).trim())) out.status = 'new';
                 if ((out.total === undefined || out.total === null || out.total === '') && out.totals && Number.isFinite(Number(out.totals.finalTotal))) {
                     out.total = Number(out.totals.finalTotal);
                 }
@@ -3512,7 +3335,7 @@ window._doCountUp = function() {
                         }, 0);
                         if (Number.isFinite(phoneMainTotal) && phoneMainTotal > 0) {
                             var currentTotal = Number(out.total);
-                            if (!Number.isFinite(currentTotal) || currentTotal <= 0 || (!out._phoneDirectSource && Math.abs(currentTotal - phoneMainTotal) > 1)) {
+                            if (!Number.isFinite(currentTotal) || Math.abs(currentTotal - phoneMainTotal) > 1) {
                                 out.total = Math.round(phoneMainTotal);
                                 out['\u7e3d\u91d1\u984d'] = Math.round(phoneMainTotal);
                                 out.totals = Object.assign({}, out.totals || {}, { finalTotal: Math.round(phoneMainTotal) });
@@ -4516,33 +4339,17 @@ window._doCountUp = function() {
                     var mode = String(order.pickupMode || order.type || '').toLowerCase();
                     var src = String(order.source || '').toLowerCase();
                     var label = String(order.sourceLabel || order._integrationSourceLabel || '').toLowerCase();
-                    var sourceBlob = [
-                        order.source,
-                        order.sourceLabel,
-                        order._integrationSourceLabel,
-                        order.printSource,
-                        order['訂單來源'],
-                        order.audit && order.audit.sourceRoot,
-                        order.integration && order.integration.sourceRecordPath,
-                        order.sourceRecordPath
-                    ].map(function(v) { return String(v || '').toLowerCase(); }).join('|');
                     var isDineIn = mode.indexOf('dinein') !== -1 || mode.indexOf('內用') !== -1;
                     var isPhone = src === 'phone_ai' || src === 'pos_local' || label.indexOf('電話') !== -1;
                     var isOnline = src === 'web' || src === 'online' || src === 'line' || src === 'web_liff' || label.indexOf('線上') !== -1;
-                    var isStorePos = !isPhone && !isOnline && (
-                        src === 'pos' || label.indexOf('pos') !== -1 ||
-                        String(order.printSource || '').toLowerCase() === 'pos' ||
-                        String(order['訂單來源'] || '').toLowerCase() === 'pos' ||
-                        sourceBlob.indexOf('現場 pos') !== -1
-                    );
                     channelMap[isDineIn ? '內用' : '外帶'] += 1;
                     if (isPhone) channelMap['電話'] += 1;
                     if (isOnline) channelMap['線上'] += 1;
-                    if (isStorePos) channelMap['店內POS點餐'] += 1;
-                    else if (src === 'qrcode' || label.indexOf('掃碼內用') !== -1) channelMap['內用掃碼點餐'] += 1;
+                    if (src === 'qrcode' || label.indexOf('掃碼內用') !== -1) channelMap['內用掃碼點餐'] += 1;
                     else if (src === 'qr_takeout' || label.indexOf('掃碼外帶') !== -1) channelMap['外帶掃碼點餐'] += 1;
                     else if (label.indexOf('自助') !== -1) channelMap['外帶自助點餐'] += 1;
                     else if (src === 'dinein' || label.indexOf('桌邊') !== -1) channelMap[isDineIn ? '內用桌邊點餐' : '外帶自助點餐'] += 1;
+                    else if (src === 'pos' && !isPhone && !isOnline) channelMap['店內POS點餐'] += 1;
                     (Array.isArray(order.items) ? order.items : []).forEach(function(item) {
                         if (!item) return;
                         var name = String(item.name || item['品項'] || '').trim();
@@ -4942,44 +4749,12 @@ window._doCountUp = function() {
                     var seg = o.integration.sourceRecordPath.split('/');
                     if (seg.length >= 3 && seg[1]) return String(seg[1]);
                 }
-                var ts = Number(o && (o.timestamp || o.createdAt || o.submittedAt || 0));
-                if (!Number.isFinite(ts) || ts <= 0) {
-                    [
-                        o && o.createdAtDisplay,
-                        o && o.submittedAtDisplay,
-                        o && o.orderTime,
-                        o && o.orderDateTime
-                    ].some(function(v) {
-                        var raw = String(v || '').trim();
-                        if (!raw) return false;
-                        var parsed = Date.parse(raw.replace(/\//g, '-').replace(' ', 'T'));
-                        if (Number.isFinite(parsed)) {
-                            ts = parsed;
-                            return true;
-                        }
-                        return false;
-                    });
-                }
-                if (Number.isFinite(ts) && ts > 0) {
-                    if (ts < 1000000000000) ts *= 1000;
-                    var d = new Date(ts);
-                    if (!Number.isNaN(d.getTime())) {
-                        return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
-                    }
-                }
                 return '';
             },
             statusOverrideRawKeys:function(order){
                 if(!order)return [];
                 var original=(order&&order._integrationOriginal)||{};
                 var integration=(order&&order.integration)||original.integration||{};
-                var sourceBlob=[
-                    order.source, original.source, integration&&integration.source,
-                    integration&&integration.sourceRecordPath, order.sourceRecordPath, original.sourceRecordPath,
-                    order.sourceOrderId, original.sourceOrderId, order.orderId, original.orderId,
-                    order.sourceLabel, original.sourceLabel, order.customerType, original.customerType
-                ].map(function(v){return String(v||'');}).join('|').toLowerCase();
-                var isPhone=sourceBlob.indexOf('phone_ai')!==-1||sourceBlob.indexOf('電話')!==-1||sourceBlob.indexOf('phone')!==-1;
                 var values=[
                     integration&&integration.sourceRecordPath,
                     order.sourceRecordPath,
@@ -4997,46 +4772,15 @@ window._doCountUp = function() {
                 var dateKey=String(order.orderDateKey||order.pickupDate||order._sourceDateKey||'').trim();
                 if(dateKey&&order.id)values.push('orders/'+dateKey+'/'+order.id);
                 var out=[];
-                var phoneOut=[];
                 values.forEach(function(v){
                     var s=String(v||'').trim();
                     if(!s)return;
-                    var phoneMatch=s.match(/(?:^|\/)phone_ai\/orders\/([^\/?#]+)/);
-                    if(isPhone){
-                        if(phoneMatch&&phoneMatch[1])phoneOut.push('phone_ai/orders/'+phoneMatch[1]);
-                        return;
-                    }
                     out.push(s);
+                    var phoneMatch=s.match(/(?:^|\/)phone_ai\/orders\/([^\/?#]+)/);
                     if(phoneMatch&&phoneMatch[1])out.push('phone_ai/orders/'+phoneMatch[1],phoneMatch[1]);
                     var orderMatch=s.match(/(?:^|\/)(orders|orders_archive)\/(\d{4}-\d{2}-\d{2})\/([^\/?#]+)/);
                     if(orderMatch&&orderMatch[3])out.push(orderMatch[3],'orders/'+orderMatch[2]+'/'+orderMatch[3]);
                 });
-                if(isPhone){
-                    if(!phoneOut.length){
-                        var fallbackId=String(order.sourceOrderId||original.sourceOrderId||order.orderId||original.orderId||order.id||'').trim().replace(/^No\.?\s*/i,'');
-                        var fallbackMatch=fallbackId.match(/(?:^|\/)phone_ai\/orders\/([^\/?#]+)/);
-                        if(fallbackMatch&&fallbackMatch[1])phoneOut.push('phone_ai/orders/'+fallbackMatch[1]);
-                        else if(fallbackId&&fallbackId.indexOf('/')===-1)phoneOut.push('phone_ai/orders/'+fallbackId);
-                    }
-                    var phoneStamp='';
-                    [
-                        order.timestamp,order.submittedAt,order.createdAt,order.created_at,
-                        order.createdAtDisplay,order.submittedAtDisplay,order.orderDateKey,
-                        order.pickupDate,order.orderNo,order.serialNumber
-                    ].some(function(v){
-                        var raw=String(v||'').trim();
-                        if(!raw)return false;
-                        var n=Number(raw);
-                        if(Number.isFinite(n)&&n>0)phoneStamp=String(Math.round(n<1000000000000?n*1000:n));
-                        else{
-                            var ms=Date.parse(raw.replace(/\//g,'-').replace(' ','T'));
-                            phoneStamp=Number.isFinite(ms)?String(ms):raw.replace(/[^\w\u4e00-\u9fff-]+/g,'_');
-                        }
-                        return !!phoneStamp;
-                    });
-                    if(!phoneStamp)phoneStamp=String(order.id||'unknown');
-                    return phoneOut.filter(function(v,i,arr){return !!v&&arr.indexOf(v)===i;}).map(function(v){return v+'#'+phoneStamp;});
-                }
                 return out.filter(function(v,i,arr){return !!v&&arr.indexOf(v)===i;});
             },
             statusOverrideRawKey:function(order){
@@ -5058,33 +4802,12 @@ window._doCountUp = function() {
                 var self = this;
                 var keys = self.statusOverrideRawKeys(order).map(function(raw) { return self.statusOverrideKeyFromRaw(raw); }).filter(Boolean);
                 var best = null;
-                var orderStartMs = 0;
-                [order && order.createdAt, order && order.created_at, order && order.orderCreatedAt, order && order.orderTime, order && order.timestamp, order && order.time, order && order.orderDateTime].forEach(function(v) {
-                    if (orderStartMs) return;
-                    if (typeof v === 'number' && Number.isFinite(v) && v > 0) orderStartMs = v < 1000000000000 ? v * 1000 : v;
-                    else {
-                        var s = String(v || '').trim();
-                        if (s) {
-                            var ms = Date.parse(s.replace(/\//g, '-').replace(' ', 'T'));
-                            if (Number.isFinite(ms)) orderStartMs = ms;
-                        }
-                    }
-                });
-                if (!orderStartMs) {
-                    var datePart = String(order && (order.orderDateKey !== undefined ? order.orderDateKey : (order.pickupDate || order.date)) || '').trim();
-                    var timePart = String(order && (order.orderTimeText !== undefined ? order.orderTimeText : (order.pickupTime || order.timeText || order.time)) || '').trim();
-                    if (datePart && timePart) {
-                        var combinedMs = Date.parse(datePart.replace(/\//g, '-') + 'T' + timePart);
-                        if (Number.isFinite(combinedMs)) orderStartMs = combinedMs;
-                    }
-                }
                 keys.forEach(function(key) {
                     var entry = (self.remoteStatusOverrides || {})[key];
                     if (!entry) return;
                     var status = String((entry && typeof entry === 'object') ? (entry.status || '') : entry).trim();
                     if (!status) return;
                     var updatedAt = Number(entry && typeof entry === 'object' ? (entry.updatedAt || 0) : 0);
-                    if (orderStartMs && updatedAt && updatedAt + 60000 < orderStartMs) return;
                     if (!best || updatedAt >= best.updatedAt) best = { status: status, updatedAt: updatedAt };
                 });
                 return best ? best.status : '';
@@ -5173,8 +4896,7 @@ window._doCountUp = function() {
                     (Array.isArray(list) ? list : []).forEach(function(order) {
                         var src = String(order && order.source || '').toLowerCase();
                         var label = String(order && order.sourceLabel || '').toLowerCase();
-                        var path = self.resolveStatsSourceOrderPath(order);
-                        var family = (path.indexOf('phone_ai/orders/') === 0 || src === 'phone_ai' || src === 'pos_local' || label.indexOf('\u96fb\u8a71') !== -1 || label.indexOf('phone') !== -1)
+                        var family = (src === 'phone_ai' || src === 'pos_local' || label.indexOf('電話') !== -1 || label.indexOf('phone') !== -1)
                             ? 'phone_ai'
                             : ((src === 'pos') ? 'pos' : ((src === 'qrcode' || src === 'qr_takeout' || src === 'dinein' || src === 'line' || src === 'web_liff') ? src : 'web'));
                         var no = String(order && (order.orderNo || order.serialNumber || '')).trim();
@@ -5235,45 +4957,8 @@ window._doCountUp = function() {
                 var datesToFetch = self.buildDateListForStatsMode(self.statsMode);
                 self.reportRevenueMode = self.getReportRevenueModeForStats(datesToFetch);
 
-                var resolvePhoneScopedStatsKey = function(order) {
-                    if (!order || typeof order !== 'object') return '';
-                    var sourcePath = self.resolveStatsSourceOrderPath(order);
-                    var original = (order && order._integrationOriginal) || {};
-                    var sourceRoot = String((order.audit && order.audit.sourceRoot) || (original.audit && original.audit.sourceRoot) || '').toLowerCase();
-                    var src = String(order.source || original.source || '').toLowerCase();
-                    var label = String(order.sourceLabel || order._integrationSourceLabel || original.sourceLabel || '').toLowerCase();
-                    var phonePath = String(sourcePath || '').match(/(?:^|\/)phone_ai\/orders\/([^\/?#]+)/);
-                    var phoneLike = !!phonePath || src === 'phone_ai' || src === 'pos_local' || sourceRoot.indexOf('phone_ai') === 0 || label.indexOf('phone') >= 0 || label.indexOf('\u96fb\u8a71') >= 0;
-                    if (!phoneLike) return '';
-                    try {
-                        var rawKeys = self.statusOverrideRawKeys ? self.statusOverrideRawKeys(order) : [];
-                        if (rawKeys && rawKeys.length) return String(rawKeys[0]);
-                    } catch(_) {}
-                    var id = phonePath && phonePath[1] ? String(phonePath[1]) : String(order.id || order.sourceOrderId || order.orderId || 'unknown').trim().replace(/^No\.?\s*/i, '');
-                    if (!id) id = 'unknown';
-                    var stamp = '';
-                    [
-                        order.timestamp, order.submittedAt, order.createdAt, order.created_at,
-                        order.createdAtDisplay, order.submittedAtDisplay, order.orderDateKey,
-                        order.pickupDate, order.orderNo, order.serialNumber
-                    ].some(function(v) {
-                        var raw = String(v || '').trim();
-                        if (!raw) return false;
-                        var n = Number(raw);
-                        if (Number.isFinite(n) && n > 0) stamp = String(Math.round(n < 1000000000000 ? n * 1000 : n));
-                        else {
-                            var ms = Date.parse(raw.replace(/\//g, '-').replace(' ', 'T'));
-                            stamp = Number.isFinite(ms) ? String(ms) : raw.replace(/[^\w\u4e00-\u9fff-]+/g, '_');
-                        }
-                        return !!stamp;
-                    });
-                    if (!stamp) stamp = String(id || 'unknown');
-                    return 'phone_ai/orders/' + id + '#' + stamp;
-                };
                 var resolveMergeKey = function(order) {
                     if (!order || typeof order !== 'object') return '';
-                    var phoneKey = resolvePhoneScopedStatsKey(order);
-                    if (phoneKey) return phoneKey;
                     var path = (order.integration && order.integration.sourceRecordPath) || order.sourceRecordPath || '';
                     if (!path && order._integrationOriginal && order._integrationOriginal.integration) {
                         path = order._integrationOriginal.integration.sourceRecordPath || '';
@@ -5335,10 +5020,9 @@ window._doCountUp = function() {
                 var mergeOrderById = function(map, rawOrder) {
                     if (!rawOrder || typeof rawOrder !== 'object') return;
                     var incoming = self.normalizeStatsOrder(rawOrder);
-                    var phoneKey = resolvePhoneScopedStatsKey(incoming);
-                    var mergeKey = phoneKey || resolveMergeKey(incoming);
-                    var fallbackKey = phoneKey ? '' : resolveFallbackDedupKey(incoming);
-                    var aliases = phoneKey ? [phoneKey] : [mergeKey, fallbackKey, incoming && incoming.id ? String(incoming.id) : ''].filter(function(v, i, arr) {
+                    var mergeKey = resolveMergeKey(incoming);
+                    var fallbackKey = resolveFallbackDedupKey(incoming);
+                    var aliases = [mergeKey, fallbackKey, incoming && incoming.id ? String(incoming.id) : ''].filter(function(v, i, arr) {
                         return !!v && arr.indexOf(v) === i;
                     });
                     if (!incoming || !aliases.length || !incoming.status) return;
@@ -5349,27 +5033,6 @@ window._doCountUp = function() {
                     var current = map[keepKey];
                     if (!current) {
                         map[keepKey] = incoming;
-                        return;
-                    }
-                    var currentDirectPhone = !!(current && current._phoneDirectSource);
-                    var incomingDirectPhone = !!(incoming && incoming._phoneDirectSource);
-                    if (currentDirectPhone || incomingDirectPhone) {
-                        var primary = incomingDirectPhone ? incoming : current;
-                        var secondary = incomingDirectPhone ? current : incoming;
-                        var directMerged = Object.assign({}, secondary || {}, primary || {});
-                        if (Array.isArray(primary.items) && primary.items.length) {
-                            directMerged.items = primary.items.map(function(it){ return Object.assign({}, it); });
-                        }
-                        var directTotal = Number(self.getOrderTotalValue(primary) || 0);
-                        if (Number.isFinite(directTotal) && directTotal > 0) directMerged.total = Math.round(directTotal);
-                        directMerged.source = 'phone_ai';
-                        directMerged.sourceLabel = '電話點餐';
-                        directMerged.sourceRecordPath = primary.sourceRecordPath || ('phone_ai/orders/' + (primary.id || directMerged.id || ''));
-                        directMerged._phoneDirectSource = true;
-                        map[keepKey] = self.normalizeStatsOrder(directMerged);
-                        aliases.forEach(function(k) {
-                            if (k !== keepKey && map[k]) delete map[k];
-                        });
                         return;
                     }
                     var archivedSource = incoming._statsArchiveRecord ? incoming : (current._statsArchiveRecord ? current : null);
@@ -5405,34 +5068,15 @@ window._doCountUp = function() {
                     (Array.isArray(values) ? values : []).forEach(function(rawOrder) {
                         if (!rawOrder || typeof rawOrder !== 'object') return;
                         var incoming = self.normalizeStatsOrder(rawOrder);
-                        var phoneKey = resolvePhoneScopedStatsKey(incoming);
-                        var mergeKey = phoneKey || resolveMergeKey(incoming);
-                        var fallbackKey = phoneKey ? '' : resolveFallbackDedupKey(incoming);
-                        var aliases = phoneKey ? [phoneKey] : [mergeKey, fallbackKey, incoming && incoming.id ? String(incoming.id) : ''].filter(function(v, i, arr) {
+                        var mergeKey = resolveMergeKey(incoming);
+                        var fallbackKey = resolveFallbackDedupKey(incoming);
+                        var aliases = [mergeKey, fallbackKey, incoming && incoming.id ? String(incoming.id) : ''].filter(function(v, i, arr) {
                             return !!v && arr.indexOf(v) === i;
                         });
                         if (!incoming || !aliases.length || !incoming.status) return;
                         var hits = aliases.map(function(k){ return aliasMap[k]; }).filter(Boolean);
                         var merged = incoming;
                         hits.forEach(function(existing) {
-                            var existingDirectPhone = !!(existing && existing._phoneDirectSource);
-                            var mergedDirectPhone = !!(merged && merged._phoneDirectSource);
-                            if (existingDirectPhone || mergedDirectPhone) {
-                                var primary = mergedDirectPhone ? merged : existing;
-                                var secondary = mergedDirectPhone ? existing : merged;
-                                var directMerged = Object.assign({}, secondary || {}, primary || {});
-                                if (Array.isArray(primary.items) && primary.items.length) {
-                                    directMerged.items = primary.items.map(function(it){ return Object.assign({}, it); });
-                                }
-                                var directTotal = Number(self.getOrderTotalValue(primary) || 0);
-                                if (Number.isFinite(directTotal) && directTotal > 0) directMerged.total = Math.round(directTotal);
-                                directMerged.source = 'phone_ai';
-                                directMerged.sourceLabel = '\u96fb\u8a71\u9ede\u9910';
-                                directMerged.sourceRecordPath = primary.sourceRecordPath || ('phone_ai/orders/' + (primary.id || directMerged.id || ''));
-                                directMerged._phoneDirectSource = true;
-                                merged = self.normalizeStatsOrder(directMerged);
-                                return;
-                            }
                             var archivedSource = merged._statsArchiveRecord ? merged : (existing && existing._statsArchiveRecord ? existing : null);
                             var otherSource = merged._statsArchiveRecord ? existing : (existing && existing._statsArchiveRecord ? merged : null);
                             var nextMerged = archivedSource ? Object.assign({}, otherSource || {}, archivedSource) : Object.assign({}, existing || {}, merged || {});
@@ -5476,36 +5120,6 @@ window._doCountUp = function() {
                     if (path.indexOf('orders/') === 0 || path.indexOf('orders_archive/') === 0 || src === 'web' || src === 'online' || !src) return 'web';
                     return src;
                 };
-                var statsPhoneScopedKey = function(order) {
-                    if (!order || typeof order !== 'object') return '';
-                    if (getStatsSourceFamilyForSignature(order) !== 'phone_ai') return '';
-                    try {
-                        var rawKeys = self.statusOverrideRawKeys ? self.statusOverrideRawKeys(order) : [];
-                        if (rawKeys && rawKeys.length) return String(rawKeys[0]);
-                    } catch(_) {}
-                    var sourcePath = self.resolveStatsSourceOrderPath(order);
-                    var match = String(sourcePath || '').match(/(?:^|\/)phone_ai\/orders\/([^\/?#]+)/);
-                    var id = match && match[1] ? String(match[1]) : String(order.id || order.sourceOrderId || order.orderId || 'unknown').trim().replace(/^No\.?\s*/i, '');
-                    if (!id) id = 'unknown';
-                    var stamp = '';
-                    [
-                        order.timestamp, order.submittedAt, order.createdAt, order.created_at,
-                        order.createdAtDisplay, order.submittedAtDisplay, order.orderDateKey,
-                        order.pickupDate, order.orderNo, order.serialNumber
-                    ].some(function(v) {
-                        var raw = String(v || '').trim();
-                        if (!raw) return false;
-                        var n = Number(raw);
-                        if (Number.isFinite(n) && n > 0) stamp = String(Math.round(n < 1000000000000 ? n * 1000 : n));
-                        else {
-                            var ms = Date.parse(raw.replace(/\//g, '-').replace(' ', 'T'));
-                            stamp = Number.isFinite(ms) ? String(ms) : raw.replace(/[^\w\u4e00-\u9fff-]+/g, '_');
-                        }
-                        return !!stamp;
-                    });
-                    if (!stamp) stamp = String(id || 'unknown');
-                    return 'phone_ai/orders/' + id + '#' + stamp;
-                };
                 var buildStatsDisplaySignature = function(order) {
                     if (!order || typeof order !== 'object') return '';
                     var sourcePath = self.resolveStatsSourceOrderPath(order);
@@ -5516,14 +5130,8 @@ window._doCountUp = function() {
                     var total = Number(self.getOrderTotalValue(order) || 0);
                     var phone = String((order.customer && order.customer.phone) || order.phone || '').trim();
                     var pickup = String(order.pickupTime || order.pickupTimeLabel || '').trim();
-                    if (family === 'phone_ai') {
-                        var scopedPhone = statsPhoneScopedKey(order);
-                        if (scopedPhone) return ['phone', scopedPhone].join('|');
-                        if (sourcePath) return ['path', sourcePath, day || ''].join('|');
-                        if (order.id) return ['id', family, String(order.id), day || ''].join('|');
-                        return '';
-                    }
                     if (sourceOrderId && day && family) return ['oid', family, day, sourceOrderId].join('|');
+                    if (family === 'phone_ai' && no && day) return ['sig', family, day, no, phone, pickup].join('|');
                     if (no && day && family) return ['sig', family, day, no, Number.isFinite(total) ? Math.round(total) : '', phone, pickup].join('|');
                     if (sourcePath) return ['path', sourcePath].join('|');
                     if (!no || !day || !family) return '';
@@ -5542,22 +5150,6 @@ window._doCountUp = function() {
                             return;
                         }
                         var current = bySig[sig];
-                        var currentDirectPhone = !!(current && current._phoneDirectSource);
-                        var orderDirectPhone = !!(order && order._phoneDirectSource);
-                        if (currentDirectPhone || orderDirectPhone) {
-                            var primary = orderDirectPhone ? order : current;
-                            var secondary = orderDirectPhone ? current : order;
-                            var directMerged = Object.assign({}, secondary || {}, primary || {});
-                            if (Array.isArray(primary.items) && primary.items.length) directMerged.items = primary.items.map(function(it){ return Object.assign({}, it); });
-                            var directTotal = Number(self.getOrderTotalValue(primary) || 0);
-                            if (Number.isFinite(directTotal) && directTotal > 0) directMerged.total = Math.round(directTotal);
-                            directMerged.source = 'phone_ai';
-                            directMerged.sourceLabel = '\u96fb\u8a71\u9ede\u9910';
-                            directMerged.sourceRecordPath = primary.sourceRecordPath || ('phone_ai/orders/' + (primary.id || directMerged.id || ''));
-                            directMerged._phoneDirectSource = true;
-                            bySig[sig] = self.normalizeStatsOrder(directMerged);
-                            return;
-                        }
                         var bestItems = self.pickRicherStatsItems(current.items, order.items, Number(self.getOrderTotalValue(order) || self.getOrderTotalValue(current) || 0));
                         var merged = Object.assign({}, current, order);
                         if (bestItems && bestItems.length) merged.items = bestItems.map(function(it){ return Object.assign({}, it); });
@@ -5591,16 +5183,12 @@ window._doCountUp = function() {
                         if (!snap.exists()) return [];
                         var raw = snap.val() || {};
                         return Object.keys(raw).map(function(id) {
-                            var row = Object.assign({}, raw[id] || {});
-                            var phonePath = 'phone_ai/orders/' + id;
-                            row.integration = Object.assign({}, row.integration || {}, { sourceRecordPath: phonePath });
-                            return Object.assign(row, {
+                            return Object.assign({
                                 id: id,
                                 source: 'phone_ai',
                                 sourceLabel: '電話點餐',
-                                sourceRecordPath: phonePath,
-                                _phoneDirectSource: true
-                            });
+                                sourceRecordPath: 'phone_ai/orders/' + id
+                            }, raw[id] || {});
                         });
                     })
                     .catch(function(e) {

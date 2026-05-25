@@ -192,7 +192,7 @@
             <p class="text-sm">{{ orderSearch ? "無符合結果" : "目前無進行中訂單" }}</p>
           </div>
           <div v-else class="space-y-2">
-            <div v-for="order in filteredOrders" :key="orderListKey(order)"
+            <div v-for="order in filteredOrders" :key="order.id"
               :class="{
                 'border-red-300 bg-red-50/50': order.status==='new',
                 'border-yellow-300 bg-yellow-50/30': order.status==='making' && order.source==='pos',
@@ -817,15 +817,6 @@
             authReady.finally(function(){onAuthStateChanged(auth,function(u){if(u){s.isLoggedIn=true;s.startAll();}else{s.isLoggedIn=false;}});});
         },
         methods:{
-            orderListKey:function(order){
-                if(!order)return Math.random();
-                if(this.isPhoneSourceOrder&&this.isPhoneSourceOrder(order)){
-                    var keys=this.statusOverrideRawKeys?this.statusOverrideRawKeys(order):[];
-                    if(keys&&keys.length)return 'phone:'+keys[0];
-                }
-                var sourcePath=this.normalizeSourceRecordPath?this.normalizeSourceRecordPath(order,order.id||''):'';
-                return [order.source||'',sourcePath||'',order.id||'',order.orderNo||'',order.timestamp||order.createdAt||''].join('|');
-            },
             getDefaultStationName:function(){
                 var sts=this.settings.stations||[];
                 for(var i=0;i<sts.length;i++){
@@ -938,18 +929,8 @@
                 var label=String((orderHint&&(orderHint.sourceLabel||orderHint._integrationSourceLabel))||'').toLowerCase();
                 var isPhoneLike=src==='phone_ai'||src==='pos_local'||sourcePath.indexOf('phone_ai/orders/')===0||sourceRoot.indexOf('phone_ai')===0||label.indexOf('phone')!==-1||label.indexOf('\u96fb\u8a71')!==-1;
                 if(isPhoneLike){
-                    if(orderHint&&orderHint._phoneDirectSource){
-                        var direct=Number((orderHint.total!==undefined)?orderHint.total:((orderHint.totals&&orderHint.totals.finalTotal)||orderHint['總金額']));
-                        if(finitePos(direct))return Math.round(direct);
-                        if(finitePos(inc))return Math.round(inc);
-                        if(finitePos(cur))return Math.round(cur);
-                        if(finitePos(sum))return Math.round(sum);
-                    }
-                    if(finitePos(inc)&&sum>0&&Math.abs(inc-sum)<=1)return Math.round(inc);
-                    if(finitePos(cur)&&sum>0&&Math.abs(cur-sum)<=1)return Math.round(cur);
-                    if(finitePos(sum))return Math.round(sum);
-                    if(finitePos(inc))return Math.round(inc);
-                    if(finitePos(cur))return Math.round(cur);
+                    var phoneTotals=[cur,inc,sum].filter(finitePos);
+                    if(phoneTotals.length)return Math.max.apply(null,phoneTotals);
                     return 0;
                 }
                 var positives=[cur,inc,sum].filter(finitePos);
@@ -1240,30 +1221,26 @@
                     sourceRecordPathRaw
                 ].map(function(v){return String(v||'');}).join(' ').toLowerCase();
                 var printSourceRaw=String(out.printSource||out['訂單來源']||'').toLowerCase();
-                var isPhoneSource=sourcePath.indexOf('phone_ai/orders/')===0
+                if(sourceRaw==='pos'||printSourceRaw==='pos'||sourceLabelRaw.indexOf('pos')>=0){
+                    out.source='pos';
+                    out.sourceLabel=out.sourceLabel||'現場 POS';
+                    out.printSource='POS';
+                    out['訂單來源']='POS';
+                }else if(sourcePath.indexOf('phone_ai/orders/')===0
                     ||sourceRecordPathRaw.indexOf('phone_ai/orders/')===0
                     ||sourceRaw==='phone_ai'
                     ||sourceRaw==='pos_local'
                     ||sourceRaw.indexOf('phone')>=0
                     ||sourceRaw.indexOf('call')>=0
                     ||sourceLabelRaw.indexOf('phone')>=0
-                    ||sourceLabelRaw.indexOf('\u96fb\u8a71')>=0
-                    ||sourceIdentityRaw.indexOf('phone_ai/orders/')>=0
-                    ||sourceIdentityRaw.indexOf('phone_ai')>=0;
-                if(isPhoneSource){
+                    ||sourceLabelRaw.indexOf('\u96fb\u8a71')>=0){
                     out.source='phone_ai';
                     out.sourceLabel='\u96fb\u8a71\u9ede\u9910';
-                }else if(sourceRaw==='pos'||printSourceRaw==='pos'||sourceLabelRaw.indexOf('pos')>=0){
-                    out.source='pos';
-                    out.sourceLabel=out.sourceLabel||'現場 POS';
-                    out.printSource='POS';
-                    out['訂單來源']='POS';
                 }else if(!sourceRaw||sourceRaw==='unknown'){
                     if(sourcePath.indexOf('orders/')===0||sourcePath.indexOf('orders_archive/')===0){
                         out.source='web';
                     }
                 }
-                if(out.source==='phone_ai'&&(!out.status||!String(out.status).trim()))out.status='new';
                 if((out.total===undefined||out.total===null||out.total==='')&&Number.isFinite(Number(totals.finalTotal)))out.total=Number(totals.finalTotal);
                 if((out.total===undefined||out.total===null||out.total==='')&&Number.isFinite(Number(out['\u7e3d\u91d1\u984d'])))out.total=Number(out['\u7e3d\u91d1\u984d']);
                 if((out.total===undefined||out.total===null||out.total==='')&&Number.isFinite(Number(out['總金額'])))out.total=Number(out['總金額']);
@@ -1611,37 +1588,6 @@
                             var size=text(drink.size||drink['容量']);
                             var temp=text(drink.temp||drink['溫度']);
                             var drinkName=stripCup(text(drink.name||drink['品項']));
-                            var addSeen={};
-                            var mergedAddons=[];
-                            function pushDrinkAddon(name,price){
-                                name=text(name).replace(/^\+/,'').replace(/\s*\$?\s*\d+\s*$/,'').trim();
-                                if(name.indexOf('加糖')!==-1)name='加糖';
-                                else if(name.indexOf('加奶')!==-1)name='加奶';
-                                else return;
-                                if(addSeen[name])return;
-                                addSeen[name]=true;
-                                var p=num(price);
-                                mergedAddons.push({name:name,price:p>0?p:0});
-                            }
-                            [main.comboDrinkAddons,main['飲料加料'],drink.comboDrinkAddons,drink['飲料加料'],drink.options,drink['加料']].forEach(function(arr){
-                                if(!Array.isArray(arr))return;
-                                arr.forEach(function(opt){
-                                    if(!opt)return;
-                                    if(typeof opt==='string')pushDrinkAddon(opt,0);
-                                    else pushDrinkAddon(opt.name||opt['名稱']||opt.label||opt.value,opt.price||opt['加價']);
-                                });
-                            });
-                            [main.optionSelections,main.selectedOptions,drink.optionSelections,drink.selectedOptions].forEach(function(obj){
-                                if(!obj||typeof obj!=='object'||Array.isArray(obj))return;
-                                Object.keys(obj).forEach(function(k){
-                                    pushDrinkAddon(k,0);
-                                    pushDrinkAddon(obj[k],0);
-                                });
-                            });
-                            [drink.note,drink['備註'],drink.drinkNote,drink.mealDrink,drink.comboDrinkText].forEach(function(raw){
-                                text(raw).split(/[，,、\/／]/).forEach(function(part){pushDrinkAddon(part,0);});
-                            });
-                            if(mergedAddons.length)main.comboDrinkAddons=mergedAddons;
                             if(!main.size&&size)main.size=size;
                             if(!main.temp&&temp)main.temp=temp;
                             if(!main.comboDrinkSurcharge){
@@ -1734,7 +1680,6 @@
                 if(!order)return [];
                 var original=(order&&order._integrationOriginal)||{};
                 var integration=(order&&order.integration)||original.integration||{};
-                var isPhone=!!(this.isPhoneSourceOrder&&this.isPhoneSourceOrder(order));
                 var values=[
                     integration&&integration.sourceRecordPath,
                     order.sourceRecordPath,
@@ -1752,46 +1697,15 @@
                 var dateKey=String(order.orderDateKey||order.pickupDate||order._sourceDateKey||'').trim();
                 if(dateKey&&order.id)values.push('orders/'+dateKey+'/'+order.id);
                 var out=[];
-                var phoneOut=[];
                 values.forEach(function(v){
                     var s=String(v||'').trim();
                     if(!s)return;
-                    var phoneMatch=s.match(/(?:^|\/)phone_ai\/orders\/([^\/?#]+)/);
-                    if(isPhone){
-                        if(phoneMatch&&phoneMatch[1])phoneOut.push('phone_ai/orders/'+phoneMatch[1]);
-                        return;
-                    }
                     out.push(s);
+                    var phoneMatch=s.match(/(?:^|\/)phone_ai\/orders\/([^\/?#]+)/);
                     if(phoneMatch&&phoneMatch[1])out.push('phone_ai/orders/'+phoneMatch[1],phoneMatch[1]);
                     var orderMatch=s.match(/(?:^|\/)(orders|orders_archive)\/(\d{4}-\d{2}-\d{2})\/([^\/?#]+)/);
                     if(orderMatch&&orderMatch[3])out.push(orderMatch[3],'orders/'+orderMatch[2]+'/'+orderMatch[3]);
                 });
-                if(isPhone){
-                    if(!phoneOut.length){
-                        var fallbackId=String(order.sourceOrderId||original.sourceOrderId||order.orderId||original.orderId||order.id||'').trim().replace(/^No\.?\s*/i,'');
-                        var fallbackMatch=fallbackId.match(/(?:^|\/)phone_ai\/orders\/([^\/?#]+)/);
-                        if(fallbackMatch&&fallbackMatch[1])phoneOut.push('phone_ai/orders/'+fallbackMatch[1]);
-                        else if(fallbackId&&fallbackId.indexOf('/')===-1)phoneOut.push('phone_ai/orders/'+fallbackId);
-                    }
-                    var phoneStamp='';
-                    [
-                        order.timestamp,order.submittedAt,order.createdAt,order.created_at,
-                        order.createdAtDisplay,order.submittedAtDisplay,order.orderDateKey,
-                        order.pickupDate,order.orderNo,order.serialNumber
-                    ].some(function(v){
-                        var raw=String(v||'').trim();
-                        if(!raw)return false;
-                        var n=Number(raw);
-                        if(Number.isFinite(n)&&n>0)phoneStamp=String(Math.round(n<1000000000000?n*1000:n));
-                        else{
-                            var ms=Date.parse(raw.replace(/\//g,'-').replace(' ','T'));
-                            phoneStamp=Number.isFinite(ms)?String(ms):raw.replace(/[^\w\u4e00-\u9fff-]+/g,'_');
-                        }
-                        return !!phoneStamp;
-                    });
-                    if(!phoneStamp)phoneStamp=String(order.id||'unknown');
-                    return phoneOut.filter(function(v,i,arr){return !!v&&arr.indexOf(v)===i;}).map(function(v){return v+'#'+phoneStamp;});
-                }
                 return out.filter(function(v,i,arr){return !!v&&arr.indexOf(v)===i;});
             },
             statusOverrideRawKey:function(order){
@@ -1813,33 +1727,12 @@
                 var s=this;
                 var keys=s.statusOverrideRawKeys(order).map(function(raw){return s.statusOverrideKeyFromRaw(raw);}).filter(Boolean);
                 var best=null;
-                var orderStartMs=0;
-                [order&&order.createdAt,order&&order.created_at,order&&order.orderCreatedAt,order&&order.submittedAt,order&&order.createdAtDisplay,order&&order.submittedAtDisplay,order&&order.orderTime,order&&order.timestamp,order&&order.time,order&&order.orderDateTime].forEach(function(v){
-                    if(orderStartMs)return;
-                    if(typeof v==='number'&&Number.isFinite(v)&&v>0)orderStartMs=v<1000000000000?v*1000:v;
-                    else{
-                        var s=String(v||'').trim();
-                        if(s){
-                            var ms=Date.parse(s.replace(/\//g,'-').replace(' ','T'));
-                            if(Number.isFinite(ms))orderStartMs=ms;
-                        }
-                    }
-                });
-                if(!orderStartMs){
-                    var datePart=String(order&&((order.orderDateKey!==undefined)?order.orderDateKey:(order.pickupDate||order.date))||'').trim();
-                    var timePart=String(order&&((order.orderTimeText!==undefined)?order.orderTimeText:(order.pickupTime||order.timeText||order.time))||'').trim();
-                    if(datePart&&timePart){
-                        var combinedMs=Date.parse(datePart.replace(/\//g,'-')+'T'+timePart);
-                        if(Number.isFinite(combinedMs))orderStartMs=combinedMs;
-                    }
-                }
                 keys.forEach(function(key){
                     var entry=(s.remoteStatusOverrides||{})[key];
                     if(!entry)return;
                     var status=String((entry&&typeof entry==='object')?(entry.status||''):entry).trim();
                     if(!status)return;
                     var updatedAt=Number(entry&&typeof entry==='object'?(entry.updatedAt||0):0);
-                    if(orderStartMs&&updatedAt&&updatedAt+60000<orderStartMs)return;
                     if(!best||updatedAt>=best.updatedAt)best={status:status,updatedAt:updatedAt};
                 });
                 return best?best.status:'';
@@ -2231,67 +2124,25 @@
                 var s=this;
                 s.resetPhoneOrdersListener();
                 var phoneRef=ref(db,'phone_ai/orders');
-                var toMs=function(v){
-                    if(typeof v==='number'&&Number.isFinite(v)&&v>0)return v<1000000000000?v*1000:v;
-                    var text=String(v||'').trim();
-                    if(!text)return 0;
-                    var parsed=Date.parse(text.replace(/\//g,'-').replace(' ','T'));
-                    return Number.isFinite(parsed)?parsed:0;
-                };
-                var firstMs=function(row,keys){
-                    for(var i=0;i<keys.length;i++){
-                        var ms=toMs(row&&row[keys[i]]);
-                        if(ms)return ms;
-                    }
-                    return 0;
-                };
-                var normalizePhoneRows=function(raw){
-                    raw=raw||{};
+                s.phoneOrdersUnsub=onValue(phoneRef,function(snap){
+                    var raw=snap.exists()?(snap.val()||{}):{};
                     var list=Object.keys(raw)
                         // \u2605 \u904e\u6ffe\u6389 `online_` \u524d\u7db4\u7684\u93e1\u50cf\u689d\u76ee
                         .filter(function(id){return typeof id==='string' && id.indexOf('online_')!==0;})
                         .map(function(id){
-                        var row=Object.assign({},raw[id]||{});
-                        var phonePath='phone_ai/orders/'+id;
-                        row.integration=Object.assign({},row.integration||{},{sourceRecordPath:phonePath});
-                        var out=Object.assign(row,{
+                        return Object.assign({
                             id:id,
                             source:'phone_ai',
                             sourceLabel:'\u96fb\u8a71\u9ede\u9910',
-                            sourceRecordPath:phonePath,
-                            _phoneDirectSource:true
-                        });
-                        var statusText=String(out.status||'').trim().toLowerCase();
-                        if(statusText==='archived'||statusText==='done'||statusText==='ready'||statusText==='cancelled'){
-                            var createdMs=firstMs(out,['createdAt','created_at','submittedAt','timestamp','orderTime','createdAtDisplay','submittedAtDisplay']);
-                            var statusMs=0;
-                            if(statusText==='archived')statusMs=firstMs(out,['archivedAt','archiveAt']);
-                            else if(statusText==='cancelled')statusMs=firstMs(out,['cancelledAt','canceledAt']);
-                            else statusMs=firstMs(out,['doneAt','completedAt','readyAt']);
-                            if(!statusMs||(createdMs&&statusMs+60000<createdMs)){
-                                out._phoneRawStatus=out.status;
-                                out.status='new';
-                            }
-                        }
-                        return out;
+                            sourceRecordPath:'phone_ai/orders/'+id
+                        },raw[id]||{});
                     });
                     s.phoneOrdersCache=s.normalizeIncomingOrders(list).map(function(o){return s.applyStatusOverrideToOrder(o);});
                     s.rebuildOnlineOrders();
-                };
-                var fallbackRead=function(){
-                    return get(phoneRef).then(function(snap){
-                        normalizePhoneRows(snap.exists()?(snap.val()||{}):{});
-                    }).catch(function(err){
-                        console.warn('phone_ai/orders fallback read failed:',err&&err.message?err.message:err);
-                    });
-                };
-                s.phoneOrdersUnsub=onValue(phoneRef,function(snap){
-                    normalizePhoneRows(snap.exists()?(snap.val()||{}):{});
                 },function(){
-                    if(!s.phoneOrdersCache||!s.phoneOrdersCache.length)fallbackRead();
+                    s.phoneOrdersCache=[];
                     s.rebuildOnlineOrders();
                 });
-                fallbackRead();
             },
             enrichPhoneCartItemsFromNote:function(){
                 var cart=Array.isArray(this.cart)?this.cart:[];
@@ -2379,63 +2230,6 @@
                 function stripCup(name){
                     return text(name).replace(/[（(]\s*(?:\u5927\u676f|\u4e2d\u676f|\u5c0f\u676f)\s*[)）]/g,'').trim();
                 }
-                function collectDrinkAddons(src){
-                    var out=[];
-                    var seen={};
-                    function push(name,price){
-                        name=text(name).replace(/^\+/,'').replace(/\s*\$?\s*\d+\s*$/,'').trim();
-                        if(!name||seen[name])return;
-                        seen[name]=true;
-                        var p=num(price);
-                        out.push({name:name,price:p>0?p:0});
-                    }
-                    if(!src||typeof src!=='object')return out;
-                    [src.comboDrinkAddons,src['\u98f2\u6599\u52a0\u6599']].forEach(function(arr){
-                        if(!Array.isArray(arr))return;
-                        arr.forEach(function(da){
-                            if(!da)return;
-                            if(typeof da==='string')push(da,0);
-                            else push(da.name||da['\u540d\u7a31']||da.label||da.value,da.price||da['\u52a0\u50f9']);
-                        });
-                    });
-                    if(Array.isArray(src.optionGroupSelections)){
-                        src.optionGroupSelections.forEach(function(sel){
-                            var token=text(sel&&sel.name);
-                            if(token.indexOf('\u52a0\u7cd6')!==-1)push('\u52a0\u7cd6',sel&&sel.price);
-                            if(token.indexOf('\u52a0\u5976')!==-1)push('\u52a0\u5976',sel&&sel.price);
-                        });
-                    }
-                    [src.optionSelections,src.selectedOptions].forEach(function(obj){
-                        if(!obj||typeof obj!=='object'||Array.isArray(obj))return;
-                        Object.keys(obj).forEach(function(k){
-                            push(k,0);
-                            push(obj[k],0);
-                        });
-                    });
-                    text([src.note,src['\u5099\u8a3b'],src.drinkNote,src.mealDrink,src.comboDrinkText,src.comboDrinkLabel,src.comboDrinkChargeText].join(',')).split(/[\uFF0C,\u3001\/／]/).forEach(function(part){
-                        var token=text(part);
-                        if(token.indexOf('\u52a0\u7cd6')!==-1)push('\u52a0\u7cd6',0);
-                        if(token.indexOf('\u52a0\u5976')!==-1)push('\u52a0\u5976',0);
-                    });
-                    return out;
-                }
-                function mergeDrinkAddons(){
-                    var out=[];
-                    var seen={};
-                    Array.prototype.slice.call(arguments).forEach(function(list){
-                        (Array.isArray(list)?list:[]).forEach(function(da){
-                            var name=text(da&&da.name);
-                            if(!name||seen[name])return;
-                            seen[name]=true;
-                            out.push({name:name,price:num(da&&da.price)});
-                        });
-                    });
-                    out.sort(function(a,b){
-                        var order={'\u52a0\u7cd6':1,'\u52a0\u5976':2};
-                        return (order[a.name]||99)-(order[b.name]||99);
-                    });
-                    return out;
-                }
                 var used={};
                 function findSibling(mainIdx){
                     var main=cart[mainIdx];
@@ -2509,7 +2303,6 @@
                     if(chargeText)combo+=(combo?'/':'')+chargeText;
                     cart[idx]=Object.assign({},main,{
                         optionGroupSelections:keep,
-                        comboDrinkAddons:mergeDrinkAddons(collectDrinkAddons(main),collectDrinkAddons(sib)),
                         comboGroupId:text(main.comboGroupId)||text(sib.comboGroupId),
                         size:size,
                         temp:temp,
@@ -2727,24 +2520,9 @@
                             else push(da.name||da['\u540d\u7a31']||da.label||da.value,da.price||da['\u52a0\u50f9']);
                         });
                     });
-                    if(Array.isArray(src.optionGroupSelections)){
-                        src.optionGroupSelections.forEach(function(sel){
-                            var token=text(sel&&sel.name);
-                            if(token.indexOf('\u52a0\u7cd6')!==-1)push('\u52a0\u7cd6',sel&&sel.price);
-                            if(token.indexOf('\u52a0\u5976')!==-1)push('\u52a0\u5976',sel&&sel.price);
-                        });
-                    }
-                    [src.optionSelections,src.selectedOptions].forEach(function(obj){
-                        if(!obj||typeof obj!=='object'||Array.isArray(obj))return;
-                        Object.keys(obj).forEach(function(k){
-                            push(k,0);
-                            push(obj[k],0);
-                        });
-                    });
-                    text([src.note,src['\u5099\u8a3b'],src.drinkNote,src.mealDrink,src.comboDrinkText,src.comboDrinkLabel,src.comboDrinkChargeText].join(',')).split(/[\uFF0C,\u3001\/／]/).forEach(function(part){
+                    text(src.note||src['\u5099\u8a3b']||src.drinkNote).split(/[\uFF0C,\u3001]/).forEach(function(part){
                         var token=text(part);
-                        if(token.indexOf('\u52a0\u7cd6')!==-1)push('\u52a0\u7cd6',0);
-                        if(token.indexOf('\u52a0\u5976')!==-1)push('\u52a0\u5976',0);
+                        if(token==='\u52a0\u7cd6'||token==='\u52a0\u5976')push(token,0);
                     });
                 }
                 collect(item);
@@ -3014,39 +2792,17 @@
                 }
                 function summaryAddonNames(it){
                     var out=[];
-                    var pushName=function(raw,onlyDrinkAddons){
-                        var n=text(raw).replace(/^\+/,'').replace(/\s*\$?\s*\d+\s*$/,'').trim();
-                        if(!n)return;
-                        var matched=false;
-                        ['\u52a0\u7cd6','\u52a0\u5976'].forEach(function(token){
-                            if(n.indexOf(token)!==-1&&out.indexOf(token)===-1){
-                                out.push(token);
-                                matched=true;
-                            }
-                        });
-                        if(!matched&&!onlyDrinkAddons&&out.indexOf(n)===-1)out.push(n);
-                    };
                     [it&&it.options,it&&it.addons,it&&it['\u52a0\u6599'],it&&it.posExtras,it&&it.comboDrinkAddons,it&&it['\u98f2\u6599\u52a0\u6599']].forEach(function(arr){
                         if(!Array.isArray(arr))return;
                         arr.forEach(function(opt){
-                            pushName(opt&&(opt.name||opt['\u540d\u7a31']||opt.label||opt.value),false);
+                            var n=text(opt&&(opt.name||opt['\u540d\u7a31']||opt.label||opt.value));
+                            n=n.replace(/^\+/,'').replace(/\s*\$?\s*\d+\s*$/,'').trim();
+                            if(n&&out.indexOf(n)===-1)out.push(n);
                         });
                     });
-                    [it&&it.note,it&&it['\u5099\u8a3b'],it&&it.drinkNote,it&&it.mealDrink,it&&it.comboDrinkText,it&&it.comboDrinkLabel,it&&it.comboDrinkChargeText].forEach(function(raw){
-                        text(raw).split(/[\uFF0C,\u3001\/／]/).map(text).forEach(function(n){
-                            pushName(n,true);
-                        });
-                    });
-                    if(Array.isArray(it&&it.optionGroupSelections)){
-                        it.optionGroupSelections.forEach(function(sel){
-                            pushName(sel&&sel.name,true);
-                        });
-                    }
-                    [it&&it.optionSelections,it&&it.selectedOptions].forEach(function(obj){
-                        if(!obj||typeof obj!=='object'||Array.isArray(obj))return;
-                        Object.keys(obj).forEach(function(k){
-                            pushName(k,true);
-                            pushName(obj[k],true);
+                    [it&&it.note,it&&it['\u5099\u8a3b'],it&&it.drinkNote].forEach(function(raw){
+                        text(raw).split(/[\uFF0C,\u3001]/).map(text).forEach(function(n){
+                            if((n==='\u52a0\u7cd6'||n==='\u52a0\u5976')&&out.indexOf(n)===-1)out.push(n);
                         });
                     });
                     out.sort(function(a,b){
@@ -3079,10 +2835,10 @@
                     var mainName=cleanName(main&&(main.name||main['\u54c1\u9805']));
                     var label=[main&&main.comboDrinkLabel,sib&&sib.comboDrinkLabel,sib&&sib.note,sib&&sib['\u5099\u8a3b']].map(text).join(' ');
                     var charge=[main&&main.comboDrinkChargeText,sib&&sib.comboDrinkChargeText,main&&main.comboDrinkText,main&&main.mealDrink,sib&&sib.comboDrinkText,sib&&sib.mealDrink].map(text).join(' ');
-                    if(charge.indexOf('飲料加購')!==-1)return '飲料加購$';
-                    if(charge.indexOf('補差價')!==-1)return '補差價$';
-                    if(label.indexOf('搭配飲料折5元')!==-1)return '飲料加購$';
                     if(label.indexOf('套餐飲料')!==-1||isNoMeal(mainName))return '補差價$';
+                    if(label.indexOf('搭配飲料折5元')!==-1)return '飲料加購$';
+                    if(charge.indexOf('補差價')!==-1)return '補差價$';
+                    if(charge.indexOf('飲料加購')!==-1)return '飲料加購$';
                     var credit=num((main&&main.comboDrinkCredit)||(sib&&sib.comboDrinkCredit));
                     if(credit>0&&credit<=5)return '飲料加購$';
                     return '補差價$';
@@ -3186,22 +2942,8 @@
                         }
                     }
                     if(!drink)return '';
-                    var chargePrefix=prefixFor(main,sib);
-                    if(chargePrefix==='\u98f2\u6599\u52a0\u8cfc$'&&amount>0){
-                        var siblingUnit=num(sib&&(sib.price||sib['\u55ae\u50f9']||sib.unitPrice));
-                        if(siblingUnit>0&&siblingUnit<amount&&amount-siblingUnit<=5){
-                            amount=siblingUnit;
-                        }else{
-                            var fullAmount=num((main&&main.comboDrinkFullPrice)||(sib&&sib.comboDrinkFullPrice));
-                            var creditAmount=num((main&&main.comboDrinkCredit)||(sib&&sib.comboDrinkCredit));
-                            if((!creditAmount||creditAmount>5)&&fullAmount>0&&Math.round(fullAmount)===Math.round(amount))creditAmount=5;
-                            if(fullAmount>0&&creditAmount>0&&creditAmount<=5&&Math.round(fullAmount)===Math.round(amount)&&amount>creditAmount){
-                                amount=amount-creditAmount;
-                            }
-                        }
-                    }
                     var line=[size,temp,drink].filter(Boolean).join('/');
-                    if(comboLike&&amount>0)line+='/'+chargePrefix+amount;
+                    if(comboLike&&amount>0)line+='/'+prefixFor(main,sib)+amount;
                     return line;
                 }
                 var used={};
@@ -3256,15 +2998,6 @@
                         }
                     }
                     if(!eggFound){
-                        [it&&it.eggStyle,it&&it.selectedEgg,it&&it['\u86cb\u54c1\u9078\u64c7'],it&&it['\u86cb\u54c1']].map(text).some(function(raw){
-                            if(!raw)return false;
-                            if(/\u4e0d\u52a0\u86cb/.test(raw)){eggFound='__skip__';return true;}
-                            var m=raw.match(/(?:\u52a0)?(\u534a\u719f\u86cb|\u592a\u967d\u86cb|\u5168\u719f\u86cb|\u6563\u86cb|\u7092\u86cb|\u8377\u5305\u86cb|\u719f\u86cb)/);
-                            if(m){eggFound=m[1];return true;}
-                            return false;
-                        });
-                    }
-                    if(!eggFound){
                         var noteText=text(it&&(it.note||it['\u5099\u8a3b']));
                         if(noteText){
                             var eggMatch=noteText.match(/(?:\u52a0)?(\u534a\u719f\u86cb|\u592a\u967d\u86cb|\u5168\u719f\u86cb|\u6563\u86cb|\u7092\u86cb|\u8377\u5305\u86cb|\u719f\u86cb)/);
@@ -3286,7 +3019,7 @@
                         var drinkLine=mealDrinkText(it,sib);
                         if(drinkLine){
                             var drinkAddText=sib?summaryAddonNames(sib):'';
-                            var mainDrinkAdds=summaryAddonNames({comboDrinkAddons:it&&it.comboDrinkAddons,'\u98f2\u6599\u52a0\u6599':it&&it['\u98f2\u6599\u52a0\u6599'],note:it&&it.note,'\u5099\u8a3b':it&&it['\u5099\u8a3b'],drinkNote:it&&it.drinkNote,optionGroupSelections:it&&it.optionGroupSelections,optionSelections:it&&it.optionSelections,selectedOptions:it&&it.selectedOptions});
+                            var mainDrinkAdds=summaryAddonNames({comboDrinkAddons:it&&it.comboDrinkAddons,'\u98f2\u6599\u52a0\u6599':it&&it['\u98f2\u6599\u52a0\u6599'],note:it&&it.note,'\u5099\u8a3b':it&&it['\u5099\u8a3b'],drinkNote:it&&it.drinkNote});
                             if(mainDrinkAdds)drinkAddText=mergeAddonTexts(drinkAddText,mainDrinkAdds);
                             if(drinkAddText)drinkLine+='/'+drinkAddText;
                             var dq=sib?qtyOf(sib):qtyOf(it);
@@ -3396,39 +3129,17 @@
                 }
                 function summaryAddonNamesFallback(it){
                     var out=[];
-                    var pushName=function(raw,onlyDrinkAddons){
-                        var n=text(raw).replace(/^\+/,'').replace(/\s*\$?\s*\d+\s*$/,'').trim();
-                        if(!n)return;
-                        var matched=false;
-                        ['\u52a0\u7cd6','\u52a0\u5976'].forEach(function(token){
-                            if(n.indexOf(token)!==-1&&out.indexOf(token)===-1){
-                                out.push(token);
-                                matched=true;
-                            }
-                        });
-                        if(!matched&&!onlyDrinkAddons&&out.indexOf(n)===-1)out.push(n);
-                    };
                     [it&&it.options,it&&it.addons,it&&it['\u52a0\u6599'],it&&it.posExtras,it&&it.comboDrinkAddons,it&&it['\u98f2\u6599\u52a0\u6599']].forEach(function(arr){
                         if(!Array.isArray(arr))return;
                         arr.forEach(function(opt){
-                            pushName(opt&&(opt.name||opt['\u540d\u7a31']||opt.label||opt.value),false);
+                            var n=text(opt&&(opt.name||opt['\u540d\u7a31']||opt.label||opt.value));
+                            n=n.replace(/^\+/,'').replace(/\s*\$?\s*\d+\s*$/,'').trim();
+                            if(n&&out.indexOf(n)===-1)out.push(n);
                         });
                     });
-                    [it&&it.note,it&&it['\u5099\u8a3b'],it&&it.drinkNote,it&&it.mealDrink,it&&it.comboDrinkText,it&&it.comboDrinkLabel,it&&it.comboDrinkChargeText].forEach(function(raw){
-                        text(raw).split(/[\uFF0C,\u3001\/／]/).map(text).forEach(function(n){
-                            pushName(n,true);
-                        });
-                    });
-                    if(Array.isArray(it&&it.optionGroupSelections)){
-                        it.optionGroupSelections.forEach(function(sel){
-                            pushName(sel&&sel.name,true);
-                        });
-                    }
-                    [it&&it.optionSelections,it&&it.selectedOptions].forEach(function(obj){
-                        if(!obj||typeof obj!=='object'||Array.isArray(obj))return;
-                        Object.keys(obj).forEach(function(k){
-                            pushName(k,true);
-                            pushName(obj[k],true);
+                    [it&&it.note,it&&it['\u5099\u8a3b'],it&&it.drinkNote].forEach(function(raw){
+                        text(raw).split(/[\uFF0C,\u3001]/).map(text).forEach(function(n){
+                            if((n==='\u52a0\u7cd6'||n==='\u52a0\u5976')&&out.indexOf(n)===-1)out.push(n);
                         });
                     });
                     out.sort(function(a,b){
@@ -3477,7 +3188,6 @@
                         if(String(sel&&sel.mealUpgradeChargePrefix||'').indexOf('\u98f2\u6599\u52a0\u8cfc')!==-1)discount5=true;
                     });
                     [main&&main.mealDrink,main&&main.comboDrinkText].forEach(function(raw){
-                        if(String(raw||'').indexOf('\u98f2\u6599\u52a0\u8cfc')!==-1||String(raw||'').indexOf('\u642d\u914d\u98f2\u6599\u62985\u5143')!==-1)discount5=true;
                         text(raw).split(/[\/,\u3001]/).map(text).filter(Boolean).forEach(function(part){
                             if(!size&&(part.indexOf('\u5927\u676f')!==-1||part.indexOf('\u4e2d\u676f')!==-1||part.indexOf('\u5c0f\u676f')!==-1))size=part;
                             else if(!temp&&(part.indexOf('\u51b0')!==-1||part.indexOf('\u71b1')!==-1||part.indexOf('\u6eab')!==-1||part.indexOf('\u5e38\u6eab')!==-1))temp=part;
@@ -3557,7 +3267,7 @@
                             if(msig)mainComboSigBudget[msig]=(mainComboSigBudget[msig]||0)+1;
                             var drinkQty=sib?qtyOf(sib):qty;
                             // ★ POS 自填單：飲料加料附加在飲料描述後
-                            var dAdds=summaryAddonNamesFallback({comboDrinkAddons:it&&it.comboDrinkAddons,'\u98f2\u6599\u52a0\u6599':it&&it['\u98f2\u6599\u52a0\u6599'],note:it&&it.note,'\u5099\u8a3b':it&&it['\u5099\u8a3b'],drinkNote:it&&it.drinkNote,optionGroupSelections:it&&it.optionGroupSelections,optionSelections:it&&it.optionSelections,selectedOptions:it&&it.selectedOptions});
+                            var dAdds=summaryAddonNamesFallback({comboDrinkAddons:it&&it.comboDrinkAddons,'\u98f2\u6599\u52a0\u6599':it&&it['\u98f2\u6599\u52a0\u6599'],note:it&&it.note,'\u5099\u8a3b':it&&it['\u5099\u8a3b'],drinkNote:it&&it.drinkNote});
                             if(dAdds)mealText=mealText+'/'+dAdds;
                             name=name+' ['+(drinkQty>0?drinkQty:qty)+'x'+mealText+']';
                         }
@@ -3814,41 +3524,8 @@
                     var src=String(order.source||'').toLowerCase().trim();
                     return ['no',day,no,src].join('|');
                 };
-                var phoneScopedKey=function(order){
-                    if(!order||typeof order!=='object')return '';
-                    var sourcePath=String((order.integration&&order.integration.sourceRecordPath)||order.sourceRecordPath||'').trim();
-                    var original=(order&&order._integrationOriginal)||{};
-                    var sourceRoot=String(order.audit&&order.audit.sourceRoot||original.audit&&original.audit.sourceRoot||'').toLowerCase();
-                    var src=String(order.source||original.source||'').toLowerCase();
-                    var label=String(order.sourceLabel||order._integrationSourceLabel||original.sourceLabel||'').toLowerCase();
-                    var phonePath=sourcePath.match(/(?:^|\/)phone_ai\/orders\/([^\/?#]+)/);
-                    var phoneLike=!!phonePath||src==='phone_ai'||src==='pos_local'||sourceRoot.indexOf('phone_ai')===0||label.indexOf('phone')>=0||label.indexOf('\u96fb\u8a71')>=0;
-                    if(!phoneLike)return '';
-                    try{
-                        var rawKeys=s.statusOverrideRawKeys?s.statusOverrideRawKeys(order):[];
-                        if(rawKeys&&rawKeys.length)return String(rawKeys[0]);
-                    }catch(_){}
-                    var id=phonePath&&phonePath[1]?String(phonePath[1]):String(order.id||order.sourceOrderId||order.orderId||'unknown').trim().replace(/^No\.?\s*/i,'');
-                    if(!id)id='unknown';
-                    var stamp='';
-                    [order.timestamp,order.submittedAt,order.createdAt,order.created_at,order.createdAtDisplay,order.submittedAtDisplay,order.orderDateKey,order.pickupDate,order.orderNo,order.serialNumber].some(function(v){
-                        var raw=String(v||'').trim();
-                        if(!raw)return false;
-                        var n=Number(raw);
-                        if(Number.isFinite(n)&&n>0)stamp=String(Math.round(n<1000000000000?n*1000:n));
-                        else{
-                            var ms=Date.parse(raw.replace(/\//g,'-').replace(' ','T'));
-                            stamp=Number.isFinite(ms)?String(ms):raw.replace(/[^\w\u4e00-\u9fff-]+/g,'_');
-                        }
-                        return !!stamp;
-                    });
-                    if(!stamp)stamp=String(id||'unknown');
-                    return 'phone_ai/orders/'+id+'#'+stamp;
-                };
                 var getMergeKey=function(order){
                     if(!order)return '';
-                    var scopedPhone=phoneScopedKey(order);
-                    if(scopedPhone)return scopedPhone;
                     var sourcePath=(order.integration&&order.integration.sourceRecordPath)||order.sourceRecordPath||'';
                     var pathId=getPathOrderId(sourcePath);
                     if(pathId)return String(pathId);
@@ -3930,26 +3607,6 @@
                 var mergeTwo=function(current,incoming){
                     if(!current)return Object.assign({},incoming);
                     if(!incoming)return Object.assign({},current);
-                    var directPhoneMerge=function(primary,secondary){
-                        var merged=Object.assign({},secondary||{},primary||{});
-                        var primaryItems=Array.isArray(primary&&primary.items)?primary.items:[];
-                        if(primaryItems.length){
-                            merged.items=primaryItems.map(function(it){return Object.assign({},it);});
-                        }else{
-                            var bestDirectItems=pickRicherItems(secondary&&secondary.items,primary&&primary.items);
-                            if(bestDirectItems&&bestDirectItems.length)merged.items=bestDirectItems.map(function(it){return Object.assign({},it);});
-                        }
-                        var directTotal=Number((primary&&primary.total!==undefined)?primary.total:((primary&&primary.totals&&primary.totals.finalTotal)||(primary&&primary['總金額'])));
-                        if(Number.isFinite(directTotal)&&directTotal>0)merged.total=Math.round(directTotal);
-                        else merged.total=s.preferOrderTotalForDisplay(merged,Number(secondary&&secondary.total),Number(primary&&primary.total),merged.items);
-                        merged.source='phone_ai';
-                        merged.sourceLabel='\u96fb\u8a71\u9ede\u9910';
-                        merged.sourceRecordPath=(primary&&primary.sourceRecordPath)||('phone_ai/orders/'+((primary&&primary.id)||merged.id||''));
-                        merged._phoneDirectSource=true;
-                        return merged;
-                    };
-                    if(current._phoneDirectSource)return directPhoneMerge(current,incoming);
-                    if(incoming._phoneDirectSource)return directPhoneMerge(incoming,current);
                     if(isPhoneLikeForMerge(current)&&isWeakPhoneShadowForMerge(incoming))return Object.assign({},incoming,current);
                     if(isPhoneLikeForMerge(incoming)&&isWeakPhoneShadowForMerge(current))return Object.assign({},current,incoming);
                     var incomingLocal=isLocalSource(incoming)||!incoming._integrationReadOnly;
@@ -3980,16 +3637,11 @@
                 var upsertMerged=function(map,o){
                     if(!o||!o.id)return;
                     var keys=[];
-                    var scopedPhone=phoneScopedKey(o);
-                    if(scopedPhone){
-                        keys.push(String(scopedPhone));
-                    }else{
-                        var primary=getMergeKey(o);
-                        if(primary)keys.push(String(primary));
-                        var fallbackKey=getFallbackDedupKey(o);
-                        if(fallbackKey)keys.push(String(fallbackKey));
-                        if(o.id)keys.push(String(o.id));
-                    }
+                    var primary=getMergeKey(o);
+                    if(primary)keys.push(String(primary));
+                    var fallbackKey=getFallbackDedupKey(o);
+                    if(fallbackKey)keys.push(String(fallbackKey));
+                    if(o.id)keys.push(String(o.id));
                     var uniq={};
                     keys=keys.filter(function(k){
                         if(!k)return false;
@@ -4010,16 +3662,11 @@
                     (Array.isArray(values)?values:[]).forEach(function(o){
                         if(!o||!o.id)return;
                         var keys=[];
-                        var scopedPhone=phoneScopedKey(o);
-                        if(scopedPhone){
-                            keys.push(String(scopedPhone));
-                        }else{
-                            var primary=getMergeKey(o);
-                            if(primary)keys.push(String(primary));
-                            var fallbackKey=getFallbackDedupKey(o);
-                            if(fallbackKey)keys.push(String(fallbackKey));
-                            if(o.id)keys.push(String(o.id));
-                        }
+                        var primary=getMergeKey(o);
+                        if(primary)keys.push(String(primary));
+                        var fallbackKey=getFallbackDedupKey(o);
+                        if(fallbackKey)keys.push(String(fallbackKey));
+                        if(o.id)keys.push(String(o.id));
                         var uniq={};
                         keys=keys.filter(function(k){
                             if(!k)return false;
@@ -4068,15 +3715,13 @@
                     var total=Number(order.total||((order.totals&&order.totals.finalTotal)||0));
                     var phone=String((order.customer&&order.customer.phone)||order.phone||'').trim();
                     var pickup=String(order.pickupTime||order.pickupTimeLabel||'').trim();
+                    if(sourceOrderId&&day&&family)return ['oid',family,day,sourceOrderId].join('|');
                     // 電話單避免用「流水號+金額」合併，否則同日重置或同號不同單會互相覆蓋
                     if(family==='phone_ai'){
-                        var scopedPhone=phoneScopedKey(order);
-                        if(scopedPhone)return ['phone',scopedPhone].join('|');
-                        if(sourcePath)return ['path',sourcePath,day||''].join('|');
-                        if(order.id)return ['id',family,String(order.id),day||''].join('|');
+                        if(sourcePath)return ['path',sourcePath].join('|');
+                        if(order.id)return ['id',family,String(order.id)].join('|');
                         return '';
                     }
-                    if(sourceOrderId&&day&&family)return ['oid',family,day,sourceOrderId].join('|');
                     if(no&&day&&family)return ['sig',family,day,no,Number.isFinite(total)?Math.round(total):'',phone,pickup].join('|');
                     if(sourcePath)return ['path',sourcePath].join('|');
                     if(!no||!day||!family)return '';
@@ -4123,21 +3768,6 @@
                     });
                 }
                 var mergedOrders=s.normalizeIncomingOrders(collapseByDisplaySignature(collapseMergedValues(Object.values(mergedMap)))).map(function(o){return s.applyStatusOverrideToOrder(o);});
-                var directPhoneSeen={};
-                mergedOrders.forEach(function(o){
-                    var k=phoneScopedKey(o);
-                    if(k)directPhoneSeen[k]=true;
-                });
-                phoneList.forEach(function(o){
-                    if(!o||!o.id)return;
-                    var direct=s.applyStatusOverrideToOrder(s.normalizeIncomingOrder(Object.assign({},o)));
-                    if(!direct||direct.status==='archived')return;
-                    var k=phoneScopedKey(direct);
-                    if(k&&!directPhoneSeen[k]){
-                        mergedOrders.push(direct);
-                        directPhoneSeen[k]=true;
-                    }
-                });
                 s.onlineOrders=mergedOrders.filter(function(o){return !o||o.status!=='archived';}).sort(function(a,b){
                     var w={new:1,making:2,done:3,cancelled:4};
                     if(w[a.status]!==w[b.status])return w[a.status]-w[b.status];
