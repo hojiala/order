@@ -141,8 +141,8 @@
                                         🧋 {{ getItemMealDrinkLabel(item, order) }}：{{ getItemMealDrinkText(item, order) }}
                                     </div>
                                     <!-- 飲料加料 -->
-                                    <div v-if="item.comboDrinkAddons && item.comboDrinkAddons.length" class="text-sm text-orange-500 mt-1">
-                                        ＋ <span v-for="da in item.comboDrinkAddons" :key="da.name" class="mr-2">{{ da.name }}<span v-if="da.price>0"> +${{ da.price }}</span></span>
+                                    <div v-if="getDisplayComboDrinkAddons(item, order).length" class="text-sm text-orange-500 mt-1">
+                                        ＋ <span v-for="da in getDisplayComboDrinkAddons(item, order)" :key="da.name" class="mr-2">{{ da.name }}<span v-if="da.price>0"> +${{ da.price }}</span></span>
                                     </div>
                                     <!-- 加料選項 -->
                                     <div v-if="item.options && item.options.length" class="text-sm text-gray-500 mt-1">
@@ -230,8 +230,8 @@
                                         <div v-if="item.optionGroupSelections && item.optionGroupSelections.length" class="flex flex-wrap gap-1 mt-1">
                                             <span v-for="sel in item.optionGroupSelections" :key="sel.groupName" class="text-xs bg-orange-50 border border-orange-200 text-orange-700 px-1.5 py-0.5 rounded-full font-bold">{{ sel.name }}</span>
                                         </div>
-                                        <div v-if="item.comboDrinkAddons && item.comboDrinkAddons.length" class="text-xs text-orange-500 mt-1">
-                                            ＋ <span v-for="da in item.comboDrinkAddons" :key="da.name" class="mr-2">{{ da.name }}<span v-if="da.price>0"> +${{ da.price }}</span></span>
+                                        <div v-if="getDisplayComboDrinkAddons(item, editModal).length" class="text-xs text-orange-500 mt-1">
+                                            ＋ <span v-for="da in getDisplayComboDrinkAddons(item, editModal)" :key="da.name" class="mr-2">{{ da.name }}<span v-if="da.price>0"> +${{ da.price }}</span></span>
                                         </div>
                                         <div v-if="item.options && item.options.length" class="text-xs text-gray-500 mt-1">
                                             + <span v-for="opt in item.options" :key="opt.name" class="mr-2">{{ opt.name }} ${{ opt.price || 0 }}</span>
@@ -783,6 +783,44 @@
                         return pricing === 'mealUpgrade' && Number.isFinite(base) && base > 0 && base <= 5;
                     });
                 },
+                getDisplayComboDrinkAddons(item, order) {
+                    const out = [];
+                    const seen = new Set();
+                    const push = (name, price) => {
+                        name = String(name || '').replace(/^\+/, '').replace(/\s*\$?\s*\d+\s*$/, '').trim();
+                        if (!name || seen.has(name)) return;
+                        seen.add(name);
+                        const p = Number(price || 0);
+                        out.push({ name, price: Number.isFinite(p) ? p : 0 });
+                    };
+                    const collect = (src) => {
+                        if (!src || typeof src !== 'object') return;
+                        [src.comboDrinkAddons, src['\u98f2\u6599\u52a0\u6599']].forEach((arr) => {
+                            if (!Array.isArray(arr)) return;
+                            arr.forEach((da) => {
+                                if (!da) return;
+                                if (typeof da === 'string') push(da, 0);
+                                else push(da.name || da['\u540d\u7a31'] || da.label || da.value, da.price || da['\u52a0\u50f9']);
+                            });
+                        });
+                        const shouldParseNote = this.isComboMainLineForDisplay(src) || this.isComboDrinkLineForDisplay(src) || Array.isArray(src.comboDrinkAddons);
+                        if (shouldParseNote) {
+                            String(src.note || src['\u5099\u8a3b'] || src.drinkNote || '').split(/[\uFF0C,\u3001]/).forEach((part) => {
+                                const token = String(part || '').trim();
+                                if (token === '\u52a0\u7cd6' || token === '\u52a0\u5976') push(token, 0);
+                            });
+                        }
+                    };
+                    collect(item);
+                    if (this.isComboMainLineForDisplay(item)) {
+                        collect(this.findComboDrinkSiblingForDisplay(item, order));
+                    }
+                    out.sort((a, b) => {
+                        const orderMap = { '\u52a0\u7cd6': 1, '\u52a0\u5976': 2 };
+                        return (orderMap[a.name] || 99) - (orderMap[b.name] || 99);
+                    });
+                    return out;
+                },
                 getDisplayItemNote(item, order) {
                     if (!item || this.isComboDrinkLineForDisplay(item)) return '';
                     const isComboMetaNote = (val) => {
@@ -807,6 +845,9 @@
                     collectNames(item.posExtras, 'name', '\u540d\u7a31');
                     collectNames(item['\u52a0\u6599'], 'name', '\u540d\u7a31');
                     collectNames(item.addons, 'name', '\u540d\u7a31');
+                    this.getDisplayComboDrinkAddons(item, order).forEach((da) => {
+                        if (da && da.name) addonNames.add(da.name);
+                    });
                     const stripAddonTokens = (text) => {
                         if (!text) return '';
                         // \u2605 \u4E0D\u52A0\u86CB\u5DF2\u7531\u7368\u7ACB chip \u986F\u793A\uFF0C\u9019\u88E1\u5F9E \u5099\u8A3B row \u79FB\u9664\u907F\u514D\u91CD\u8907

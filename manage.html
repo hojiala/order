@@ -1262,8 +1262,8 @@
                     </span>
                 </div>
                 <div v-if="getDetailMealDrink(item)" class="text-xs text-orange-400 mt-1">🧋 {{ getDetailMealDrink(item) }}</div>
-                <div v-if="item.comboDrinkAddons && item.comboDrinkAddons.length" class="text-xs text-orange-300 mt-0.5">
-                    <span v-for="da in item.comboDrinkAddons" :key="da.name" class="mr-2">＋{{ da.name }}<span v-if="da.price>0"> +${{ da.price }}</span></span>
+                <div v-if="getDetailComboDrinkAddons(item, viewingOrder, getOriginalDetailItemIndex(viewingOrder, item)).length" class="text-xs text-orange-300 mt-0.5">
+                    <span v-for="da in getDetailComboDrinkAddons(item, viewingOrder, getOriginalDetailItemIndex(viewingOrder, item))" :key="da.name" class="mr-2">＋{{ da.name }}<span v-if="da.price>0"> +${{ da.price }}</span></span>
                 </div>
                 <div v-if="item.options && item.options.length" class="text-xs text-slate-400 mt-0.5">
                     <span v-for="opt in item.options" :key="opt.name" class="mr-2">+{{ opt.name }} ${{ opt.price || 0 }}</span>
@@ -2833,6 +2833,45 @@ window._doCountUp = function() {
                 }
                 return this.getDetailMenuDefaultEggDoneness(item);
             },
+            getDetailComboDrinkAddons: function(item, order, index) {
+                var out = [];
+                var seen = new Set();
+                var push = function(name, price) {
+                    name = String(name || '').replace(/^\+/, '').replace(/\s*\$?\s*\d+\s*$/, '').trim();
+                    if (!name || seen.has(name)) return;
+                    seen.add(name);
+                    var p = Number(price || 0);
+                    out.push({ name: name, price: Number.isFinite(p) ? p : 0 });
+                };
+                var self = this;
+                var collect = function(src) {
+                    if (!src || typeof src !== 'object') return;
+                    [src.comboDrinkAddons, src['\u98f2\u6599\u52a0\u6599']].forEach(function(arr) {
+                        if (!Array.isArray(arr)) return;
+                        arr.forEach(function(da) {
+                            if (!da) return;
+                            if (typeof da === 'string') push(da, 0);
+                            else push(da.name || da['\u540d\u7a31'] || da.label || da.value, da.price || da['\u52a0\u50f9']);
+                        });
+                    });
+                    var shouldParseNote = self.isDetailComboMainLine(src) || self.isDetailComboDrinkLine(src) || Array.isArray(src.comboDrinkAddons);
+                    if (shouldParseNote) {
+                        String(src.note || src['\u5099\u8a3b'] || src.drinkNote || '').split(/[\uFF0C,\u3001]/).forEach(function(part) {
+                            var token = String(part || '').trim();
+                            if (token === '\u52a0\u7cd6' || token === '\u52a0\u5976') push(token, 0);
+                        });
+                    }
+                };
+                collect(item);
+                if (this.isDetailComboMainLine(item)) {
+                    collect(this.findComboDrinkSibling(order, item, index));
+                }
+                out.sort(function(a, b) {
+                    var orderMap = { '\u52a0\u7cd6': 1, '\u52a0\u5976': 2 };
+                    return (orderMap[a.name] || 99) - (orderMap[b.name] || 99);
+                });
+                return out;
+            },
             getDetailItemNote: function(item, order, index) {
                 if (!item || this.isDetailComboDrinkLine(item)) return '';
                 // ★ 同 admin getDisplayItemNote：把已經顯示成 +加糖/+加奶 的 token 從 note 過濾掉
@@ -2851,6 +2890,9 @@ window._doCountUp = function() {
                 collectNames(item.posExtras, ['name', '名稱']);
                 collectNames(item['加料'], ['name', '名稱']);
                 collectNames(item.addons, ['name', '名稱']);
+                this.getDetailComboDrinkAddons(item, order, index).forEach(function(da) {
+                    if (da && da.name) addonNames.add(da.name);
+                });
                 var stripAddonTokens = function(text) {
                     if (!text) return '';
                     // ★ 不加蛋已由獨立 chip 顯示，這裡從 備註 row 移除避免重複

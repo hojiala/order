@@ -2751,7 +2751,7 @@
                 }
                 function summaryAddonNames(it){
                     var out=[];
-                    [it&&it.options,it&&it.addons,it&&it['\u52a0\u6599'],it&&it.posExtras].forEach(function(arr){
+                    [it&&it.options,it&&it.addons,it&&it['\u52a0\u6599'],it&&it.posExtras,it&&it.comboDrinkAddons,it&&it['\u98f2\u6599\u52a0\u6599']].forEach(function(arr){
                         if(!Array.isArray(arr))return;
                         arr.forEach(function(opt){
                             var n=text(opt&&(opt.name||opt['\u540d\u7a31']||opt.label||opt.value));
@@ -2759,8 +2759,30 @@
                             if(n&&out.indexOf(n)===-1)out.push(n);
                         });
                     });
+                    [it&&it.note,it&&it['\u5099\u8a3b'],it&&it.drinkNote].forEach(function(raw){
+                        text(raw).split(/[\uFF0C,\u3001]/).map(text).forEach(function(n){
+                            if((n==='\u52a0\u7cd6'||n==='\u52a0\u5976')&&out.indexOf(n)===-1)out.push(n);
+                        });
+                    });
                     out.sort(function(a,b){
-                        var order={'\u52a0\u5976':1,'\u52a0\u7cd6':2};
+                        var order={'\u52a0\u7cd6':1,'\u52a0\u5976':2};
+                        return (order[a]||99)-(order[b]||99);
+                    });
+                    return out.join(', ');
+                }
+                function mergeAddonTexts(left,right){
+                    var out=[];
+                    var seen={};
+                    [left,right].forEach(function(raw){
+                        text(raw).split(/\s*,\s*/).map(text).forEach(function(n){
+                            if(n&&!seen[n]){
+                                seen[n]=true;
+                                out.push(n);
+                            }
+                        });
+                    });
+                    out.sort(function(a,b){
+                        var order={'\u52a0\u7cd6':1,'\u52a0\u5976':2};
                         return (order[a]||99)-(order[b]||99);
                     });
                     return out.join(', ');
@@ -2922,22 +2944,42 @@
                     collect(it&&it.posExtras,'name','price');
                     return parts.join(' ');
                 }
+                function eggSuffixOf(it){
+                    var eggFound='';
+                    var ogSels=Array.isArray(it&&it.optionGroupSelections)?it.optionGroupSelections:[];
+                    for(var k=0;k<ogSels.length&&!eggFound;k++){
+                        var selName=text(ogSels[k]&&ogSels[k].name);
+                        if(!selName)continue;
+                        if(/\u4e0d\u52a0\u86cb/.test(selName))eggFound='__skip__';
+                        else{
+                            var m=selName.match(/(?:\u52a0)?(\u534a\u719f\u86cb|\u592a\u967d\u86cb|\u5168\u719f\u86cb|\u6563\u86cb|\u7092\u86cb|\u8377\u5305\u86cb|\u719f\u86cb)/);
+                            if(m)eggFound=m[1];
+                        }
+                    }
+                    if(!eggFound){
+                        var noteText=text(it&&(it.note||it['\u5099\u8a3b']));
+                        if(noteText){
+                            var eggMatch=noteText.match(/(?:\u52a0)?(\u534a\u719f\u86cb|\u592a\u967d\u86cb|\u5168\u719f\u86cb|\u6563\u86cb|\u7092\u86cb|\u8377\u5305\u86cb|\u719f\u86cb)/);
+                            if(eggMatch)eggFound=eggMatch[1];
+                            else if(/\u4e0d\u52a0\u86cb/.test(noteText))eggFound='__skip__';
+                        }
+                    }
+                    return (eggFound&&eggFound!=='__skip__')?' +'+eggFound:'';
+                }
                 items.forEach(function(it,idx){
                     if(used[idx]||!it)return;
                     if(isMain(it)){
                         var mainName=cleanName(it.name||it['\u54c1\u9805']);
                         var mainAddons=addonsOf(it);
-                        if(mainName)lines.push(qtyOf(it)+'x'+mainName+(mainAddons?' '+mainAddons:''));
+                        var mainEgg=eggSuffixOf(it);
+                        if(mainName)lines.push(qtyOf(it)+'x'+mainName+mainEgg+(mainAddons?' '+mainAddons:''));
                         var sibIdx=findSibling(idx);
                         var sib=sibIdx>=0?items[sibIdx]:null;
                         var drinkLine=mealDrinkText(it,sib);
                         if(drinkLine){
                             var drinkAddText=sib?summaryAddonNames(sib):'';
-                            // ★ POS 自填單：飲料加料存在主項上的 comboDrinkAddons
-                            if(!sib&&Array.isArray(it&&it.comboDrinkAddons)&&it.comboDrinkAddons.length){
-                                var posDrinkAdds=it.comboDrinkAddons.map(function(o){return text(o&&o.name);}).filter(Boolean).join(', ');
-                                if(posDrinkAdds)drinkAddText=drinkAddText?drinkAddText+', '+posDrinkAdds:posDrinkAdds;
-                            }
+                            var mainDrinkAdds=summaryAddonNames({comboDrinkAddons:it&&it.comboDrinkAddons,'\u98f2\u6599\u52a0\u6599':it&&it['\u98f2\u6599\u52a0\u6599'],note:it&&it.note,'\u5099\u8a3b':it&&it['\u5099\u8a3b'],drinkNote:it&&it.drinkNote});
+                            if(mainDrinkAdds)drinkAddText=mergeAddonTexts(drinkAddText,mainDrinkAdds);
                             if(drinkAddText)drinkLine+='/'+drinkAddText;
                             var dq=sib?qtyOf(sib):qtyOf(it);
                             lines.push(dq+'x'+drinkLine);
@@ -3046,7 +3088,7 @@
                 }
                 function summaryAddonNamesFallback(it){
                     var out=[];
-                    [it&&it.options,it&&it.addons,it&&it['\u52a0\u6599'],it&&it.posExtras].forEach(function(arr){
+                    [it&&it.options,it&&it.addons,it&&it['\u52a0\u6599'],it&&it.posExtras,it&&it.comboDrinkAddons,it&&it['\u98f2\u6599\u52a0\u6599']].forEach(function(arr){
                         if(!Array.isArray(arr))return;
                         arr.forEach(function(opt){
                             var n=text(opt&&(opt.name||opt['\u540d\u7a31']||opt.label||opt.value));
@@ -3054,8 +3096,13 @@
                             if(n&&out.indexOf(n)===-1)out.push(n);
                         });
                     });
+                    [it&&it.note,it&&it['\u5099\u8a3b'],it&&it.drinkNote].forEach(function(raw){
+                        text(raw).split(/[\uFF0C,\u3001]/).map(text).forEach(function(n){
+                            if((n==='\u52a0\u7cd6'||n==='\u52a0\u5976')&&out.indexOf(n)===-1)out.push(n);
+                        });
+                    });
                     out.sort(function(a,b){
-                        var order={'\u52a0\u5976':1,'\u52a0\u7cd6':2};
+                        var order={'\u52a0\u7cd6':1,'\u52a0\u5976':2};
                         return (order[a]||99)-(order[b]||99);
                     });
                     return out.join(', ');
@@ -3179,10 +3226,8 @@
                             if(msig)mainComboSigBudget[msig]=(mainComboSigBudget[msig]||0)+1;
                             var drinkQty=sib?qtyOf(sib):qty;
                             // ★ POS 自填單：飲料加料附加在飲料描述後
-                            if(Array.isArray(it&&it.comboDrinkAddons)&&it.comboDrinkAddons.length){
-                                var dAdds=it.comboDrinkAddons.map(function(o){return text(o&&o.name);}).filter(Boolean).join(', ');
-                                if(dAdds)mealText=mealText+'/'+dAdds;
-                            }
+                            var dAdds=summaryAddonNamesFallback({comboDrinkAddons:it&&it.comboDrinkAddons,'\u98f2\u6599\u52a0\u6599':it&&it['\u98f2\u6599\u52a0\u6599'],note:it&&it.note,'\u5099\u8a3b':it&&it['\u5099\u8a3b'],drinkNote:it&&it.drinkNote});
+                            if(dAdds)mealText=mealText+'/'+dAdds;
                             name=name+' ['+(drinkQty>0?drinkQty:qty)+'x'+mealText+']';
                         }
                         out.push(qty+'x'+name);
@@ -3209,10 +3254,8 @@
                                 ||(num(it.comboDrinkCredit)>0&&num(it.comboDrinkCredit)<=5);
                             drinkLine=drinkLine+'/'+(discount5?'\u98f2\u6599\u52a0\u8cfc$':'\u88dc\u5dee\u50f9$')+Math.round(surcharge);
                         }
-                        if(!comboLike){
-                            var addText=summaryAddonNamesFallback(it);
-                            if(addText)drinkLine=drinkLine+'/'+addText;
-                        }
+                        var addText=summaryAddonNamesFallback(it);
+                        if(addText)drinkLine=drinkLine+'/'+addText;
                         out.push(qty+'x'+drinkLine);
                         continue;
                     }
