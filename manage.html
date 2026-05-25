@@ -2154,16 +2154,71 @@ window._doCountUp = function() {
             enrichStatsOrderFromSource: async function(order) {
                 var normalized = this.normalizeStatsOrder(order || {});
                 var sourcePath = this.resolveStatsSourceOrderPath(normalized);
-                if (!sourcePath) return normalized;
+                var candidates = [normalized];
+                var self = this;
+                var phoneLike = function(o) {
+                    var path = self.resolveStatsSourceOrderPath(o);
+                    var src = String(o && o.source || '').toLowerCase();
+                    var label = String(o && (o.sourceLabel || o._integrationSourceLabel) || '').toLowerCase();
+                    return path.indexOf('phone_ai/orders/') === 0 || src === 'phone_ai' || src === 'pos_local' || label.indexOf('phone') !== -1 || label.indexOf('\u96fb\u8a71') !== -1;
+                };
+                var sameStatsOrder = function(a, b) {
+                    if (!a || !b) return false;
+                    var aid = String(a.id || '').trim();
+                    var bid = String(b.id || '').trim();
+                    if (aid && bid && aid === bid) return true;
+                    var aoid = String(a.sourceOrderId || a.orderId || '').trim();
+                    var boid = String(b.sourceOrderId || b.orderId || '').trim();
+                    if (aoid && boid && aoid === boid) return true;
+                    var ano = String(a.orderNo || a.serialNumber || '').trim();
+                    var bno = String(b.orderNo || b.serialNumber || '').trim();
+                    var aday = self.getOrderDate(a);
+                    var bday = self.getOrderDate(b);
+                    if (ano && bno && ano === bno && aday && bday && aday === bday && phoneLike(a) && phoneLike(b)) return true;
+                    return false;
+                };
+                var addCandidate = function(raw) {
+                    if (!raw || typeof raw !== 'object') return;
+                    var cand = self.normalizeStatsOrder(raw);
+                    if (sameStatsOrder(normalized, cand)) candidates.push(cand);
+                };
+                var readViewCandidates = async function(path) {
+                    try {
+                        var snap = await get(ref(db, path));
+                        if (!snap.exists()) return;
+                        var val = snap.val() || {};
+                        var rows = Array.isArray(val.orders)
+                            ? val.orders
+                            : Object.keys(val).map(function(k) { return Object.assign({ id: k }, val[k] || {}); });
+                        rows.forEach(addCandidate);
+                    } catch (e) {
+                        console.warn('enrichStatsOrderFromSource view failed:', path, e && e.message ? e.message : e);
+                    }
+                };
                 try {
-                    var snap = await get(ref(db, sourcePath));
-                    if (!snap.exists()) return normalized;
-                    var sourceOrder = this.normalizeStatsOrder(Object.assign({ id: normalized.id }, snap.val() || {}));
-                    var picked = this.pickRicherStatsItems(normalized.items, sourceOrder.items, Number(this.getOrderTotalValue(normalized) || 0));
-                    var merged = Object.assign({}, normalized);
-                    if (picked && picked.length) merged.items = picked.map(function(it) { return Object.assign({}, it); });
-                    merged.total = this.pickStatsDisplayTotal(merged, Number(this.getOrderTotalValue(normalized) || 0), Number(this.getOrderTotalValue(sourceOrder) || 0), merged.items);
-                    return merged;
+                    if (sourcePath) {
+                        var snap = await get(ref(db, sourcePath));
+                        if (snap.exists()) addCandidate(Object.assign({ id: normalized.id, sourceRecordPath: sourcePath }, snap.val() || {}));
+                    }
+                    await Promise.all([
+                        readViewCandidates('integration_views/merged_orders_active'),
+                        readViewCandidates('integration_views/merged_orders_today'),
+                        readViewCandidates('integration_views/merged_orders_history_index')
+                    ]);
+                    var best = normalized;
+                    candidates.forEach(function(cand) {
+                        if (!cand) return;
+                        var bestTotal = Number(self.getOrderTotalValue(best) || 0);
+                        var candTotal = Number(self.getOrderTotalValue(cand) || 0);
+                        var preferCand = candTotal > bestTotal + 0.01 || self.scoreStatsItemsDetail(cand.items) > self.scoreStatsItemsDetail(best.items);
+                        var merged = preferCand ? Object.assign({}, best, cand) : Object.assign({}, cand, best);
+                        var targetTotal = Math.max(bestTotal || 0, candTotal || 0);
+                        var picked = self.pickRicherStatsItems(best.items, cand.items, targetTotal);
+                        if (picked && picked.length) merged.items = picked.map(function(it) { return Object.assign({}, it); });
+                        merged.total = self.pickStatsDisplayTotal(merged, bestTotal, candTotal, merged.items);
+                        best = self.normalizeStatsOrder(merged);
+                    });
+                    return best;
                 } catch (e) {
                     console.warn('enrichStatsOrderFromSource failed:', normalized && normalized.id, e && e.message ? e.message : e);
                     return normalized;
