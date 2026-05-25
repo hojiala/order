@@ -803,6 +803,12 @@
                                 else push(da.name || da['\u540d\u7a31'] || da.label || da.value, da.price || da['\u52a0\u50f9']);
                             });
                         });
+                        if (Array.isArray(src.optionGroupSelections)) {
+                            src.optionGroupSelections.forEach((sel) => {
+                                const token = String(sel && sel.name || '').trim();
+                                if (token === '\u52a0\u7cd6' || token === '\u52a0\u5976') push(token, sel && sel.price);
+                            });
+                        }
                         const shouldParseNote = this.isComboMainLineForDisplay(src) || this.isComboDrinkLineForDisplay(src) || Array.isArray(src.comboDrinkAddons);
                         if (shouldParseNote) {
                             String(src.note || src['\u5099\u8a3b'] || src.drinkNote || '').split(/[\uFF0C,\u3001]/).forEach((part) => {
@@ -2009,12 +2015,18 @@
                     const phoneRef = ref(db, 'phone_ai/orders');
                     this.phoneOrdersUnsub = onValue(phoneRef, (snap) => {
                         const raw = snap.exists() ? (snap.val() || {}) : {};
-                        const list = Object.keys(raw).map((id) => Object.assign({
-                            id: id,
-                            source: 'phone_ai',
-                            sourceLabel: '電話點餐',
-                            sourceRecordPath: 'phone_ai/orders/' + id
-                        }, raw[id] || {}));
+                        const list = Object.keys(raw).map((id) => {
+                            const row = Object.assign({}, raw[id] || {});
+                            const phonePath = 'phone_ai/orders/' + id;
+                            row.integration = Object.assign({}, row.integration || {}, { sourceRecordPath: phonePath });
+                            return Object.assign(row, {
+                                id: id,
+                                source: 'phone_ai',
+                                sourceLabel: '電話點餐',
+                                sourceRecordPath: phonePath,
+                                _phoneDirectSource: true
+                            });
+                        });
                         self.phoneOrdersCache = self.normalizeIncomingOrders(list);
                         self.rebuildOrdersFromBuckets();
                     }, () => {
@@ -2138,8 +2150,18 @@
                         const label = String((orderHint && (orderHint.sourceLabel || orderHint._integrationSourceLabel)) || '').toLowerCase();
                         const phoneLike = src === 'phone_ai' || src === 'pos_local' || sourcePath.indexOf('phone_ai/orders/') === 0 || sourceRoot.indexOf('phone_ai') === 0 || label.indexOf('phone') >= 0 || label.indexOf('\u96fb\u8a71') >= 0;
                         if (phoneLike) {
-                            const phoneTotals = [cur, inc, sum].filter(isPos);
-                            if (phoneTotals.length) return Math.max(...phoneTotals);
+                            if (orderHint && orderHint._phoneDirectSource) {
+                                const direct = Number((orderHint.total !== undefined) ? orderHint.total : ((orderHint.totals && orderHint.totals.finalTotal) || orderHint['總金額']));
+                                if (isPos(direct)) return Math.round(direct);
+                                if (isPos(inc)) return Math.round(inc);
+                                if (isPos(cur)) return Math.round(cur);
+                                if (isPos(sum)) return Math.round(sum);
+                            }
+                            if (isPos(inc) && sum > 0 && Math.abs(inc - sum) <= 1) return Math.round(inc);
+                            if (isPos(cur) && sum > 0 && Math.abs(cur - sum) <= 1) return Math.round(cur);
+                            if (isPos(sum)) return Math.round(sum);
+                            if (isPos(inc)) return Math.round(inc);
+                            if (isPos(cur)) return Math.round(cur);
                             return 0;
                         }
                         const positives = [cur, inc, sum].filter(isPos);
@@ -2209,6 +2231,26 @@
                     const mergeTwo = (current, incoming) => {
                         if (!current) return Object.assign({}, incoming);
                         if (!incoming) return Object.assign({}, current);
+                        const directPhoneMerge = (primary, secondary) => {
+                            const merged = Object.assign({}, secondary || {}, primary || {});
+                            const primaryItems = Array.isArray(primary && primary.items) ? primary.items : [];
+                            if (primaryItems.length) {
+                                merged.items = primaryItems.map((it) => Object.assign({}, it));
+                            } else {
+                                const bestDirectItems = pickRicherItems(secondary && secondary.items, primary && primary.items);
+                                if (bestDirectItems && bestDirectItems.length) merged.items = bestDirectItems.map((it) => Object.assign({}, it));
+                            }
+                            const directTotal = Number((primary && primary.total !== undefined) ? primary.total : ((primary && primary.totals && primary.totals.finalTotal) || (primary && primary['總金額'])));
+                            if (Number.isFinite(directTotal) && directTotal > 0) merged.total = Math.round(directTotal);
+                            else merged.total = pickDisplayTotal(merged, Number(secondary && secondary.total), Number(primary && primary.total), merged.items);
+                            merged.source = 'phone_ai';
+                            merged.sourceLabel = '電話點餐';
+                            merged.sourceRecordPath = (primary && primary.sourceRecordPath) || ('phone_ai/orders/' + ((primary && primary.id) || merged.id || ''));
+                            merged._phoneDirectSource = true;
+                            return merged;
+                        };
+                        if (current._phoneDirectSource) return directPhoneMerge(current, incoming);
+                        if (incoming._phoneDirectSource) return directPhoneMerge(incoming, current);
                         if (isPhoneLikeForMerge(current) && isWeakPhoneShadowForMerge(incoming)) return Object.assign({}, incoming, current);
                         if (isPhoneLikeForMerge(incoming) && isWeakPhoneShadowForMerge(current)) return Object.assign({}, current, incoming);
                         const incomingLocal = isLocalSource(incoming) || !incoming._integrationReadOnly;

@@ -929,8 +929,18 @@
                 var label=String((orderHint&&(orderHint.sourceLabel||orderHint._integrationSourceLabel))||'').toLowerCase();
                 var isPhoneLike=src==='phone_ai'||src==='pos_local'||sourcePath.indexOf('phone_ai/orders/')===0||sourceRoot.indexOf('phone_ai')===0||label.indexOf('phone')!==-1||label.indexOf('\u96fb\u8a71')!==-1;
                 if(isPhoneLike){
-                    var phoneTotals=[cur,inc,sum].filter(finitePos);
-                    if(phoneTotals.length)return Math.max.apply(null,phoneTotals);
+                    if(orderHint&&orderHint._phoneDirectSource){
+                        var direct=Number((orderHint.total!==undefined)?orderHint.total:((orderHint.totals&&orderHint.totals.finalTotal)||orderHint['總金額']));
+                        if(finitePos(direct))return Math.round(direct);
+                        if(finitePos(inc))return Math.round(inc);
+                        if(finitePos(cur))return Math.round(cur);
+                        if(finitePos(sum))return Math.round(sum);
+                    }
+                    if(finitePos(inc)&&sum>0&&Math.abs(inc-sum)<=1)return Math.round(inc);
+                    if(finitePos(cur)&&sum>0&&Math.abs(cur-sum)<=1)return Math.round(cur);
+                    if(finitePos(sum))return Math.round(sum);
+                    if(finitePos(inc))return Math.round(inc);
+                    if(finitePos(cur))return Math.round(cur);
                     return 0;
                 }
                 var positives=[cur,inc,sum].filter(finitePos);
@@ -2134,12 +2144,16 @@
                         // \u2605 \u904e\u6ffe\u6389 `online_` \u524d\u7db4\u7684\u93e1\u50cf\u689d\u76ee
                         .filter(function(id){return typeof id==='string' && id.indexOf('online_')!==0;})
                         .map(function(id){
-                        return Object.assign({
+                        var row=Object.assign({},raw[id]||{});
+                        var phonePath='phone_ai/orders/'+id;
+                        row.integration=Object.assign({},row.integration||{},{sourceRecordPath:phonePath});
+                        return Object.assign(row,{
                             id:id,
                             source:'phone_ai',
                             sourceLabel:'\u96fb\u8a71\u9ede\u9910',
-                            sourceRecordPath:'phone_ai/orders/'+id
-                        },raw[id]||{});
+                            sourceRecordPath:phonePath,
+                            _phoneDirectSource:true
+                        });
                     });
                     s.phoneOrdersCache=s.normalizeIncomingOrders(list).map(function(o){return s.applyStatusOverrideToOrder(o);});
                     s.rebuildOnlineOrders();
@@ -2864,6 +2878,12 @@
                             if((n==='\u52a0\u7cd6'||n==='\u52a0\u5976')&&out.indexOf(n)===-1)out.push(n);
                         });
                     });
+                    if(Array.isArray(it&&it.optionGroupSelections)){
+                        it.optionGroupSelections.forEach(function(sel){
+                            var n=text(sel&&sel.name);
+                            if((n==='\u52a0\u7cd6'||n==='\u52a0\u5976')&&out.indexOf(n)===-1)out.push(n);
+                        });
+                    }
                     out.sort(function(a,b){
                         var order={'\u52a0\u7cd6':1,'\u52a0\u5976':2};
                         return (order[a]||99)-(order[b]||99);
@@ -3666,6 +3686,26 @@
                 var mergeTwo=function(current,incoming){
                     if(!current)return Object.assign({},incoming);
                     if(!incoming)return Object.assign({},current);
+                    var directPhoneMerge=function(primary,secondary){
+                        var merged=Object.assign({},secondary||{},primary||{});
+                        var primaryItems=Array.isArray(primary&&primary.items)?primary.items:[];
+                        if(primaryItems.length){
+                            merged.items=primaryItems.map(function(it){return Object.assign({},it);});
+                        }else{
+                            var bestDirectItems=pickRicherItems(secondary&&secondary.items,primary&&primary.items);
+                            if(bestDirectItems&&bestDirectItems.length)merged.items=bestDirectItems.map(function(it){return Object.assign({},it);});
+                        }
+                        var directTotal=Number((primary&&primary.total!==undefined)?primary.total:((primary&&primary.totals&&primary.totals.finalTotal)||(primary&&primary['總金額'])));
+                        if(Number.isFinite(directTotal)&&directTotal>0)merged.total=Math.round(directTotal);
+                        else merged.total=s.preferOrderTotalForDisplay(merged,Number(secondary&&secondary.total),Number(primary&&primary.total),merged.items);
+                        merged.source='phone_ai';
+                        merged.sourceLabel='\u96fb\u8a71\u9ede\u9910';
+                        merged.sourceRecordPath=(primary&&primary.sourceRecordPath)||('phone_ai/orders/'+((primary&&primary.id)||merged.id||''));
+                        merged._phoneDirectSource=true;
+                        return merged;
+                    };
+                    if(current._phoneDirectSource)return directPhoneMerge(current,incoming);
+                    if(incoming._phoneDirectSource)return directPhoneMerge(incoming,current);
                     if(isPhoneLikeForMerge(current)&&isWeakPhoneShadowForMerge(incoming))return Object.assign({},incoming,current);
                     if(isPhoneLikeForMerge(incoming)&&isWeakPhoneShadowForMerge(current))return Object.assign({},current,incoming);
                     var incomingLocal=isLocalSource(incoming)||!incoming._integrationReadOnly;
