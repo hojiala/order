@@ -322,7 +322,7 @@
                 class="text-xs bg-orange-50 text-orange-600 border border-orange-200 px-1.5 py-0.5 rounded">
                 {{ sel.name }}</span></div>
             <div v-if="getCartItemMealDrinkText(item,idx)" class="text-xs text-orange-500 mt-0.5">🧋 {{ getCartItemMealDrinkText(item,idx) }}</div>
-            <div v-if="item.comboDrinkAddons && item.comboDrinkAddons.length" class="text-xs text-orange-400 mt-0.5">＋ {{ item.comboDrinkAddons.map(function(o){return o.name+(o.price>0?(' +$'+o.price):'');}).join(', ') }}</div>
+            <div v-if="getCartDisplayComboDrinkAddons(item,idx).length" class="text-xs text-orange-400 mt-0.5">＋ {{ getCartDisplayComboDrinkAddons(item,idx).map(function(o){return o.name+(o.price>0?(' +$'+o.price):'');}).join(', ') }}</div>
             <div v-if="item.options && item.options.length" class="text-xs text-gray-400 mt-0.5">{{ item.options.map(function(o){return "+"+o.name+" $"+(o.price||0);}).join(" ") }}</div>
             <div v-if="item.posExtras && item.posExtras.length" class="text-xs text-purple-500 mt-0.5">🔧 {{ item.posExtras.map(function(e){return e.name+" $"+(e.price||0);}).join(', ') }}</div>
             <div v-if="getCartVisibleNote(item,idx)" class="text-xs text-blue-500 mt-0.5">&#128221; {{ getCartVisibleNote(item,idx) }}</div>
@@ -2498,6 +2498,43 @@
                 }
                 return null;
             },
+            getCartDisplayComboDrinkAddons:function(item,idx){
+                var out=[];
+                var seen={};
+                var self=this;
+                function text(v){return String(v===undefined||v===null?'':v).trim();}
+                function push(name,price){
+                    name=text(name).replace(/^\+/,'').replace(/\s*\$?\s*\d+\s*$/,'').trim();
+                    if(!name||seen[name])return;
+                    seen[name]=true;
+                    var p=Number(price||0);
+                    out.push({name:name,price:Number.isFinite(p)?p:0});
+                }
+                function collect(src){
+                    if(!src||typeof src!=='object')return;
+                    [src.comboDrinkAddons,src['\u98f2\u6599\u52a0\u6599']].forEach(function(arr){
+                        if(!Array.isArray(arr))return;
+                        arr.forEach(function(da){
+                            if(!da)return;
+                            if(typeof da==='string')push(da,0);
+                            else push(da.name||da['\u540d\u7a31']||da.label||da.value,da.price||da['\u52a0\u50f9']);
+                        });
+                    });
+                    text(src.note||src['\u5099\u8a3b']||src.drinkNote).split(/[\uFF0C,\u3001]/).forEach(function(part){
+                        var token=text(part);
+                        if(token==='\u52a0\u7cd6'||token==='\u52a0\u5976')push(token,0);
+                    });
+                }
+                collect(item);
+                if(item&&!item.isComboDrink){
+                    collect(self.findCartComboDrinkSibling(item,idx));
+                }
+                out.sort(function(a,b){
+                    var order={'\u52a0\u7cd6':1,'\u52a0\u5976':2};
+                    return (order[a.name]||99)-(order[b.name]||99);
+                });
+                return out;
+            },
             shouldShowCartOptionChip:function(item,idx,sel){
                 if(!sel)return false;
                 if(String(sel&&sel.pricing||'')==='mealUpgrade')return false;
@@ -2543,6 +2580,10 @@
                 var hidden={};
                 this.getCartVisibleOptionChips(item,idx).forEach(function(sel){
                     var n=String(sel&&sel.name||'').trim();
+                    if(n)hidden[n]=true;
+                });
+                this.getCartDisplayComboDrinkAddons(item,idx).forEach(function(addon){
+                    var n=String(addon&&addon.name||'').trim();
                     if(n)hidden[n]=true;
                 });
                 String(this.getCartItemMealDrinkText(item,idx)||'').split('/').forEach(function(part){

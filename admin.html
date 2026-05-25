@@ -1157,6 +1157,23 @@
                         if (sibLine > 0 && sibQty > 0) setReliable(sibLine / sibQty);
                     }
                     let upgrade = reliableUpgrade > 0 ? reliableUpgrade : fallbackUpgrade;
+                    if (upgrade > 0 && this.isDiscount5MealForDisplay(item, order)) {
+                        const base = this.getDisplayBaseUnit(item);
+                        const line = this.getDisplayLineTotal(item);
+                        const qty = this.getDisplayQty(item);
+                        if (line > 0 && base > 0 && qty > 0) {
+                            const optionsCost = Array.isArray(item.options) ? item.options.reduce((s, o) => s + Number(o && o.price || 0), 0) : 0;
+                            const extrasCost = Array.isArray(item.posExtras) ? item.posExtras.reduce((s, e) => s + Number(e && e.price || 0), 0) : 0;
+                            const lineDelta = Math.max(0, (line / qty) - base - optionsCost - extrasCost);
+                            if (lineDelta > 0 && lineDelta + 0.01 < upgrade) upgrade = lineDelta;
+                        }
+                        const sibling = this.findComboDrinkSiblingForDisplay(item, order);
+                        const fullCandidates = [item.comboDrinkFullPrice, sibling && sibling.comboDrinkFullPrice];
+                        const creditCandidates = [item.comboDrinkCredit, sibling && sibling.comboDrinkCredit, (this.getMealUpgradeMetaFromMenu(item && item.name) || {}).baseValue, 5];
+                        const full = fullCandidates.map(Number).find((v) => Number.isFinite(v) && v > 0 && Math.round(v) === Math.round(upgrade));
+                        const credit = creditCandidates.map(Number).find((v) => Number.isFinite(v) && v > 0 && v <= 5);
+                        if (full && credit && upgrade > credit) upgrade = Math.min(upgrade, full - credit);
+                    }
                     if (upgrade > 0 && reliableUpgrade <= 0) {
                         const base = this.getDisplayBaseUnit(item);
                         const line = this.getDisplayLineTotal(item);
@@ -1252,7 +1269,11 @@
                     if (menuPrefix && Number(amount) > 0) return menuPrefix + Number(amount);
                     const sibling = this.findComboDrinkSiblingForDisplay(item, order);
                     const explicit = String(item && item.comboDrinkChargeText || sibling && sibling.comboDrinkChargeText || '').trim();
-                    if (explicit && this.isDiscount5MealForDisplay(item, order)) return explicit.replace(/\u88dc\u5dee\u50f9/g, '\u98f2\u6599\u52a0\u8cfc');
+                    if (explicit && this.isDiscount5MealForDisplay(item, order)) {
+                        const parsed = explicit.match(/(?:\u88dc\u5dee\u50f9|\u98f2\u6599\u52a0\u8cfc)\s*\$?\s*(\d+)/);
+                        if (parsed && Number(parsed[1]) !== Number(amount)) return '\u98f2\u6599\u52a0\u8cfc$' + amount;
+                        return explicit.replace(/\u88dc\u5dee\u50f9/g, '\u98f2\u6599\u52a0\u8cfc');
+                    }
                     if (explicit) return explicit;
                     return (this.isDiscount5MealForDisplay(item, order) ? '\u98f2\u6599\u52a0\u8cfc$' : '\u88dc\u5dee\u50f9$') + amount;
                 },
