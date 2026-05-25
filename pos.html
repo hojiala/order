@@ -2174,8 +2174,22 @@
                 var s=this;
                 s.resetPhoneOrdersListener();
                 var phoneRef=ref(db,'phone_ai/orders');
-                s.phoneOrdersUnsub=onValue(phoneRef,function(snap){
-                    var raw=snap.exists()?(snap.val()||{}):{};
+                var toMs=function(v){
+                    if(typeof v==='number'&&Number.isFinite(v)&&v>0)return v<1000000000000?v*1000:v;
+                    var text=String(v||'').trim();
+                    if(!text)return 0;
+                    var parsed=Date.parse(text.replace(/\//g,'-').replace(' ','T'));
+                    return Number.isFinite(parsed)?parsed:0;
+                };
+                var firstMs=function(row,keys){
+                    for(var i=0;i<keys.length;i++){
+                        var ms=toMs(row&&row[keys[i]]);
+                        if(ms)return ms;
+                    }
+                    return 0;
+                };
+                var normalizePhoneRows=function(raw){
+                    raw=raw||{};
                     var list=Object.keys(raw)
                         // \u2605 \u904e\u6ffe\u6389 `online_` \u524d\u7db4\u7684\u93e1\u50cf\u689d\u76ee
                         .filter(function(id){return typeof id==='string' && id.indexOf('online_')!==0;})
@@ -2183,20 +2197,41 @@
                         var row=Object.assign({},raw[id]||{});
                         var phonePath='phone_ai/orders/'+id;
                         row.integration=Object.assign({},row.integration||{},{sourceRecordPath:phonePath});
-                        return Object.assign(row,{
+                        var out=Object.assign(row,{
                             id:id,
                             source:'phone_ai',
                             sourceLabel:'\u96fb\u8a71\u9ede\u9910',
                             sourceRecordPath:phonePath,
                             _phoneDirectSource:true
                         });
+                        var statusText=String(out.status||'').trim().toLowerCase();
+                        if(statusText==='archived'||statusText==='done'||statusText==='ready'||statusText==='cancelled'){
+                            var createdMs=firstMs(out,['createdAt','created_at','submittedAt','timestamp','orderTime','createdAtDisplay','submittedAtDisplay']);
+                            var statusMs=firstMs(out,['statusUpdatedAt','updatedAt','archivedAt','doneAt','completedAt','cancelledAt','statusAt']);
+                            if(!statusMs||(createdMs&&statusMs+60000<createdMs)){
+                                out._phoneRawStatus=out.status;
+                                out.status='new';
+                            }
+                        }
+                        return out;
                     });
                     s.phoneOrdersCache=s.normalizeIncomingOrders(list).map(function(o){return s.applyStatusOverrideToOrder(o);});
                     s.rebuildOnlineOrders();
+                };
+                var fallbackRead=function(){
+                    return get(phoneRef).then(function(snap){
+                        normalizePhoneRows(snap.exists()?(snap.val()||{}):{});
+                    }).catch(function(err){
+                        console.warn('phone_ai/orders fallback read failed:',err&&err.message?err.message:err);
+                    });
+                };
+                s.phoneOrdersUnsub=onValue(phoneRef,function(snap){
+                    normalizePhoneRows(snap.exists()?(snap.val()||{}):{});
                 },function(){
-                    s.phoneOrdersCache=[];
+                    if(!s.phoneOrdersCache||!s.phoneOrdersCache.length)fallbackRead();
                     s.rebuildOnlineOrders();
                 });
+                fallbackRead();
             },
             enrichPhoneCartItemsFromNote:function(){
                 var cart=Array.isArray(this.cart)?this.cart:[];

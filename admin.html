@@ -2061,7 +2061,55 @@
                     const self = this;
                     this.resetPhoneOrdersListener();
                     const phoneRef = ref(db, 'phone_ai/orders');
+                    const toMs = (v) => {
+                        if (typeof v === 'number' && Number.isFinite(v) && v > 0) return v < 1000000000000 ? v * 1000 : v;
+                        const text = String(v || '').trim();
+                        if (!text) return 0;
+                        const parsed = Date.parse(text.replace(/\//g, '-').replace(' ', 'T'));
+                        return Number.isFinite(parsed) ? parsed : 0;
+                    };
+                    const firstMs = (row, keys) => {
+                        for (let i = 0; i < keys.length; i++) {
+                            const ms = toMs(row && row[keys[i]]);
+                            if (ms) return ms;
+                        }
+                        return 0;
+                    };
+                    const normalizePhoneRows = (raw) => {
+                        raw = raw || {};
+                        const list = Object.keys(raw).map((id) => {
+                            const row = Object.assign({}, raw[id] || {});
+                            const phonePath = 'phone_ai/orders/' + id;
+                            row.integration = Object.assign({}, row.integration || {}, { sourceRecordPath: phonePath });
+                            const out = Object.assign(row, {
+                                id: id,
+                                source: 'phone_ai',
+                                sourceLabel: '\u96fb\u8a71\u9ede\u9910',
+                                sourceRecordPath: phonePath,
+                                _phoneDirectSource: true
+                            });
+                            const statusText = String(out.status || '').trim().toLowerCase();
+                            if (statusText === 'archived' || statusText === 'done' || statusText === 'ready' || statusText === 'cancelled') {
+                                const createdMs = firstMs(out, ['createdAt','created_at','submittedAt','timestamp','orderTime','createdAtDisplay','submittedAtDisplay']);
+                                const statusMs = firstMs(out, ['statusUpdatedAt','updatedAt','archivedAt','doneAt','completedAt','cancelledAt','statusAt']);
+                                if (!statusMs || (createdMs && statusMs + 60000 < createdMs)) {
+                                    out._phoneRawStatus = out.status;
+                                    out.status = 'new';
+                                }
+                            }
+                            return out;
+                        });
+                        self.phoneOrdersCache = self.normalizeIncomingOrders(list);
+                        self.rebuildOrdersFromBuckets();
+                    };
+                    const fallbackRead = () => get(phoneRef).then((snap) => {
+                        normalizePhoneRows(snap.exists() ? (snap.val() || {}) : {});
+                    }).catch((err) => {
+                        console.warn('phone_ai/orders fallback read failed:', err && err.message ? err.message : err);
+                    });
                     this.phoneOrdersUnsub = onValue(phoneRef, (snap) => {
+                        normalizePhoneRows(snap.exists() ? (snap.val() || {}) : {});
+                        return;
                         const raw = snap.exists() ? (snap.val() || {}) : {};
                         const list = Object.keys(raw).map((id) => {
                             const row = Object.assign({}, raw[id] || {});
@@ -2078,9 +2126,10 @@
                         self.phoneOrdersCache = self.normalizeIncomingOrders(list);
                         self.rebuildOrdersFromBuckets();
                     }, () => {
-                        self.phoneOrdersCache = [];
+                        if (!self.phoneOrdersCache || !self.phoneOrdersCache.length) fallbackRead();
                         self.rebuildOrdersFromBuckets();
                     });
+                    fallbackRead();
                 },
                 toggleMenu(orderId) {
                     this.activeMenu = this.activeMenu === orderId ? null : orderId;
