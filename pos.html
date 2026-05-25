@@ -2984,6 +2984,13 @@
                             pushName(sel&&sel.name,true);
                         });
                     }
+                    [it&&it.optionSelections,it&&it.selectedOptions].forEach(function(obj){
+                        if(!obj||typeof obj!=='object'||Array.isArray(obj))return;
+                        Object.keys(obj).forEach(function(k){
+                            pushName(k,true);
+                            pushName(obj[k],true);
+                        });
+                    });
                     out.sort(function(a,b){
                         var order={'\u52a0\u7cd6':1,'\u52a0\u5976':2};
                         return (order[a]||99)-(order[b]||99);
@@ -3221,7 +3228,7 @@
                         var drinkLine=mealDrinkText(it,sib);
                         if(drinkLine){
                             var drinkAddText=sib?summaryAddonNames(sib):'';
-                            var mainDrinkAdds=summaryAddonNames({comboDrinkAddons:it&&it.comboDrinkAddons,'\u98f2\u6599\u52a0\u6599':it&&it['\u98f2\u6599\u52a0\u6599'],note:it&&it.note,'\u5099\u8a3b':it&&it['\u5099\u8a3b'],drinkNote:it&&it.drinkNote,optionGroupSelections:it&&it.optionGroupSelections});
+                            var mainDrinkAdds=summaryAddonNames({comboDrinkAddons:it&&it.comboDrinkAddons,'\u98f2\u6599\u52a0\u6599':it&&it['\u98f2\u6599\u52a0\u6599'],note:it&&it.note,'\u5099\u8a3b':it&&it['\u5099\u8a3b'],drinkNote:it&&it.drinkNote,optionGroupSelections:it&&it.optionGroupSelections,optionSelections:it&&it.optionSelections,selectedOptions:it&&it.selectedOptions});
                             if(mainDrinkAdds)drinkAddText=mergeAddonTexts(drinkAddText,mainDrinkAdds);
                             if(drinkAddText)drinkLine+='/'+drinkAddText;
                             var dq=sib?qtyOf(sib):qtyOf(it);
@@ -3359,6 +3366,13 @@
                             pushName(sel&&sel.name,true);
                         });
                     }
+                    [it&&it.optionSelections,it&&it.selectedOptions].forEach(function(obj){
+                        if(!obj||typeof obj!=='object'||Array.isArray(obj))return;
+                        Object.keys(obj).forEach(function(k){
+                            pushName(k,true);
+                            pushName(obj[k],true);
+                        });
+                    });
                     out.sort(function(a,b){
                         var order={'\u52a0\u7cd6':1,'\u52a0\u5976':2};
                         return (order[a]||99)-(order[b]||99);
@@ -3485,7 +3499,7 @@
                             if(msig)mainComboSigBudget[msig]=(mainComboSigBudget[msig]||0)+1;
                             var drinkQty=sib?qtyOf(sib):qty;
                             // ★ POS 自填單：飲料加料附加在飲料描述後
-                            var dAdds=summaryAddonNamesFallback({comboDrinkAddons:it&&it.comboDrinkAddons,'\u98f2\u6599\u52a0\u6599':it&&it['\u98f2\u6599\u52a0\u6599'],note:it&&it.note,'\u5099\u8a3b':it&&it['\u5099\u8a3b'],drinkNote:it&&it.drinkNote,optionGroupSelections:it&&it.optionGroupSelections});
+                            var dAdds=summaryAddonNamesFallback({comboDrinkAddons:it&&it.comboDrinkAddons,'\u98f2\u6599\u52a0\u6599':it&&it['\u98f2\u6599\u52a0\u6599'],note:it&&it.note,'\u5099\u8a3b':it&&it['\u5099\u8a3b'],drinkNote:it&&it.drinkNote,optionGroupSelections:it&&it.optionGroupSelections,optionSelections:it&&it.optionSelections,selectedOptions:it&&it.selectedOptions});
                             if(dAdds)mealText=mealText+'/'+dAdds;
                             name=name+' ['+(drinkQty>0?drinkQty:qty)+'x'+mealText+']';
                         }
@@ -3742,8 +3756,41 @@
                     var src=String(order.source||'').toLowerCase().trim();
                     return ['no',day,no,src].join('|');
                 };
+                var phoneScopedKey=function(order){
+                    if(!order||typeof order!=='object')return '';
+                    var sourcePath=String((order.integration&&order.integration.sourceRecordPath)||order.sourceRecordPath||'').trim();
+                    var original=(order&&order._integrationOriginal)||{};
+                    var sourceRoot=String(order.audit&&order.audit.sourceRoot||original.audit&&original.audit.sourceRoot||'').toLowerCase();
+                    var src=String(order.source||original.source||'').toLowerCase();
+                    var label=String(order.sourceLabel||order._integrationSourceLabel||original.sourceLabel||'').toLowerCase();
+                    var phonePath=sourcePath.match(/(?:^|\/)phone_ai\/orders\/([^\/?#]+)/);
+                    var phoneLike=!!phonePath||src==='phone_ai'||src==='pos_local'||sourceRoot.indexOf('phone_ai')===0||label.indexOf('phone')>=0||label.indexOf('\u96fb\u8a71')>=0;
+                    if(!phoneLike)return '';
+                    try{
+                        var rawKeys=s.statusOverrideRawKeys?s.statusOverrideRawKeys(order):[];
+                        if(rawKeys&&rawKeys.length)return String(rawKeys[0]);
+                    }catch(_){}
+                    var id=phonePath&&phonePath[1]?String(phonePath[1]):String(order.id||order.sourceOrderId||order.orderId||'unknown').trim().replace(/^No\.?\s*/i,'');
+                    if(!id)id='unknown';
+                    var stamp='';
+                    [order.timestamp,order.submittedAt,order.createdAt,order.created_at,order.createdAtDisplay,order.submittedAtDisplay,order.orderDateKey,order.pickupDate,order.orderNo,order.serialNumber].some(function(v){
+                        var raw=String(v||'').trim();
+                        if(!raw)return false;
+                        var n=Number(raw);
+                        if(Number.isFinite(n)&&n>0)stamp=String(Math.round(n<1000000000000?n*1000:n));
+                        else{
+                            var ms=Date.parse(raw.replace(/\//g,'-').replace(' ','T'));
+                            stamp=Number.isFinite(ms)?String(ms):raw.replace(/[^\w\u4e00-\u9fff-]+/g,'_');
+                        }
+                        return !!stamp;
+                    });
+                    if(!stamp)stamp=String(id||'unknown');
+                    return 'phone_ai/orders/'+id+'#'+stamp;
+                };
                 var getMergeKey=function(order){
                     if(!order)return '';
+                    var scopedPhone=phoneScopedKey(order);
+                    if(scopedPhone)return scopedPhone;
                     var sourcePath=(order.integration&&order.integration.sourceRecordPath)||order.sourceRecordPath||'';
                     var pathId=getPathOrderId(sourcePath);
                     if(pathId)return String(pathId);
@@ -3875,11 +3922,16 @@
                 var upsertMerged=function(map,o){
                     if(!o||!o.id)return;
                     var keys=[];
-                    var primary=getMergeKey(o);
-                    if(primary)keys.push(String(primary));
-                    var fallbackKey=getFallbackDedupKey(o);
-                    if(fallbackKey)keys.push(String(fallbackKey));
-                    if(o.id)keys.push(String(o.id));
+                    var scopedPhone=phoneScopedKey(o);
+                    if(scopedPhone){
+                        keys.push(String(scopedPhone));
+                    }else{
+                        var primary=getMergeKey(o);
+                        if(primary)keys.push(String(primary));
+                        var fallbackKey=getFallbackDedupKey(o);
+                        if(fallbackKey)keys.push(String(fallbackKey));
+                        if(o.id)keys.push(String(o.id));
+                    }
                     var uniq={};
                     keys=keys.filter(function(k){
                         if(!k)return false;
@@ -3900,11 +3952,16 @@
                     (Array.isArray(values)?values:[]).forEach(function(o){
                         if(!o||!o.id)return;
                         var keys=[];
-                        var primary=getMergeKey(o);
-                        if(primary)keys.push(String(primary));
-                        var fallbackKey=getFallbackDedupKey(o);
-                        if(fallbackKey)keys.push(String(fallbackKey));
-                        if(o.id)keys.push(String(o.id));
+                        var scopedPhone=phoneScopedKey(o);
+                        if(scopedPhone){
+                            keys.push(String(scopedPhone));
+                        }else{
+                            var primary=getMergeKey(o);
+                            if(primary)keys.push(String(primary));
+                            var fallbackKey=getFallbackDedupKey(o);
+                            if(fallbackKey)keys.push(String(fallbackKey));
+                            if(o.id)keys.push(String(o.id));
+                        }
                         var uniq={};
                         keys=keys.filter(function(k){
                             if(!k)return false;
@@ -3953,13 +4010,15 @@
                     var total=Number(order.total||((order.totals&&order.totals.finalTotal)||0));
                     var phone=String((order.customer&&order.customer.phone)||order.phone||'').trim();
                     var pickup=String(order.pickupTime||order.pickupTimeLabel||'').trim();
-                    if(sourceOrderId&&day&&family)return ['oid',family,day,sourceOrderId].join('|');
                     // 電話單避免用「流水號+金額」合併，否則同日重置或同號不同單會互相覆蓋
                     if(family==='phone_ai'){
-                        if(sourcePath)return ['path',sourcePath].join('|');
-                        if(order.id)return ['id',family,String(order.id)].join('|');
+                        var scopedPhone=phoneScopedKey(order);
+                        if(scopedPhone)return ['phone',scopedPhone].join('|');
+                        if(sourcePath)return ['path',sourcePath,day||''].join('|');
+                        if(order.id)return ['id',family,String(order.id),day||''].join('|');
                         return '';
                     }
+                    if(sourceOrderId&&day&&family)return ['oid',family,day,sourceOrderId].join('|');
                     if(no&&day&&family)return ['sig',family,day,no,Number.isFinite(total)?Math.round(total):'',phone,pickup].join('|');
                     if(sourcePath)return ['path',sourcePath].join('|');
                     if(!no||!day||!family)return '';
@@ -4006,6 +4065,21 @@
                     });
                 }
                 var mergedOrders=s.normalizeIncomingOrders(collapseByDisplaySignature(collapseMergedValues(Object.values(mergedMap)))).map(function(o){return s.applyStatusOverrideToOrder(o);});
+                var directPhoneSeen={};
+                mergedOrders.forEach(function(o){
+                    var k=phoneScopedKey(o);
+                    if(k)directPhoneSeen[k]=true;
+                });
+                phoneList.forEach(function(o){
+                    if(!o||!o.id)return;
+                    var direct=s.applyStatusOverrideToOrder(s.normalizeIncomingOrder(Object.assign({},o)));
+                    if(!direct||direct.status==='archived')return;
+                    var k=phoneScopedKey(direct);
+                    if(k&&!directPhoneSeen[k]){
+                        mergedOrders.push(direct);
+                        directPhoneSeen[k]=true;
+                    }
+                });
                 s.onlineOrders=mergedOrders.filter(function(o){return !o||o.status!=='archived';}).sort(function(a,b){
                     var w={new:1,making:2,done:3,cancelled:4};
                     if(w[a.status]!==w[b.status])return w[a.status]-w[b.status];

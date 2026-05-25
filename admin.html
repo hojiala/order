@@ -2235,8 +2235,45 @@
                         const src = String(order.source || '').toLowerCase().trim();
                         return ['no', day, no, src].join('|');
                     };
+                    const phoneScopedKey = (order) => {
+                        if (!order || typeof order !== 'object') return '';
+                        const sourcePath = String((order.integration && order.integration.sourceRecordPath) || order.sourceRecordPath || '').trim();
+                        const original = (order && order._integrationOriginal) || {};
+                        const sourceRoot = String((order.audit && order.audit.sourceRoot) || (original.audit && original.audit.sourceRoot) || '').toLowerCase();
+                        const src = String(order.source || original.source || '').toLowerCase();
+                        const label = String(order.sourceLabel || order._integrationSourceLabel || original.sourceLabel || '').toLowerCase();
+                        const phonePath = sourcePath.match(/(?:^|\/)phone_ai\/orders\/([^\/?#]+)/);
+                        const phoneLike = !!phonePath || src === 'phone_ai' || src === 'pos_local' || sourceRoot.indexOf('phone_ai') === 0 || label.indexOf('phone') >= 0 || label.indexOf('\u96fb\u8a71') >= 0;
+                        if (!phoneLike) return '';
+                        try {
+                            const rawKeys = this.statusOverrideRawKeys ? this.statusOverrideRawKeys(order) : [];
+                            if (rawKeys && rawKeys.length) return String(rawKeys[0]);
+                        } catch(_) {}
+                        let id = phonePath && phonePath[1] ? String(phonePath[1]) : String(order.id || order.sourceOrderId || order.orderId || 'unknown').trim().replace(/^No\.?\s*/i, '');
+                        if (!id) id = 'unknown';
+                        let stamp = '';
+                        [
+                            order.timestamp, order.submittedAt, order.createdAt, order.created_at,
+                            order.createdAtDisplay, order.submittedAtDisplay, order.orderDateKey,
+                            order.pickupDate, order.orderNo, order.serialNumber
+                        ].some((v) => {
+                            const raw = String(v || '').trim();
+                            if (!raw) return false;
+                            const n = Number(raw);
+                            if (Number.isFinite(n) && n > 0) stamp = String(Math.round(n < 1000000000000 ? n * 1000 : n));
+                            else {
+                                const ms = Date.parse(raw.replace(/\//g, '-').replace(' ', 'T'));
+                                stamp = Number.isFinite(ms) ? String(ms) : raw.replace(/[^\w\u4e00-\u9fff-]+/g, '_');
+                            }
+                            return !!stamp;
+                        });
+                        if (!stamp) stamp = String(id || 'unknown');
+                        return 'phone_ai/orders/' + id + '#' + stamp;
+                    };
                     const getMergeKey = (order) => {
                         if (!order) return '';
+                        const scopedPhone = phoneScopedKey(order);
+                        if (scopedPhone) return scopedPhone;
                         const sourcePath = (order.integration && order.integration.sourceRecordPath) || order.sourceRecordPath || '';
                         const pathId = getPathOrderId(sourcePath);
                         if (pathId) return pathId;
@@ -2398,9 +2435,10 @@
                     };
                     const upsertMerged = (map, order) => {
                         if (!order || !order.id) return;
-                        const primary = getMergeKey(order) || String(order.id);
-                        const fallbackKey = getFallbackDedupKey(order);
-                        const aliases = Array.from(new Set([primary, fallbackKey, String(order.id)].filter(Boolean)));
+                        const scopedPhone = phoneScopedKey(order);
+                        const primary = scopedPhone || getMergeKey(order) || String(order.id);
+                        const fallbackKey = scopedPhone ? '' : getFallbackDedupKey(order);
+                        const aliases = scopedPhone ? [scopedPhone] : Array.from(new Set([primary, fallbackKey, String(order.id)].filter(Boolean)));
                         let keepKey = aliases.find((k) => !!map[k]) || aliases[0];
                         let merged = Object.assign({}, order);
                         aliases.forEach((k) => {
@@ -2414,9 +2452,10 @@
                         const aliasMap = {};
                         (Array.isArray(values) ? values : []).forEach((order) => {
                             if (!order || !order.id) return;
-                            const primary = getMergeKey(order) || String(order.id);
-                            const fallbackKey = getFallbackDedupKey(order);
-                            const aliases = Array.from(new Set([primary, fallbackKey, String(order.id)].filter(Boolean)));
+                            const scopedPhone = phoneScopedKey(order);
+                            const primary = scopedPhone || getMergeKey(order) || String(order.id);
+                            const fallbackKey = scopedPhone ? '' : getFallbackDedupKey(order);
+                            const aliases = scopedPhone ? [scopedPhone] : Array.from(new Set([primary, fallbackKey, String(order.id)].filter(Boolean)));
                             if (!aliases.length) return;
                             const hits = aliases.map((k) => aliasMap[k]).filter(Boolean);
                             let merged = Object.assign({}, order);
@@ -2463,8 +2502,14 @@
                         const total = Number(order.total || (order.totals && order.totals.finalTotal) || 0);
                         const phone = String((order.customer && order.customer.phone) || order.phone || '').trim();
                         const pickup = String(order.pickupTime || order.pickupTimeLabel || '').trim();
+                        if (family === 'phone_ai') {
+                            const scopedPhone = phoneScopedKey(order);
+                            if (scopedPhone) return ['phone', scopedPhone].join('|');
+                            if (sourcePath) return ['path', sourcePath, day || ''].join('|');
+                            if (order.id) return ['id', family, String(order.id), day || ''].join('|');
+                            return '';
+                        }
                         if (sourceOrderId && day && family) return ['oid', family, day, sourceOrderId].join('|');
-                        if (family === 'phone_ai' && no && day) return ['sig', family, day, no, phone, pickup].join('|');
                         if (no && day && family) return ['sig', family, day, no, Number.isFinite(total) ? Math.round(total) : '', phone, pickup].join('|');
                         if (sourcePath) return ['path', sourcePath].join('|');
                         if (!no || !day || !family) return '';
@@ -2511,6 +2556,21 @@
                         });
                     }
                     const mergedOrders = this.normalizeIncomingOrders(collapseByDisplaySignature(collapseMergedValues(Object.values(mergedMap)))).map((o) => this.applyRemoteStatusOverrideToOrder(o));
+                    const directPhoneSeen = {};
+                    mergedOrders.forEach((o) => {
+                        const k = phoneScopedKey(o);
+                        if (k) directPhoneSeen[k] = true;
+                    });
+                    phoneList.forEach((o) => {
+                        if (!o || !o.id) return;
+                        const direct = this.applyRemoteStatusOverrideToOrder(this.normalizeIncomingOrder(Object.assign({}, o)));
+                        if (!direct || this.getDisplayStatus(direct) === 'archived') return;
+                        const k = phoneScopedKey(direct);
+                        if (k && !directPhoneSeen[k]) {
+                            mergedOrders.push(direct);
+                            directPhoneSeen[k] = true;
+                        }
+                    });
                     this.orders = mergedOrders;
                     const mergedNewCount = mergedOrders.filter(o => this.getDisplayStatus(o) === 'new').length;
                     if (mergedNewCount > this.previousNewCount && this.previousNewCount !== 0) this.playAlert();
