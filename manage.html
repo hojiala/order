@@ -772,7 +772,7 @@
                             </tr>
                         </thead>
                         <tbody class="divide-y divide-slate-700">
-                            <tr v-for="order in statsSortedOrders" :key="order.id" class="hover:bg-slate-700/30 transition">
+                            <tr v-for="order in statsSortedOrders" :key="orderListKey(order)" class="hover:bg-slate-700/30 transition">
                                 <td class="px-3 py-3">
                                     <span class="text-orange-400 font-black text-xs">No.{{ order.orderNo ? String(order.orderNo).padStart(3,"0") : "???" }}</span>
                                     <span class="block text-gray-500 font-mono text-xs">#{{ order.id.slice(-4).toUpperCase() }}</span>
@@ -1908,6 +1908,15 @@ window._doCountUp = function() {
         },
 
         methods: {
+            orderListKey: function(order) {
+                if (!order) return Math.random();
+                if (this.statusOverrideRawKeys) {
+                    var keys = this.statusOverrideRawKeys(order);
+                    if (keys && keys.length && String(keys[0]).indexOf('phone_ai/orders/') === 0) return 'phone:' + keys[0];
+                }
+                var sourcePath = this.resolveStatsSourceOrderPath ? this.resolveStatsSourceOrderPath(order) : '';
+                return [order.source || '', sourcePath || '', order.id || '', order.orderNo || '', order.timestamp || order.createdAt || ''].join('|');
+            },
             // ── AUTH ──
             login: function() {
                 var self = this;
@@ -4933,6 +4942,31 @@ window._doCountUp = function() {
                     var seg = o.integration.sourceRecordPath.split('/');
                     if (seg.length >= 3 && seg[1]) return String(seg[1]);
                 }
+                var ts = Number(o && (o.timestamp || o.createdAt || o.submittedAt || 0));
+                if (!Number.isFinite(ts) || ts <= 0) {
+                    [
+                        o && o.createdAtDisplay,
+                        o && o.submittedAtDisplay,
+                        o && o.orderTime,
+                        o && o.orderDateTime
+                    ].some(function(v) {
+                        var raw = String(v || '').trim();
+                        if (!raw) return false;
+                        var parsed = Date.parse(raw.replace(/\//g, '-').replace(' ', 'T'));
+                        if (Number.isFinite(parsed)) {
+                            ts = parsed;
+                            return true;
+                        }
+                        return false;
+                    });
+                }
+                if (Number.isFinite(ts) && ts > 0) {
+                    if (ts < 1000000000000) ts *= 1000;
+                    var d = new Date(ts);
+                    if (!Number.isNaN(d.getTime())) {
+                        return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+                    }
+                }
                 return '';
             },
             statusOverrideRawKeys:function(order){
@@ -5139,7 +5173,8 @@ window._doCountUp = function() {
                     (Array.isArray(list) ? list : []).forEach(function(order) {
                         var src = String(order && order.source || '').toLowerCase();
                         var label = String(order && order.sourceLabel || '').toLowerCase();
-                        var family = (src === 'phone_ai' || src === 'pos_local' || label.indexOf('電話') !== -1 || label.indexOf('phone') !== -1)
+                        var path = self.resolveStatsSourceOrderPath(order);
+                        var family = (path.indexOf('phone_ai/orders/') === 0 || src === 'phone_ai' || src === 'pos_local' || label.indexOf('\u96fb\u8a71') !== -1 || label.indexOf('phone') !== -1)
                             ? 'phone_ai'
                             : ((src === 'pos') ? 'pos' : ((src === 'qrcode' || src === 'qr_takeout' || src === 'dinein' || src === 'line' || src === 'web_liff') ? src : 'web'));
                         var no = String(order && (order.orderNo || order.serialNumber || '')).trim();

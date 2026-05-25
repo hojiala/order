@@ -51,7 +51,7 @@
             <main class="p-4 max-w-7xl mx-auto">
                 <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                     
-                    <div v-for="order in sortedOrders" :key="order.id" 
+                    <div v-for="order in sortedOrders" :key="orderListKey(order)" 
                          class="bg-white rounded-xl shadow-md flex flex-col relative overflow-hidden"
                          :class="{'opacity-60': getDisplayStatus(order) === 'done'}">
                         
@@ -354,8 +354,26 @@
                         const dayOf = (o) => {
                             const explicit = String((o && (o.pickupDate || o.orderDateKey || o._sourceDateKey)) || '').trim();
                             if (explicit) return explicit;
-                            const ts = Number(o && (o.timestamp || o.createdAt || 0));
+                            let ts = Number(o && (o.timestamp || o.createdAt || o.submittedAt || 0));
+                            if (!Number.isFinite(ts) || ts <= 0) {
+                                [
+                                    o && o.createdAtDisplay,
+                                    o && o.submittedAtDisplay,
+                                    o && o.orderTime,
+                                    o && o.orderDateTime
+                                ].some((v) => {
+                                    const raw = String(v || '').trim();
+                                    if (!raw) return false;
+                                    const parsed = Date.parse(raw.replace(/\//g, '-').replace(' ', 'T'));
+                                    if (Number.isFinite(parsed)) {
+                                        ts = parsed;
+                                        return true;
+                                    }
+                                    return false;
+                                });
+                            }
                             if (Number.isFinite(ts) && ts > 0) {
+                                if (ts < 1000000000000) ts *= 1000;
                                 const d = new Date(ts);
                                 if (!isNaN(d.getTime())) {
                                     return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
@@ -389,7 +407,8 @@
                         }, 0);
                     };
                     const bySig = {};
-                    (Array.isArray(this.orders) ? this.orders : []).forEach((order) => {
+                    const sourceRows = (Array.isArray(this.orders) ? this.orders : []).concat(Array.isArray(this.phoneOrdersCache) ? this.phoneOrdersCache : []);
+                    sourceRows.forEach((order) => {
                         const sig = signatureOf(order);
                         if (!sig) {
                             bySig['id:' + String(order && order.id || Math.random())] = order;
@@ -441,6 +460,15 @@
             },
             methods: {
                 toast(msg) { this.toastMsg = msg; clearTimeout(this.toastTimer); this.toastTimer = setTimeout(() => { this.toastMsg = ''; }, 4000); },
+                orderListKey(order) {
+                    if (!order) return Math.random();
+                    if (this.isPhoneSourceOrder && this.isPhoneSourceOrder(order)) {
+                        const keys = this.statusOverrideRawKeys ? this.statusOverrideRawKeys(order) : [];
+                        if (keys && keys.length) return 'phone:' + keys[0];
+                    }
+                    const sourcePath = this.normalizeSourceRecordPath ? this.normalizeSourceRecordPath(order, order.id || '') : '';
+                    return [order.source || '', sourcePath || '', order.id || '', order.orderNo || '', order.timestamp || order.createdAt || ''].join('|');
+                },
                 statusOverrideStorageKey() {
                     return 'genki_admin_status_overrides_v1';
                 },
