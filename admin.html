@@ -474,6 +474,7 @@
                     if (!order) return [];
                     const original = order._integrationOriginal || {};
                     const integration = order.integration || original.integration || {};
+                    const isPhone = !!(this.isPhoneSourceOrder && this.isPhoneSourceOrder(order));
                     const values = [
                         integration.sourceRecordPath,
                         order.sourceRecordPath,
@@ -491,15 +492,29 @@
                     const dateKey = String(order.orderDateKey || order.pickupDate || order._sourceDateKey || '').trim();
                     if (dateKey && order.id) values.push('orders/' + dateKey + '/' + order.id);
                     const out = [];
+                    const phoneOut = [];
                     values.forEach((v) => {
                         let s = String(v || '').trim();
                         if (!s) return;
-                        out.push(s);
                         const phoneMatch = s.match(/(?:^|\/)phone_ai\/orders\/([^\/?#]+)/);
+                        if (isPhone) {
+                            if (phoneMatch && phoneMatch[1]) phoneOut.push('phone_ai/orders/' + phoneMatch[1]);
+                            return;
+                        }
+                        out.push(s);
                         if (phoneMatch && phoneMatch[1]) out.push('phone_ai/orders/' + phoneMatch[1], phoneMatch[1]);
                         const orderMatch = s.match(/(?:^|\/)(orders|orders_archive)\/(\d{4}-\d{2}-\d{2})\/([^\/?#]+)/);
                         if (orderMatch && orderMatch[3]) out.push(orderMatch[3], 'orders/' + orderMatch[2] + '/' + orderMatch[3]);
                     });
+                    if (isPhone) {
+                        if (!phoneOut.length) {
+                            const fallbackId = String(order.sourceOrderId || original.sourceOrderId || order.orderId || original.orderId || order.id || '').trim().replace(/^No\.?\s*/i, '');
+                            const fallbackMatch = fallbackId.match(/(?:^|\/)phone_ai\/orders\/([^\/?#]+)/);
+                            if (fallbackMatch && fallbackMatch[1]) phoneOut.push('phone_ai/orders/' + fallbackMatch[1]);
+                            else if (fallbackId && fallbackId.indexOf('/') === -1) phoneOut.push('phone_ai/orders/' + fallbackId);
+                        }
+                        return phoneOut.filter((v, i, arr) => !!v && arr.indexOf(v) === i);
+                    }
                     return out.filter((v, i, arr) => !!v && arr.indexOf(v) === i);
                 },
                 statusOverrideRawKey(order) {
@@ -520,12 +535,41 @@
                 getRemoteStatusOverride(order) {
                     const keys = this.statusOverrideRawKeys(order).map((raw) => this.statusOverrideKeyFromRaw(raw)).filter(Boolean);
                     let best = null;
+                    let orderStartMs = 0;
+                    [
+                        order && order.createdAt,
+                        order && order.created_at,
+                        order && order.orderCreatedAt,
+                        order && order.orderTime,
+                        order && order.timestamp,
+                        order && order.time,
+                        order && order.orderDateTime
+                    ].forEach((v) => {
+                        if (orderStartMs) return;
+                        if (typeof v === 'number' && Number.isFinite(v) && v > 0) orderStartMs = v < 1000000000000 ? v * 1000 : v;
+                        else {
+                            const s = String(v || '').trim();
+                            if (s) {
+                                const ms = Date.parse(s.replace(/\//g, '-').replace(' ', 'T'));
+                                if (Number.isFinite(ms)) orderStartMs = ms;
+                            }
+                        }
+                    });
+                    if (!orderStartMs) {
+                        const datePart = String(order && (order.orderDateKey !== undefined ? order.orderDateKey : (order.pickupDate || order.date)) || '').trim();
+                        const timePart = String(order && (order.orderTimeText !== undefined ? order.orderTimeText : (order.pickupTime || order.timeText || order.time)) || '').trim();
+                        if (datePart && timePart) {
+                            const combinedMs = Date.parse(datePart.replace(/\//g, '-') + 'T' + timePart);
+                            if (Number.isFinite(combinedMs)) orderStartMs = combinedMs;
+                        }
+                    }
                     keys.forEach((key) => {
                         const entry = (this.remoteStatusOverrides || {})[key];
                         if (!entry) return;
                         const status = String((entry && typeof entry === 'object') ? (entry.status || '') : entry).trim();
                         if (!status) return;
                         const updatedAt = Number(entry && typeof entry === 'object' ? (entry.updatedAt || 0) : 0);
+                        if (orderStartMs && updatedAt && updatedAt + 60000 < orderStartMs) return;
                         if (!best || updatedAt >= best.updatedAt) best = { status, updatedAt };
                     });
                     return best ? best.status : '';
@@ -1164,6 +1208,11 @@
                     }
                     let upgrade = reliableUpgrade > 0 ? reliableUpgrade : fallbackUpgrade;
                     if (upgrade > 0 && this.isDiscount5MealForDisplay(item, order)) {
+                        const discountSibling = this.findComboDrinkSiblingForDisplay(item, order);
+                        const discountSiblingLine = discountSibling ? this.getDisplayLineTotal(discountSibling) : 0;
+                        const discountSiblingQty = discountSibling ? this.getDisplayQty(discountSibling) : 0;
+                        const discountSiblingUnit = discountSiblingLine > 0 && discountSiblingQty > 0 ? (discountSiblingLine / discountSiblingQty) : 0;
+                        if (discountSiblingUnit > 0 && discountSiblingUnit < upgrade && upgrade - discountSiblingUnit <= 5) upgrade = discountSiblingUnit;
                         const base = this.getDisplayBaseUnit(item);
                         const line = this.getDisplayLineTotal(item);
                         const qty = this.getDisplayQty(item);
@@ -1173,9 +1222,8 @@
                             const lineDelta = Math.max(0, (line / qty) - base - optionsCost - extrasCost);
                             if (lineDelta > 0 && lineDelta + 0.01 < upgrade) upgrade = lineDelta;
                         }
-                        const sibling = this.findComboDrinkSiblingForDisplay(item, order);
-                        const fullCandidates = [item.comboDrinkFullPrice, sibling && sibling.comboDrinkFullPrice];
-                        const creditCandidates = [item.comboDrinkCredit, sibling && sibling.comboDrinkCredit, (this.getMealUpgradeMetaFromMenu(item && item.name) || {}).baseValue, 5];
+                        const fullCandidates = [item.comboDrinkFullPrice, discountSibling && discountSibling.comboDrinkFullPrice];
+                        const creditCandidates = [item.comboDrinkCredit, discountSibling && discountSibling.comboDrinkCredit, (this.getMealUpgradeMetaFromMenu(item && item.name) || {}).baseValue, 5];
                         const full = fullCandidates.map(Number).find((v) => Number.isFinite(v) && v > 0 && Math.round(v) === Math.round(upgrade));
                         const credit = creditCandidates.map(Number).find((v) => Number.isFinite(v) && v > 0 && v <= 5);
                         if (full && credit && upgrade > credit) upgrade = Math.min(upgrade, full - credit);

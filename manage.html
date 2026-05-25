@@ -2584,6 +2584,26 @@ window._doCountUp = function() {
                         if (Number.isFinite(rest) && rest > 0) upgrade = Math.max(upgrade, rest / qty);
                     }
                 }
+                if (upgrade > 0 && this.isDetailDiscount5Meal(item, order, index)) {
+                    var discountSibling = this.findComboDrinkSibling(order, item, index);
+                    var discountSiblingLine = discountSibling ? this.getDetailLineTotal(discountSibling) : 0;
+                    var discountSiblingQty = discountSibling ? this.getDetailItemQty(discountSibling) : 0;
+                    var discountSiblingUnit = discountSiblingLine > 0 && discountSiblingQty > 0 ? (discountSiblingLine / discountSiblingQty) : 0;
+                    if (discountSiblingUnit > 0 && discountSiblingUnit < upgrade && upgrade - discountSiblingUnit <= 5) {
+                        upgrade = discountSiblingUnit;
+                    } else {
+                        var menuMeta = this.getDetailMealUpgradeMetaFromMenu(item.name || item['\u54c1\u9805'] || '');
+                        var discountFullCandidates = [item.comboDrinkFullPrice, discountSibling && discountSibling.comboDrinkFullPrice];
+                        var discountCreditCandidates = [item.comboDrinkCredit, discountSibling && discountSibling.comboDrinkCredit, menuMeta && menuMeta.baseValue, 5];
+                        var discountFull = discountFullCandidates.map(Number).find(function(v) {
+                            return Number.isFinite(v) && v > 0 && Math.round(v) === Math.round(upgrade);
+                        });
+                        var discountCredit = discountCreditCandidates.map(Number).find(function(v) {
+                            return Number.isFinite(v) && v > 0 && v <= 5;
+                        });
+                        if (discountFull && discountCredit && upgrade > discountCredit) upgrade = discountFull - discountCredit;
+                    }
+                }
                 return Math.max(0, Math.round(upgrade));
             },
             getDetailItemTotal: function(item, order, index) {
@@ -4866,6 +4886,13 @@ window._doCountUp = function() {
                 if(!order)return [];
                 var original=(order&&order._integrationOriginal)||{};
                 var integration=(order&&order.integration)||original.integration||{};
+                var sourceBlob=[
+                    order.source, original.source, integration&&integration.source,
+                    integration&&integration.sourceRecordPath, order.sourceRecordPath, original.sourceRecordPath,
+                    order.sourceOrderId, original.sourceOrderId, order.orderId, original.orderId,
+                    order.sourceLabel, original.sourceLabel, order.customerType, original.customerType
+                ].map(function(v){return String(v||'');}).join('|').toLowerCase();
+                var isPhone=sourceBlob.indexOf('phone_ai')!==-1||sourceBlob.indexOf('電話')!==-1||sourceBlob.indexOf('phone')!==-1;
                 var values=[
                     integration&&integration.sourceRecordPath,
                     order.sourceRecordPath,
@@ -4883,15 +4910,29 @@ window._doCountUp = function() {
                 var dateKey=String(order.orderDateKey||order.pickupDate||order._sourceDateKey||'').trim();
                 if(dateKey&&order.id)values.push('orders/'+dateKey+'/'+order.id);
                 var out=[];
+                var phoneOut=[];
                 values.forEach(function(v){
                     var s=String(v||'').trim();
                     if(!s)return;
-                    out.push(s);
                     var phoneMatch=s.match(/(?:^|\/)phone_ai\/orders\/([^\/?#]+)/);
+                    if(isPhone){
+                        if(phoneMatch&&phoneMatch[1])phoneOut.push('phone_ai/orders/'+phoneMatch[1]);
+                        return;
+                    }
+                    out.push(s);
                     if(phoneMatch&&phoneMatch[1])out.push('phone_ai/orders/'+phoneMatch[1],phoneMatch[1]);
                     var orderMatch=s.match(/(?:^|\/)(orders|orders_archive)\/(\d{4}-\d{2}-\d{2})\/([^\/?#]+)/);
                     if(orderMatch&&orderMatch[3])out.push(orderMatch[3],'orders/'+orderMatch[2]+'/'+orderMatch[3]);
                 });
+                if(isPhone){
+                    if(!phoneOut.length){
+                        var fallbackId=String(order.sourceOrderId||original.sourceOrderId||order.orderId||original.orderId||order.id||'').trim().replace(/^No\.?\s*/i,'');
+                        var fallbackMatch=fallbackId.match(/(?:^|\/)phone_ai\/orders\/([^\/?#]+)/);
+                        if(fallbackMatch&&fallbackMatch[1])phoneOut.push('phone_ai/orders/'+fallbackMatch[1]);
+                        else if(fallbackId&&fallbackId.indexOf('/')===-1)phoneOut.push('phone_ai/orders/'+fallbackId);
+                    }
+                    return phoneOut.filter(function(v,i,arr){return !!v&&arr.indexOf(v)===i;});
+                }
                 return out.filter(function(v,i,arr){return !!v&&arr.indexOf(v)===i;});
             },
             statusOverrideRawKey:function(order){
@@ -4913,12 +4954,33 @@ window._doCountUp = function() {
                 var self = this;
                 var keys = self.statusOverrideRawKeys(order).map(function(raw) { return self.statusOverrideKeyFromRaw(raw); }).filter(Boolean);
                 var best = null;
+                var orderStartMs = 0;
+                [order && order.createdAt, order && order.created_at, order && order.orderCreatedAt, order && order.orderTime, order && order.timestamp, order && order.time, order && order.orderDateTime].forEach(function(v) {
+                    if (orderStartMs) return;
+                    if (typeof v === 'number' && Number.isFinite(v) && v > 0) orderStartMs = v < 1000000000000 ? v * 1000 : v;
+                    else {
+                        var s = String(v || '').trim();
+                        if (s) {
+                            var ms = Date.parse(s.replace(/\//g, '-').replace(' ', 'T'));
+                            if (Number.isFinite(ms)) orderStartMs = ms;
+                        }
+                    }
+                });
+                if (!orderStartMs) {
+                    var datePart = String(order && (order.orderDateKey !== undefined ? order.orderDateKey : (order.pickupDate || order.date)) || '').trim();
+                    var timePart = String(order && (order.orderTimeText !== undefined ? order.orderTimeText : (order.pickupTime || order.timeText || order.time)) || '').trim();
+                    if (datePart && timePart) {
+                        var combinedMs = Date.parse(datePart.replace(/\//g, '-') + 'T' + timePart);
+                        if (Number.isFinite(combinedMs)) orderStartMs = combinedMs;
+                    }
+                }
                 keys.forEach(function(key) {
                     var entry = (self.remoteStatusOverrides || {})[key];
                     if (!entry) return;
                     var status = String((entry && typeof entry === 'object') ? (entry.status || '') : entry).trim();
                     if (!status) return;
                     var updatedAt = Number(entry && typeof entry === 'object' ? (entry.updatedAt || 0) : 0);
+                    if (orderStartMs && updatedAt && updatedAt + 60000 < orderStartMs) return;
                     if (!best || updatedAt >= best.updatedAt) best = { status: status, updatedAt: updatedAt };
                 });
                 return best ? best.status : '';
