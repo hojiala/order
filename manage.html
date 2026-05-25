@@ -772,7 +772,7 @@
                             </tr>
                         </thead>
                         <tbody class="divide-y divide-slate-700">
-                            <tr v-for="order in statsSortedOrders" :key="order.id" class="hover:bg-slate-700/30 transition">
+                            <tr v-for="order in statsSortedOrders" :key="getOrderRenderKey(order)" class="hover:bg-slate-700/30 transition">
                                 <td class="px-3 py-3">
                                     <span class="text-orange-400 font-black text-xs">No.{{ order.orderNo ? String(order.orderNo).padStart(3,"0") : "???" }}</span>
                                     <span class="block text-gray-500 font-mono text-xs">#{{ order.id.slice(-4).toUpperCase() }}</span>
@@ -1929,6 +1929,19 @@ window._doCountUp = function() {
             },
             logout: function() {
                 if (confirm('確定要登出嗎？')) signOut(auth);
+            },
+
+            getOrderRenderKey: function(order) {
+                if (!order || typeof order !== 'object') return 'order:empty';
+                var sourcePath = this.resolveStatsSourceOrderPath(order);
+                if (sourcePath) return 'path:' + sourcePath;
+                return [
+                    'order',
+                    String(order.source || ''),
+                    String(order.orderDateKey || order.pickupDate || order._sourceDateKey || ''),
+                    String(order.id || ''),
+                    String(order.orderNo || order.serialNumber || '')
+                ].join('|');
             },
 
             isLinePayOrder: function(order) {
@@ -4896,9 +4909,20 @@ window._doCountUp = function() {
                     (Array.isArray(list) ? list : []).forEach(function(order) {
                         var src = String(order && order.source || '').toLowerCase();
                         var label = String(order && order.sourceLabel || '').toLowerCase();
+                        var sourcePath = self.resolveStatsSourceOrderPath(order);
                         var family = (src === 'phone_ai' || src === 'pos_local' || label.indexOf('電話') !== -1 || label.indexOf('phone') !== -1)
                             ? 'phone_ai'
                             : ((src === 'pos') ? 'pos' : ((src === 'qrcode' || src === 'qr_takeout' || src === 'dinein' || src === 'line' || src === 'web_liff') ? src : 'web'));
+                        if (family === 'phone_ai') {
+                            if (sourcePath) {
+                                bySig['path:' + sourcePath] = bySig['path:' + sourcePath] ? self.normalizeStatsOrder(Object.assign({}, bySig['path:' + sourcePath], order)) : order;
+                                return;
+                            }
+                            if (order && order.id) {
+                                bySig['id:phone_ai:' + String(order.id)] = bySig['id:phone_ai:' + String(order.id)] ? self.normalizeStatsOrder(Object.assign({}, bySig['id:phone_ai:' + String(order.id)], order)) : order;
+                                return;
+                            }
+                        }
                         var no = String(order && (order.orderNo || order.serialNumber || '')).trim();
                         var day = self.getOrderDate(order);
                         var total = Number(self.getOrderTotalValue(order) || 0);
@@ -5131,7 +5155,11 @@ window._doCountUp = function() {
                     var phone = String((order.customer && order.customer.phone) || order.phone || '').trim();
                     var pickup = String(order.pickupTime || order.pickupTimeLabel || '').trim();
                     if (sourceOrderId && day && family) return ['oid', family, day, sourceOrderId].join('|');
-                    if (family === 'phone_ai' && no && day) return ['sig', family, day, no, phone, pickup].join('|');
+                    if (family === 'phone_ai') {
+                        if (sourcePath) return ['path', sourcePath].join('|');
+                        if (order.id) return ['id', family, String(order.id)].join('|');
+                        return '';
+                    }
                     if (no && day && family) return ['sig', family, day, no, Number.isFinite(total) ? Math.round(total) : '', phone, pickup].join('|');
                     if (sourcePath) return ['path', sourcePath].join('|');
                     if (!no || !day || !family) return '';

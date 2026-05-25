@@ -51,7 +51,7 @@
             <main class="p-4 max-w-7xl mx-auto">
                 <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                     
-                    <div v-for="order in sortedOrders" :key="order.id" 
+                    <div v-for="order in sortedOrders" :key="getOrderRenderKey(order)" 
                          class="bg-white rounded-xl shadow-md flex flex-col relative overflow-hidden"
                          :class="{'opacity-60': getDisplayStatus(order) === 'done'}">
                         
@@ -365,16 +365,22 @@
                         };
                         const src = String(order.source || '').toLowerCase();
                         const label = String(order.sourceLabel || order._integrationSourceLabel || '').toLowerCase();
-                        const family = (src === 'phone_ai' || src === 'pos_local' || label.indexOf('\u96fb\u8a71') !== -1 || label.indexOf('phone') !== -1)
+                        const sourcePath = this.normalizeSourceRecordPath(order, order && order.id || '');
+                        const family = (sourcePath.indexOf('phone_ai/orders/') === 0 || src === 'phone_ai' || src === 'pos_local' || label.indexOf('\u96fb\u8a71') !== -1 || label.indexOf('phone') !== -1)
                             ? 'phone_ai'
                             : ((src === 'pos') ? 'pos' : ((src === 'qrcode' || src === 'qr_takeout' || src === 'dinein' || src === 'line' || src === 'web_liff') ? src : 'web'));
+                        if (family === 'phone_ai') {
+                            if (sourcePath) return ['path', sourcePath].join('|');
+                            if (order.id) return ['id', family, String(order.id)].join('|');
+                        }
                         const no = String(order.orderNo || order.serialNumber || '').trim();
                         const day = dayOf(order);
+                        const sourceOrderId = String(order.sourceOrderId || order.orderId || '').trim();
+                        if (sourceOrderId && day && family) return ['oid', family, day, sourceOrderId].join('|');
                         const total = Number(order.total || (order.totals && order.totals.finalTotal) || 0);
                         const phone = String((order.customer && order.customer.phone) || order.phone || '').replace(/\D/g, '');
                         const pickup = String(order.pickupTime || order.pickupTimeLabel || '').trim();
                         if (!no || !day) return '';
-                        if (family === 'phone_ai') return [family, day, no, phone, pickup].join('|');
                         return [family, day, no, Number.isFinite(total) ? Math.round(total) : '', phone, pickup].join('|');
                     };
                     const score = (order) => {
@@ -441,6 +447,39 @@
             },
             methods: {
                 toast(msg) { this.toastMsg = msg; clearTimeout(this.toastTimer); this.toastTimer = setTimeout(() => { this.toastMsg = ''; }, 4000); },
+                getOrderRenderKey(order) {
+                    if (!order || typeof order !== 'object') return 'order:empty';
+                    const sourcePath = this.normalizeSourceRecordPath(order, order.id || '');
+                    if (sourcePath) return 'path:' + sourcePath;
+                    return [
+                        'order',
+                        String(order.source || ''),
+                        String(order.orderDateKey || order.pickupDate || order._sourceDateKey || ''),
+                        String(order.id || ''),
+                        String(order.orderNo || order.serialNumber || '')
+                    ].join('|');
+                },
+                isCurrentPhoneFallbackOrder(id, row) {
+                    let today = '';
+                    const now = new Date();
+                    today = now.getFullYear() + '-' + ('0' + (now.getMonth() + 1)).slice(-2) + '-' + ('0' + now.getDate()).slice(-2);
+                    const dayFromCompact = (value) => {
+                        const m = String(value || '').match(/^(\d{4})(\d{2})(\d{2})[_-]/);
+                        return m ? (m[1] + '-' + m[2] + '-' + m[3]) : '';
+                    };
+                    const dayFromTs = (value) => {
+                        const n = Number(value);
+                        if (!Number.isFinite(n) || n <= 0) return '';
+                        const d = new Date(n);
+                        if (Number.isNaN(d.getTime())) return '';
+                        return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2);
+                    };
+                    const r = row || {};
+                    let day = String(r.pickupDate || r.orderDateKey || r._sourceDateKey || '').slice(0, 10);
+                    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) day = dayFromCompact(id);
+                    if (!day) day = dayFromTs(r.timestamp || r.createdAt || r.updatedAt);
+                    return !day || day === today;
+                },
                 statusOverrideStorageKey() {
                     return 'genki_admin_status_overrides_v1';
                 },
@@ -805,7 +844,7 @@
                         });
                         const shouldParseNote = this.isComboMainLineForDisplay(src) || this.isComboDrinkLineForDisplay(src) || Array.isArray(src.comboDrinkAddons);
                         if (shouldParseNote) {
-                            String(src.note || src['\u5099\u8a3b'] || src.drinkNote || '').split(/[\uFF0C,\u3001]/).forEach((part) => {
+                            String(src.note || src['\u5099\u8a3b'] || src.drinkNote || '').split(/[\uFF0C,\u3001\/\s]+/).forEach((part) => {
                                 const token = String(part || '').trim();
                                 if (token === '\u52a0\u7cd6' || token === '\u52a0\u5976') push(token, 0);
                             });
@@ -851,7 +890,7 @@
                     const stripAddonTokens = (text) => {
                         if (!text) return '';
                         // \u2605 \u4E0D\u52A0\u86CB\u5DF2\u7531\u7368\u7ACB chip \u986F\u793A\uFF0C\u9019\u88E1\u5F9E \u5099\u8A3B row \u79FB\u9664\u907F\u514D\u91CD\u8907
-                        return String(text).split(/[\uFF0C,\u3001]/).map((s) => s.trim()).filter((s) => s && !addonNames.has(s) && s !== '\u4E0D\u52A0\u86CB').join('\uFF0C');
+                        return String(text).split(/[\uFF0C,\u3001\/\s]+/).map((s) => s.trim()).filter((s) => s && !addonNames.has(s) && s !== '\u4E0D\u52A0\u86CB').join('\uFF0C');
                     };
                     const notes = [];
                     const own = stripAddonTokens(this.cleanDisplayNoteText(item.note || item['\u5099\u8a3b'] || ''));
@@ -2006,7 +2045,7 @@
                     const phoneRef = ref(db, 'phone_ai/orders');
                     this.phoneOrdersUnsub = onValue(phoneRef, (snap) => {
                         const raw = snap.exists() ? (snap.val() || {}) : {};
-                        const list = Object.keys(raw).map((id) => Object.assign({
+                        const list = Object.keys(raw).filter((id) => this.isCurrentPhoneFallbackOrder(id, raw[id])).map((id) => Object.assign({
                             id: id,
                             source: 'phone_ai',
                             sourceLabel: '電話點餐',
@@ -2299,7 +2338,11 @@
                         const phone = String((order.customer && order.customer.phone) || order.phone || '').trim();
                         const pickup = String(order.pickupTime || order.pickupTimeLabel || '').trim();
                         if (sourceOrderId && day && family) return ['oid', family, day, sourceOrderId].join('|');
-                        if (family === 'phone_ai' && no && day) return ['sig', family, day, no, phone, pickup].join('|');
+                        if (family === 'phone_ai') {
+                            if (sourcePath) return ['path', sourcePath].join('|');
+                            if (order.id) return ['id', family, String(order.id)].join('|');
+                            return '';
+                        }
                         if (no && day && family) return ['sig', family, day, no, Number.isFinite(total) ? Math.round(total) : '', phone, pickup].join('|');
                         if (sourcePath) return ['path', sourcePath].join('|');
                         if (!no || !day || !family) return '';
