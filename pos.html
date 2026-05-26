@@ -778,7 +778,7 @@
                 function score(order){
                     var items=Array.isArray(order&&order.items)?order.items:[];
                     return items.length*10+items.reduce(function(sum,item){
-                        return sum+(item&&item.comboDrinkText?3:0)+(item&&item.mealDrink?3:0)+(item&&item.comboDrinkLabel?2:0)+(item&&item.comboDrinkChargeText?2:0)+(Array.isArray(item&&item.optionGroupSelections)?item.optionGroupSelections.length:0)+(Array.isArray(item&&item.comboDrinkAddons)?item.comboDrinkAddons.length*3:0);
+                        return sum+(item&&item.comboDrinkText?3:0)+(item&&item.mealDrink?3:0)+(item&&item.comboDrinkLabel?2:0)+(item&&item.comboDrinkChargeText?2:0)+s.scoreOrderItemsDetail([item]);
                     },0);
                 }
                 var bySig={};
@@ -969,6 +969,8 @@
                     var local=0;
                     if(Array.isArray(it.optionGroupSelections)&&it.optionGroupSelections.length)local+=it.optionGroupSelections.length*4;
                     if(Array.isArray(it.options)&&it.options.length)local+=it.options.length*3;
+                    if(Array.isArray(it.addons)&&it.addons.length)local+=it.addons.length*3;
+                    if(Array.isArray(it['加料'])&&it['加料'].length)local+=it['加料'].length*3;
                     if(Array.isArray(it.posExtras)&&it.posExtras.length)local+=it.posExtras.length*2;
                     if(Array.isArray(it.comboDrinkAddons)&&it.comboDrinkAddons.length)local+=it.comboDrinkAddons.length*3;
                     if(it.mealDrink&&String(it.mealDrink).trim())local+=6;
@@ -3132,10 +3134,19 @@
                         if(!Array.isArray(arr))return;
                         arr.forEach(function(a){
                             if(!a)return;
-                            var name=text(a[nameKey]||a.name||a['\u540d\u7a31']);
+                            var name='';
+                            var p=0;
+                            if(typeof a==='string'){
+                                name=text(a).replace(/^\+/,'');
+                                var m=name.match(/\$?\s*(\d+)\s*$/);
+                                if(m&&m[1])p=num(m[1]);
+                                name=name.replace(/\s*\$?\s*\d+\s*$/,'').trim();
+                            }else{
+                                name=text(a[nameKey]||a.name||a['\u540d\u7a31']);
+                                p=num(a[priceKey]!==undefined?a[priceKey]:(a.price!==undefined?a.price:a['\u52a0\u50f9']));
+                            }
                             if(!name||seen[name])return;
                             seen[name]=true;
-                            var p=num(a[priceKey]!==undefined?a[priceKey]:(a.price!==undefined?a.price:a['\u52a0\u50f9']));
                             parts.push('+'+name+(p>0?' $'+Math.round(p):''));
                         });
                     };
@@ -3234,11 +3245,15 @@
             },
             orderItemsSummary:function(order){
                 try{
-                    var flat=this.orderItemsSummaryFlat(order);
+                    var displayOrder=order;
+                    if(this.orderMode!=='pos'&&this.editingOrder&&order&&this.editingOrder.id===order.id&&Array.isArray(this.cart)&&this.cart.length){
+                        displayOrder=Object.assign({},order,{items:this.cart.map(function(it){return Object.assign({},it);})});
+                    }
+                    var flat=this.orderItemsSummaryFlat(displayOrder);
                     if(flat)return flat;
                 }catch(flatErr){console.warn('orderItemsSummaryFlat failed:',flatErr&&flatErr.message?flatErr.message:flatErr);}
                 try{
-                var items=(order&&Array.isArray(order.items))?order.items:[];
+                var items=(displayOrder&&Array.isArray(displayOrder.items))?displayOrder.items:[];
                 function text(v){return String(v===undefined||v===null?'':v).trim();}
                 function stripComboChargeSuffix(rawName){
                     return String(rawName||'')
@@ -3713,6 +3728,8 @@
                         var local=0;
                         if(Array.isArray(it.optionGroupSelections)&&it.optionGroupSelections.length)local+=it.optionGroupSelections.length*4;
                         if(Array.isArray(it.options)&&it.options.length)local+=it.options.length*3;
+                        if(Array.isArray(it.addons)&&it.addons.length)local+=it.addons.length*3;
+                        if(Array.isArray(it['加料'])&&it['加料'].length)local+=it['加料'].length*3;
                         if(Array.isArray(it.posExtras)&&it.posExtras.length)local+=it.posExtras.length*2;
                         if(Array.isArray(it.comboDrinkAddons)&&it.comboDrinkAddons.length)local+=it.comboDrinkAddons.length*3;
                         if(it.mealDrink&&String(it.mealDrink).trim())local+=6;
@@ -4850,6 +4867,10 @@
                             if(it.size||it['\u5bb9\u91cf'])local+=2;
                             if(it.temp||it['\u6eab\u5ea6'])local+=2;
                             if(Array.isArray(it.optionGroupSelections))local+=it.optionGroupSelections.length*2;
+                            if(Array.isArray(it.options))local+=it.options.length*3;
+                            if(Array.isArray(it.addons))local+=it.addons.length*3;
+                            if(Array.isArray(it['加料']))local+=it['加料'].length*3;
+                            if(Array.isArray(it.posExtras))local+=it.posExtras.length*4;
                             if(Array.isArray(it.comboDrinkAddons))local+=it.comboDrinkAddons.length*3;
                             return score+local;
                         },0);
@@ -4885,6 +4906,7 @@
                 this.editPickupTime=(latest&&latest.pickupTime)||normalized.pickupTime||'';
                 this.editOrderNote=(latest&&latest.orderNote)||normalized.orderNote||normalized['訂單備註']||normalized.note||'';
                 this.editOrderNote=this.editOrderNote||(latest&&latest.orderNote)||normalized.orderNote||normalized.note||'';
+                if(String(this.editOrderNote||'').trim()==='現場單')this.editOrderNote='';
                 this.editPayMethod=(latest&&latest.paymentMethod)||normalized.paymentMethod||'store';
                 this.editOrderType=(((latest&&latest.type)||normalized.type)==='dinein'||((latest&&latest.pickupMode)||normalized.pickupMode)==='dinein')?'dinein':'takeout';
                 this.editTableLabel=(latest&&latest.tableLabel)||normalized.tableLabel||'';
