@@ -120,8 +120,9 @@
         <button @click="editMode=!editMode"
           :class="editMode ? 'bg-red-500 text-white' : 'bg-white/20 hover:bg-white/30 text-white'"
           class="text-xs px-2 py-1.5 rounded-lg font-bold transition">{{ editMode ? "🔴 上下架" : "⚡ 上下架" }}</button>
-        <button @click="confirmResetCounter"
-          class="text-xs px-2 py-1.5 rounded-lg font-bold bg-white/20 hover:bg-white/30 text-white transition">🔢 歸零</button>
+        <button @click="openCounterSettings"
+          title="流水號設定"
+          class="text-xs px-2 py-1.5 rounded-lg font-bold bg-white/20 hover:bg-white/30 text-white transition">🔢</button>
         <button @click="openCashDrawer"
           class="text-xs px-2 py-1.5 rounded-lg font-bold bg-emerald-500 hover:bg-emerald-400 text-white transition">💰 開錢箱</button>
         <button @click="doArchiveAll"
@@ -562,15 +563,57 @@
 
   <!-- ★ 店內付款：付款狀態選擇 -->
   <div v-if="showStorePayChoiceModal" class="fixed inset-0 z-[1000] flex items-center justify-center" style="background:rgba(0,0,0,0.45)">
-    <div class="bg-white rounded-2xl shadow-2xl overflow-hidden" style="max-width:20rem;width:calc(100% - 2rem)">
+    <div class="bg-white rounded-2xl shadow-2xl overflow-hidden" style="max-width:24rem;width:calc(100% - 2rem)">
       <div class="px-5 py-4">
         <h3 class="text-lg font-black text-gray-900">店內付款</h3>
-        <p class="text-gray-500 text-sm mt-1">請選擇這筆訂單要標記為「現金已付款」或「未付款」。</p>
+        <p class="text-gray-500 text-sm mt-1">請選擇付款狀態；需要找零時可開啟計算機。</p>
       </div>
       <div class="px-5 pb-5 grid grid-cols-1 gap-2">
         <button @click="submitStorePayChoice('cash')" class="py-3 rounded-xl font-black text-white text-sm transition active:scale-95" style="background:linear-gradient(135deg,#16a34a,#15803d)">💵 現金已付款</button>
+        <button @click="showCashCalculator=!showCashCalculator" class="py-2.5 rounded-xl font-black text-gray-700 bg-gray-100 hover:bg-gray-200 text-sm transition">🧮 計算機</button>
+        <div v-if="showCashCalculator" class="rounded-xl border border-gray-200 bg-gray-50 p-3">
+          <div class="grid grid-cols-3 gap-2 mb-2">
+            <button @click="cashCalcQuick(100)" class="py-2 rounded-lg bg-white border border-gray-200 font-black text-gray-700">100</button>
+            <button @click="cashCalcQuick(500)" class="py-2 rounded-lg bg-white border border-gray-200 font-black text-gray-700">500</button>
+            <button @click="cashCalcQuick(1000)" class="py-2 rounded-lg bg-white border border-gray-200 font-black text-gray-700">1000</button>
+          </div>
+          <div class="bg-white border border-gray-200 rounded-lg p-2 mb-2 text-sm">
+            <div class="flex justify-between text-gray-500"><span>應收</span><b class="text-gray-900">${{ cartTotal }}</b></div>
+            <div class="flex justify-between text-gray-500"><span>收款</span><b class="text-gray-900">${{ cashReceivedAmount }}</b></div>
+            <div class="flex justify-between text-gray-500"><span>找零</span><b :class="cashChangeAmount<0?'text-red-500':'text-emerald-600'">${{ cashChangeAmount }}</b></div>
+          </div>
+          <div class="grid grid-cols-3 gap-2">
+            <button v-for="n in ['7','8','9','4','5','6','1','2','3','0']" :key="'cash-'+n" @click="cashCalcAppend(n)" class="py-2 rounded-lg bg-white border border-gray-200 font-black text-gray-700">{{ n }}</button>
+            <button @click="cashCalcBackspace" class="py-2 rounded-lg bg-white border border-gray-200 font-black text-gray-700">⌫</button>
+            <button @click="cashCalcClear" class="py-2 rounded-lg bg-white border border-gray-200 font-black text-gray-700">C</button>
+          </div>
+        </div>
         <button @click="submitStorePayChoice('store')" class="py-3 rounded-xl font-black text-white text-sm transition active:scale-95" style="background:linear-gradient(135deg,#f97316,#ef4444)">⚠️ 未付款</button>
         <button @click="showStorePayChoiceModal=false" class="py-2 rounded-xl font-bold text-gray-500 bg-gray-100 text-sm hover:bg-gray-200 transition">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <div v-if="showCounterSettingsModal" class="fixed inset-0 z-[1000] flex items-center justify-center" style="background:rgba(0,0,0,0.45)">
+    <div class="bg-white rounded-2xl shadow-2xl overflow-hidden" style="max-width:23rem;width:calc(100% - 2rem)">
+      <div class="px-5 py-4 border-b border-gray-100">
+        <h3 class="text-lg font-black text-gray-900">流水號設定</h3>
+        <p class="text-gray-500 text-sm mt-1">店內 POS 訂單會依設定自動歸零。</p>
+      </div>
+      <div class="px-5 py-4 space-y-3">
+        <label class="block">
+          <span class="block text-xs font-black text-gray-500 mb-1">每日歸零時間</span>
+          <input v-model="counterResetTime" type="time" class="w-full px-3 py-2 rounded-lg border border-gray-200 font-bold text-gray-800 focus:outline-none focus:border-orange-400">
+        </label>
+        <label class="block">
+          <span class="block text-xs font-black text-gray-500 mb-1">最高流水號碼</span>
+          <input v-model.number="counterMaxNo" type="number" min="1" max="9999" class="w-full px-3 py-2 rounded-lg border border-gray-200 font-bold text-gray-800 focus:outline-none focus:border-orange-400">
+        </label>
+      </div>
+      <div class="px-5 pb-5 grid grid-cols-1 gap-2">
+        <button @click="saveCounterSettings" :disabled="counterSaving" class="py-3 rounded-xl font-black text-white text-sm transition active:scale-95 disabled:opacity-50" style="background:linear-gradient(135deg,#f97316,#ef4444)">{{ counterSaving ? "儲存中..." : "儲存設定" }}</button>
+        <button @click="confirmResetCounter" class="py-2.5 rounded-xl font-black text-gray-700 bg-gray-100 hover:bg-gray-200 text-sm transition">立即歸零</button>
+        <button @click="showCounterSettingsModal=false" class="py-2 rounded-xl font-bold text-gray-500 bg-gray-100 text-sm hover:bg-gray-200 transition">關閉</button>
       </div>
     </div>
   </div>
@@ -697,7 +740,8 @@
                 menu:[],menuItems:[],menuLoading:true,filterCat:"",settings:{categories:[],stations:[{name:'湯麵',ip:'192.168.0.6'},{name:'麵包台',ip:'192.168.0.7'},{name:'飲料台',ip:'192.168.0.8'}]},settingsStationsLoaded:false,
                 activeView:"menu",editMode:false,
                 cart:[],custName:"",custPhone:"",isSubmitting:false,
-                posMetaExpanded:false,showStorePayChoiceModal:false,showLinePayChoiceModal:false,posOrderNote:"",
+                posMetaExpanded:false,showStorePayChoiceModal:false,showLinePayChoiceModal:false,showCounterSettingsModal:false,showCashCalculator:false,posOrderNote:"",
+                counterResetTime:"00:00",counterMaxNo:999,counterLegacyValue:0,counterSaving:false,cashCalcInput:"",
                 editPickupDate:"",editPickupTime:"",editOrderNote:"",editingCartIdx:-1,
                 editShowCustomer:false,editShowPayment:false,editOrderType:'takeout',editTableLabel:'',editingLinePayPaid:false,
                 posOrderType:'takeout',posTableLabel:'',posTables:[],cartDragIdx:null,
@@ -724,6 +768,8 @@
             filteredMenu:function(){var s=this;if(!s.filterCat){if(s.settings.hideAllTab&&s.allCategories.length){s.filterCat=s.allCategories[0];return s.menu.filter(function(i){return i.category===s.allCategories[0];});}return s.menu;}return s.menu.filter(function(i){return i.category===s.filterCat;});},
             cartTotal:function(){return this.cart.reduce(function(s,i){return s+(Number(i.itemTotal)||0);},0);},
             cartCount:function(){return this.cart.reduce(function(s,i){return s+i.qty;},0);},
+            cashReceivedAmount:function(){return Number(this.cashCalcInput||0)||0;},
+            cashChangeAmount:function(){return this.cashReceivedAmount-this.cartTotal;},
             activeOrderCount:function(){
                 try{return (this.onlineOrders||[]).filter(function(o){
                     if(!o)return false;
@@ -3581,12 +3627,71 @@
                     s.exitOnline();
                 }catch(e){alert("結單失敗："+(e&&e.message?e.message:e));}
             },
+            normalizeCounterResetTime:function(value){
+                var t=String(value||'00:00').trim();
+                var m=t.match(/^(\d{1,2}):(\d{2})$/);
+                if(!m)return'00:00';
+                var h=Math.max(0,Math.min(23,Number(m[1])||0));
+                var mi=Math.max(0,Math.min(59,Number(m[2])||0));
+                return('0'+h).slice(-2)+':'+('0'+mi).slice(-2);
+            },
+            getCounterBusinessDateKey:function(ts){
+                var d=new Date(ts||Date.now());
+                var reset=this.normalizeCounterResetTime(this.counterResetTime||'00:00').split(':');
+                var resetMinutes=(Number(reset[0])||0)*60+(Number(reset[1])||0);
+                var minutes=d.getHours()*60+d.getMinutes();
+                if(minutes<resetMinutes)d.setDate(d.getDate()-1);
+                return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);
+            },
+            openCounterSettings:function(){
+                this.counterResetTime=this.normalizeCounterResetTime(this.counterResetTime||'00:00');
+                this.counterMaxNo=Math.max(1,Number(this.counterMaxNo||999)||999);
+                this.showCounterSettingsModal=true;
+            },
+            saveCounterSettings:function(){
+                var s=this;
+                var time=s.normalizeCounterResetTime(s.counterResetTime||'00:00');
+                var maxNo=Math.max(1,Math.min(9999,Math.floor(Number(s.counterMaxNo||999)||999)));
+                s.counterSaving=true;
+                update(ref(db,'settings'),{counterResetTime:time,counterMaxNo:maxNo})
+                    .then(function(){
+                        s.counterResetTime=time;s.counterMaxNo=maxNo;s.showCounterSettingsModal=false;
+                        s.toast('✅ 流水號設定已儲存');
+                    })
+                    .catch(function(e){alert('儲存失敗：'+(e&&e.message?e.message:e));})
+                    .finally(function(){s.counterSaving=false;});
+            },
+            resetOrderCounterState:function(){
+                var key=this.getCounterBusinessDateKey(Date.now());
+                return update(ref(db,'settings'),{
+                    orderCounter:0,
+                    orderCounterState:{dateKey:key,value:0,resetTime:this.normalizeCounterResetTime(this.counterResetTime||'00:00'),maxNo:Math.max(1,Number(this.counterMaxNo||999)||999)}
+                });
+            },
             confirmResetCounter:function(){
                 var s=this;
-                if(!confirm("確定要將數字流水號歸零嗎？\n（歸零後下一筆訂單將從 No.001 開始重新計算）"))return;
-                set(ref(db,"settings/orderCounter"),0)
+                if(!confirm("確定要將數字流水號歸零嗎？\n（歸零後下一筆 POS 訂單將從 No.001 開始重新計算）"))return;
+                s.resetOrderCounterState()
                     .then(function(){s.toast("✅ 流水號已歸零，下一筆從 No.001 開始");})
-                    .catch(function(e){alert("歸零失敗："+e.message);});
+                    .catch(function(e){alert("歸零失敗："+(e&&e.message?e.message:e));});
+            },
+            allocateNextOrderNo:function(){
+                var s=this;
+                var resetTime=s.normalizeCounterResetTime(s.counterResetTime||'00:00');
+                var maxNo=Math.max(1,Math.min(9999,Math.floor(Number(s.counterMaxNo||999)||999)));
+                var dateKey=s.getCounterBusinessDateKey(Date.now());
+                var legacySeed=Number(s.counterLegacyValue||0)||0;
+                return runTransaction(ref(db,'settings/orderCounterState'),function(cur){
+                    var prev=Number(cur&&cur.value||0)||0;
+                    if(!cur)prev=legacySeed;
+                    else if(cur.dateKey!==dateKey)prev=0;
+                    var next=prev+1;
+                    if(next>maxNo)next=1;
+                    return{dateKey:dateKey,value:next,resetTime:resetTime,maxNo:maxNo,updatedAt:Date.now()};
+                }).then(function(result){
+                    var val=Number(result&&result.snapshot&&result.snapshot.val()&&result.snapshot.val().value||0)||1;
+                    return set(ref(db,'settings/orderCounter'),val).then(function(){return val;});
+                });
             },
             openCashDrawer:function(){
                 var s=this;
@@ -4030,7 +4135,10 @@
                         s.settings={categories:v.categories||[],hideAllTab:!!v.hideAllTab,posOnlyCategories:v.posOnlyCategories||[],
                             stations:hasStationSettings?v.stations:defaultStations};
                         s.settingsStationsLoaded=hasStationSettings;
-                        s.linePayServerUrl=v.linePayServerUrl||'';s.linePayConfirmUrl=v.linePayConfirmUrl||'';s.posTables=v.posTables||[];}
+                        s.linePayServerUrl=v.linePayServerUrl||'';s.linePayConfirmUrl=v.linePayConfirmUrl||'';s.posTables=v.posTables||[];
+                        s.counterLegacyValue=Number(v.orderCounter||0)||0;
+                        s.counterResetTime=s.normalizeCounterResetTime(v.counterResetTime||'00:00');
+                        s.counterMaxNo=Math.max(1,Number(v.counterMaxNo||999)||999);}
                 });
                 s.ordersLoading=true;
                 s.resetOrderBucketListeners();
@@ -4295,7 +4403,7 @@
                 var key=JSON.stringify(ogSels),found=null;
                 for(var i=0;i<this.cart.length;i++){var c=this.cart[i];if(c.id===item.id&&!c.note&&(!c.options||!c.options.length)&&JSON.stringify(c.optionGroupSelections||[])===key){found=c;break;}}
                 if(found){found.qty+=1;found.itemTotal=up*found.qty;}
-                else{this.cart.push({id:item.id,name:item.name,price:item.price,station:item.station||this.getDefaultStationName(),qty:1,note:"",options:[],optionGroupSelections:ogSels,itemTotal:up});}
+                else{this.cart.push({id:item.id,name:item.name,shortName:String(item.shortName||'').trim(),printName:String(item.shortName||item.printName||'').trim(),price:item.price,station:item.station||this.getDefaultStationName(),qty:1,note:"",options:[],optionGroupSelections:ogSels,itemTotal:up});}
                 this.toast("✓ "+item.name);
             },
             addOrDetail:function(item){
@@ -4501,7 +4609,7 @@
                 // ★ 從 sels 重建 optionSelections/selectedOptions（dict 形式），避免舊值殘留導致 print_order.py 一次印出新舊兩個選項
                 var rebuiltOptionSelections={};
                 sels.forEach(function(sel){if(sel&&sel.groupName&&sel.name)rebuiltOptionSelections[sel.groupName]=sel.name;});
-                var newItem={id:item.id,name:item.name,price:item.price,station:item.station||s.getDefaultStationName(),qty:s.tempQty,note:s.tempNote,drinkNote:String(s.tempDrinkNote||''),options:s.tempSels.slice(),posExtras:(s.tempPosExtras||[]).slice(),comboDrinkAddons:(s.tempDrinkAddons||[]).slice(),optionGroupSelections:sels,optionSelections:rebuiltOptionSelections,selectedOptions:Object.assign({},rebuiltOptionSelections),itemTotal:(b+e)*s.tempQty};
+                var newItem={id:item.id,name:item.name,shortName:String(item.shortName||'').trim(),printName:String(item.shortName||item.printName||'').trim(),price:item.price,station:item.station||s.getDefaultStationName(),qty:s.tempQty,note:s.tempNote,drinkNote:String(s.tempDrinkNote||''),options:s.tempSels.slice(),posExtras:(s.tempPosExtras||[]).slice(),comboDrinkAddons:(s.tempDrinkAddons||[]).slice(),optionGroupSelections:sels,optionSelections:rebuiltOptionSelections,selectedOptions:Object.assign({},rebuiltOptionSelections),itemTotal:(b+e)*s.tempQty};
                 if(s.editingCartIdx>=0&&s.editingCartIdx<s.cart.length){
                     // 修改已有品項
                     s.cart.splice(s.editingCartIdx,1,newItem);
@@ -4535,9 +4643,9 @@
                     type:s.posOrderType||'takeout',
                     timestamp:Date.now(),source:"pos",sourceLabel:"現場 POS",printSource:"POS","訂單來源":"POS",paymentMethod:"linepay"};
                 if(s.posOrderType==='dinein'&&s.posTableLabel)o.tableLabel=s.posTableLabel;
-                runTransaction(ref(db,"settings/orderCounter"),function(cur){return(cur||0)+1;})
-                    .then(function(result){
-                        o.orderNo=result.snapshot.val();
+                s.allocateNextOrderNo()
+                    .then(function(no){
+                        o.orderNo=no;
                                                 var orderDateKey=(o.pickupDate||((function(){var dd=new Date(o.timestamp||Date.now());return dd.getFullYear()+"-"+("0"+(dd.getMonth()+1)).slice(-2)+"-"+("0"+dd.getDate()).slice(-2);})()));
                         o.orderDateKey=orderDateKey;
                         var orderId=push(ref(db,"orders/"+orderDateKey)).key;
@@ -4628,8 +4736,19 @@
             clearCart:function(){this.cart=[];this.custName="";this.custPhone="";this.posPickupDate=this.todayStr;this.posPickupTime="";this.posOrderType="takeout";this.posTableLabel="";this.posOrderNote="";},
             openStorePayChoice:function(){
                 if(!this.cart.length||this.isSubmitting)return;
+                this.showCashCalculator=false;
+                this.cashCalcInput="";
                 this.showStorePayChoiceModal=true;
             },
+            cashCalcQuick:function(amount){this.cashCalcInput=String(Math.max(0,Number(amount)||0));},
+            cashCalcAppend:function(n){
+                var s=String(this.cashCalcInput||'');
+                var digit=String(n||'').replace(/\D/g,'').slice(0,1);
+                if(!digit)return;
+                this.cashCalcInput=(s==='0'?digit:(s+digit)).slice(0,6);
+            },
+            cashCalcBackspace:function(){this.cashCalcInput=String(this.cashCalcInput||'').slice(0,-1);},
+            cashCalcClear:function(){this.cashCalcInput="";},
             submitStorePayChoice:function(method){
                 this.showStorePayChoiceModal=false;
                 if(method!=='cash'&&method!=='store')return;
@@ -4707,9 +4826,9 @@
                     paymentStatus:isLinePay?"pending":(isCash?"paid":"unpaid"),
                     stationMap:s.settingsStationsLoaded?(s.settings.stations||[]):[]};
                 if(s.posOrderType==='dinein'&&s.posTableLabel)o.tableLabel=s.posTableLabel;
-                runTransaction(ref(db,"settings/orderCounter"),function(cur){return(cur||0)+1;})
-                    .then(function(result){
-                        o.orderNo=result.snapshot.val();
+                s.allocateNextOrderNo()
+                    .then(function(no){
+                        o.orderNo=no;
                                                 var orderDateKey=(o.pickupDate||((function(){var dd=new Date(o.timestamp||Date.now());return dd.getFullYear()+"-"+("0"+(dd.getMonth()+1)).slice(-2)+"-"+("0"+dd.getDate()).slice(-2);})()));
                         o.orderDateKey=orderDateKey;
                         var orderId=push(ref(db,"orders/"+orderDateKey)).key;

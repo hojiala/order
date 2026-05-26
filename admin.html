@@ -42,13 +42,19 @@
                 </div>
                 <div class="flex gap-3">
                     <button @click="dailyClose" class="bg-yellow-500 hover:bg-yellow-600 text-gray-900 font-bold px-4 py-2 rounded text-sm transition shadow-lg">
-                        🌙 打烊結單
+                        🌙 結單
                     </button>
                     <button @click="logout" class="bg-gray-700 hover:bg-red-600 text-white px-4 py-2 rounded text-sm transition">登出</button>
                 </div>
             </header>
 
             <main class="p-4 max-w-7xl mx-auto">
+                <div class="mb-4 flex items-center gap-2 bg-white rounded-xl shadow-sm border border-gray-100 px-3 py-2">
+                    <span class="text-gray-400">🔍</span>
+                    <input v-model="orderSearch" type="text" placeholder="搜尋姓名、電話、單號、品項..."
+                        class="flex-1 outline-none text-sm text-gray-700 placeholder-gray-400">
+                    <button v-if="orderSearch" @click="orderSearch=''" class="text-xs font-bold text-gray-400 hover:text-gray-700">清除</button>
+                </div>
                 <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                     
                     <div v-for="order in sortedOrders" :key="getOrderRenderKey(order)" 
@@ -339,6 +345,7 @@
                     linePayConfirmUrl: '',
                     integrationOrdersUnsub: null,
                     useIntegrationView: false,
+                    orderSearch: '',
                     toastMsg: '', toastTimer: null,
                     alertSound: new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg')
                 }
@@ -408,7 +415,7 @@
                             bySig[sig] = this.normalizeIncomingOrder(merged);
                         }
                     });
-                    return Object.keys(bySig).map((key) => bySig[key])
+                    const sorted = Object.keys(bySig).map((key) => bySig[key])
                         .filter(o => this.getDisplayStatus(o) !== 'archived')
                         .slice()
                         .sort((a, b) => {
@@ -420,6 +427,31 @@
                             if (bt !== at) return bt - at;
                             return String((b && b.id) || '').localeCompare(String((a && a.id) || ''));
                         });
+                    const query = String(this.orderSearch || '').trim().toLowerCase();
+                    if (!query) return sorted;
+                    const textOf = (order) => {
+                        const customer = order && order.customer;
+                        const customerName = typeof customer === 'string' ? customer : (customer && (customer.name || customer.displayName));
+                        const customerPhone = typeof customer === 'object' && customer ? customer.phone : '';
+                        const items = Array.isArray(order && order.items) ? order.items : [];
+                        const itemText = items.map((item) => [
+                            item && (item.name || item['品項'] || ''),
+                            item && (item.shortName || item.printName || ''),
+                            item && (item.note || item.drinkNote || '')
+                        ].join(' ')).join(' ');
+                        return [
+                            order && order.orderNo,
+                            order && order.serialNumber,
+                            order && order.id,
+                            customerName,
+                            customerPhone,
+                            order && order.phone,
+                            order && order.pickupTime,
+                            order && order.orderNote,
+                            itemText
+                        ].join(' ').toLowerCase();
+                    };
+                    return sorted.filter((order) => textOf(order).indexOf(query) !== -1);
                 },
                 activeOrdersCount() {
                     return this.orders.filter(o => {
@@ -2847,7 +2879,7 @@
                     } catch (err) {
                         this.toast('❌ 取消訂單失敗：' + err);
                     }
-                },                // ★ 打烊結單：只封存今天及過去的訂單，保留未來預約
+                },                // ★ 結單：只封存今天及過去的訂單，保留未來預約
                 async dailyClose() {
                     const today = new Date();
                     const todayStr = today.getFullYear()+'-'+('0'+(today.getMonth()+1)).slice(-2)+'-'+('0'+today.getDate()).slice(-2);
@@ -2858,7 +2890,7 @@
                         return pd > todayStr; // 預約明天以後
                     });
                     const futureCount = futureOrders.length;
-                    var msg = "確定要進行「打烊結單」嗎？\n這會將今日及過去的訂單封存至歷史紀錄。";
+                    var msg = "確定要進行「結單」嗎？\n這會將今日及過去的訂單封存至歷史紀錄。";
                     if (futureCount > 0) msg += "\n\n⚠️ 有 " + futureCount + " 筆未來預約訂單將保留在畫面上。";
                     if (!confirm(msg)) return;
                     const updates = {};
