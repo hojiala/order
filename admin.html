@@ -161,8 +161,8 @@
                                     <div v-if="getDisplayItemNote(item, order)" class="text-sm text-blue-600 font-bold mt-1 bg-blue-50 p-1 rounded">
                                         備註：{{ getDisplayItemNote(item, order) }}
                                     </div>
-                                    <div v-if="item.drinkNote" class="text-sm text-blue-600 font-bold mt-1 bg-blue-50 p-1 rounded">
-                                        🥤 飲料備註：{{ item.drinkNote }}
+                                    <div v-if="getDisplayDrinkNote(item, order)" class="text-sm text-blue-600 font-bold mt-1 bg-blue-50 p-1 rounded">
+                                        🥤 飲料備註：{{ getDisplayDrinkNote(item, order) }}
                                     </div>
                                 </li>
                             </ul>
@@ -932,12 +932,39 @@
                     const notes = [];
                     const own = stripAddonTokens(this.cleanDisplayNoteText(item.note || item['\u5099\u8a3b'] || ''));
                     if (own && !isComboMetaNote(own)) notes.push(own);
+                    return notes.join('\uFF0C');
+                },
+                getDisplayDrinkNote(item, order) {
+                    if (!item || this.isComboDrinkLineForDisplay(item)) return '';
+                    const candidates = [];
+                    const add = (val) => {
+                        const s = String(val || '').trim();
+                        if (s) candidates.push(s);
+                    };
+                    add(item.drinkNote || item['\u98f2\u6599\u5099\u8a3b']);
                     if (this.isComboMainLineForDisplay(item)) {
                         const sibling = this.findComboDrinkSiblingForDisplay(item, order);
-                        const sib = stripAddonTokens(this.cleanDisplayNoteText((sibling && (sibling.note || sibling['\u5099\u8a3b'])) || ''));
-                        if (sib && !isComboMetaNote(sib) && notes.indexOf(sib) === -1) notes.push(sib);
+                        if (sibling) {
+                            add(sibling.drinkNote || sibling['\u98f2\u6599\u5099\u8a3b']);
+                            add(sibling.note || sibling['\u5099\u8a3b']);
+                        }
                     }
-                    return notes.join('\uFF0C');
+                    if (!candidates.length) return '';
+                    const addonNames = new Set(['\u52a0\u7cd6', '\u52a0\u5976']);
+                    this.getDisplayComboDrinkAddons(item, order).forEach((da) => {
+                        if (da && da.name) addonNames.add(String(da.name).trim());
+                    });
+                    const cleaned = [];
+                    candidates.forEach((raw) => {
+                        this.cleanDisplayNoteText(raw).split(/[\uFF0C,\u3001,\/|]+/).forEach((part) => {
+                            let t = String(part || '').trim().replace(/^(?:\u98f2\u6599\u5099\u8a3b|drinkNote|note|\u5099\u8a3b|加料)\s*[:\uFF1A]\s*/i, '');
+                            if (!t) return;
+                            if (addonNames.has(t)) return;
+                            if (/^(?:\u5957\u9910\u98f2\u6599|\u642d\u914d\u98f2\u6599\u6298\s*5\s*\u5143|\u98f2\u6599\u52a0\u8cfc|\u88dc\u5dee\u50f9)/.test(t)) return;
+                            if (cleaned.indexOf(t) === -1) cleaned.push(t);
+                        });
+                    });
+                    return cleaned.join('\uFF0C');
                 },
                 formatOrderDateTime(order) {
                     const ts = (order && ((typeof order.timestamp === 'number' && order.timestamp) || (typeof order.createdAt === 'number' && order.createdAt))) || 0;

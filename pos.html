@@ -3928,7 +3928,7 @@
                     var keys=[];
                     var primary=getMergeKey(o);
                     if(primary)keys.push(String(primary));
-                    var fallbackKey=getFallbackDedupKey(o);
+                    var fallbackKey=primary?'':getFallbackDedupKey(o);
                     if(fallbackKey)keys.push(String(fallbackKey));
                     if(o.id)keys.push(String(o.id));
                     var uniq={};
@@ -3953,7 +3953,7 @@
                         var keys=[];
                         var primary=getMergeKey(o);
                         if(primary)keys.push(String(primary));
-                        var fallbackKey=getFallbackDedupKey(o);
+                        var fallbackKey=primary?'':getFallbackDedupKey(o);
                         if(fallbackKey)keys.push(String(fallbackKey));
                         if(o.id)keys.push(String(o.id));
                         var uniq={};
@@ -4004,6 +4004,10 @@
                     var total=Number(order.total||((order.totals&&order.totals.finalTotal)||0));
                     var phone=String((order.customer&&order.customer.phone)||order.phone||'').trim();
                     var pickup=String(order.pickupTime||order.pickupTimeLabel||'').trim();
+                    if(family==='pos'){
+                        if(sourcePath)return ['path',sourcePath].join('|');
+                        if(order.id)return ['id',family,String(order.id)].join('|');
+                    }
                     if(sourceOrderId&&day&&family)return ['oid',family,day,sourceOrderId].join('|');
                     // 電話單避免用「流水號+金額」合併，否則同日重置或同號不同單會互相覆蓋
                     if(family==='phone_ai'){
@@ -4559,6 +4563,11 @@
                 }
                 return null;
             },
+            getDrinkTicketNameForPrint:function(base){
+                var m=this.findDrinkMenuItem(base);
+                if(!m)return "";
+                return String(m.printName||m.shortName||"").trim();
+            },
             currentDrinkAddonOptions:function(gi,grp){
                 var base=this.selectedComboBase(gi,grp);
                 var m=this.findDrinkMenuItem(base);
@@ -4599,14 +4608,21 @@
                 this.tempOG[gi]=arr.slice();
             },
             confirmAdd:function(){
-                var s=this,item=s.activeItem,b=item.price,e=0,sels=[];
+                var s=this,item=s.activeItem,b=item.price,e=0,sels=[],comboDrinkPrintName="";
                 (item.optionGroups||[]).forEach(function(g,gi){
                     var si=s.tempOG[gi];if(si===undefined||si===null)si=g.defaultIdx||0;
                     var ch=(g.choices||[])[si];if(!ch)return;
+                    var selPrintName="";
                     if(g.pricing==="setPrice")b=ch.price;
                     else if(g.pricing==="addDelta")e+=ch.price;
-                    else if(g.pricing==="mealUpgrade")e+=Math.max(0,ch.price-(g.baseValue||0));
-                    sels.push({groupName:g.groupName,idx:si,name:ch.name,price:ch.price,pricing:g.pricing,baseValue:g.baseValue||0,mealUpgradeDisplayLabel:String(g.mealUpgradeDisplayLabel||'').trim(),mealUpgradeChargePrefix:String(g.mealUpgradeChargePrefix||'').trim()});
+                    else if(g.pricing==="mealUpgrade"){
+                        e+=Math.max(0,ch.price-(g.baseValue||0));
+                        selPrintName=s.getDrinkTicketNameForPrint(s.splitDrinkName(ch.name).base);
+                        if(selPrintName)comboDrinkPrintName=selPrintName;
+                    }
+                    var selObj={groupName:g.groupName,idx:si,name:ch.name,price:ch.price,pricing:g.pricing,baseValue:g.baseValue||0,mealUpgradeDisplayLabel:String(g.mealUpgradeDisplayLabel||'').trim(),mealUpgradeChargePrefix:String(g.mealUpgradeChargePrefix||'').trim()};
+                    if(selPrintName){selObj.drinkPrintName=selPrintName;selObj.comboDrinkPrintName=selPrintName;}
+                    sels.push(selObj);
                 });
                 e+=(s.tempSels||[]).reduce(function(x,o){return x+o.price;},0);
                 e+=(s.tempPosExtras||[]).reduce(function(x,o){return x+(o.price||0);},0);
@@ -4614,7 +4630,7 @@
                 // ★ 從 sels 重建 optionSelections/selectedOptions（dict 形式），避免舊值殘留導致 print_order.py 一次印出新舊兩個選項
                 var rebuiltOptionSelections={};
                 sels.forEach(function(sel){if(sel&&sel.groupName&&sel.name)rebuiltOptionSelections[sel.groupName]=sel.name;});
-                var newItem={id:item.id,name:item.name,shortName:String(item.shortName||'').trim(),printName:String(item.shortName||item.printName||'').trim(),price:item.price,station:item.station||s.getDefaultStationName(),qty:s.tempQty,note:s.tempNote,drinkNote:String(s.tempDrinkNote||''),options:s.tempSels.slice(),posExtras:(s.tempPosExtras||[]).slice(),comboDrinkAddons:(s.tempDrinkAddons||[]).slice(),optionGroupSelections:sels,optionSelections:rebuiltOptionSelections,selectedOptions:Object.assign({},rebuiltOptionSelections),itemTotal:(b+e)*s.tempQty};
+                var newItem={id:item.id,name:item.name,shortName:String(item.shortName||'').trim(),printName:String(item.shortName||item.printName||'').trim(),price:item.price,station:item.station||s.getDefaultStationName(),qty:s.tempQty,note:s.tempNote,drinkNote:String(s.tempDrinkNote||''),options:s.tempSels.slice(),posExtras:(s.tempPosExtras||[]).slice(),comboDrinkAddons:(s.tempDrinkAddons||[]).slice(),comboDrinkPrintName:comboDrinkPrintName,comboDrinkShortName:comboDrinkPrintName,optionGroupSelections:sels,optionSelections:rebuiltOptionSelections,selectedOptions:Object.assign({},rebuiltOptionSelections),itemTotal:(b+e)*s.tempQty};
                 if(s.editingCartIdx>=0&&s.editingCartIdx<s.cart.length){
                     // 修改已有品項
                     s.cart.splice(s.editingCartIdx,1,newItem);
