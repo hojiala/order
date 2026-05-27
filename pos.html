@@ -1437,11 +1437,28 @@
                 if(!Array.isArray(out.items)&&Array.isArray(out['\u8a02\u55ae']))out.items=out['\u8a02\u55ae'];
                 if(!Array.isArray(out.items)&&Array.isArray(out['訂單']))out.items=out['訂單'];
                 var rawOrderItems=[];
-                if(Array.isArray(out['\u8a02\u55ae']))rawOrderItems=out['\u8a02\u55ae'];
-                if(Array.isArray(out['訂單'])&&out['訂單'].length>rawOrderItems.length)rawOrderItems=out['訂單'];
-                if(out._integrationOriginal&&Array.isArray(out._integrationOriginal['\u8a02\u55ae'])&&out._integrationOriginal['\u8a02\u55ae'].length>rawOrderItems.length)rawOrderItems=out._integrationOriginal['\u8a02\u55ae'];
-                if(out._integrationOriginal&&Array.isArray(out._integrationOriginal['訂單'])&&out._integrationOriginal['訂單'].length>rawOrderItems.length)rawOrderItems=out._integrationOriginal['訂單'];
-                if(rawOrderItems.length&&(!Array.isArray(out.items)||rawOrderItems.length>out.items.length))out.items=rawOrderItems;
+                var chooseRawOrderItems=function(candidate){
+                    if(!Array.isArray(candidate)||!candidate.length)return;
+                    if(!rawOrderItems.length||candidate.length>rawOrderItems.length){
+                        rawOrderItems=candidate;
+                        return;
+                    }
+                    if(candidate.length===rawOrderItems.length&&this.scoreOrderItemsDetail(candidate)>this.scoreOrderItemsDetail(rawOrderItems)){
+                        rawOrderItems=candidate;
+                    }
+                }.bind(this);
+                chooseRawOrderItems(out['\u8a02\u55ae']);
+                chooseRawOrderItems(out['訂單']);
+                if(out._integrationOriginal){
+                    chooseRawOrderItems(out._integrationOriginal['\u8a02\u55ae']);
+                    chooseRawOrderItems(out._integrationOriginal['訂單']);
+                    chooseRawOrderItems(out._integrationOriginal.items);
+                }
+                if(rawOrderItems.length&&(
+                    !Array.isArray(out.items)
+                    ||rawOrderItems.length>out.items.length
+                    ||(rawOrderItems.length===out.items.length&&this.scoreOrderItemsDetail(rawOrderItems)>this.scoreOrderItemsDetail(out.items))
+                ))out.items=rawOrderItems;
                 if(Array.isArray(out.items)){
                     var self=this;
                     // 預先建立 comboGroupId -> 主餐名稱 的索引，讓套餐飲料 sibling 能依主餐分類決定折扣：
@@ -1713,6 +1730,31 @@
                             var hasSizeTemp=!!text(item.size||item['容量'])||!!text(item.temp||item['溫度']);
                             return hasSizeTemp&&/(?:茶|咖啡|奶|豆漿|可可|拿鐵|美式|飲料)/.test(name);
                         }
+                        function cleanDrinkNote(raw){
+                            var parts=[];var seen={};
+                            text(raw).split(/[\uFF0C,\u3001\/|]+/).forEach(function(part){
+                                var n=text(part).replace(/^(?:\u98f2\u6599\u5099\u8a3b|drinkNote|note|\u5099\u8a3b)\s*[:\uFF1A]\s*/i,'');
+                                if(!n)return;
+                                if(n==='加糖'||n==='加奶')return;
+                                if(/(?:\u5957\u9910\u98f2\u6599|\u642d\u914d\u98f2\u6599\u6298\s*5\s*\u5143|\u98f2\u6599\u52a0\u8cfc|\u88dc\u5dee\u50f9)/.test(n))return;
+                                if(/(?:\u98f2\u6599\u52a0\u8cfc|\u88dc\u5dee\u50f9)\s*\$?\s*\d+/.test(n))return;
+                                if(seen[n])return;
+                                seen[n]=true;
+                                parts.push(n);
+                            });
+                            return parts.join('\uFF0C');
+                        }
+                        function mergeDrinkNotes(){
+                            var out=[];var seen={};
+                            Array.prototype.slice.call(arguments).forEach(function(raw){
+                                cleanDrinkNote(raw).split(/[\uFF0C,\u3001\/|]+/).map(text).filter(Boolean).forEach(function(n){
+                                    if(seen[n])return;
+                                    seen[n]=true;
+                                    out.push(n);
+                                });
+                            });
+                            return out.join('\uFF0C');
+                        }
                         function ensureMainFromDrink(main,drink){
                             if(!main||!drink)return;
                             function collectDrinkAddons(src){
@@ -1764,7 +1806,8 @@
                                 drinkAddons.forEach(function(da){if(!seenAddons[da.name])mainAddons.push(da);});
                                 main.comboDrinkAddons=mainAddons;
                             }
-                            if(!text(main.drinkNote)&&text(drink.drinkNote||drink['飲料備註']))main.drinkNote=text(drink.drinkNote||drink['飲料備註']);
+                            var mergedDrinkNote=mergeDrinkNotes(main.drinkNote,main['飲料備註'],drink.drinkNote,drink['飲料備註'],drink.note,drink['備註']);
+                            if(mergedDrinkNote)main.drinkNote=mergedDrinkNote;
                         }
                         var mainByGroup={};
                         var mainBySig={};
@@ -3451,6 +3494,16 @@
                         displayOrder=Object.assign({},order,{items:this.cart.map(function(it){return Object.assign({},it);})});
                     }
                     var flat=this.orderItemsSummaryFlat(displayOrder);
+                    if(flat&&flat.indexOf('\u98f2\u6599\u5099\u8a3b')===-1&&order&&order._integrationOriginal){
+                        var original=order._integrationOriginal||{};
+                        var candidates=[original.items,original['\u8a02\u55ae'],original['訂單']];
+                        for(var oi=0;oi<candidates.length;oi++){
+                            if(!Array.isArray(candidates[oi])||!candidates[oi].length)continue;
+                            var alt=this.normalizeIncomingOrder(Object.assign({},order,{items:candidates[oi].map(function(it){return Object.assign({},it);})}));
+                            var altFlat=this.orderItemsSummaryFlat(alt);
+                            if(altFlat&&altFlat.indexOf('\u98f2\u6599\u5099\u8a3b')!==-1)return altFlat;
+                        }
+                    }
                     if(flat)return flat;
                 }catch(flatErr){console.warn('orderItemsSummaryFlat failed:',flatErr&&flatErr.message?flatErr.message:flatErr);}
                 try{
