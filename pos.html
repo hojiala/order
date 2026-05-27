@@ -991,6 +991,33 @@
                     return sum+line;
                 },0);
             },
+            scoreOrderItemNoteRichness:function(it){
+                if(!it||typeof it!=='object')return 0;
+                function text(v){return String(v===undefined||v===null?'':v).trim();}
+                function parts(v){
+                    return text(v)
+                        .replace(/^\s*(?:\u5099\u8a3b|note|\u98f2\u6599\u5099\u8a3b|drinkNote)\s*[:\uFF1A]\s*/i,'')
+                        .split(/[\uFF0C,\u3001\/|]+/)
+                        .map(text)
+                        .filter(Boolean);
+                }
+                function hasDrinkNoteSignal(v){
+                    return /\u5438\u7ba1|\u652a\u62cc\u68d2|\u652a\u62cc|\u676f\u84cb|\u5c01\u819c|\u98f2\u6599\u5099\u8a3b/.test(text(v));
+                }
+                var score=0;
+                [it.drinkNote,it['\u98f2\u6599\u5099\u8a3b']].forEach(function(raw){
+                    var p=parts(raw);
+                    if(p.length)score+=8+p.length;
+                });
+                [it.note,it['\u5099\u8a3b']].forEach(function(raw){
+                    var p=parts(raw);
+                    if(p.length)score+=1;
+                    p.forEach(function(part){
+                        if(hasDrinkNoteSignal(part))score+=6;
+                    });
+                });
+                return score;
+            },
             preferOrderTotalForDisplay:function(orderHint,currentTotal,incomingTotal,items){
                 var cur=Number(currentTotal);
                 var inc=Number(incomingTotal);
@@ -1014,6 +1041,7 @@
             },
             scoreOrderItemsDetail:function(items){
                 if(!Array.isArray(items))return 0;
+                var self=this;
                 return items.reduce(function(score,it){
                     if(!it||typeof it!=='object')return score;
                     var local=0;
@@ -1027,6 +1055,8 @@
                     if(it.size&&String(it.size).trim())local+=2;
                     if(it.temp&&String(it.temp).trim())local+=2;
                     if(it.note&&String(it.note).trim())local+=1;
+                    if(it['\u5099\u8a3b']&&String(it['\u5099\u8a3b']).trim())local+=1;
+                    local+=self.scoreOrderItemNoteRichness(it);
                     if(it.isComboDrink)local+=2;
                     return score+local;
                 },0);
@@ -3859,6 +3889,7 @@
                 var s=this;
                 try{
                 var map={};
+                var previousOnlineOrders=Array.isArray(s.onlineOrders)?s.onlineOrders.slice():[];
                 Object.keys(s.orderBuckets||{}).forEach(function(dateKey){
                     var bucket=s.orderBuckets[dateKey]||{};
                     Object.keys(bucket).forEach(function(id){
@@ -3957,23 +3988,7 @@
                     },0);
                 };
                 var scoreItemsDetail=function(items){
-                    if(!Array.isArray(items))return 0;
-                    return items.reduce(function(score,it){
-                        if(!it||typeof it!=='object')return score;
-                        var local=0;
-                        if(Array.isArray(it.optionGroupSelections)&&it.optionGroupSelections.length)local+=it.optionGroupSelections.length*4;
-                        if(Array.isArray(it.options)&&it.options.length)local+=it.options.length*3;
-                        if(Array.isArray(it.addons)&&it.addons.length)local+=it.addons.length*3;
-                        if(Array.isArray(it['加料'])&&it['加料'].length)local+=it['加料'].length*3;
-                        if(Array.isArray(it.posExtras)&&it.posExtras.length)local+=it.posExtras.length*2;
-                        if(Array.isArray(it.comboDrinkAddons)&&it.comboDrinkAddons.length)local+=it.comboDrinkAddons.length*3;
-                        if(it.mealDrink&&String(it.mealDrink).trim())local+=6;
-                        if(it.size&&String(it.size).trim())local+=2;
-                        if(it.temp&&String(it.temp).trim())local+=2;
-                        if(it.note&&String(it.note).trim())local+=1;
-                        if(it.isComboDrink)local+=2;
-                        return score+local;
-                    },0);
+                    return s.scoreOrderItemsDetail(items);
                 };
                 var pickRicherItems=function(a,b){
                     var aa=Array.isArray(a)?a:[];
@@ -4154,6 +4169,21 @@
                     });
                     return Object.keys(bySig).map(function(k){return bySig[k];});
                 };
+                var previousByKey={};
+                previousOnlineOrders.forEach(function(o){
+                    if(!o||!o.id)return;
+                    [buildDisplaySignature(o),getMergeKey(o),String(o.id||'')].forEach(function(k){
+                        if(k&&!previousByKey[k])previousByKey[k]=o;
+                    });
+                });
+                var findPreviousOrder=function(order){
+                    if(!order)return null;
+                    var keys=[buildDisplaySignature(order),getMergeKey(order),String(order.id||'')];
+                    for(var i=0;i<keys.length;i++){
+                        if(keys[i]&&previousByKey[keys[i]])return previousByKey[keys[i]];
+                    }
+                    return null;
+                };
                 var integrationList=Array.isArray(s.integrationOrdersCache)?s.integrationOrdersCache:[];
                 var phoneList=Array.isArray(s.phoneOrdersCache)?s.phoneOrdersCache:[];
                 var mergedMap={};
@@ -4182,7 +4212,20 @@
                         upsertMerged(mergedMap,o);
                     });
                 }
-                var mergedOrders=s.normalizeIncomingOrders(collapseByDisplaySignature(collapseMergedValues(Object.values(mergedMap)))).map(function(o){return s.applyStatusOverrideToOrder(o);});
+                var mergedOrders=s.normalizeIncomingOrders(collapseByDisplaySignature(collapseMergedValues(Object.values(mergedMap)))).map(function(o){
+                    var normalized=s.normalizeIncomingOrder(o);
+                    var previous=findPreviousOrder(normalized);
+                    if(previous&&Array.isArray(previous.items)&&previous.items.length){
+                        var bestItems=pickRicherItems(normalized.items,previous.items);
+                        if(bestItems===previous.items){
+                            normalized=Object.assign({},normalized,{
+                                items:previous.items.map(function(it){return Object.assign({},it);}),
+                                total:s.preferOrderTotalForDisplay(normalized,Number(normalized.total||0),Number(previous.total||0),previous.items)
+                            });
+                        }
+                    }
+                    return s.applyStatusOverrideToOrder(normalized);
+                });
                 s.onlineOrders=mergedOrders.filter(function(o){return !o||o.status!=='archived';}).sort(function(a,b){
                     var w={new:1,making:2,done:3,cancelled:4};
                     if(w[a.status]!==w[b.status])return w[a.status]-w[b.status];
