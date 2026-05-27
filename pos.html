@@ -3116,14 +3116,47 @@
                 function isDrink(it){
                     if(!it||typeof it!=='object')return false;
                     if(isMain(it))return false;
-                    if(it.isComboDrink)return true;
                     var meta=[it.note,it['\u5099\u8a3b'],it.comboDrinkLabel,it.comboDrinkChargeText,it.comboDrinkText,it.mealDrink].map(text).join(' ');
                     var hasSizeTemp=!!text(it.size||it['\u5bb9\u91cf'])||!!text(it.temp||it['\u6eab\u5ea6'])||hasSelectedSizeTemp(it);
+                    if(it.isComboDrink)return /(?:套餐飲料|搭配飲料折\s*5\s*元|飲料加購|補差價)/.test(meta)||!!text(it.comboGroupId)||(hasSizeTemp&&looksLikeDrinkName(it.name||it['\u54c1\u9805']));
                     return /(?:套餐飲料|搭配飲料折\s*5\s*元|飲料加購|補差價)/.test(meta)||(hasSizeTemp&&looksLikeDrinkName(it.name||it['\u54c1\u9805']));
                 }
                 function amountFrom(raw){
                     var m=text(raw).match(/(?:飲料加購|補差價|\+)\s*\$?\s*([\d０-９]+)/);
                     return m&&m[1]?Math.round(num(m[1].replace(/[０-９]/g,function(ch){return '０１２３４５６７８９'.indexOf(ch);} ))):0;
+                }
+                function hasComboDrinkContext(it){
+                    if(!it||typeof it!=='object')return false;
+                    var meta=[it.note,it['\u5099\u8a3b'],it.comboDrinkLabel,it.comboDrinkChargeText,it.comboDrinkText,it.mealDrink].map(text).join(' ');
+                    if(/(?:套餐飲料|搭配飲料折\s*5\s*元|飲料加購|補差價)/.test(meta))return true;
+                    if(text(it.comboGroupId))return true;
+                    var sels=Array.isArray(it.optionGroupSelections)?it.optionGroupSelections:[];
+                    return sels.some(function(sel){
+                        var g=text(sel&&sel.groupName).toLowerCase();
+                        return String(sel&&sel.pricing||'')==='mealUpgrade'||g.indexOf('drink')!==-1||g.indexOf('飲料')!==-1||g.indexOf('套餐飲料')!==-1;
+                    });
+                }
+                function isEggSelectionName(name){
+                    return /(?:不加蛋|半熟蛋|太陽蛋|全熟蛋|散蛋|炒蛋|荷包蛋|熟蛋|加蛋)/.test(text(name));
+                }
+                function isComboLikeItem(it){
+                    var name=cleanName(it&&(it.name||it['\u54c1\u9805']));
+                    return !!(it&&(it.isCombo||it.mealDrink||it.comboDrinkText||name.indexOf('套餐')!==-1||name.indexOf('拼盤')!==-1));
+                }
+                function selectionExtraPrice(sel){
+                    var p=num(sel&&sel.price),b=num(sel&&sel.baseValue);
+                    if(p>b)return p-b;
+                    return p>0?p:0;
+                }
+                function shouldDisplaySelectionAsAddon(sel){
+                    var g=text(sel&&sel.groupName).toLowerCase();
+                    var n=text(sel&&(sel.name||sel.value||sel.label));
+                    if(!n)return false;
+                    if(String(sel&&sel.pricing||'')==='mealUpgrade')return false;
+                    if(g.indexOf('drink')!==-1||g.indexOf('飲料')!==-1||g.indexOf('套餐飲料')!==-1)return false;
+                    if(g.indexOf('size')!==-1||g.indexOf('容量')!==-1||g.indexOf('temp')!==-1||g.indexOf('溫度')!==-1)return false;
+                    if(g.indexOf('蛋')!==-1||isEggSelectionName(n))return false;
+                    return true;
                 }
                 function summaryAddonNames(it){
                     var out=[];
@@ -3134,6 +3167,12 @@
                             n=n.replace(/^\+/,'').replace(/\s*\$?\s*\d+\s*$/,'').trim();
                             if(n&&out.indexOf(n)===-1)out.push(n);
                         });
+                    });
+                    var ogSels=Array.isArray(it&&it.optionGroupSelections)?it.optionGroupSelections:[];
+                    ogSels.forEach(function(sel){
+                        if(!shouldDisplaySelectionAsAddon(sel))return;
+                        var n=text(sel&&(sel.name||sel.value||sel.label)).replace(/^\+/,'').replace(/\s*\$?\s*\d+\s*$/,'').trim();
+                        if(n&&out.indexOf(n)===-1)out.push(n);
                     });
                     [it&&it.note,it&&it['\u5099\u8a3b'],it&&it.drinkNote].forEach(function(raw){
                         text(raw).split(/[\uFF0C,\u3001\/\s]+/).map(text).forEach(function(n){
@@ -3215,6 +3254,7 @@
                     });
                     var meta=[sib&&sib.note,sib&&sib['\u5099\u8a3b'],sib&&sib.comboDrinkLabel,sib&&sib.comboDrinkChargeText].map(text).join(' ');
                     if(/(?:套餐飲料|搭配飲料折\s*5\s*元|飲料加購|補差價)/.test(meta))comboLike=true;
+                    if(!main&&!hasComboDrinkContext(sib))comboLike=false;
                     var extractCupFromText=function(s){
                         s=text(s);
                         var m=s.match(/[（(]\s*(大杯|中杯|小杯)\s*[)）]/);
@@ -3328,6 +3368,15 @@
                     collect(it&&it.addons,'name','price');
                     collect(it&&it['\u52a0\u6599'],'\u540d\u7a31','\u52a0\u50f9');
                     collect(it&&it.posExtras,'name','price');
+                    var ogSels=Array.isArray(it&&it.optionGroupSelections)?it.optionGroupSelections:[];
+                    ogSels.forEach(function(sel){
+                        if(!shouldDisplaySelectionAsAddon(sel))return;
+                        var name=text(sel&&(sel.name||sel.value||sel.label)).replace(/^\+/,'').replace(/\s*\$?\s*\d+\s*$/,'').trim();
+                        if(!name||seen[name])return;
+                        seen[name]=true;
+                        var p=selectionExtraPrice(sel);
+                        parts.push('+'+name+(p>0?' $'+Math.round(p):''));
+                    });
                     return parts.join(' ');
                 }
                 function notePartsOf(raw){
@@ -3368,6 +3417,10 @@
                             else add(opt.name||opt['\u540d\u7a31']||opt.label||opt.value);
                         });
                     });
+                    var ogSels=Array.isArray(it&&it.optionGroupSelections)?it.optionGroupSelections:[];
+                    ogSels.forEach(function(sel){
+                        if(shouldDisplaySelectionAsAddon(sel))add(sel.name||sel.value||sel.label);
+                    });
                     return hidden;
                 }
                 function mainNoteOf(it){
@@ -3397,6 +3450,7 @@
                 }
                 function eggSuffixOf(it){
                     var eggFound='';
+                    var comboLike=isComboLikeItem(it);
                     var ogSels=Array.isArray(it&&it.optionGroupSelections)?it.optionGroupSelections:[];
                     for(var k=0;k<ogSels.length&&!eggFound;k++){
                         var selName=text(ogSels[k]&&ogSels[k].name);
@@ -3404,7 +3458,7 @@
                         if(/\u4e0d\u52a0\u86cb/.test(selName))eggFound='__skip__';
                         else{
                             var m=selName.match(/(?:\u52a0)?(\u534a\u719f\u86cb|\u592a\u967d\u86cb|\u5168\u719f\u86cb|\u6563\u86cb|\u7092\u86cb|\u8377\u5305\u86cb|\u719f\u86cb)/);
-                            if(m)eggFound=m[1];
+                            if(m&&(comboLike||selectionExtraPrice(ogSels[k])>0||/^加/.test(selName)))eggFound=m[1];
                         }
                     }
                     if(!eggFound){
@@ -3463,6 +3517,7 @@
                     //   \u4f86\u6e90\u512a\u5148\u7d1a\uff1aoptionGroupSelections > note (\u7dda\u4e0a/\u684c\u908a\u7528\u524d\u8005\uff0c\u96fb\u8a71 POS \u7528\u5f8c\u8005)
                     var noteSuffix='';
                     var eggFound='';
+                    var comboLikeSingle=isComboLikeItem(it);
                     var ogSels=Array.isArray(it&&it.optionGroupSelections)?it.optionGroupSelections:[];
                     for(var k=0;k<ogSels.length&&!eggFound;k++){
                         var selName=text(ogSels[k]&&ogSels[k].name);
@@ -3470,7 +3525,7 @@
                         if(/\u4e0d\u52a0\u86cb/.test(selName))eggFound='__skip__';
                         else{
                             var m2=selName.match(/(?:\u52a0)?(\u534a\u719f\u86cb|\u592a\u967d\u86cb|\u5168\u719f\u86cb|\u6563\u86cb|\u7092\u86cb|\u8377\u5305\u86cb|\u719f\u86cb)/);
-                            if(m2)eggFound=m2[1];
+                            if(m2&&(comboLikeSingle||selectionExtraPrice(ogSels[k])>0||/^加/.test(selName)))eggFound=m2[1];
                         }
                     }
                     if(!eggFound){
