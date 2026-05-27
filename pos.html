@@ -327,7 +327,7 @@
             <div v-if="item.options && item.options.length" class="text-xs text-gray-400 mt-0.5">{{ item.options.map(function(o){return "+"+o.name+" $"+(o.price||0);}).join(" ") }}</div>
             <div v-if="item.posExtras && item.posExtras.length" class="text-xs text-purple-500 mt-0.5">🔧 {{ item.posExtras.map(function(e){return e.name+" $"+(e.price||0);}).join(', ') }}</div>
             <div v-if="getCartVisibleNote(item,idx)" class="text-xs text-blue-500 mt-0.5">&#128221; {{ getCartVisibleNote(item,idx) }}</div>
-            <div v-if="item.drinkNote" class="text-xs text-blue-500 mt-0.5">&#129371; {{ item.drinkNote }}</div>
+            <div v-if="getCartVisibleDrinkNote(item,idx)" class="text-xs text-blue-500 mt-0.5">&#129371; {{ getCartVisibleDrinkNote(item,idx) }}</div>
             <p class="text-orange-500 font-black text-sm mt-1">${{ item.itemTotal }}</p>
           </div>
           <div class="flex items-center gap-1 flex-shrink-0 mt-0.5">
@@ -2511,7 +2511,18 @@
                     var combo=[size,temp,drink].filter(Boolean).join('/');
                     if(chargeText)combo+=(combo?'/':'')+chargeText;
                     var drinkAddons=mergeDrinkAddons(main,sib);
-                    var drinkNote=text(main.drinkNote||main['飲料備註']||sib.drinkNote||sib['飲料備註']);
+                    var cleanDrinkNote=function(raw){
+                        var parts=[];
+                        text(raw).split(/[\uFF0C,\u3001\/|]+/).forEach(function(part){
+                            var n=text(part).replace(/^(?:飲料備註|drinkNote|note|備註)\s*[:\uFF1A]\s*/i,'');
+                            if(!n)return;
+                            if(n==='加糖'||n==='加奶')return;
+                            if(comboDrinkRe.test(n)||/(?:飲料加購|補差價)\s*\$?\s*\d+/.test(n))return;
+                            if(parts.indexOf(n)===-1)parts.push(n);
+                        });
+                        return parts.join('，');
+                    };
+                    var drinkNote=[main.drinkNote,main['飲料備註'],sib.drinkNote,sib['飲料備註'],sib.note,sib['備註']].map(cleanDrinkNote).filter(Boolean).filter(function(v,i,a){return a.indexOf(v)===i;}).join('，');
                     cart[idx]=Object.assign({},main,{
                         optionGroupSelections:keep,
                         comboGroupId:text(main.comboGroupId)||text(sib.comboGroupId),
@@ -2823,6 +2834,44 @@
                     return true;
                 });
                 return parts.join('\uFF0C');
+            },
+            getCartVisibleDrinkNote:function(item,idx){
+                function text(v){return String(v===undefined||v===null?'':v).trim();}
+                var candidates=[];
+                var add=function(v){var s=text(v);if(s)candidates.push(s);};
+                add(item&&item.drinkNote);
+                add(item&&item['\u98f2\u6599\u5099\u8a3b']);
+                var sibling=this.findCartComboDrinkSibling(item,idx);
+                if(sibling){
+                    add(sibling.drinkNote);
+                    add(sibling['\u98f2\u6599\u5099\u8a3b']);
+                    add(sibling.note);
+                    add(sibling['\u5099\u8a3b']);
+                }
+                var drinkNoteRe=/\u5438\u7ba1|\u652a\u62cc\u68d2|\u652a\u62cc|\u676f\u84cb|\u5c01\u819c|\u98f2\u6599\u5099\u8a3b/;
+                [item&&item.note,item&&item['\u5099\u8a3b']].forEach(function(raw){
+                    text(raw).split(/[\uFF0C,\u3001\/|]+/).forEach(function(part){
+                        var n=text(part);
+                        if(n&&drinkNoteRe.test(n))candidates.push(n);
+                    });
+                });
+                if(!candidates.length)return '';
+                var addonNames={};
+                this.getCartDisplayComboDrinkAddons(item,idx).forEach(function(addon){
+                    var n=text(addon&&addon.name);
+                    if(n)addonNames[n]=true;
+                });
+                var cleaned=[];
+                candidates.forEach(function(raw){
+                    text(raw).split(/[\uFF0C,\u3001\/|]+/).forEach(function(part){
+                        var n=text(part).replace(/^(?:\u98f2\u6599\u5099\u8a3b|drinkNote|note|\u5099\u8a3b|加料)\s*[:\uFF1A]\s*/i,'');
+                        if(!n)return;
+                        if(n==='\u52a0\u7cd6'||n==='\u52a0\u5976'||addonNames[n])return;
+                        if(/^(?:\u5957\u9910\u98f2\u6599|\u642d\u914d\u98f2\u6599\u6298\s*5\s*\u5143|\u98f2\u6599\u52a0\u8cfc|\u88dc\u5dee\u50f9)/.test(n))return;
+                        if(cleaned.indexOf(n)===-1)cleaned.push(n);
+                    });
+                });
+                return cleaned.join('\uFF0C');
             },
             getCartItemDisplayName:function(item,idx){
                 if(!item||typeof item!=='object')return '';
@@ -3208,6 +3257,53 @@
                     collect(it&&it.posExtras,'name','price');
                     return parts.join(' ');
                 }
+                function notePartsOf(raw){
+                    var cleaned=text(raw).replace(/^\s*(?:\u5099\u8a3b|note|\u98f2\u6599\u5099\u8a3b|drinkNote)\s*[:\uFF1A]\s*/i,'');
+                    if(!cleaned)return [];
+                    return cleaned.split(/[\uFF0C,\u3001\/|]+/).map(text).filter(Boolean);
+                }
+                function isDrinkNotePart(part){
+                    return /\u5438\u7ba1|\u652a\u62cc\u68d2|\u652a\u62cc|\u676f\u84cb|\u5c01\u819c|\u98f2\u6599\u5099\u8a3b/.test(text(part));
+                }
+                function isHiddenNotePart(part){
+                    var n=text(part);
+                    if(!n)return true;
+                    if(n==='加糖'||n==='加奶')return true;
+                    if(/^(?:套餐飲料|搭配飲料折\s*5\s*元|飲料加購|補差價)/.test(n))return true;
+                    if(/^(?:加|免|去)?(?:半熟蛋|太陽蛋|全熟蛋|散蛋|炒蛋|荷包蛋|熟蛋|蛋)$/.test(n))return true;
+                    return false;
+                }
+                function uniqueJoin(parts){
+                    var out=[];
+                    parts.forEach(function(part){
+                        var n=text(part);
+                        if(n&&out.indexOf(n)===-1)out.push(n);
+                    });
+                    return out.join('，');
+                }
+                function mainNoteOf(it){
+                    var parts=[];
+                    [it&&it.note,it&&it['\u5099\u8a3b']].forEach(function(raw){
+                        notePartsOf(raw).forEach(function(part){
+                            if(!isHiddenNotePart(part)&&!isDrinkNotePart(part))parts.push(part);
+                        });
+                    });
+                    return uniqueJoin(parts);
+                }
+                function drinkNoteOf(main,sib){
+                    var parts=[];
+                    [main&&main.drinkNote,main&&main['\u98f2\u6599\u5099\u8a3b'],sib&&sib.drinkNote,sib&&sib['\u98f2\u6599\u5099\u8a3b']].forEach(function(raw){
+                        notePartsOf(raw).forEach(function(part){
+                            if(!isHiddenNotePart(part))parts.push(part);
+                        });
+                    });
+                    [main&&main.note,main&&main['\u5099\u8a3b'],sib&&sib.note,sib&&sib['\u5099\u8a3b']].forEach(function(raw){
+                        notePartsOf(raw).forEach(function(part){
+                            if(!isHiddenNotePart(part)&&isDrinkNotePart(part))parts.push(part);
+                        });
+                    });
+                    return uniqueJoin(parts);
+                }
                 function eggSuffixOf(it){
                     var eggFound='';
                     var ogSels=Array.isArray(it&&it.optionGroupSelections)?it.optionGroupSelections:[];
@@ -3236,15 +3332,18 @@
                         var mainName=cleanName(it.name||it['\u54c1\u9805']);
                         var mainAddons=addonsOf(it);
                         var mainEgg=eggSuffixOf(it);
-                        if(mainName)lines.push(qtyOf(it)+'x'+mainName+mainEgg+(mainAddons?' '+mainAddons:''));
                         var sibIdx=findSibling(idx);
                         var sib=sibIdx>=0?items[sibIdx]:null;
+                        var mainNote=mainNoteOf(it);
+                        if(mainName)lines.push(qtyOf(it)+'x'+mainName+mainEgg+(mainAddons?' '+mainAddons:'')+(mainNote?'（備註:'+mainNote+'）':''));
                         var drinkLine=mealDrinkText(it,sib);
                         if(drinkLine){
                             var drinkAddText=sib?summaryAddonNames(sib):'';
                             var mainDrinkAdds=summaryAddonNames({comboDrinkAddons:it&&it.comboDrinkAddons,'\u98f2\u6599\u52a0\u6599':it&&it['\u98f2\u6599\u52a0\u6599'],note:it&&it.note,'\u5099\u8a3b':it&&it['\u5099\u8a3b'],drinkNote:it&&it.drinkNote});
                             if(mainDrinkAdds)drinkAddText=mergeAddonTexts(drinkAddText,mainDrinkAdds);
                             if(drinkAddText)drinkLine+='/'+drinkAddText;
+                            var drinkNote=drinkNoteOf(it,sib);
+                            if(drinkNote)drinkLine+='/飲料備註:'+drinkNote;
                             var dq=sib?qtyOf(sib):qtyOf(it);
                             lines.push(dq+'x'+drinkLine);
                         }
@@ -3257,7 +3356,8 @@
                             var standaloneMeta=[it&&it.note,it&&it['\u5099\u8a3b'],it&&it.comboDrinkLabel,it&&it.comboDrinkChargeText,it&&it.comboDrinkText,it&&it.mealDrink].map(text).join(' ');
                             var standaloneComboLike=(!!(it&&it.isComboDrink)||!!text(it&&it.comboGroupId)||!!(it&&it.isCombo))&&/(?:套餐飲料|搭配飲料折\s*5\s*元|飲料加購|補差價)/.test(standaloneMeta);
                             var addText=summaryAddonNames(it);
-                            lines.push(qtyOf(it)+'x'+drinkLine+(addText?'/'+addText:''));
+                            var standaloneDrinkNote=drinkNoteOf(null,it);
+                            lines.push(qtyOf(it)+'x'+drinkLine+(addText?'/'+addText:'')+(standaloneDrinkNote?'/飲料備註:'+standaloneDrinkNote:''));
                         }
                         else{
                             var dline=[text(it.size||it['\u5bb9\u91cf']),text(it.temp||it['\u6eab\u5ea6']),stripCup(it.name||it['\u54c1\u9805'])].filter(Boolean).join('/');
@@ -5021,6 +5121,7 @@
                             if(Array.isArray(it['加料']))local+=it['加料'].length*3;
                             if(Array.isArray(it.posExtras))local+=it.posExtras.length*4;
                             if(Array.isArray(it.comboDrinkAddons))local+=it.comboDrinkAddons.length*3;
+                            if(it.drinkNote||it['\u98f2\u6599\u5099\u8a3b'])local+=3;
                             return score+local;
                         },0);
                     }
