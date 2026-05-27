@@ -772,6 +772,98 @@
                         baseValue: Number(grp.baseValue || 0)
                     };
                 },
+                getDisplayMenuPriceValue(menuItem) {
+                    if (!menuItem || typeof menuItem !== 'object') return 0;
+                    const candidates = [menuItem.price, menuItem.unitPrice, menuItem.basePrice, menuItem.originalPrice, menuItem['\u552e\u50f9'], menuItem['\u55ae\u50f9'], menuItem['\u539f\u50f9']];
+                    for (let i = 0; i < candidates.length; i++) {
+                        const price = Number(candidates[i]);
+                        if (Number.isFinite(price) && price > 0) return price;
+                    }
+                    return 0;
+                },
+                findDrinkMenuItemForDisplayName(name) {
+                    const normalizedName = this.normalizeDisplayDrinkName(name, {});
+                    const target = this.normalizeDisplayNameForMatch(normalizedName || name);
+                    if (!target) return null;
+                    const menu = this.flattenMenuItemsForDisplay(Array.isArray(this.menuItems) ? this.menuItems : []);
+                    const namesOf = (m) => [m && m.name, m && m['\u54c1\u9805'], m && m.itemName, m && m.title, m && m.label].map((v) => this.normalizeDisplayNameForMatch(v)).filter(Boolean);
+                    for (let i = 0; i < menu.length; i++) {
+                        if (this.getDisplayMenuPriceValue(menu[i]) > 0 && namesOf(menu[i]).some((candidate) => candidate === target)) return menu[i];
+                    }
+                    if (target.length >= 2) {
+                        for (let i = 0; i < menu.length; i++) {
+                            if (this.getDisplayMenuPriceValue(menu[i]) > 0 && namesOf(menu[i]).some((candidate) => candidate.indexOf(target) !== -1 || target.indexOf(candidate) !== -1)) return menu[i];
+                        }
+                    }
+                    return null;
+                },
+                getMealUpgradeDrinkFullPriceForDisplay(item, order) {
+                    const candidates = [];
+                    const addCandidate = (raw) => {
+                        const source = String(raw || '').trim();
+                        if (!source) return;
+                        const state = {};
+                        let drinkName = '';
+                        source.split(/[\/\uFF0F\u3001,，]+/).forEach((part) => {
+                            const text = String(part || '').trim();
+                            if (!text) return;
+                            if (/^(?:\u5927\u676f|\u4e2d\u676f|\u5c0f\u676f)$/.test(text)) {
+                                if (!state.size) state.size = text;
+                                return;
+                            }
+                            if (/^(?:\u53bb\u51b0|\u5c11\u51b0|\u5fae\u51b0|\u51b0|\u6eab|\u71b1|\u5e38\u6eab|\u5168\u51b0)$/.test(text) || /\u51b0|\u71b1|\u6eab/.test(text)) {
+                                if (!state.temp) state.temp = text;
+                                return;
+                            }
+                            if (/(?:\u88dc\u5dee\u50f9|\u98f2\u6599\u52a0\u8cfc|\u5957\u9910\u98f2\u6599|\u642d\u914d\u98f2\u6599|\u88dc|\+)\s*\$?\s*\d+/.test(text)) return;
+                            if (!drinkName) drinkName = this.normalizeDisplayDrinkName(text, state);
+                        });
+                        if (!drinkName) drinkName = this.normalizeDisplayDrinkName(source, state);
+                        if (drinkName && candidates.indexOf(drinkName) === -1) candidates.push(drinkName);
+                    };
+                    const collectSelection = (owner) => {
+                        const sels = Array.isArray(owner && owner.optionGroupSelections) ? owner.optionGroupSelections : [];
+                        sels.forEach((sel) => {
+                            const pricing = String(sel && sel.pricing || '');
+                            const group = String(sel && sel.groupName || '').toLowerCase();
+                            if (pricing === 'mealUpgrade' || group.indexOf('drink') !== -1 || group.indexOf('\u98f2\u6599') !== -1 || group.indexOf('\u5957\u9910\u98f2\u6599') !== -1) {
+                                addCandidate(sel && (sel.name || sel.value || sel.label));
+                            }
+                        });
+                    };
+                    collectSelection(item);
+                    [item && item.mealDrink, item && item.comboDrinkText].forEach(addCandidate);
+                    const sibling = this.findComboDrinkSiblingForDisplay(item, order);
+                    if (sibling) {
+                        addCandidate(sibling.name || sibling['\u54c1\u9805']);
+                        collectSelection(sibling);
+                        [sibling.mealDrink, sibling.comboDrinkText].forEach(addCandidate);
+                    }
+                    for (let i = 0; i < candidates.length; i++) {
+                        const menuItem = this.findDrinkMenuItemForDisplayName(candidates[i]);
+                        const price = this.getDisplayMenuPriceValue(menuItem);
+                        if (price > 0) return price;
+                    }
+                    const fullCandidates = [item && item.comboDrinkFullPrice, sibling && sibling.comboDrinkFullPrice];
+                    for (let i = 0; i < fullCandidates.length; i++) {
+                        const price = Number(fullCandidates[i]);
+                        if (Number.isFinite(price) && price > 0) return price;
+                    }
+                    const priceFromSelections = [];
+                    const collectSelectionPrice = (owner) => {
+                        const sels = Array.isArray(owner && owner.optionGroupSelections) ? owner.optionGroupSelections : [];
+                        sels.forEach((sel) => {
+                            if (String(sel && sel.pricing || '') === 'mealUpgrade') priceFromSelections.push(sel && sel.price);
+                        });
+                    };
+                    collectSelectionPrice(item);
+                    collectSelectionPrice(sibling);
+                    for (let i = 0; i < priceFromSelections.length; i++) {
+                        const price = Number(priceFromSelections[i]);
+                        if (Number.isFinite(price) && price > 0) return price;
+                    }
+                    return 0;
+                },
                 getEggChoicesFromGroup(group) {
                     if (!group || typeof group !== 'object') return [];
                     return (Array.isArray(group.choices) ? group.choices : (Array.isArray(group.options) ? group.options : (Array.isArray(group.values) ? group.values : [])));
@@ -1260,6 +1352,25 @@
                         if (sibLine > 0 && sibQty > 0) setReliable(sibLine / sibQty);
                     }
                     let upgrade = reliableUpgrade > 0 ? reliableUpgrade : fallbackUpgrade;
+                    const menuMeta = this.getMealUpgradeMetaFromMenu(item && (item.name || item['\u54c1\u9805'])) || {};
+                    let mealCredit = Number(menuMeta.baseValue || 0);
+                    if (!Number.isFinite(mealCredit) || mealCredit <= 0) {
+                        const owners = [item, sibling];
+                        owners.forEach((owner) => {
+                            const ownerSels = Array.isArray(owner && owner.optionGroupSelections) ? owner.optionGroupSelections : [];
+                            ownerSels.forEach((sel) => {
+                                if (String(sel && sel.pricing || '') !== 'mealUpgrade') return;
+                                const base = Number(sel && sel.baseValue);
+                                if (Number.isFinite(base) && base > 0) mealCredit = Math.max(mealCredit, base);
+                            });
+                        });
+                    }
+                    if (upgrade > 0 && mealCredit > 0) {
+                        const drinkFullPrice = this.getMealUpgradeDrinkFullPriceForDisplay(item, order);
+                        if (drinkFullPrice > mealCredit && Math.round(upgrade) >= Math.round(drinkFullPrice)) {
+                            upgrade = Math.max(0, drinkFullPrice - mealCredit);
+                        }
+                    }
                     if (upgrade > 0 && this.isDiscount5MealForDisplay(item, order)) {
                         const base = this.getDisplayBaseUnit(item);
                         const line = this.getDisplayLineTotal(item);
@@ -1376,6 +1487,10 @@
                         const parsed = explicit.match(/(?:\u88dc\u5dee\u50f9|\u98f2\u6599\u52a0\u8cfc)\s*\$?\s*(\d+)/);
                         if (parsed && Number(parsed[1]) !== Number(amount)) return '\u98f2\u6599\u52a0\u8cfc$' + amount;
                         return explicit.replace(/\u88dc\u5dee\u50f9/g, '\u98f2\u6599\u52a0\u8cfc');
+                    }
+                    if (explicit && Number(amount) > 0) {
+                        const parsed = explicit.match(/(\u88dc\u5dee\u50f9|\u98f2\u6599\u52a0\u8cfc)\s*\$?\s*(\d+)/);
+                        if (parsed && Number(parsed[2]) !== Number(amount)) return parsed[1] + '$' + amount;
                     }
                     if (explicit) return explicit;
                     return (this.isDiscount5MealForDisplay(item, order) ? '\u98f2\u6599\u52a0\u8cfc$' : '\u88dc\u5dee\u50f9$') + amount;
