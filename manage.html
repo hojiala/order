@@ -1384,11 +1384,27 @@
                     <p class="text-slate-500 text-xs mt-1">先到「分類管理」在大分類底下新增子分類，這裡就能指定。</p>
                 </div>
                 <div>
-                    <label class="block text-slate-400 text-xs font-bold uppercase tracking-wider mb-2">工作站</label>
-                    <select v-model="form.station"
+                    <label class="block text-slate-400 text-xs font-bold uppercase tracking-wider mb-2">主要工作站</label>
+                    <select v-model="form.station" @change="syncFormPrintStations"
                         class="w-full bg-slate-700 border border-slate-600 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:border-emerald-500 text-sm">
                         <option v-for="st in (settings.stations || [])" :key="st.name" :value="st.name">{{ st.name }}</option>
                     </select>
+                </div>
+                <div class="col-span-2">
+                    <label class="block text-slate-400 text-xs font-bold uppercase tracking-wider mb-2">加印工作站</label>
+                    <div class="grid grid-cols-2 md:grid-cols-3 gap-2">
+                        <label v-for="st in (settings.stations || [])" :key="'print-station-' + st.name"
+                            class="flex items-center gap-2 bg-slate-700/70 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white">
+                            <input type="checkbox" class="accent-emerald-500"
+                                :value="st.name"
+                                v-model="form.printStations"
+                                :disabled="st.name === form.station"
+                                @change="syncFormPrintStations">
+                            <span>{{ st.name }}</span>
+                            <span v-if="st.name === form.station" class="text-[11px] text-emerald-300">主要</span>
+                        </label>
+                    </div>
+                    <p class="text-slate-500 text-xs mt-1">主要工作站會固定列印；勾選其它工作站可加印同一份工單。</p>
                 </div>
                 <div>
                     <label class="block text-slate-400 text-xs font-bold uppercase tracking-wider mb-2">可售時間（之後才上架）</label>
@@ -1652,7 +1668,7 @@ window._doCountUp = function() {
                 menuItems: [], menuLoading: true, filterCat: '',
                 // Modal
                 showModal: false, isEditing: false, isSaving: false,
-                form: { id:null, name:'', shortName:'', price:'', category:'蛋餅、燒餅', subCategory:'', desc:'', img:'', options:[], optionGroups:[], posExtras:[], station:'麵包台', availableAfter:'', active:true },
+                form: { id:null, name:'', shortName:'', price:'', category:'蛋餅、燒餅', subCategory:'', desc:'', img:'', options:[], optionGroups:[], posExtras:[], station:'麵包台', printStations:['麵包台'], availableAfter:'', active:true },
                 // Templates
                 optionTemplates: [],
                 showTemplateDropdown: false,
@@ -3505,6 +3521,29 @@ window._doCountUp = function() {
                 var sts = this.settings.stations || [];
                 return (sts.length && sts[0].name) ? sts[0].name : '麵包台';
             },
+            normalizePrintStations: function(list, mainStation) {
+                var station = String(mainStation || this.getDefaultStationName() || '').trim();
+                var values = Array.isArray(list) ? list.slice() : (list ? String(list).split(/[,，、]/) : []);
+                var known = {};
+                (this.settings.stations || []).forEach(function(st) {
+                    var name = String(st && st.name || '').trim();
+                    if (name) known[name] = true;
+                });
+                var out = [];
+                function add(name) {
+                    name = String(name || '').trim();
+                    if (!name) return;
+                    if (Object.keys(known).length && !known[name]) return;
+                    if (out.indexOf(name) === -1) out.push(name);
+                }
+                add(station);
+                values.forEach(add);
+                return out;
+            },
+            syncFormPrintStations: function() {
+                if (!this.form) return;
+                this.form.printStations = this.normalizePrintStations(this.form.printStations, this.form.station);
+            },
             loadMenu: function() {
                 var self = this;
                 this.menuLoading = true;
@@ -3528,16 +3567,18 @@ window._doCountUp = function() {
                 });
             },
             openAddModal: function() {
+                var defaultStation = this.getDefaultStationName();
                 this.form = {
                     id:null, name:'', price:'', category: this.allCategories[0]||'蛋餅、燒餅', subCategory:'',
                     shortName:'',
                     desc:'', img:'', options:[], optionGroups:[], posExtras:[],
-                    station: this.getDefaultStationName(), availableAfter:'', active:true
+                    station: defaultStation, printStations: this.normalizePrintStations([], defaultStation), availableAfter:'', active:true
                 };
                 this.compressStatus = ''; this.compressedSizeKB = 0;
                 this.isEditing = false; this.showModal = true;
             },
             openEditModal: function(item) {
+                var station = item.station || this.getDefaultStationName();
                 this.form = {
                     id: item.id, name: item.name||'', shortName: item.shortName || item.printName || '', price: item.price||'',
                     category: item.category||this.allCategories[0]||'蛋餅、燒餅',
@@ -3546,7 +3587,8 @@ window._doCountUp = function() {
                     options: item.options ? JSON.parse(JSON.stringify(item.options)) : [],
                     optionGroups: item.optionGroups ? JSON.parse(JSON.stringify(item.optionGroups)) : [],
                     posExtras: item.posExtras ? JSON.parse(JSON.stringify(item.posExtras)) : [],
-                    station: item.station || this.getDefaultStationName(),
+                    station: station,
+                    printStations: this.normalizePrintStations(item.printStations || item.stations || [], station),
                     availableAfter: item.availableAfter || '',
                     active: item.active !== false
                 };
@@ -3613,6 +3655,7 @@ window._doCountUp = function() {
                 if (!this.form.name.trim()) { alert('請輸入餐點名稱'); return; }
                 if (!this.form.price && this.form.price !== 0) { alert('請輸入正確售價'); return; }
                 this.isSaving = true;
+                this.syncFormPrintStations();
 
                 var itemData = {
                     name: this.form.name.trim(),
@@ -3627,6 +3670,7 @@ window._doCountUp = function() {
                     optionGroups: (this.form.optionGroups || []).filter(function(g) { return g.groupName && g.choices && g.choices.length; }),
                     posExtras: (this.form.posExtras || []).filter(function(e) { return e.name && e.name.trim(); }),
                     station: this.form.station || this.getDefaultStationName(),
+                    printStations: this.normalizePrintStations(this.form.printStations, this.form.station || this.getDefaultStationName()),
                     availableAfter: this.form.availableAfter || '',
                     active: this.form.active,
                     updatedAt: Date.now()
@@ -3662,6 +3706,7 @@ window._doCountUp = function() {
                 base.updatedAt = Date.now();
                 base.createdAt = Date.now();
                 base.station = base.station || self.getDefaultStationName();
+                base.printStations = self.normalizePrintStations(base.printStations || [], base.station);
                 base.availableAfter = base.availableAfter || '';
                 var nextItem = (self.filteredMenu || [])[displayIdx + 1];
                 var origSort = (typeof item.sortOrder === 'number') ? item.sortOrder : self.menuItems.indexOf(item);
