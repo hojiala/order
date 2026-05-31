@@ -5494,6 +5494,26 @@
                         queueData.printSource='POS';
                         queueData['訂單來源']='POS';
                     }
+                    var isPosQueue=queueData.source==='pos'||String(queueData.printSource||'').toLowerCase()==='pos'||String(queueData['訂單來源']||'').toLowerCase()==='pos';
+                    var taskText=String(task||'');
+                    var isNormalKitchenTask=taskText.indexOf('kitchen_')===0
+                        && taskText.indexOf('reprint')<0
+                        && taskText.indexOf('edit')<0
+                        && taskText.indexOf('cancel')<0;
+                    if(isPosQueue&&isNormalKitchenTask){
+                        this.posPrintQueueSent=this.posPrintQueueSent||{};
+                        var prev=this.posPrintQueueSent[orderId];
+                        if(prev&&Date.now()-prev.at<60000){
+                            console.warn('skip duplicate POS print_queue:',orderId,prev.task,taskText);
+                            return;
+                        }
+                        this.posPrintQueueSent[orderId]={task:taskText,at:Date.now()};
+                        setTimeout(function(){
+                            try{
+                                if(this.posPrintQueueSent&&this.posPrintQueueSent[orderId]&&this.posPrintQueueSent[orderId].task===taskText)delete this.posPrintQueueSent[orderId];
+                            }catch(e){}
+                        }.bind(this),60000);
+                    }
                     delete queueData.id;
                     var pm=queueData.paymentMethod||'';
                     var txnState=(this.lpStatus&&this.lpStatus[orderId])||'';
@@ -5508,9 +5528,9 @@
                     }
                     queueData.print_task=task;
                     var qRef=ref(db,'print_queue/'+orderId);
-                    remove(qRef).catch(function(){})
+                    (isPosQueue&&isNormalKitchenTask?set(qRef,queueData):(remove(qRef).catch(function(){})
                         .then(function(){ return new Promise(function(resolve){ setTimeout(resolve,120); }); })
-                        .then(function(){ return set(qRef,queueData); })
+                        .then(function(){ return set(qRef,queueData); })))
                         .catch(function(e){console.warn('print_queue寫入失敗:',e.message);});
                 }catch(e){console.warn('print_queue error:',e);}
             },
