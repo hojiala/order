@@ -539,6 +539,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getAuth, signInAnonymously, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
     import { getDatabase, ref, push, set, get, update, remove, onValue, runTransaction, query, orderByChild, equalTo, limitToLast } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
+    import { writeOrderToPocketBase } from "./pocketbase-order-writer.js";
 
     const firebaseConfig = {
         apiKey:"AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -609,7 +610,7 @@
             deviceId:'', deviceLabel:'', deviceType:'',
             // 設定
             isLoading:true, menuReady:false,
-            settings:{isOpen:true,dineinIsOpen:true,openTime:'06:00',closeTime:'13:15',weeklyDaysOff:[],holidays:[],dailyHours:{},pickupInterval:15,linePayServerUrl:'',linePayConfirmUrl:'',announcements:[]},settingsStationsLoaded:false,
+            settings:{isOpen:true,dineinIsOpen:true,openTime:'06:00',closeTime:'13:15',weeklyDaysOff:[],holidays:[],dailyHours:{},pickupInterval:15,linePayServerUrl:'',linePayConfirmUrl:'',pocketBaseUrl:'',pocketBaseOrdersCollection:'orders',announcements:[]},settingsStationsLoaded:false,
             // 菜單
             categories:[], currentCategory:'', menu:[], categorySubcategories:{},
             // 點餐
@@ -766,6 +767,18 @@
             }
         },
         methods:{
+            syncPocketBaseOrder:function(orderId,orderData,sourcePage){
+                return writeOrderToPocketBase(orderId,orderData,{
+                    settings:this.settings,
+                    sourcePage:sourcePage||'dinein'
+                }).then(function(result){
+                    if(result&&result.ok)console.info('PocketBase order sync:',result.action,result.id||orderId);
+                    return result;
+                }).catch(function(e){
+                    console.warn('PocketBase order sync failed:',e&&e.message?e.message:e);
+                    return {ok:false,error:e};
+                });
+            },
             normalizeCategorySubcategories:function(raw,categories){
                 var source=(raw&&typeof raw==='object')?raw:{};
                 var cats=Array.isArray(categories)?categories:[];
@@ -858,7 +871,7 @@
                         var defaultStations=[{name:'湯麵',ip:'192.168.0.6'},{name:'麵包台',ip:'192.168.0.7'},{name:'飲料台',ip:'192.168.0.8'}];
                         var hasStationSettings=!!(v.stations&&v.stations.length);
                         s.settings={isOpen:v.isOpen!==false,dineinIsOpen:v.dineinIsOpen!==false,openTime:v.openTime||'06:00',closeTime:v.closeTime||'13:15',
-                            weeklyDaysOff:Array.isArray(v.weeklyDaysOff)?v.weeklyDaysOff:(v.weeklyDaysOff?Object.values(v.weeklyDaysOff):[]),holidays:v.holidays||[],dailyHours:v.dailyHours||{},pickupInterval:v.pickupInterval||15,linePayServerUrl:v.linePayServerUrl||'',linePayConfirmUrl:v.linePayConfirmUrl||'',announcements:v.announcements||[],stations:hasStationSettings?v.stations:defaultStations,posOnlyCategories:v.posOnlyCategories||[]};
+                            weeklyDaysOff:Array.isArray(v.weeklyDaysOff)?v.weeklyDaysOff:(v.weeklyDaysOff?Object.values(v.weeklyDaysOff):[]),holidays:v.holidays||[],dailyHours:v.dailyHours||{},pickupInterval:v.pickupInterval||15,linePayServerUrl:v.linePayServerUrl||'',linePayConfirmUrl:v.linePayConfirmUrl||'',pocketBaseUrl:v.pocketBaseUrl||v.pocketbaseUrl||'',pocketBaseOrdersCollection:v.pocketBaseOrdersCollection||v.pocketbaseOrdersCollection||'orders',announcements:v.announcements||[],stations:hasStationSettings?v.stations:defaultStations,posOnlyCategories:v.posOnlyCategories||[]};
                         s.categorySubcategories=s.normalizeCategorySubcategories(v.categorySubcategories,v.categories||s.categories);
                         s.settingsStationsLoaded=hasStationSettings;
                         // ★ 設定更新時，自動重新檢查當前分類的公告（即時開啟/關閉公告視窗）
@@ -877,7 +890,7 @@
                         var defaultStations=[{name:'湯麵',ip:'192.168.0.6'},{name:'麵包台',ip:'192.168.0.7'},{name:'飲料台',ip:'192.168.0.8'}];
                         var hasStationSettings=!!(v.stations&&v.stations.length);
                         s.settings={isOpen:v.isOpen!==false,dineinIsOpen:v.dineinIsOpen!==false,openTime:v.openTime||'06:00',closeTime:v.closeTime||'13:15',
-                            weeklyDaysOff:Array.isArray(v.weeklyDaysOff)?v.weeklyDaysOff:(v.weeklyDaysOff?Object.values(v.weeklyDaysOff):[]),holidays:v.holidays||[],dailyHours:v.dailyHours||{},pickupInterval:v.pickupInterval||15,linePayServerUrl:v.linePayServerUrl||'',linePayConfirmUrl:v.linePayConfirmUrl||'',announcements:v.announcements||[],stations:hasStationSettings?v.stations:defaultStations,posOnlyCategories:v.posOnlyCategories||[]};
+                            weeklyDaysOff:Array.isArray(v.weeklyDaysOff)?v.weeklyDaysOff:(v.weeklyDaysOff?Object.values(v.weeklyDaysOff):[]),holidays:v.holidays||[],dailyHours:v.dailyHours||{},pickupInterval:v.pickupInterval||15,linePayServerUrl:v.linePayServerUrl||'',linePayConfirmUrl:v.linePayConfirmUrl||'',pocketBaseUrl:v.pocketBaseUrl||v.pocketbaseUrl||'',pocketBaseOrdersCollection:v.pocketBaseOrdersCollection||v.pocketbaseOrdersCollection||'orders',announcements:v.announcements||[],stations:hasStationSettings?v.stations:defaultStations,posOnlyCategories:v.posOnlyCategories||[]};
                         s.categorySubcategories=s.normalizeCategorySubcategories(v.categorySubcategories,v.categories||s.categories);
                         s.settingsStationsLoaded=hasStationSettings;
                         s.devicePassword=v.dineinPassword||'0000';
@@ -1417,11 +1430,15 @@
                     if(payMethod!=='linepay'&&payMethod!=='linepay_qr'){
                         orderData.print_task='kitchen_'+Date.now();
                     }
-                    return set(bucketOrderRef,orderData).then(function(){return assignedNo;});
+                    return set(bucketOrderRef,orderData).then(function(){
+                        return s.syncPocketBaseOrder(orderId,orderData,'dinein').then(function(){return assignedNo;});
+                    });
                 })
                 .catch(function(){
                     // 取流水號失敗（權限等），仍送出訂單但不含 orderNo（後台補發）
-                    return set(bucketOrderRef,orderData).then(function(){return null;});
+                    return set(bucketOrderRef,orderData).then(function(){
+                        return s.syncPocketBaseOrder(orderId,orderData,'dinein').then(function(){return null;});
+                    });
                 })
                 .then(function(assignedNo){
                     // ★ 非 LINE Pay 且有 print_task：寫入 print_queue 觸發 Node-RED 列印

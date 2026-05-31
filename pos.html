@@ -693,6 +693,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getDatabase, ref, onValue, onChildAdded, onChildChanged, onChildRemoved, update, push, set, get, remove, runTransaction, query, orderByChild, limitToLast } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
+    import { writeOrderToPocketBase } from "./pocketbase-order-writer.js";
     const firebaseConfig = {
         apiKey:"AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
         authDomain:"breakfast-ai-system.firebaseapp.com",
@@ -773,7 +774,7 @@
                 toastMsg:"",toastTimer:null,lastOrderId:null,
                 activeMenu:null,menuPos:null,activeMenuOrder:null,
                 archiveConfirm:false,resetConfirm:false,
-                linePayServerUrl:"",linePayConfirmUrl:"",
+                linePayServerUrl:"",linePayConfirmUrl:"",pocketBaseUrl:"",pocketBaseOrdersCollection:"orders",
                 // ★ 情境3 Offline 掃碼
                 showOfflineModal:false, offlineBarcode:"", offlineAmount:0,
                 offlineOrderId:"", offlineOrderDateKey:"", offlineItems:[], offlineError:"", offlineSuccess:"",
@@ -894,6 +895,20 @@
             authReady.finally(function(){onAuthStateChanged(auth,function(u){if(u){s.isLoggedIn=true;s.startAll();}else{s.isLoggedIn=false;}});});
         },
         methods:{
+            syncPocketBaseOrder:function(orderId,orderData,sourcePage){
+                return writeOrderToPocketBase(orderId,orderData,{
+                    settings:this.settings,
+                    pocketBaseUrl:this.pocketBaseUrl,
+                    pocketBaseOrdersCollection:this.pocketBaseOrdersCollection,
+                    sourcePage:sourcePage||'pos'
+                }).then(function(result){
+                    if(result&&result.ok)console.info('PocketBase order sync:',result.action,result.id||orderId);
+                    return result;
+                }).catch(function(e){
+                    console.warn('PocketBase order sync failed:',e&&e.message?e.message:e);
+                    return {ok:false,error:e};
+                });
+            },
             selectMenuCategory:function(cat){
                 this.filterCat=cat||"";
                 this.activeView="menu";
@@ -4458,7 +4473,7 @@
                         s.settings={categories:v.categories||[],hideAllTab:!!v.hideAllTab,posOnlyCategories:v.posOnlyCategories||[],
                             stations:hasStationSettings?v.stations:defaultStations};
                         s.settingsStationsLoaded=hasStationSettings;
-                        s.linePayServerUrl=v.linePayServerUrl||'';s.linePayConfirmUrl=v.linePayConfirmUrl||'';s.posTables=v.posTables||[];
+                        s.linePayServerUrl=v.linePayServerUrl||'';s.linePayConfirmUrl=v.linePayConfirmUrl||'';s.pocketBaseUrl=v.pocketBaseUrl||v.pocketbaseUrl||'';s.pocketBaseOrdersCollection=v.pocketBaseOrdersCollection||v.pocketbaseOrdersCollection||'orders';s.posTables=v.posTables||[];
                         s.counterLegacyValue=Number(v.orderCounter||0)||0;
                         s.counterResetTime=s.normalizeCounterResetTime(v.counterResetTime||'00:00');
                         s.counterMaxNo=Math.max(1,Number(v.counterMaxNo||999)||999);}
@@ -4986,7 +5001,9 @@
                         o.orderDateKey=orderDateKey;
                         var orderId=push(ref(db,"orders/"+orderDateKey)).key;
                         var bucketOrderRef=ref(db,"orders/"+orderDateKey+"/"+orderId);
-                        return set(bucketOrderRef,o).then(function(){return {key:orderId};});
+                        return set(bucketOrderRef,o).then(function(){
+                            return s.syncPocketBaseOrder(orderId,o,'pos').then(function(){return {key:orderId};});
+                        });
                     })
                     .then(function(snap){
                         s.offlineOrderId=snap.key;
@@ -5170,7 +5187,9 @@
                         o.orderDateKey=orderDateKey;
                         var orderId=push(ref(db,"orders/"+orderDateKey)).key;
                         var bucketOrderRef=ref(db,"orders/"+orderDateKey+"/"+orderId);
-                        return set(bucketOrderRef,o).then(function(){return {key:orderId};});
+                        return set(bucketOrderRef,o).then(function(){
+                            return s.syncPocketBaseOrder(orderId,o,'pos').then(function(){return {key:orderId};});
+                        });
                     })
                     .then(function(snap){
                         var orderId=snap.key;s.lastOrderId=orderId;

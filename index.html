@@ -597,6 +597,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getDatabase, ref, push, set, get, update, onValue, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, signInAnonymously, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
+    import { writeOrderToPocketBase } from "./pocketbase-order-writer.js";
 
     const firebaseConfig = {
         apiKey: "AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -670,7 +671,7 @@
                     openTime: '06:00',
                     closeTime: '13:15',
                     pickupDays: 3,
-                    pickupInterval: 30, linePayServerUrl: '', linePayConfirmUrl: '', announcements: [],
+                    pickupInterval: 30, linePayServerUrl: '', linePayConfirmUrl: '', pocketBaseUrl: '', pocketBaseOrdersCollection: 'orders', announcements: [],
                     holidays: [],
                     weeklyDaysOff: [0]
                 },
@@ -814,6 +815,18 @@
             this.init();
         },
         methods: {
+            syncPocketBaseOrder: function(orderId, orderData, sourcePage) {
+                return writeOrderToPocketBase(orderId, orderData, {
+                    settings: this.settings,
+                    sourcePage: sourcePage || 'index'
+                }).then(function(result) {
+                    if (result && result.ok) console.info('PocketBase order sync:', result.action, result.id || orderId);
+                    return result;
+                }).catch(function(e) {
+                    console.warn('PocketBase order sync failed:', e && e.message ? e.message : e);
+                    return { ok: false, error: e };
+                });
+            },
             normalizeCategorySubcategories: function(raw, categories) {
                 var source = (raw && typeof raw === 'object') ? raw : {};
                 var cats = Array.isArray(categories) ? categories : [];
@@ -886,7 +899,7 @@
                             openTime: s.openTime || '06:00',
                             closeTime: s.closeTime || '13:15',
                             pickupDays: s.pickupDays || 3,
-                            pickupInterval: s.pickupInterval || 30, linePayServerUrl: s.linePayServerUrl || '', linePayConfirmUrl: s.linePayConfirmUrl || '', announcements: s.announcements || [],
+                            pickupInterval: s.pickupInterval || 30, linePayServerUrl: s.linePayServerUrl || '', linePayConfirmUrl: s.linePayConfirmUrl || '', pocketBaseUrl: s.pocketBaseUrl || s.pocketbaseUrl || '', pocketBaseOrdersCollection: s.pocketBaseOrdersCollection || s.pocketbaseOrdersCollection || 'orders', announcements: s.announcements || [],
                             holidays: s.holidays || [],
                             weeklyDaysOff: s.weeklyDaysOff || [],
                             orderCooldownEnabled: s.orderCooldownEnabled !== false,
@@ -946,7 +959,7 @@
                             openTime: s.openTime || '06:00',
                             closeTime: s.closeTime || '13:15',
                             pickupDays: s.pickupDays || 3,
-                            pickupInterval: s.pickupInterval || 30, linePayServerUrl: s.linePayServerUrl || '', linePayConfirmUrl: s.linePayConfirmUrl || '', announcements: s.announcements || [],
+                            pickupInterval: s.pickupInterval || 30, linePayServerUrl: s.linePayServerUrl || '', linePayConfirmUrl: s.linePayConfirmUrl || '', pocketBaseUrl: s.pocketBaseUrl || s.pocketbaseUrl || '', pocketBaseOrdersCollection: s.pocketBaseOrdersCollection || s.pocketbaseOrdersCollection || 'orders', announcements: s.announcements || [],
                             holidays: s.holidays || [],
                             weeklyDaysOff: s.weeklyDaysOff || [],
                             orderCooldownEnabled: s.orderCooldownEnabled !== false,
@@ -1761,11 +1774,15 @@
                     if (payMethod !== 'linepay') {
                         orderData.print_task = 'kitchen_' + Date.now();
                     }
-                    return set(bucketOrderRef, orderData).then(function() { return assignedNo; });
+                    return set(bucketOrderRef, orderData).then(function() {
+                        return self.syncPocketBaseOrder(orderId, orderData, 'index').then(function() { return assignedNo; });
+                    });
                 })
                 .catch(function() {
                     // 流水號取得失敗，仍送出訂單（後台補發）
-                    return set(bucketOrderRef, orderData).then(function() { return null; });
+                    return set(bucketOrderRef, orderData).then(function() {
+                        return self.syncPocketBaseOrder(orderId, orderData, 'index').then(function() { return null; });
+                    });
                 })
                 .then(function(assignedNo) {
                     // ★ 非 LINE Pay 且有 print_task：寫入 print_queue 觸發 Node-RED 列印
