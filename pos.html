@@ -5001,11 +5001,6 @@
                         o.orderDateKey=orderDateKey;
                         var orderId=push(ref(db,"orders/"+orderDateKey)).key;
                         var bucketOrderRef=ref(db,"orders/"+orderDateKey+"/"+orderId);
-                        if(o.print_task){
-                            s.posSubmittedPrintTasks=s.posSubmittedPrintTasks||{};
-                            s.posSubmittedPrintTasks[orderId]=o.print_task;
-                            setTimeout(function(){try{delete s.posSubmittedPrintTasks[orderId];}catch(e){}},30000);
-                        }
                         return set(bucketOrderRef,o).then(function(){
                             s.syncPocketBaseOrder(orderId,o,'pos');
                             return {key:orderId};
@@ -5184,8 +5179,6 @@
                     paymentMethod:isLinePay?"linepay":(isCash?"cash":"store"),
                     paymentStatus:isLinePay?"pending":(isCash?"paid":"unpaid"),
                     stationMap:s.settingsStationsLoaded?(s.settings.stations||[]):[]};
-                var storePrintTaskForInitial=!isLinePay?("kitchen_"+Date.now()):"";
-                if(storePrintTaskForInitial)o.print_task=storePrintTaskForInitial;
                 if(s.posOrderType==='dinein'&&s.posTableLabel)o.tableLabel=s.posTableLabel;
                 s.allocateNextOrderNo()
                     .then(function(no){
@@ -5195,11 +5188,6 @@
                         o.orderDateKey=orderDateKey;
                         var orderId=push(ref(db,"orders/"+orderDateKey)).key;
                         var bucketOrderRef=ref(db,"orders/"+orderDateKey+"/"+orderId);
-                        if(o.print_task){
-                            s.posSubmittedPrintTasks=s.posSubmittedPrintTasks||{};
-                            s.posSubmittedPrintTasks[orderId]=o.print_task;
-                            setTimeout(function(){try{delete s.posSubmittedPrintTasks[orderId];}catch(e){}},30000);
-                        }
                         return set(bucketOrderRef,o).then(function(){
                             s.syncPocketBaseOrder(orderId,o,'pos');
                             return {key:orderId};
@@ -5298,12 +5286,10 @@
                             },90000);
                         }else{
                             // ★ 店內付款：立即列印
-                            var storePrintTask=o.print_task||("kitchen_"+Date.now());
-                            o.print_task=storePrintTask;
+                            var storePrintTask="kitchen_"+Date.now();
                             var taskRef=ref(db,"orders/"+(o.orderDateKey||o.pickupDate||s.todayStr)+"/"+orderId+"/print_task");
-                            Promise.resolve().then(function(){
-                                if(!storePrintTaskForInitial)return set(taskRef,storePrintTask);
-                                return null;
+                            remove(taskRef).then(function(){
+                                return set(taskRef,storePrintTask);
                             }).then(function(){
                                 // ★ 寫入 print_queue 供 Node-RED
                                 s.writeToPrintQueue(orderId,storePrintTask,o);
@@ -5454,7 +5440,6 @@
             triggerPrintForOrder:async function(order){
                 var s=this;
                 if(!order||!order.id)return;
-                if(s.posSubmittedPrintTasks&&s.posSubmittedPrintTasks[order.id])return;
                 var key='triggering_'+order.id;
                 if(s[key])return;
                 s[key]=true;
@@ -5494,26 +5479,6 @@
                         queueData.printSource='POS';
                         queueData['訂單來源']='POS';
                     }
-                    var isPosQueue=queueData.source==='pos'||String(queueData.printSource||'').toLowerCase()==='pos'||String(queueData['訂單來源']||'').toLowerCase()==='pos';
-                    var taskText=String(task||'');
-                    var isNormalKitchenTask=taskText.indexOf('kitchen_')===0
-                        && taskText.indexOf('reprint')<0
-                        && taskText.indexOf('edit')<0
-                        && taskText.indexOf('cancel')<0;
-                    if(isPosQueue&&isNormalKitchenTask){
-                        this.posPrintQueueSent=this.posPrintQueueSent||{};
-                        var prev=this.posPrintQueueSent[orderId];
-                        if(prev&&Date.now()-prev.at<60000){
-                            console.warn('skip duplicate POS print_queue:',orderId,prev.task,taskText);
-                            return;
-                        }
-                        this.posPrintQueueSent[orderId]={task:taskText,at:Date.now()};
-                        setTimeout(function(){
-                            try{
-                                if(this.posPrintQueueSent&&this.posPrintQueueSent[orderId]&&this.posPrintQueueSent[orderId].task===taskText)delete this.posPrintQueueSent[orderId];
-                            }catch(e){}
-                        }.bind(this),60000);
-                    }
                     delete queueData.id;
                     var pm=queueData.paymentMethod||'';
                     var txnState=(this.lpStatus&&this.lpStatus[orderId])||'';
@@ -5528,9 +5493,9 @@
                     }
                     queueData.print_task=task;
                     var qRef=ref(db,'print_queue/'+orderId);
-                    (isPosQueue&&isNormalKitchenTask?set(qRef,queueData):(remove(qRef).catch(function(){})
+                    remove(qRef).catch(function(){})
                         .then(function(){ return new Promise(function(resolve){ setTimeout(resolve,120); }); })
-                        .then(function(){ return set(qRef,queueData); })))
+                        .then(function(){ return set(qRef,queueData); })
                         .catch(function(e){console.warn('print_queue寫入失敗:',e.message);});
                 }catch(e){console.warn('print_queue error:',e);}
             },
