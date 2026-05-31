@@ -5169,6 +5169,7 @@
                 }
                 // LINE Pay 訂單：status 先設 new，付款確認後 linepay_server 會改 making
                 var custDisplay=(s.posOrderType==='dinein'&&s.posTableLabel)?s.posTableLabel:(s.custName||"現場");
+                var storePrintTask=isLinePay?null:("kitchen_"+Date.now());
                 var o={customer:custDisplay,phone:s.custPhone||"",pickupDate:pickDate,pickupTime:pickTime,
                     items:s.cart.map(function(i){return Object.assign({},i);}),
                     total:s.cartTotal,
@@ -5179,6 +5180,7 @@
                     paymentMethod:isLinePay?"linepay":(isCash?"cash":"store"),
                     paymentStatus:isLinePay?"pending":(isCash?"paid":"unpaid"),
                     stationMap:s.settingsStationsLoaded?(s.settings.stations||[]):[]};
+                if(storePrintTask)o.print_task=storePrintTask;
                 if(s.posOrderType==='dinein'&&s.posTableLabel)o.tableLabel=s.posTableLabel;
                 s.allocateNextOrderNo()
                     .then(function(no){
@@ -5285,12 +5287,8 @@
                                 }
                             },90000);
                         }else{
-                            // ★ 店內付款：立即列印
-                            var storePrintTask="kitchen_"+Date.now();
-                            var taskRef=ref(db,"orders/"+(o.orderDateKey||o.pickupDate||s.todayStr)+"/"+orderId+"/print_task");
-                            remove(taskRef).then(function(){
-                                return set(taskRef,storePrintTask);
-                            }).then(function(){
+                            // ★ 店內付款：立即列印；print_task 已隨訂單本體一起寫入，避免 POS 監聽器補印第二次
+                            Promise.resolve().then(function(){
                                 // ★ 寫入 print_queue 供 Node-RED
                                 s.writeToPrintQueue(orderId,storePrintTask,o);
                                 if(isCash){
