@@ -62,8 +62,23 @@ function customerPayload(orderData, options) {
     payload.printTask = payload.printTask || text(orderData && orderData.print_task);
     payload.timestamp = payload.timestamp || numericOrUndefined(orderData && orderData.timestamp);
     payload.counterCycleKey = payload.counterCycleKey || text(orderData && orderData.counterCycleKey);
-    payload.counterResetTime = payload.counterResetTime || text((orderData && orderData.counterResetTime) || settings.counterResetTime || state.resetTime || "00:00");
-    payload.counterMaxNo = numericOrUndefined(payload.counterMaxNo || (orderData && orderData.counterMaxNo) || settings.counterMaxNo || state.maxNo || 999) || 999;
+    payload.counterResetTime = payload.counterResetTime || text(
+        (orderData && orderData.counterResetTime) ||
+        options.counterResetTime ||
+        options.resetTime ||
+        settings.counterResetTime ||
+        state.resetTime ||
+        "00:00"
+    );
+    payload.counterMaxNo = numericOrUndefined(
+        payload.counterMaxNo ||
+        (orderData && orderData.counterMaxNo) ||
+        options.counterMaxNo ||
+        options.maxNo ||
+        settings.counterMaxNo ||
+        state.maxNo ||
+        999
+    ) || 999;
     payload.printSource = payload.printSource || text(orderData && (orderData.printSource || orderData["訂單來源"]));
     if (!payload.stationMap && orderData && Array.isArray(orderData.stationMap)) payload.stationMap = orderData.stationMap;
     if (!payload.stationSettings && orderData && Array.isArray(orderData.stationSettings)) payload.stationSettings = orderData.stationSettings;
