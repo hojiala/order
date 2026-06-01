@@ -213,11 +213,13 @@ export function allocateOrderNoFromPocketBase(options) {
     if (config.token) headers.Authorization = "Bearer " + config.token;
     var settings = options.settings || {};
     var state = settings.orderCounterState || {};
+    var resetValue = options.resetTime || settings.counterResetTime || state.resetTime;
+    var maxValue = options.maxNo || settings.counterMaxNo || state.maxNo;
     var payload = {
-        source: text(options.sourcePage || options.source || ""),
-        resetTime: text(options.resetTime || settings.counterResetTime || state.resetTime || "00:00"),
-        maxNo: numericOrUndefined(options.maxNo || settings.counterMaxNo || state.maxNo || 999) || 999
+        source: text(options.sourcePage || options.source || "")
     };
+    if (text(resetValue)) payload.resetTime = text(resetValue);
+    if (text(maxValue)) payload.maxNo = numericOrUndefined(maxValue) || 999;
     return requestJson(config.baseUrl + "/api/order-counter/next", {
         method: "POST",
         headers: headers,
