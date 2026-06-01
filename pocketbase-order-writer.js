@@ -314,7 +314,6 @@ export function listOrdersFromPocketBase(options) {
     var timeoutMs = Number(options.timeoutMs || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
     var filter = dateKeyFilter(options.dateKeys);
     var baseUrl = config.baseUrl + "/api/collections/" + encodeURIComponent(config.collection) + "/records";
-    var sort = text(options.sort || "-date_key,-order_no,-created");
     var maxPages = Math.max(1, Math.floor(Number(options.maxPages || 8) || 8));
 
     function fetchRecords(queryFilter, querySort) {
@@ -336,15 +335,12 @@ export function listOrdersFromPocketBase(options) {
 
     function fallbackAfterBadQuery(err) {
         if (!err || Number(err.status) !== 400) throw err;
-        return fetchRecords("", sort).catch(function(sortErr) {
-            if (!sortErr || Number(sortErr.status) !== 400) throw sortErr;
-            return fetchRecords("", "");
-        }).then(function(rows) {
+        return fetchRecords("", "").then(function(rows) {
             return sortOrderRecords(filterRecordsByDateKeys(rows, options.dateKeys));
         });
     }
 
-    return fetchRecords(filter, sort).catch(fallbackAfterBadQuery).then(function(rows) {
+    return fetchRecords(filter, "").catch(fallbackAfterBadQuery).then(function(rows) {
         rows = sortOrderRecords(filterRecordsByDateKeys(rows, options.dateKeys));
         return {
             ok: true,
