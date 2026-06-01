@@ -269,8 +269,9 @@
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
-        import { getDatabase, ref, onValue, onChildAdded, onChildChanged, onChildRemoved, update, set, get, remove, runTransaction, query, orderByChild, limitToLast } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
+        import { getDatabase, ref, onValue, onChildAdded, onChildChanged, onChildRemoved, update, set, get, remove, query, orderByChild, limitToLast } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
         import { getAuth, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
+        import { allocateOrderNoFromPocketBase } from "./pocketbase-order-writer.js";
 
         // ★★★ 請貼入您相同的 Firebase 配置 ★★★
         const firebaseConfig = {
@@ -363,6 +364,9 @@
                     phoneOrdersUnsub: null,
                     linePayServerUrl: '',
                     linePayConfirmUrl: '',
+                    settings: {},
+                    pocketBaseUrl: '',
+                    pocketBaseOrdersCollection: 'orders',
                     integrationOrdersUnsub: null,
                     useIntegrationView: false,
                     orderSearch: '',
@@ -2245,8 +2249,11 @@
                         get(ref(db, 'settings')).then((snap) => {
                             if (snap.exists()) {
                                 const sv = snap.val();
+                                selfS.settings = sv || {};
                                 selfS.linePayServerUrl = sv.linePayServerUrl || '';
                                 selfS.linePayConfirmUrl = sv.linePayConfirmUrl || '';
+                                selfS.pocketBaseUrl = sv.pocketBaseUrl || sv.pocketbaseUrl || '';
+                                selfS.pocketBaseOrdersCollection = sv.pocketBaseOrdersCollection || sv.pocketbaseOrdersCollection || 'orders';
                             }
                         });
                     };
@@ -2759,6 +2766,14 @@
                             .catch(e => console.warn('print_queue 寫入失敗:', e.message));
                     } catch(e) { console.warn('print_queue error:', e); }
                 },
+                allocateOrderNoPrimary(sourcePage) {
+                    return allocateOrderNoFromPocketBase({
+                        settings: this.settings || {},
+                        pocketBaseUrl: this.pocketBaseUrl,
+                        pocketBaseOrdersCollection: this.pocketBaseOrdersCollection,
+                        sourcePage: sourcePage || 'admin'
+                    });
+                },
                 async autoAssignOrderNo(orderId) {
                     if (this.assigningNos[orderId]) return;
                     this.assigningNos[orderId] = true;
@@ -2776,10 +2791,15 @@
                                 delete this.assigningNos[orderId];
                                 return;
                             }
-                            const result = await runTransaction(ref(db, 'settings/orderCounter'), (cur) => (cur || 0) + 1);
+                            const counter = await this.allocateOrderNoPrimary('admin');
+                            const assignedNo = counter && counter.ok ? counter.orderNo : null;
+                            if (!assignedNo) {
+                                delete this.assigningNos[orderId];
+                                return;
+                            }
                             const paySnap = await get(ref(db, `${base}/paymentStatus`));
                             const payStatus = paySnap.exists() ? paySnap.val() : '';
-                            const updateData = { orderNo: result.snapshot.val() };
+                            const updateData = { orderNo: assignedNo, counterCycleKey: counter.cycleKey || '' };
                             if (payStatus !== 'pending') updateData.print_task = 'kitchen_' + Date.now();
                             await this.updateOrderMirror(orderId, updateData, orderObj);
                             // ★ 如果有 print_task，寫入 print_queue 供 Node-RED

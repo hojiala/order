@@ -595,9 +595,9 @@
 
 <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
-    import { getDatabase, ref, push, set, get, update, onValue, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
+    import { getDatabase, ref, push, set, get, update, onValue } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, signInAnonymously, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-    import { writeOrderToPocketBase, writeOrderWithFirebaseFallback } from "./pocketbase-order-writer.js";
+    import { allocateOrderNoFromPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback } from "./pocketbase-order-writer.js";
 
     const firebaseConfig = {
         apiKey: "AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -654,7 +654,7 @@
         } catch(e){ console.warn('daily theme listener failed:', e); }
     })();
 
-    // ★ 匿名登入：用於取得流水號權限（settings/orderCounter 需要 auth）
+    // ★ 匿名登入：Firebase fallback 與顧客訂單查詢需要 auth；流水號改由 PocketBase 發號
     const auth = getAuth(app);
     setPersistence(auth, browserLocalPersistence).then(function() {
         if (!auth.currentUser) return signInAnonymously(auth);
@@ -836,6 +836,12 @@
                     if (result && result.backend === 'pocketbase') console.info('Order saved to PocketBase primary:', orderId);
                     else if (result && result.backend === 'firebase') console.warn('PocketBase unavailable; order saved to Firebase fallback:', orderId);
                     return result;
+                });
+            },
+            allocateOrderNoPrimary: function(sourcePage) {
+                return allocateOrderNoFromPocketBase({
+                    settings: this.settings,
+                    sourcePage: sourcePage || 'index'
                 });
             },
             normalizeCategorySubcategories: function(raw, categories) {
@@ -1777,10 +1783,15 @@
                 var orderId = push(ref(db, 'orders/' + orderDateKey)).key;
                 var bucketOrderRef = ref(db, 'orders/' + orderDateKey + '/' + orderId);
                 // ★ 先取得流水號
-                runTransaction(ref(db, 'settings/orderCounter'), function(cur) { return (cur || 0) + 1; })
-                .then(function(result) {
-                    var assignedNo = result.snapshot.val();
-                    orderData.orderNo = assignedNo;
+                self.allocateOrderNoPrimary('index')
+                .then(function(counter) {
+                    var assignedNo = counter && counter.ok ? counter.orderNo : null;
+                    if (assignedNo) {
+                        orderData.orderNo = assignedNo;
+                        orderData.counterCycleKey = counter.cycleKey || '';
+                    } else {
+                        orderData.counterPending = true;
+                    }
                     // 非 LINE Pay 訂單：同時寫入 print_task 觸發列印
                     if (payMethod !== 'linepay') {
                         orderData.print_task = 'kitchen_' + Date.now();
@@ -1789,16 +1800,14 @@
                         return set(bucketOrderRef, orderData);
                     }).then(function(result) {
                         orderData._writeBackend = (result && result.backend) || 'firebase';
+                        var pbRecord = result && result.pocketBase && result.pocketBase.record;
+                        var pbNo = pbRecord && Number(pbRecord.order_no || pbRecord.orderNo || 0);
+                        if (!assignedNo && Number.isFinite(pbNo) && pbNo > 0) {
+                            assignedNo = pbNo;
+                            orderData.orderNo = pbNo;
+                            orderData.counterPending = false;
+                        }
                         return assignedNo;
-                    });
-                })
-                .catch(function() {
-                    // 流水號取得失敗，仍送出訂單（後台補發）
-                    return self.writeOrderPrimary(orderId, orderData, 'index', function() {
-                        return set(bucketOrderRef, orderData);
-                    }).then(function(result) {
-                        orderData._writeBackend = (result && result.backend) || 'firebase';
-                        return null;
                     });
                 })
                 .then(function(assignedNo) {

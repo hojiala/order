@@ -37,7 +37,10 @@ function sourceLabelFor(orderData, sourcePage) {
     return labels[source] || labels[sourcePage] || source || text(sourcePage);
 }
 
-function customerPayload(orderData) {
+function customerPayload(orderData, options) {
+    options = options || {};
+    var settings = options.settings || {};
+    var state = settings.orderCounterState || {};
     var raw = orderData && orderData.customer;
     var payload;
     if (raw && typeof raw === "object" && !Array.isArray(raw)) {
@@ -59,6 +62,8 @@ function customerPayload(orderData) {
     payload.printTask = payload.printTask || text(orderData && orderData.print_task);
     payload.timestamp = payload.timestamp || numericOrUndefined(orderData && orderData.timestamp);
     payload.counterCycleKey = payload.counterCycleKey || text(orderData && orderData.counterCycleKey);
+    payload.counterResetTime = payload.counterResetTime || text((orderData && orderData.counterResetTime) || settings.counterResetTime || state.resetTime || "00:00");
+    payload.counterMaxNo = numericOrUndefined(payload.counterMaxNo || (orderData && orderData.counterMaxNo) || settings.counterMaxNo || state.maxNo || 999) || 999;
     payload.printSource = payload.printSource || text(orderData && (orderData.printSource || orderData["訂單來源"]));
     if (!payload.stationMap && orderData && Array.isArray(orderData.stationMap)) payload.stationMap = orderData.stationMap;
     if (!payload.stationSettings && orderData && Array.isArray(orderData.stationSettings)) payload.stationSettings = orderData.stationSettings;
@@ -89,7 +94,7 @@ export function buildPocketBaseOrderRecord(orderId, orderData, options) {
         pickup_mode: text(orderData.type || orderData.pickupMode || orderData.pickup_mode || ""),
         pickup_time: text(orderData.pickupTime || orderData.pickup_time || ""),
         total: numericOrUndefined(orderData.total),
-        customer: customerPayload(orderData),
+        customer: customerPayload(orderData, options),
         items: Array.isArray(orderData.items) ? orderData.items : []
     });
 }
@@ -170,6 +175,76 @@ function requestJson(url, init, timeoutMs) {
     });
 }
 
+export function allocateOrderNoFromPocketBase(options) {
+    options = options || {};
+    var config = resolvePocketBaseConfig(options);
+    if (!config.baseUrl) {
+        return Promise.resolve({ ok: false, skipped: true, reason: "missing_pocketbase_url" });
+    }
+    if (typeof window !== "undefined" && window.location && window.location.protocol === "https:" &&
+        /^http:\/\//i.test(config.baseUrl) && !/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(config.baseUrl)) {
+        return Promise.resolve({ ok: false, skipped: true, reason: "mixed_content_http_pocketbase_url" });
+    }
+    var headers = { "Content-Type": "application/json" };
+    if (config.token) headers.Authorization = "Bearer " + config.token;
+    var settings = options.settings || {};
+    var state = settings.orderCounterState || {};
+    var payload = {
+        source: text(options.sourcePage || options.source || ""),
+        resetTime: text(options.resetTime || settings.counterResetTime || state.resetTime || "00:00"),
+        maxNo: numericOrUndefined(options.maxNo || settings.counterMaxNo || state.maxNo || 999) || 999
+    };
+    return requestJson(config.baseUrl + "/api/order-counter/next", {
+        method: "POST",
+        headers: headers,
+        body: JSON.stringify(payload)
+    }, Number(options.timeoutMs || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS).then(function(data) {
+        var orderNo = numericOrUndefined(data && (data.orderNo || data.order_no || data.value));
+        if (!orderNo) return { ok: false, reason: "invalid_counter_response", response: data };
+        return {
+            ok: true,
+            orderNo: orderNo,
+            serialNumber: text((data && data.serialNumber) || String(orderNo).padStart(3, "0")),
+            dateKey: text(data && (data.dateKey || data.date_key)),
+            cycleKey: text(data && (data.cycleKey || data.cycle_key)),
+            resetTime: text(data && (data.resetTime || data.reset_time)),
+            maxNo: numericOrUndefined(data && (data.maxNo || data.max_no))
+        };
+    }).catch(function(e) {
+        return { ok: false, error: e, message: e && e.message ? e.message : String(e) };
+    });
+}
+
+export function resetOrderNoInPocketBase(options) {
+    options = options || {};
+    var config = resolvePocketBaseConfig(options);
+    if (!config.baseUrl) {
+        return Promise.resolve({ ok: false, skipped: true, reason: "missing_pocketbase_url" });
+    }
+    if (typeof window !== "undefined" && window.location && window.location.protocol === "https:" &&
+        /^http:\/\//i.test(config.baseUrl) && !/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(config.baseUrl)) {
+        return Promise.resolve({ ok: false, skipped: true, reason: "mixed_content_http_pocketbase_url" });
+    }
+    var headers = { "Content-Type": "application/json" };
+    if (config.token) headers.Authorization = "Bearer " + config.token;
+    var settings = options.settings || {};
+    var state = settings.orderCounterState || {};
+    var payload = {
+        source: text(options.sourcePage || options.source || ""),
+        resetTime: text(options.resetTime || settings.counterResetTime || state.resetTime || "00:00"),
+        maxNo: numericOrUndefined(options.maxNo || settings.counterMaxNo || state.maxNo || 999) || 999
+    };
+    return requestJson(config.baseUrl + "/api/order-counter/reset", {
+        method: "POST",
+        headers: headers,
+        body: JSON.stringify(payload)
+    }, Number(options.timeoutMs || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS).then(function(data) {
+        return Object.assign({ ok: true }, data || {});
+    }).catch(function(e) {
+        return { ok: false, error: e, message: e && e.message ? e.message : String(e) };
+    });
+}
+
 function findExistingRecordId(config, orderId, headers, timeoutMs) {
     if (!orderId) return Promise.resolve("");
     var filter = 'order_id="' + encodeFilterValue(orderId) + '"';
@@ -205,7 +280,8 @@ export function writeOrderToPocketBase(orderId, orderData, options) {
             headers: headers,
             body: JSON.stringify(record)
         }, timeoutMs).then(function(data) {
-            return { ok: true, action: existingId ? "updated" : "created", id: (data && data.id) || existingId || "", record: record };
+            var mergedRecord = data && typeof data === "object" ? Object.assign({}, record, data) : record;
+            return { ok: true, action: existingId ? "updated" : "created", id: (data && data.id) || existingId || "", record: mergedRecord, data: data };
         });
     });
 }

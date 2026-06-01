@@ -691,9 +691,9 @@
 
 <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
-    import { getDatabase, ref, onValue, onChildAdded, onChildChanged, onChildRemoved, update, push, set, get, remove, runTransaction, query, orderByChild, limitToLast } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
+    import { getDatabase, ref, onValue, onChildAdded, onChildChanged, onChildRemoved, update, push, set, get, remove, query, orderByChild, limitToLast } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-    import { writeOrderToPocketBase, writeOrderWithFirebaseFallback } from "./pocketbase-order-writer.js";
+    import { allocateOrderNoFromPocketBase, resetOrderNoInPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback } from "./pocketbase-order-writer.js";
     const firebaseConfig = {
         apiKey:"AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
         authDomain:"breakfast-ai-system.firebaseapp.com",
@@ -3994,10 +3994,22 @@
                     .finally(function(){s.counterSaving=false;});
             },
             resetOrderCounterState:function(){
-                var key=this.getCounterBusinessDateKey(Date.now());
-                return update(ref(db,'settings'),{
-                    orderCounter:0,
-                    orderCounterState:{dateKey:key,cycleKey:this.getCounterCycleKey(Date.now()),value:0,resetTime:this.normalizeCounterResetTime(this.counterResetTime||'00:00'),maxNo:Math.max(1,Number(this.counterMaxNo||999)||999)}
+                var s=this;
+                var resetTime=this.normalizeCounterResetTime(this.counterResetTime||'00:00');
+                var maxNo=Math.max(1,Math.min(9999,Math.floor(Number(this.counterMaxNo||999)||999)));
+                return resetOrderNoInPocketBase({
+                    settings:this.settings,
+                    pocketBaseUrl:this.pocketBaseUrl,
+                    pocketBaseOrdersCollection:this.pocketBaseOrdersCollection,
+                    sourcePage:'pos',
+                    resetTime:resetTime,
+                    maxNo:maxNo
+                }).then(function(result){
+                    if(!result||!result.ok)throw new Error((result&&result.message)||'PocketBase counter reset failed');
+                    return update(ref(db,'settings'),{
+                        counterResetTime:resetTime,
+                        counterMaxNo:maxNo
+                    });
                 });
             },
             confirmResetCounter:function(){
@@ -4011,20 +4023,16 @@
                 var s=this;
                 var resetTime=s.normalizeCounterResetTime(s.counterResetTime||'00:00');
                 var maxNo=Math.max(1,Math.min(9999,Math.floor(Number(s.counterMaxNo||999)||999)));
-                var dateKey=s.getCounterBusinessDateKey(Date.now());
-                var cycleKey=s.getCounterCycleKey(Date.now());
-                var legacySeed=Number(s.counterLegacyValue||0)||0;
-                return runTransaction(ref(db,'settings/orderCounterState'),function(cur){
-                    var prev=Number(cur&&cur.value||0)||0;
-                    var curCycleKey=String((cur&&cur.cycleKey)||((cur&&cur.dateKey?cur.dateKey:'')+'@'+(cur&&cur.resetTime?cur.resetTime:'00:00')));
-                    if(!cur)prev=legacySeed;
-                    else if(curCycleKey!==cycleKey)prev=0;
-                    var next=prev+1;
-                    if(next>maxNo)next=1;
-                    return{dateKey:dateKey,cycleKey:cycleKey,value:next,resetTime:resetTime,maxNo:maxNo,updatedAt:Date.now()};
+                return allocateOrderNoFromPocketBase({
+                    settings:s.settings,
+                    pocketBaseUrl:s.pocketBaseUrl,
+                    pocketBaseOrdersCollection:s.pocketBaseOrdersCollection,
+                    sourcePage:'pos',
+                    resetTime:resetTime,
+                    maxNo:maxNo
                 }).then(function(result){
-                    var val=Number(result&&result.snapshot&&result.snapshot.val()&&result.snapshot.val().value||0)||1;
-                    return set(ref(db,'settings/orderCounter'),val).then(function(){return val;});
+                    if(result&&result.ok)return result;
+                    return {ok:false,message:(result&&result.message)||'PocketBase counter unavailable'};
                 });
             },
             openCashDrawer:function(){
@@ -5007,9 +5015,14 @@
                     timestamp:Date.now(),source:"pos",sourceLabel:"現場 POS",printSource:"POS","訂單來源":"POS",paymentMethod:"linepay"};
                 if(s.posOrderType==='dinein'&&s.posTableLabel)o.tableLabel=s.posTableLabel;
                 s.allocateNextOrderNo()
-                    .then(function(no){
-                        o.orderNo=no;
-                        o.counterCycleKey=s.getCounterCycleKey(o.timestamp||Date.now());
+                    .then(function(counter){
+                        var no=counter&&counter.ok?counter.orderNo:null;
+                        if(no){
+                            o.orderNo=no;
+                            o.counterCycleKey=counter.cycleKey||s.getCounterCycleKey(o.timestamp||Date.now());
+                        }else{
+                            o.counterPending=true;
+                        }
                                                 var orderDateKey=(o.pickupDate||((function(){var dd=new Date(o.timestamp||Date.now());return dd.getFullYear()+"-"+("0"+(dd.getMonth()+1)).slice(-2)+"-"+("0"+dd.getDate()).slice(-2);})()));
                         o.orderDateKey=orderDateKey;
                         var orderId=push(ref(db,"orders/"+orderDateKey)).key;
@@ -5018,6 +5031,12 @@
                             return set(bucketOrderRef,o);
                         }).then(function(result){
                             o._writeBackend=(result&&result.backend)||'firebase';
+                            var pbRecord=result&&result.pocketBase&&result.pocketBase.record;
+                            var pbNo=pbRecord&&Number(pbRecord.order_no||pbRecord.orderNo||0);
+                            if(!no&&Number.isFinite(pbNo)&&pbNo>0){
+                                o.orderNo=pbNo;
+                                o.counterPending=false;
+                            }
                             return {key:orderId,writeBackend:o._writeBackend};
                         });
                     })
@@ -5198,9 +5217,14 @@
                 if(storePrintTask)o.print_task=storePrintTask;
                 if(s.posOrderType==='dinein'&&s.posTableLabel)o.tableLabel=s.posTableLabel;
                 s.allocateNextOrderNo()
-                    .then(function(no){
-                        o.orderNo=no;
-                        o.counterCycleKey=s.getCounterCycleKey(o.timestamp||Date.now());
+                    .then(function(counter){
+                        var no=counter&&counter.ok?counter.orderNo:null;
+                        if(no){
+                            o.orderNo=no;
+                            o.counterCycleKey=counter.cycleKey||s.getCounterCycleKey(o.timestamp||Date.now());
+                        }else{
+                            o.counterPending=true;
+                        }
                                                 var orderDateKey=(o.pickupDate||((function(){var dd=new Date(o.timestamp||Date.now());return dd.getFullYear()+"-"+("0"+(dd.getMonth()+1)).slice(-2)+"-"+("0"+dd.getDate()).slice(-2);})()));
                         o.orderDateKey=orderDateKey;
                         var orderId=push(ref(db,"orders/"+orderDateKey)).key;
@@ -5209,6 +5233,12 @@
                             return set(bucketOrderRef,o);
                         }).then(function(result){
                             o._writeBackend=(result&&result.backend)||'firebase';
+                            var pbRecord=result&&result.pocketBase&&result.pocketBase.record;
+                            var pbNo=pbRecord&&Number(pbRecord.order_no||pbRecord.orderNo||0);
+                            if(!no&&Number.isFinite(pbNo)&&pbNo>0){
+                                o.orderNo=pbNo;
+                                o.counterPending=false;
+                            }
                             return {key:orderId,writeBackend:o._writeBackend};
                         });
                     })
