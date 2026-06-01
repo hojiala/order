@@ -24,6 +24,15 @@ function text(value) {
     return value === null || value === undefined ? "" : String(value);
 }
 
+function plainJson(value, fallback) {
+    if (value === null || value === undefined) return fallback;
+    try {
+        return JSON.parse(JSON.stringify(value));
+    } catch(e) {
+        return fallback;
+    }
+}
+
 function sourceLabelFor(orderData, sourcePage) {
     if (orderData && orderData.sourceLabel) return text(orderData.sourceLabel);
     var source = text(orderData && orderData.source);
@@ -109,8 +118,8 @@ export function buildPocketBaseOrderRecord(orderId, orderData, options) {
         pickup_mode: text(orderData.type || orderData.pickupMode || orderData.pickup_mode || ""),
         pickup_time: text(orderData.pickupTime || orderData.pickup_time || ""),
         total: numericOrUndefined(orderData.total),
-        customer: customerPayload(orderData, options),
-        items: Array.isArray(orderData.items) ? orderData.items : []
+        customer: plainJson(customerPayload(orderData, options), {}),
+        items: plainJson(Array.isArray(orderData.items) ? orderData.items : [], [])
     });
 }
 
