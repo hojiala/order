@@ -1,5 +1,6 @@
 const DEFAULT_COLLECTION = "orders";
 const DEFAULT_TIMEOUT_MS = 2500;
+const RESET_TIMEOUT_MS = 10000;
 
 function cleanBaseUrl(url) {
     var value = String(url || "").trim();
@@ -177,7 +178,11 @@ function requestJson(url, init, timeoutMs) {
     init = init || {};
     timeoutMs = timeoutMs || DEFAULT_TIMEOUT_MS;
     var controller = typeof AbortController !== "undefined" ? new AbortController() : null;
-    var timer = controller ? setTimeout(function() { controller.abort(); }, timeoutMs) : null;
+    var didTimeout = false;
+    var timer = controller ? setTimeout(function() {
+        didTimeout = true;
+        controller.abort();
+    }, timeoutMs) : null;
     if (controller) init.signal = controller.signal;
     return fetch(url, init).then(function(res) {
         return res.text().then(function(bodyText) {
@@ -194,6 +199,11 @@ function requestJson(url, init, timeoutMs) {
             }
             return body;
         });
+    }).catch(function(err) {
+        if (didTimeout) {
+            throw new Error("PocketBase request timeout after " + timeoutMs + "ms");
+        }
+        throw err;
     }).finally(function() {
         if (timer) clearTimeout(timer);
     });
@@ -264,7 +274,7 @@ export function resetOrderNoInPocketBase(options) {
         method: "POST",
         headers: headers,
         body: JSON.stringify(payload)
-    }, Number(options.timeoutMs || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS).then(function(data) {
+    }, Number(options.timeoutMs || RESET_TIMEOUT_MS) || RESET_TIMEOUT_MS).then(function(data) {
         return Object.assign({ ok: true }, data || {});
     }).catch(function(e) {
         return { ok: false, error: e, message: e && e.message ? e.message : String(e) };
