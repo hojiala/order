@@ -774,7 +774,7 @@
                 posOrderType:'takeout',posTableLabel:'',posTables:[],cartDragIdx:null,
                 posPickupDate:"",posPickupTime:"",
                 orderMode:"pos",editingOrder:null,
-                onlineOrders:[],ordersLoading:false,assigningNos:{},orderBuckets:{},orderBucketUnsubs:[],integrationOrdersUnsub:null,integrationOrdersCache:[],phoneOrdersUnsub:null,phoneOrdersCache:[],useIntegrationView:false,ordersReadBackend:'checking',pbOrdersPollTimer:null,pbOrdersReadInFlight:false,remoteStatusOverrides:{},remoteStatusOverridesUnsub:null,orderHydrateInFlight:{},orderHydrateDone:{},
+                onlineOrders:[],ordersLoading:false,assigningNos:{},orderBuckets:{},orderBucketUnsubs:[],integrationOrdersUnsub:null,integrationOrdersCache:[],phoneOrdersUnsub:null,phoneOrdersCache:[],useIntegrationView:false,ordersReadBackend:'checking',pbOrdersPollTimer:null,pbOrdersReadInFlight:false,pbOrdersEverConnected:false,pbOrdersFailureCount:0,remoteStatusOverrides:{},remoteStatusOverridesUnsub:null,orderHydrateInFlight:{},orderHydrateDone:{},
                 orderSearch:"",
                 activeItem:null,tempQty:1,tempNote:"",tempDrinkNote:"",tempSels:[],tempOG:{},tempPosExtras:[],tempComboSize:{},tempDrinkAddons:[],
                 toastMsg:"",toastTimer:null,lastOrderId:null,
@@ -963,6 +963,7 @@
                 if(this.pbOrdersPollTimer)clearInterval(this.pbOrdersPollTimer);
                 this.pbOrdersPollTimer=null;
                 this.pbOrdersReadInFlight=false;
+                this.pbOrdersFailureCount=0;
             },
             clearOrderBucketListeners:function(){
                 var s=this;
@@ -992,6 +993,8 @@
                         s.resetPhoneOrdersListener();
                     }
                     s.ordersReadBackend='pocketbase';
+                    s.pbOrdersEverConnected=true;
+                    s.pbOrdersFailureCount=0;
                     if(carry.length)s.backfillOrdersToPocketBaseBestEffort(carry,'pos_firebase_fallback');
                     var rows=(Array.isArray(result.orders)?result.orders:[]).concat(carry);
                     s.integrationOrdersCache=s.normalizeIncomingOrders(rows).map(function(o){return s.applyStatusOverrideToOrder(o);});
@@ -1019,6 +1022,11 @@
                 s.ordersLoading=true;
                 var run=function(){
                     s.readPocketBaseOrdersPrimary().catch(function(err){
+                        s.pbOrdersFailureCount=(s.pbOrdersFailureCount||0)+1;
+                        if(s.pbOrdersEverConnected&&s.pbOrdersFailureCount<3){
+                            console.warn('PocketBase orders read retrying; keeping PB primary:',err&&err.message?err.message:err);
+                            return;
+                        }
                         s.switchToFirebaseOrdersFallback(err);
                     });
                 };
@@ -4068,6 +4076,10 @@
                         sourceRecordPath:"orders_archive/"+dateKey+"/"+o.id,
                         archivedFrom:sourcePath||("orders/"+dateKey+"/"+o.id)
                     });
+                    phoneCmds.push(s.writeRemoteStatusOverride(archivedOrder,archivedOrder.status).catch(function(err){
+                        console.warn('archive status override failed:',err&&err.message?err.message:err);
+                        return false;
+                    }));
                     updates["orders_archive/" + dateKey + "/" + o.id] = archivedOrder;
                     dateCandidates.forEach(function(k){updates["orders/"+k+"/"+o.id]=null;});
                   });

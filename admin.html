@@ -377,6 +377,8 @@
                     ordersReadBackend: 'checking',
                     pbOrdersPollTimer: null,
                     pbOrdersReadInFlight: false,
+                    pbOrdersEverConnected: false,
+                    pbOrdersFailureCount: 0,
                     useIntegrationView: false,
                     orderSearch: '',
                     toastMsg: '', toastTimer: null,
@@ -2277,6 +2279,7 @@
                     if (this.pbOrdersPollTimer) clearInterval(this.pbOrdersPollTimer);
                     this.pbOrdersPollTimer = null;
                     this.pbOrdersReadInFlight = false;
+                    this.pbOrdersFailureCount = 0;
                 },
                 clearOrderBucketListeners() {
                     (this.orderBucketUnsubs || []).forEach(fn => { try { fn && fn(); } catch(_) {} });
@@ -2304,6 +2307,8 @@
                             this.resetPhoneOrdersListener();
                         }
                         this.ordersReadBackend = 'pocketbase';
+                        this.pbOrdersEverConnected = true;
+                        this.pbOrdersFailureCount = 0;
                         if (carry.length) this.backfillOrdersToPocketBaseBestEffort(carry, 'admin_firebase_fallback');
                         const rows = (Array.isArray(result.orders) ? result.orders : []).concat(carry);
                         this.integrationOrdersCache = this.normalizeIncomingOrders(rows);
@@ -2326,6 +2331,11 @@
                     this.resetPocketBaseOrdersPoll();
                     const run = () => {
                         this.readPocketBaseOrdersPrimary().catch((err) => {
+                            this.pbOrdersFailureCount = (this.pbOrdersFailureCount || 0) + 1;
+                            if (this.pbOrdersEverConnected && this.pbOrdersFailureCount < 3) {
+                                console.warn('PocketBase orders read retrying; keeping PB primary:', err && err.message ? err.message : err);
+                                return;
+                            }
                             this.switchToFirebaseOrdersFallback(err);
                         });
                     };
@@ -3270,6 +3280,10 @@
                             const archivedOrder = Object.assign({}, o, { status: (o.status === 'cancelled' ? 'cancelled' : 'archived') });
                             const d = new Date(o.timestamp || Date.now());
                             const dateKey = o.orderDateKey || o.pickupDate || (d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2));
+                            phoneCmds.push(this.writeRemoteStatusOverride(archivedOrder, archivedOrder.status).catch(err => {
+                                console.warn('archive status override failed', err && err.message ? err.message : err);
+                                return false;
+                            }));
                             updates['orders_archive/' + dateKey + '/' + o.id] = archivedOrder;
                             updates['orders/' + dateKey + '/' + o.id] = null;
                         }
