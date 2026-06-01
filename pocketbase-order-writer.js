@@ -39,16 +39,30 @@ function sourceLabelFor(orderData, sourcePage) {
 
 function customerPayload(orderData) {
     var raw = orderData && orderData.customer;
+    var payload;
     if (raw && typeof raw === "object" && !Array.isArray(raw)) {
-        return Object.assign({}, raw);
+        payload = Object.assign({}, raw);
+    } else {
+        payload = {
+            name: text(raw || (orderData && orderData.tableLabel) || ""),
+            phone: text(orderData && orderData.phone),
+            deviceId: text(orderData && (orderData.deviceId || orderData.tableDevice)),
+            tableLabel: text(orderData && orderData.tableLabel),
+            tableType: text(orderData && orderData.tableType)
+        };
     }
-    return {
-        name: text(raw || (orderData && orderData.tableLabel) || ""),
-        phone: text(orderData && orderData.phone),
-        deviceId: text(orderData && (orderData.deviceId || orderData.tableDevice)),
-        tableLabel: text(orderData && orderData.tableLabel),
-        tableType: text(orderData && orderData.tableType)
-    };
+    payload.phone = payload.phone || text(orderData && orderData.phone);
+    payload.deviceId = payload.deviceId || text(orderData && (orderData.deviceId || orderData.tableDevice));
+    payload.tableLabel = payload.tableLabel || text(orderData && orderData.tableLabel);
+    payload.tableType = payload.tableType || text(orderData && orderData.tableType);
+    payload.orderNote = payload.orderNote || text(orderData && orderData.orderNote);
+    payload.printTask = payload.printTask || text(orderData && orderData.print_task);
+    payload.timestamp = payload.timestamp || numericOrUndefined(orderData && orderData.timestamp);
+    payload.counterCycleKey = payload.counterCycleKey || text(orderData && orderData.counterCycleKey);
+    payload.printSource = payload.printSource || text(orderData && (orderData.printSource || orderData["訂單來源"]));
+    if (!payload.stationMap && orderData && Array.isArray(orderData.stationMap)) payload.stationMap = orderData.stationMap;
+    if (!payload.stationSettings && orderData && Array.isArray(orderData.stationSettings)) payload.stationSettings = orderData.stationSettings;
+    return payload;
 }
 
 function compactRecord(record) {
@@ -194,4 +208,29 @@ export function writeOrderToPocketBase(orderId, orderData, options) {
             return { ok: true, action: existingId ? "updated" : "created", id: (data && data.id) || existingId || "", record: record };
         });
     });
+}
+
+export function writeOrderWithFirebaseFallback(orderId, orderData, options) {
+    options = options || {};
+    var writeToFirebase = typeof options.writeToFirebase === "function" ? options.writeToFirebase : null;
+    var fallback = function(reason) {
+        if (!writeToFirebase) {
+            return Promise.resolve({ ok: false, backend: "none", fallback: false, pocketBase: reason });
+        }
+        return Promise.resolve()
+            .then(function() { return writeToFirebase(reason); })
+            .then(function(firebaseResult) {
+                return { ok: true, backend: "firebase", fallback: true, pocketBase: reason, firebase: firebaseResult };
+            });
+    };
+    return writeOrderToPocketBase(orderId, orderData, options)
+        .then(function(pbResult) {
+            if (pbResult && pbResult.ok) {
+                return { ok: true, backend: "pocketbase", fallback: false, pocketBase: pbResult };
+            }
+            return fallback(pbResult || { ok: false, reason: "pocketbase_not_available" });
+        })
+        .catch(function(err) {
+            return fallback({ ok: false, error: err, message: err && err.message ? err.message : String(err) });
+        });
 }

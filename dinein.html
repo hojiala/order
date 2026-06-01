@@ -539,7 +539,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getAuth, signInAnonymously, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
     import { getDatabase, ref, push, set, get, update, remove, onValue, runTransaction, query, orderByChild, equalTo, limitToLast } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
-    import { writeOrderToPocketBase } from "./pocketbase-order-writer.js";
+    import { writeOrderToPocketBase, writeOrderWithFirebaseFallback } from "./pocketbase-order-writer.js";
 
     const firebaseConfig = {
         apiKey:"AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -777,6 +777,17 @@
                 }).catch(function(e){
                     console.warn('PocketBase order sync failed:',e&&e.message?e.message:e);
                     return {ok:false,error:e};
+                });
+            },
+            writeOrderPrimary:function(orderId,orderData,sourcePage,writeToFirebase){
+                return writeOrderWithFirebaseFallback(orderId,orderData,{
+                    settings:this.settings,
+                    sourcePage:sourcePage||'dinein',
+                    writeToFirebase:writeToFirebase
+                }).then(function(result){
+                    if(result&&result.backend==='pocketbase')console.info('Order saved to PocketBase primary:',orderId);
+                    else if(result&&result.backend==='firebase')console.warn('PocketBase unavailable; order saved to Firebase fallback:',orderId);
+                    return result;
                 });
             },
             normalizeCategorySubcategories:function(raw,categories){
@@ -1430,19 +1441,25 @@
                     if(payMethod!=='linepay'&&payMethod!=='linepay_qr'){
                         orderData.print_task='kitchen_'+Date.now();
                     }
-                    return set(bucketOrderRef,orderData).then(function(){
-                        return s.syncPocketBaseOrder(orderId,orderData,'dinein').then(function(){return assignedNo;});
+                    return s.writeOrderPrimary(orderId,orderData,'dinein',function(){
+                        return set(bucketOrderRef,orderData);
+                    }).then(function(result){
+                        orderData._writeBackend=(result&&result.backend)||'firebase';
+                        return assignedNo;
                     });
                 })
                 .catch(function(){
                     // 取流水號失敗（權限等），仍送出訂單但不含 orderNo（後台補發）
-                    return set(bucketOrderRef,orderData).then(function(){
-                        return s.syncPocketBaseOrder(orderId,orderData,'dinein').then(function(){return null;});
+                    return s.writeOrderPrimary(orderId,orderData,'dinein',function(){
+                        return set(bucketOrderRef,orderData);
+                    }).then(function(result){
+                        orderData._writeBackend=(result&&result.backend)||'firebase';
+                        return null;
                     });
                 })
                 .then(function(assignedNo){
                     // ★ 非 LINE Pay 且有 print_task：寫入 print_queue 觸發 Node-RED 列印
-                    if(assignedNo&&orderData.print_task){
+                    if(assignedNo&&orderData.print_task&&orderData._writeBackend==='firebase'){
                         try{
                             var queueData=Object.assign({},orderData);
                             set(ref(db,'print_queue/'+orderId),queueData).catch(function(e){console.warn('print_queue寫入失敗:',e.message);});

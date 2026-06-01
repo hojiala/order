@@ -693,7 +693,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getDatabase, ref, onValue, onChildAdded, onChildChanged, onChildRemoved, update, push, set, get, remove, runTransaction, query, orderByChild, limitToLast } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-    import { writeOrderToPocketBase } from "./pocketbase-order-writer.js";
+    import { writeOrderToPocketBase, writeOrderWithFirebaseFallback } from "./pocketbase-order-writer.js";
     const firebaseConfig = {
         apiKey:"AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
         authDomain:"breakfast-ai-system.firebaseapp.com",
@@ -907,6 +907,19 @@
                 }).catch(function(e){
                     console.warn('PocketBase order sync failed:',e&&e.message?e.message:e);
                     return {ok:false,error:e};
+                });
+            },
+            writeOrderPrimary:function(orderId,orderData,sourcePage,writeToFirebase){
+                return writeOrderWithFirebaseFallback(orderId,orderData,{
+                    settings:this.settings,
+                    pocketBaseUrl:this.pocketBaseUrl,
+                    pocketBaseOrdersCollection:this.pocketBaseOrdersCollection,
+                    sourcePage:sourcePage||'pos',
+                    writeToFirebase:writeToFirebase
+                }).then(function(result){
+                    if(result&&result.backend==='pocketbase')console.info('Order saved to PocketBase primary:',orderId);
+                    else if(result&&result.backend==='firebase')console.warn('PocketBase unavailable; order saved to Firebase fallback:',orderId);
+                    return result;
                 });
             },
             selectMenuCategory:function(cat){
@@ -5001,9 +5014,11 @@
                         o.orderDateKey=orderDateKey;
                         var orderId=push(ref(db,"orders/"+orderDateKey)).key;
                         var bucketOrderRef=ref(db,"orders/"+orderDateKey+"/"+orderId);
-                        return set(bucketOrderRef,o).then(function(){
-                            s.syncPocketBaseOrder(orderId,o,'pos');
-                            return {key:orderId};
+                        return s.writeOrderPrimary(orderId,o,'pos',function(){
+                            return set(bucketOrderRef,o);
+                        }).then(function(result){
+                            o._writeBackend=(result&&result.backend)||'firebase';
+                            return {key:orderId,writeBackend:o._writeBackend};
                         });
                     })
                     .then(function(snap){
@@ -5190,9 +5205,11 @@
                         o.orderDateKey=orderDateKey;
                         var orderId=push(ref(db,"orders/"+orderDateKey)).key;
                         var bucketOrderRef=ref(db,"orders/"+orderDateKey+"/"+orderId);
-                        return set(bucketOrderRef,o).then(function(){
-                            s.syncPocketBaseOrder(orderId,o,'pos');
-                            return {key:orderId};
+                        return s.writeOrderPrimary(orderId,o,'pos',function(){
+                            return set(bucketOrderRef,o);
+                        }).then(function(result){
+                            o._writeBackend=(result&&result.backend)||'firebase';
+                            return {key:orderId,writeBackend:o._writeBackend};
                         });
                     })
                     .then(function(snap){
@@ -5289,8 +5306,8 @@
                         }else{
                             // ★ 店內付款：立即列印；print_task 已隨訂單本體一起寫入，避免 POS 監聽器補印第二次
                             Promise.resolve().then(function(){
-                                // ★ 寫入 print_queue 供 Node-RED
-                                s.writeToPrintQueue(orderId,storePrintTask,o);
+                                // ★ Firebase fallback 時由前端補寫 print_queue；PB primary 時由 PocketBase hook 同步
+                                if(o._writeBackend==='firebase')s.writeToPrintQueue(orderId,storePrintTask,o);
                                 if(isCash){
                                     s.toast("✅ 現金已付款 $"+o.total+" (No."+String(o.orderNo).padStart(3,"0")+")");
                                 }else{
