@@ -1,6 +1,7 @@
 const DEFAULT_COLLECTION = "orders";
 const DEFAULT_TIMEOUT_MS = 2500;
 const RESET_TIMEOUT_MS = 10000;
+let backfillPausedUntil = 0;
 
 function cleanBaseUrl(url) {
     var value = String(url || "").trim();
@@ -32,6 +33,40 @@ function plainJson(value, fallback) {
     } catch(e) {
         return fallback;
     }
+}
+
+function jsonObject(value) {
+    if (value && typeof value === "object" && !Array.isArray(value)) return plainJson(value, {});
+    if (typeof value === "string" && value.trim()) {
+        try {
+            var parsed = JSON.parse(value);
+            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+        } catch(e) {}
+    }
+    return {};
+}
+
+function jsonArray(value) {
+    if (Array.isArray(value)) return plainJson(value, []);
+    if (typeof value === "string" && value.trim()) {
+        try {
+            var parsed = JSON.parse(value);
+            if (Array.isArray(parsed)) return parsed;
+        } catch(e) {}
+    }
+    return [];
+}
+
+function timestampFromRecord(record, customer) {
+    var ts = numericOrUndefined(customer && customer.timestamp);
+    if (ts) return ts;
+    var raw = text((record && (record.created || record.updated)) || "");
+    var parsed = raw ? Date.parse(raw) : NaN;
+    return Number.isFinite(parsed) ? parsed : Date.now();
+}
+
+function padOrderNo(value) {
+    return String(Math.max(0, Number(value) || 0)).padStart(3, "0");
 }
 
 function sourceLabelFor(orderData, sourcePage) {
@@ -168,6 +203,184 @@ export function resolvePocketBaseConfig(options) {
         storageValue(["pocketbase_token"])
     );
     return { baseUrl: baseUrl, collection: collection, token: token };
+}
+
+export function pocketBaseRecordToOrder(record) {
+    record = record || {};
+    var customer = jsonObject(record.customer);
+    var items = jsonArray(record.items);
+    var dateKey = text(record.date_key || record.dateKey || customer.orderDateKey || customer.pickupDate);
+    var orderId = text(record.order_id || record.orderId || record.id);
+    var source = text(record.source || "web");
+    var paymentMethod = text(record.payment_method || record.paymentMethod || "");
+    var paymentStatus = text(record.payment_status || record.paymentStatus || "");
+    var pickupMode = text(record.pickup_mode || record.pickupMode || "");
+    var orderNo = numericOrUndefined(record.order_no || record.orderNo);
+    var timestamp = timestampFromRecord(record, customer);
+    var sourceRecordPath = text(customer.sourceRecordPath || customer.source_record_path);
+    if (!sourceRecordPath && dateKey && orderId) sourceRecordPath = "orders/" + dateKey + "/" + orderId;
+    var order = {
+        id: orderId || text(record.id),
+        source: source,
+        sourceLabel: text(record.source_label || record.sourceLabel || sourceLabelFor({ source: source }, source)),
+        sourceOrderId: orderId || text(record.id),
+        status: text(record.status || "new"),
+        orderNo: orderNo || null,
+        serialNumber: orderNo ? padOrderNo(orderNo) : text(record.serialNumber || ""),
+        timestamp: timestamp,
+        createdAt: timestamp,
+        updatedAt: text(record.updated || ""),
+        pickupDate: dateKey,
+        orderDateKey: dateKey,
+        _sourceDateKey: dateKey,
+        pickupTime: text(record.pickup_time || record.pickupTime || ""),
+        pickupTimeLabel: text(record.pickup_time || record.pickupTime || ""),
+        type: pickupMode,
+        pickupMode: pickupMode,
+        tableLabel: text(customer.tableLabel),
+        tableType: text(customer.tableType),
+        customer: customer.name || customer.tableLabel || "",
+        phone: text(customer.phone),
+        paymentMethod: paymentMethod,
+        paymentStatus: paymentStatus,
+        payment: { method: paymentMethod, status: paymentStatus },
+        items: items,
+        total: numericOrUndefined(record.total) || 0,
+        totals: { finalTotal: numericOrUndefined(record.total) || 0 },
+        orderNote: text(customer.orderNote),
+        counterCycleKey: text(customer.counterCycleKey),
+        print_task: text(customer.printTask || customer.print_task),
+        sourceRecordPath: sourceRecordPath,
+        _pocketBaseRecordId: text(record.id),
+        _readBackend: "pocketbase"
+    };
+    if (customer.deviceId) order.deviceId = text(customer.deviceId);
+    if (Array.isArray(customer.stationMap)) order.stationMap = customer.stationMap;
+    if (Array.isArray(customer.stationSettings)) order.stationSettings = customer.stationSettings;
+    return order;
+}
+
+function dateKeyFilter(dateKeys) {
+    var keys = Array.isArray(dateKeys) ? dateKeys.map(text).filter(Boolean) : [];
+    keys = keys.filter(function(v, i, arr) { return arr.indexOf(v) === i; });
+    if (!keys.length) return "";
+    return "(" + keys.map(function(key) { return 'date_key="' + encodeFilterValue(key) + '"'; }).join(" || ") + ")";
+}
+
+export function listOrdersFromPocketBase(options) {
+    options = options || {};
+    var config = resolvePocketBaseConfig(options);
+    if (!config.baseUrl) {
+        return Promise.resolve({ ok: false, skipped: true, reason: "missing_pocketbase_url", orders: [] });
+    }
+    if (typeof window !== "undefined" && window.location && window.location.protocol === "https:" &&
+        /^http:\/\//i.test(config.baseUrl) && !/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(config.baseUrl)) {
+        return Promise.resolve({ ok: false, skipped: true, reason: "mixed_content_http_pocketbase_url", orders: [] });
+    }
+    var headers = {};
+    if (config.token) headers.Authorization = "Bearer " + config.token;
+    var perPage = Math.max(1, Math.min(500, Math.floor(Number(options.perPage || 300) || 300)));
+    var timeoutMs = Number(options.timeoutMs || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
+    var filter = dateKeyFilter(options.dateKeys);
+    var baseUrl = config.baseUrl + "/api/collections/" + encodeURIComponent(config.collection) + "/records";
+    var sort = text(options.sort || "-date_key,-order_no,-created");
+    var maxPages = Math.max(1, Math.floor(Number(options.maxPages || 8) || 8));
+    var records = [];
+
+    function fetchPage(page) {
+        var url = baseUrl + "?page=" + page + "&perPage=" + perPage + "&sort=" + encodeURIComponent(sort);
+        if (filter) url += "&filter=" + encodeURIComponent(filter);
+        return requestJson(url, { method: "GET", headers: headers }, timeoutMs).then(function(data) {
+            var items = Array.isArray(data && data.items) ? data.items : [];
+            records = records.concat(items);
+            var totalPages = Number(data && data.totalPages) || page;
+            if (page < totalPages && page < maxPages) return fetchPage(page + 1);
+            return records;
+        });
+    }
+
+    return fetchPage(1).then(function(rows) {
+        return {
+            ok: true,
+            backend: "pocketbase",
+            records: rows,
+            orders: rows.map(pocketBaseRecordToOrder)
+        };
+    }).catch(function(e) {
+        return { ok: false, backend: "pocketbase", error: e, message: e && e.message ? e.message : String(e), orders: [] };
+    });
+}
+
+function backfillThrottleKey(order) {
+    var id = text(order && (order.id || order.sourceOrderId || order.orderId));
+    if (id) return id;
+    return [
+        text(order && (order.source || "")),
+        text(order && (order.orderDateKey || order.pickupDate || "")),
+        text(order && (order.orderNo || order.serialNumber || "")),
+        text(order && (order.phone || ""))
+    ].join("|");
+}
+
+function wasRecentlyBackfilled(key, ttlMs) {
+    try {
+        if (typeof localStorage === "undefined" || !key) return false;
+        var raw = Number(localStorage.getItem("pb_backfill_ok_" + key) || 0);
+        return raw && Date.now() - raw < ttlMs;
+    } catch(e) {
+        return false;
+    }
+}
+
+function markBackfilled(key) {
+    try {
+        if (typeof localStorage !== "undefined" && key) localStorage.setItem("pb_backfill_ok_" + key, String(Date.now()));
+    } catch(e) {}
+}
+
+export function backfillOrdersToPocketBase(orders, options) {
+    options = options || {};
+    var now = Date.now();
+    if (now < backfillPausedUntil) {
+        return Promise.resolve({ ok: false, paused: true, attempted: 0, success: 0, failed: 0 });
+    }
+    var rows = Array.isArray(orders) ? orders : [];
+    var limit = Math.max(1, Math.min(100, Math.floor(Number(options.limit || 25) || 25)));
+    var ttlMs = Math.max(10000, Number(options.throttleMs || 300000) || 300000);
+    var seen = {};
+    var candidates = rows.filter(function(order) {
+        if (!order || typeof order !== "object") return false;
+        if (order._readBackend === "pocketbase" || order._pocketBaseRecordId) return false;
+        var key = backfillThrottleKey(order);
+        if (!key || seen[key] || wasRecentlyBackfilled(key, ttlMs)) return false;
+        seen[key] = true;
+        return true;
+    }).slice(0, limit);
+    var success = 0;
+    var failed = 0;
+
+    return candidates.reduce(function(promise, order) {
+        return promise.then(function() {
+            var key = backfillThrottleKey(order);
+            return writeOrderToPocketBase(text(order.id || order.sourceOrderId || order.orderId), order, Object.assign({}, options, {
+                sourcePage: text(order.source || options.sourcePage || "firebase_fallback"),
+                timeoutMs: Number(options.timeoutMs || 1200) || 1200
+            })).then(function(result) {
+                if (result && result.ok) {
+                    success++;
+                    markBackfilled(key);
+                    return;
+                }
+                failed++;
+                backfillPausedUntil = Date.now() + 10000;
+            }).catch(function() {
+                failed++;
+                backfillPausedUntil = Date.now() + 10000;
+            });
+        });
+    }, Promise.resolve()).then(function() {
+        return { ok: failed === 0, attempted: candidates.length, success: success, failed: failed };
+    });
 }
 
 function encodeFilterValue(value) {

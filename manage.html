@@ -1645,6 +1645,7 @@ window._doCountUp = function() {
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getDatabase, ref, set, get, push, update, remove, onValue, onChildAdded, onChildChanged, onChildRemoved, query, orderByChild, equalTo, limitToLast } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
+    import { listOrdersFromPocketBase, backfillOrdersToPocketBase } from "./pocketbase-order-writer.js";
 
     const firebaseConfig = {
         apiKey: "AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -1741,7 +1742,7 @@ window._doCountUp = function() {
                     dineinIsOpen: true,
                     openTime: '06:00', closeTime: '13:15',
                     dailyHours: {},
-                    pickupDays: 3, pickupInterval: 30, linePayServerUrl: '', linePayConfirmUrl: '', announcements: [],
+                    pickupDays: 3, pickupInterval: 30, linePayServerUrl: '', linePayConfirmUrl: '', pocketBaseUrl: '', pocketBaseOrdersCollection: 'orders', announcements: [],
                     holidays: [],
                     weeklyDaysOff: [0],
                     dailyThemes: cloneDefaultDailyThemes(),
@@ -5158,6 +5159,18 @@ window._doCountUp = function() {
                     this.statsSortDir = key === 'total' || key === 'orderNo' ? -1 : 1;
                 }
             },
+            backfillStatsOrdersToPocketBase: function(orders) {
+                var self = this;
+                if (!Array.isArray(orders) || !orders.length) return Promise.resolve({ ok: false, attempted: 0 });
+                return backfillOrdersToPocketBase(orders, {
+                    settings: self.settings || {},
+                    pocketBaseUrl: self.settings && self.settings.pocketBaseUrl,
+                    pocketBaseOrdersCollection: (self.settings && self.settings.pocketBaseOrdersCollection) || 'orders',
+                    sourcePage: 'manage_firebase_fallback',
+                    limit: 50,
+                    timeoutMs: 1200
+                }).catch(function() { return { ok: false }; });
+            },
             loadStats: function() {
                 var self = this;
                 self.statsLoading = true;
@@ -5167,6 +5180,36 @@ window._doCountUp = function() {
                 }
                 var datesToFetch = self.buildDateListForStatsMode(self.statsMode);
                 self.reportRevenueMode = self.getReportRevenueModeForStats(datesToFetch);
+                if (!self._forceFirebaseStatsOnce) {
+                    return listOrdersFromPocketBase({
+                        settings: self.settings || {},
+                        pocketBaseUrl: self.settings && self.settings.pocketBaseUrl,
+                        pocketBaseOrdersCollection: (self.settings && self.settings.pocketBaseOrdersCollection) || 'orders',
+                        sourcePage: 'manage',
+                        dateKeys: datesToFetch,
+                        perPage: 500,
+                        maxPages: 12,
+                        timeoutMs: 2200
+                    }).then(function(result) {
+                        if (!result || !result.ok) throw new Error((result && result.message) || 'PocketBase stats unavailable');
+                        return get(ref(db, 'integration_sync/display_status_overrides'))
+                            .then(function(snap) { return snap.exists() ? (snap.val() || {}) : {}; })
+                            .catch(function() { return {}; })
+                            .then(function(overrides) {
+                                self.remoteStatusOverrides = overrides || {};
+                                self.allOrdersCache = (Array.isArray(result.orders) ? result.orders : []).map(function(o) {
+                                    return self.applyStatusOverrideToOrder(self.normalizeStatsOrder(o));
+                                });
+                                self.doFilter();
+                                return self.statsOrders;
+                            });
+                    }).catch(function(e) {
+                        console.warn('PocketBase stats read failed; using Firebase fallback:', e && e.message ? e.message : e);
+                        self._forceFirebaseStatsOnce = true;
+                        return self.loadStats();
+                    });
+                }
+                self._forceFirebaseStatsOnce = false;
 
                 var resolveMergeKey = function(order) {
                     if (!order || typeof order !== 'object') return '';
@@ -5476,6 +5519,7 @@ window._doCountUp = function() {
                     phoneOrders.forEach(function(o){ mergeOrderById(mergedMap, o); });
                     integrationOrders.forEach(function(o){ mergeOrderById(mergedMap, o); });
                     bucketOrders.forEach(function(o){ mergeOrderById(mergedMap, o); });
+                    self.backfillStatsOrdersToPocketBase(Object.values(mergedMap));
                     self.allOrdersCache = collapseStatsByDisplaySignature(collapseMergedStatsValues(Object.values(mergedMap))).map(function(o) { return self.applyStatusOverrideToOrder(o); });
                     self.doFilter();
                     return self.statsOrders;
@@ -5643,6 +5687,8 @@ window._doCountUp = function() {
                             dineinPassword: s.dineinPassword || '0000',
                             linePayServerUrl: s.linePayServerUrl || '',
                             linePayConfirmUrl: s.linePayConfirmUrl || '',
+                            pocketBaseUrl: s.pocketBaseUrl || s.pocketbaseUrl || '',
+                            pocketBaseOrdersCollection: s.pocketBaseOrdersCollection || s.pocketbaseOrdersCollection || 'orders',
                             announcements: self.normalizeAnnouncementsForSave(s.announcements || []),
                             hideAllTab: !!s.hideAllTab,
                             posTables: s.posTables || [],
@@ -5652,6 +5698,10 @@ window._doCountUp = function() {
                         self.qrBaseUrl = s.qrBaseUrl || '';
                         self.qrPin = s.dineinPin ? String(s.dineinPin) : '';
                         self.qrEntries = s.qrEntries || [];
+                        if (self.settings.pocketBaseUrl && !self._statsReloadedAfterSettings) {
+                            self._statsReloadedAfterSettings = true;
+                            self.loadStats();
+                        }
                     }
                 }).catch(function(e) { console.error('讀取設定失敗:', e); });
             },
@@ -5679,6 +5729,8 @@ window._doCountUp = function() {
                     dineinPassword: self.settings.dineinPassword || '0000',
                     linePayServerUrl: self.settings.linePayServerUrl || '',
                     linePayConfirmUrl: self.settings.linePayConfirmUrl || '',
+                    pocketBaseUrl: self.settings.pocketBaseUrl || '',
+                    pocketBaseOrdersCollection: self.settings.pocketBaseOrdersCollection || 'orders',
                     announcements: self.settings.announcements || [],
                     hideAllTab: !!self.settings.hideAllTab,
                     posTables: self.settings.posTables || [],

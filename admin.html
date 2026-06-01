@@ -271,7 +271,7 @@
         import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
         import { getDatabase, ref, onValue, onChildAdded, onChildChanged, onChildRemoved, update, set, get, remove, query, orderByChild, limitToLast } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
         import { getAuth, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-        import { allocateOrderNoFromPocketBase } from "./pocketbase-order-writer.js";
+        import { allocateOrderNoFromPocketBase, listOrdersFromPocketBase, backfillOrdersToPocketBase } from "./pocketbase-order-writer.js";
 
         // ★★★ 請貼入您相同的 Firebase 配置 ★★★
         const firebaseConfig = {
@@ -368,6 +368,9 @@
                     pocketBaseUrl: '',
                     pocketBaseOrdersCollection: 'orders',
                     integrationOrdersUnsub: null,
+                    ordersReadBackend: 'firebase',
+                    pbOrdersPollTimer: null,
+                    pbOrdersReadInFlight: false,
                     useIntegrationView: false,
                     orderSearch: '',
                     toastMsg: '', toastTimer: null,
@@ -2240,9 +2243,92 @@
                 async logout() {
                     try { await signOut(auth); } catch (error) { console.error("登出失敗", error); }
                 },
+                backfillOrdersToPocketBaseBestEffort(orders, sourcePage) {
+                    if (!Array.isArray(orders) || !orders.length) return Promise.resolve({ ok: false, attempted: 0 });
+                    return backfillOrdersToPocketBase(orders, {
+                        settings: this.settings || {},
+                        pocketBaseUrl: this.pocketBaseUrl,
+                        pocketBaseOrdersCollection: this.pocketBaseOrdersCollection,
+                        sourcePage: sourcePage || 'admin_firebase_fallback',
+                        limit: 25,
+                        timeoutMs: 1200
+                    }).catch(() => ({ ok: false }));
+                },
+                collectFirebaseFallbackOrders() {
+                    const out = [];
+                    (Array.isArray(this.integrationOrdersCache) ? this.integrationOrdersCache : []).forEach(o => { if (o) out.push(o); });
+                    (Array.isArray(this.phoneOrdersCache) ? this.phoneOrdersCache : []).forEach(o => { if (o) out.push(o); });
+                    Object.keys(this.orderBuckets || {}).forEach((dateKey) => {
+                        const bucket = this.orderBuckets[dateKey] || {};
+                        Object.keys(bucket).forEach((id) => {
+                            const o = bucket[id];
+                            if (o && typeof o === 'object') out.push(Object.assign({ id, orderDateKey: dateKey, pickupDate: o.pickupDate || dateKey }, o));
+                        });
+                    });
+                    return out;
+                },
+                resetPocketBaseOrdersPoll() {
+                    if (this.pbOrdersPollTimer) clearInterval(this.pbOrdersPollTimer);
+                    this.pbOrdersPollTimer = null;
+                    this.pbOrdersReadInFlight = false;
+                },
+                clearOrderBucketListeners() {
+                    (this.orderBucketUnsubs || []).forEach(fn => { try { fn && fn(); } catch(_) {} });
+                    this.orderBucketUnsubs = [];
+                    this.orderBuckets = {};
+                },
+                readPocketBaseOrdersPrimary() {
+                    if (this.pbOrdersReadInFlight) return Promise.resolve(false);
+                    this.pbOrdersReadInFlight = true;
+                    const carry = this.ordersReadBackend === 'firebase' ? this.collectFirebaseFallbackOrders() : [];
+                    return listOrdersFromPocketBase({
+                        settings: this.settings || {},
+                        pocketBaseUrl: this.pocketBaseUrl,
+                        pocketBaseOrdersCollection: this.pocketBaseOrdersCollection,
+                        sourcePage: 'admin',
+                        dateKeys: this.buildWatchDateKeys(),
+                        perPage: 500,
+                        maxPages: 4,
+                        timeoutMs: 1800
+                    }).then((result) => {
+                        if (!result || !result.ok) throw new Error((result && result.message) || 'PocketBase orders unavailable');
+                        if (this.ordersReadBackend !== 'pocketbase') {
+                            this.clearOrderBucketListeners();
+                            this.resetIntegrationOrdersListener();
+                            this.resetPhoneOrdersListener();
+                        }
+                        this.ordersReadBackend = 'pocketbase';
+                        if (carry.length) this.backfillOrdersToPocketBaseBestEffort(carry, 'admin_firebase_fallback');
+                        const rows = (Array.isArray(result.orders) ? result.orders : []).concat(carry);
+                        this.integrationOrdersCache = this.normalizeIncomingOrders(rows);
+                        this.phoneOrdersCache = [];
+                        this.useIntegrationView = true;
+                        this.rebuildOrdersFromBuckets();
+                        return true;
+                    }).finally(() => {
+                        this.pbOrdersReadInFlight = false;
+                    });
+                },
+                switchToFirebaseOrdersFallback(reason) {
+                    if (this.ordersReadBackend === 'firebase' && this.integrationOrdersUnsub) return;
+                    console.warn('PocketBase orders read failed; using Firebase fallback:', reason && reason.message ? reason.message : reason);
+                    this.ordersReadBackend = 'firebase';
+                    this.resetOrderBucketListeners();
+                    this.listenIntegratedOrdersFallback();
+                },
+                startOrdersPrimaryRead() {
+                    this.resetPocketBaseOrdersPoll();
+                    const run = () => {
+                        this.readPocketBaseOrdersPrimary().catch((err) => {
+                            this.switchToFirebaseOrdersFallback(err);
+                        });
+                    };
+                    run();
+                    this.pbOrdersPollTimer = setInterval(run, 5000);
+                },
                 listenToOrders() {
                     const self = this;
-                    self.resetOrderBucketListeners();
+                    self.clearOrderBucketListeners();
                     self.resetIntegrationOrdersListener();
                     const selfS = this;
                     const _loadAdminSettings = () => {
@@ -2275,6 +2361,8 @@
                         onChildChanged(txnQ, _update);
                         onChildRemoved(txnQ, (snap) => { delete _statusMap[snap.key]; delete _confirmed[snap.key]; clearTimeout(_timer); _timer = setTimeout(_flush, 150); });
                     })();
+                    self.startOrdersPrimaryRead();
+                    return;
                     self.listenPhoneOrders();
                     const integrationRef = ref(db, 'integration_views/merged_orders_active');
                     self.integrationOrdersUnsub = onValue(integrationRef, (snap) => {
@@ -2284,6 +2372,24 @@
                         self.rebuildOrdersFromBuckets();
                     }, (err) => {
                         console.error('❌ integration_views 監聽失敗:', err && err.message ? err.message : err);
+                        self.integrationOrdersCache = [];
+                        self.useIntegrationView = false;
+                        self.rebuildOrdersFromBuckets();
+                    });
+                },
+                listenIntegratedOrdersFallback() {
+                    const self = this;
+                    self.resetIntegrationOrdersListener();
+                    self.listenPhoneOrders();
+                    const integrationRef = ref(db, 'integration_views/merged_orders_active');
+                    self.integrationOrdersUnsub = onValue(integrationRef, (snap) => {
+                        const view = snap.exists() ? (snap.val() || {}) : {};
+                        self.integrationOrdersCache = self.normalizeIncomingOrders(Array.isArray(view.orders) ? view.orders : []);
+                        self.backfillOrdersToPocketBaseBestEffort(self.integrationOrdersCache, 'admin_integration_view_fallback');
+                        self.useIntegrationView = !!self.integrationOrdersCache.length;
+                        self.rebuildOrdersFromBuckets();
+                    }, (err) => {
+                        console.error('integration_views fallback read failed:', err && err.message ? err.message : err);
                         self.integrationOrdersCache = [];
                         self.useIntegrationView = false;
                         self.rebuildOrdersFromBuckets();
@@ -2306,6 +2412,7 @@
                             sourceRecordPath: 'phone_ai/orders/' + id
                         }, raw[id] || {}));
                         self.phoneOrdersCache = self.normalizeIncomingOrders(list);
+                        if (self.ordersReadBackend === 'firebase') self.backfillOrdersToPocketBaseBestEffort(self.phoneOrdersCache, 'admin_phone_fallback');
                         self.rebuildOrdersFromBuckets();
                     }, () => {
                         self.phoneOrdersCache = [];
@@ -2669,6 +2776,7 @@
                         const u1 = onChildAdded(bucketRef, (snap) => {
                             if (isMirrorKey(snap.key)) return;
                             self.orderBuckets[dateKey][snap.key] = snap.val();
+                            if (self.ordersReadBackend === 'firebase') self.backfillOrdersToPocketBaseBestEffort([Object.assign({ id: snap.key, orderDateKey: dateKey, pickupDate: dateKey }, snap.val() || {})], 'admin_bucket_fallback');
                             self._scheduleRebuild();
                         }, (err) => {
                             console.error('❌ 訂單監聽失敗 [' + dateKey + ']:', err && err.message ? err.message : err);
@@ -2679,6 +2787,7 @@
                         const u2 = onChildChanged(bucketRef, (snap) => {
                             if (isMirrorKey(snap.key)) return;
                             self.orderBuckets[dateKey][snap.key] = snap.val();
+                            if (self.ordersReadBackend === 'firebase') self.backfillOrdersToPocketBaseBestEffort([Object.assign({ id: snap.key, orderDateKey: dateKey, pickupDate: dateKey }, snap.val() || {})], 'admin_bucket_fallback');
                             self._scheduleRebuild();
                         });
                         const u3 = onChildRemoved(bucketRef, (snap) => {
