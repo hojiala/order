@@ -880,13 +880,29 @@
                 s.loadCart();
                 s.nowMinute=Date.now();
                 setInterval(function(){s.nowMinute=Date.now()},30000);
-                s.loadSettings().then(function(){return s.loadMenu();}).then(function(){
+                Promise.all([
+                    s.loadSettings({timeoutMs:900}),
+                    s.loadMenu({timeoutMs:1100})
+                ]).then(function(){
                     s.isLoading=false;
                     s.listenOrders();
                     s.startSettingsPrimaryRefresh();
                 }).catch(function(e){console.error(e);s.menuReady=true;s.isLoading=false});
             },
-            loadSettings:function(){
+            refreshMenuCategoriesFromSettings:function(){
+                var s=this;
+                var items=Array.isArray(s.menu)?s.menu:[];
+                var ORDER=s.settings.categories||[];
+                var posOnly=s.settings.posOnlyCategories||[];
+                var found=[];
+                items.forEach(function(i){if(i.category&&found.indexOf(i.category)===-1)found.push(i.category)});
+                var cats=ORDER.filter(function(c){return found.indexOf(c)!==-1&&posOnly.indexOf(c)===-1});
+                found.forEach(function(c){if(cats.indexOf(c)===-1&&posOnly.indexOf(c)===-1)cats.push(c)});
+                s.categories=cats;
+                if(cats.indexOf(s.currentCategory)===-1)s.currentCategory=cats.length?cats[0]:'';
+            },
+            loadSettings:function(options){
+                options=options||{};
                 var s=this;
                 var apply=function(v,backend){
                     v=v||{};
@@ -906,10 +922,11 @@
                     s.settingsStationsLoaded=hasStationSettings||(prev.stations&&prev.stations.length)||false;
                     s.settingsReadBackend=backend||'pocketbase';
                     s.devicePassword=v.dineinPassword||prev.dineinPassword||'0000';
+                    if(s.menu&&s.menu.length)s.refreshMenuCategoriesFromSettings();
                     s.$nextTick(function(){s.checkAnnouncements();});
                     s._settingsLoaded=true;
                 };
-                return readSettingsFromPocketBase({settings:this.settings||{},timeoutMs:2200}).then(function(result){
+                return readSettingsFromPocketBase({settings:this.settings||{},timeoutMs:options.timeoutMs||2200}).then(function(result){
                     if(result&&result.ok&&result.settings&&Object.keys(result.settings).length){apply(result.settings,'pocketbase');return;}
                     return get(ref(db,'settings')).then(function(snap){if(snap.exists())apply(snap.val()||{},'firebase');});
                 }).catch(function(e){
@@ -922,7 +939,8 @@
                 if(s.settingsRefreshTimer)return;
                 s.settingsRefreshTimer=setInterval(function(){s.loadSettings().then(function(){return s.loadMenu();}).catch(function(e){console.warn('settings refresh failed:',e&&e.message?e.message:e);});},60000);
             },
-            loadMenu:function(){
+            loadMenu:function(options){
+                options=options||{};
                 var s=this;
                 var initialLoad=!s.menuReady&&!s.menu.length;
                 if(initialLoad)s.menuReady=false;
@@ -951,7 +969,7 @@
                     if(cats.indexOf(s.currentCategory)===-1)s.currentCategory=cats.length?cats[0]:'';
                     s.$nextTick(function(){s._menuLoaded=true;});
                 };
-                return listMenuItemsFromPocketBase({settings:this.settings||{},activeOnly:true,timeoutMs:2500}).then(function(result){
+                return listMenuItemsFromPocketBase({settings:this.settings||{},activeOnly:true,timeoutMs:options.timeoutMs||2500}).then(function(result){
                     if(result&&result.ok){applyMenuSettings(result.items||[],s.settings||{});s.menuReadBackend='pocketbase';return;}
                     return get(ref(db,'menu')).then(function(snap){var d=snap.val()||{},items=[];for(var id in d){if(d[id]&&d[id].active!==false)items.push(Object.assign({id:id},d[id]))}applyMenuSettings(items,s.settings||{});s.menuReadBackend='firebase';});
                 }).catch(function(e){

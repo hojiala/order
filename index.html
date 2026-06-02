@@ -897,9 +897,10 @@
             },
             init: function() {
                 var self = this;
-                self.loadSettings().then(function() {
-                    return self.loadMenu();
-                }).then(function() {
+                Promise.all([
+                    self.loadSettings({ timeoutMs: 900 }),
+                    self.loadMenu({ timeoutMs: 1100 })
+                ]).then(function() {
                     self.isLoading = false;
                     self.checkHoliday();
                     if (self.settings.isOpen) self.initDateTime();
@@ -912,7 +913,20 @@
                     self.initDateTime();
                 });
             },
-            loadSettings: function() {
+            refreshMenuCategoriesFromSettings: function() {
+                var self = this;
+                var items = Array.isArray(self.menu) ? self.menu : [];
+                var ORDER = self.settings.categories || [];
+                var posOnly = self.settings.posOnlyCategories || [];
+                var found = [];
+                items.forEach(function(i) { if (i.category && found.indexOf(i.category) === -1) found.push(i.category); });
+                var cats = ORDER.filter(function(c) { return found.indexOf(c) !== -1 && posOnly.indexOf(c) === -1; });
+                found.forEach(function(c) { if (cats.indexOf(c) === -1 && posOnly.indexOf(c) === -1) cats.push(c); });
+                self.categories = cats;
+                if (cats.indexOf(self.currentCategory) === -1) self.currentCategory = cats.length ? cats[0] : '';
+            },
+            loadSettings: function(options) {
+                options = options || {};
                 var self = this;
                 var apply = function(v, backend) {
                     v = v || {};
@@ -957,6 +971,7 @@
                     };
                     self.settingsReadBackend = backend || 'pocketbase';
                     self.categorySubcategories = self.normalizeCategorySubcategories(self.settings.categorySubcategories, self.settings.categories || self.categories);
+                    if (self.menu && self.menu.length) self.refreshMenuCategoriesFromSettings();
                     self.storeInfo = v.storeInfo || prev.storeInfo || '';
                     self.storePhone = v.storePhone || prev.storePhone || '';
                     self.storeAddress = v.storeAddress || prev.storeAddress || '';
@@ -976,7 +991,7 @@
                     self.$nextTick(function() { self.checkAnnouncements(); });
                     self._settingsLoaded = true;
                 };
-                return readSettingsFromPocketBase({ settings: this.settings || {}, timeoutMs: 2200 }).then(function(result) {
+                return readSettingsFromPocketBase({ settings: this.settings || {}, timeoutMs: options.timeoutMs || 2200 }).then(function(result) {
                     if (result && result.ok && result.settings && Object.keys(result.settings).length) { apply(result.settings, 'pocketbase'); return; }
                     return get(ref(db, 'settings')).then(function(snap) { if (snap.exists()) apply(snap.val() || {}, 'firebase'); });
                 }).catch(function(e) {
@@ -992,7 +1007,8 @@
                         .catch(function(e) { console.warn('settings refresh failed:', e && e.message ? e.message : e); });
                 }, 60000);
             },
-            loadMenu: function() {
+            loadMenu: function(options) {
+                options = options || {};
                 var self = this;
                 var initialLoad = !self.menuReady && !self.menu.length;
                 if (initialLoad) self.menuReady = false;
@@ -1031,7 +1047,7 @@
                     if (cats.indexOf(self.currentCategory) === -1) self.currentCategory = cats.length ? cats[0] : '';
                     self.$nextTick(function() { self._menuLoaded = true; });
                 };
-                return listMenuItemsFromPocketBase({ settings: this.settings || {}, activeOnly: true, timeoutMs: 2500 }).then(function(result) {
+                return listMenuItemsFromPocketBase({ settings: this.settings || {}, activeOnly: true, timeoutMs: options.timeoutMs || 2500 }).then(function(result) {
                     if (result && result.ok) { applyMenuSettings(result.items || [], self.settings || {}); self.menuReadBackend = 'pocketbase'; return; }
                     return get(ref(db, 'menu')).then(function(snap) {
                         var data = snap.val() || {}, items = [];
