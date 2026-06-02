@@ -199,15 +199,49 @@ function loadTurnstileScript() {
 function turnstileContainer() {
     var id = "pb-turnstile-container";
     var el = document.getElementById(id);
-    if (el) return el;
+    var shell = document.getElementById("pb-turnstile-shell");
+    if (el && shell) {
+        shell.style.display = "flex";
+        return el;
+    }
+    shell = document.createElement("div");
+    shell.id = "pb-turnstile-shell";
+    shell.style.position = "fixed";
+    shell.style.inset = "0";
+    shell.style.zIndex = "2147483647";
+    shell.style.display = "flex";
+    shell.style.alignItems = "center";
+    shell.style.justifyContent = "center";
+    shell.style.background = "rgba(15,23,42,.35)";
+    shell.style.padding = "16px";
+    var panel = document.createElement("div");
+    panel.style.background = "#fff";
+    panel.style.borderRadius = "8px";
+    panel.style.boxShadow = "0 18px 60px rgba(0,0,0,.28)";
+    panel.style.padding = "16px";
+    panel.style.maxWidth = "360px";
+    panel.style.width = "100%";
+    var label = document.createElement("div");
+    label.textContent = "Cloudflare verification";
+    label.style.font = "700 14px/1.4 system-ui, -apple-system, BlinkMacSystemFont, sans-serif";
+    label.style.color = "#0f172a";
+    label.style.marginBottom = "12px";
     el = document.createElement("div");
     el.id = id;
     el.style.position = "fixed";
-    el.style.right = "16px";
-    el.style.bottom = "16px";
-    el.style.zIndex = "2147483647";
-    document.body.appendChild(el);
+    el.style.position = "relative";
+    panel.appendChild(label);
+    panel.appendChild(el);
+    shell.appendChild(panel);
+    document.body.appendChild(shell);
     return el;
+}
+
+function hideTurnstileContainer() {
+    try {
+        var shell = document.getElementById("pb-turnstile-shell");
+        if (shell) shell.style.display = "none";
+    } catch(e) {}
 }
 
 function requestTurnstileToken(siteKey, timeoutMs) {
@@ -220,11 +254,12 @@ function requestTurnstileToken(siteKey, timeoutMs) {
                 if (done) return;
                 done = true;
                 reject(new Error("Turnstile token timeout"));
-            }, Math.max(3000, Number(timeoutMs || 10000) || 10000));
+            }, Math.max(10000, Number(timeoutMs || 30000) || 30000));
             var finish = function(err, token) {
                 if (done) return;
                 done = true;
                 clearTimeout(timer);
+                hideTurnstileContainer();
                 if (err) reject(err);
                 else resolve(token || "");
             };
@@ -235,7 +270,7 @@ function requestTurnstileToken(siteKey, timeoutMs) {
                     widgetId = turnstile.render(turnstileContainer(), {
                         sitekey: siteKey,
                         execution: "execute",
-                        appearance: "interaction-only",
+                        appearance: "always",
                         callback: function(token) { finish(null, token); },
                         "error-callback": function() { finish(new Error("Turnstile challenge failed")); },
                         "expired-callback": function() { finish(new Error("Turnstile token expired")); }
