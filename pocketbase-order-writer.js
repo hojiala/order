@@ -2,7 +2,10 @@ const DEFAULT_COLLECTION = "orders";
 const DEFAULT_POCKETBASE_URL = "https://pb.yuangi168.com";
 const DEFAULT_TIMEOUT_MS = 2500;
 const RESET_TIMEOUT_MS = 10000;
+const PUBLIC_ENDPOINT_COOLDOWN_MS = 5 * 60 * 1000;
 let backfillPausedUntil = 0;
+let publicSettingsPausedUntil = 0;
+let publicMenuPausedUntil = 0;
 
 function cleanBaseUrl(url) {
     var value = String(url || "").trim();
@@ -668,15 +671,40 @@ function menuItemFromRecord(record) {
     return item;
 }
 
+function endpointCooldownResult(pausedUntil, payload) {
+    var now = Date.now();
+    if (!pausedUntil || now >= pausedUntil) return null;
+    return Object.assign({
+        ok: false,
+        backend: "pocketbase",
+        skipped: true,
+        reason: "pocketbase_public_endpoint_cooldown",
+        retryAfterMs: pausedUntil - now
+    }, payload || {});
+}
+
+function parsePublicSettingsResponse(data) {
+    var settings = data && data.settings && typeof data.settings === "object" ? decodeJsonLike(data.settings) : {};
+    return { ok: true, backend: "pocketbase", settings: settings, data: data };
+}
+
+function parsePublicMenuResponse(data, options) {
+    var items = Array.isArray(data && data.items) ? data.items.map(decodeJsonLike) : [];
+    if (options && options.activeOnly) items = items.filter(function(item) { return item && item.active !== false; });
+    return { ok: true, backend: "pocketbase", items: sortMenuItems(items), data: data };
+}
+
 export function readSettingsFromPocketBase(options) {
     options = options || {};
     var config = resolvePocketBaseConfig(options);
     var timeoutMs = Number(options.timeoutMs || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
     if (!config.baseUrl) return Promise.resolve({ ok: false, skipped: true, reason: "missing_pocketbase_url", settings: {} });
-    return requestJson(config.baseUrl + "/api/public/settings", { method: "GET" }, timeoutMs)
+    var paused = endpointCooldownResult(publicSettingsPausedUntil, { settings: {} });
+    if (paused) return Promise.resolve(paused);
+    return requestJson(config.baseUrl + "/api/order-public/settings", { method: "GET" }, timeoutMs)
         .then(function(data) {
-            var settings = data && data.settings && typeof data.settings === "object" ? decodeJsonLike(data.settings) : {};
-            return { ok: true, backend: "pocketbase", settings: settings, data: data };
+            publicSettingsPausedUntil = 0;
+            return parsePublicSettingsResponse(data);
         })
         .catch(function(endpointErr) {
             if (options.allowDirectCollectionFallback === true) {
@@ -694,6 +722,7 @@ export function readSettingsFromPocketBase(options) {
                     return { ok: true, backend: "pocketbase", settings: settingsFromRecords(result.records), records: result.records };
                 });
             }
+            publicSettingsPausedUntil = Date.now() + PUBLIC_ENDPOINT_COOLDOWN_MS;
             return {
                 ok: false,
                 backend: "pocketbase",
@@ -709,11 +738,12 @@ export function listMenuItemsFromPocketBase(options) {
     var config = resolvePocketBaseConfig(options);
     var timeoutMs = Number(options.timeoutMs || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
     if (!config.baseUrl) return Promise.resolve({ ok: false, skipped: true, reason: "missing_pocketbase_url", items: [] });
-    return requestJson(config.baseUrl + "/api/public/menu", { method: "GET" }, timeoutMs)
+    var paused = endpointCooldownResult(publicMenuPausedUntil, { items: [] });
+    if (paused) return Promise.resolve(paused);
+    return requestJson(config.baseUrl + "/api/order-public/menu", { method: "GET" }, timeoutMs)
         .then(function(data) {
-            var items = Array.isArray(data && data.items) ? data.items.map(decodeJsonLike) : [];
-            if (options.activeOnly) items = items.filter(function(item) { return item && item.active !== false; });
-            return { ok: true, backend: "pocketbase", items: sortMenuItems(items), data: data };
+            publicMenuPausedUntil = 0;
+            return parsePublicMenuResponse(data, options);
         })
         .catch(function(endpointErr) {
             if (options.allowDirectCollectionFallback === true) {
@@ -733,6 +763,7 @@ export function listMenuItemsFromPocketBase(options) {
                     return { ok: true, backend: "pocketbase", items: sortMenuItems(items), records: result.records };
                 });
             }
+            publicMenuPausedUntil = Date.now() + PUBLIC_ENDPOINT_COOLDOWN_MS;
             return {
                 ok: false,
                 backend: "pocketbase",
