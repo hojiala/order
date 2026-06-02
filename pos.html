@@ -29,7 +29,11 @@
     @keyframes tin{from{transform:translateY(16px) translateX(-50%);opacity:0}to{transform:translateY(0) translateX(-50%);opacity:1}}
     @keyframes tout{to{transform:translateY(-8px) translateX(-50%);opacity:0}}
     .tbtn{border-bottom:3px solid transparent;transition:all .15s;white-space:nowrap}.tbtn.active{border-bottom-color:#f97316;color:#f97316}
-    .pos-layout{display:grid;grid-template-columns:1fr 300px;height:100vh;overflow:hidden}
+    .pos-layout{display:grid;grid-template-columns:1fr 300px;height:100vh;height:100dvh;min-height:0;overflow:hidden}
+    .pos-right{height:100%;min-height:0;max-height:100dvh}
+    .pos-actions{padding-bottom:calc(1rem + env(safe-area-inset-bottom,0px))}
+    @supports(height:100svh){.pos-layout{height:100svh}.pos-right{max-height:100svh}}
+    @supports(height:100dvh){.pos-layout{height:100dvh}.pos-right{max-height:100dvh}}
     @media(max-width:900px){.pos-layout{grid-template-columns:1fr 260px}}
     @media(max-width:600px){.pos-layout{grid-template-columns:3fr 2fr}}
     @media(max-width:420px){.pos-layout{grid-template-columns:55vw 1fr}}
@@ -116,7 +120,14 @@
           class="hidden sm:inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-black whitespace-nowrap"
           :title="ordersReadBackend==='firebase' ? 'PocketBase 目前不可用，訂單讀取使用 Firebase 備援' : (ordersReadBackend==='checking' ? '正在讀取 PocketBase 設定與訂單' : '訂單讀取目前走 PocketBase primary')">
           <span :class="ordersReadBackend==='firebase' ? 'bg-amber-500' : (ordersReadBackend==='checking' ? 'bg-sky-500' : 'bg-emerald-500')" class="h-2 w-2 rounded-full"></span>
-          {{ ordersReadBackend==='firebase' ? 'Firebase 備援中' : (ordersReadBackend==='checking' ? 'PB 檢查中' : 'PB 讀取中') }}
+          {{ ordersReadBackend==='firebase' ? '訂單 Firebase 讀取' : (ordersReadBackend==='checking' ? '訂單 PB 檢查' : '訂單 PB 讀取') }}
+        </span>
+        <span v-if="lastWriteBackend"
+          :class="lastWriteBackend==='firebase' ? 'bg-rose-100 text-rose-800 border-rose-200' : 'bg-emerald-100 text-emerald-900 border-emerald-200'"
+          class="hidden md:inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-black whitespace-nowrap"
+          :title="lastWriteBackend==='firebase' ? '最近一筆訂單因 PocketBase 不可用，已寫入 Firebase fallback' : '最近一筆訂單已寫入 PocketBase primary'">
+          <span :class="lastWriteBackend==='firebase' ? 'bg-rose-500' : 'bg-emerald-500'" class="h-2 w-2 rounded-full"></span>
+          {{ lastWriteBackend==='firebase' ? '最近寫入 Firebase' : '最近寫入 PB' }}
         </span>
         <button @click="activeView = activeView==='orders' ? 'menu' : 'orders'"
           class="relative text-xs px-2 py-1.5 rounded-lg font-bold bg-white/20 hover:bg-white/30 text-white transition">
@@ -410,7 +421,7 @@
       </div>
       <!-- POS count/total -->
       <div v-if="orderMode==='pos'" class="px-4 py-2.5 flex justify-between items-center"><span class="text-gray-500 text-sm">共 {{ cartCount }} 件</span><span class="text-2xl font-black text-gray-900">${{ cartTotal }}</span></div>
-      <div class="px-4 pb-4 grid grid-cols-2 gap-2">
+      <div class="pos-actions px-4 grid grid-cols-2 gap-2">
         <template v-if="orderMode==='pos'">
           <button @click="openStorePayChoice" :disabled="cart.length===0||isSubmitting"
             class="py-3 rounded-xl font-black text-white text-sm disabled:opacity-40 transition active:scale-95"
@@ -699,7 +710,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getDatabase, ref, onValue, onChildAdded, onChildChanged, onChildRemoved, update, push, set, get, remove, query, orderByChild, limitToLast } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-    import { allocateOrderNoFromPocketBase, resetOrderNoInPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, listOrdersFromPocketBase, backfillOrdersToPocketBase } from "./pocketbase-order-writer.js";
+    import { allocateOrderNoFromPocketBase, resetOrderNoInPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, listMenuItemsFromPocketBase } from "./pocketbase-order-writer.js";
     const firebaseConfig = {
         apiKey:"AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
         authDomain:"breakfast-ai-system.firebaseapp.com",
@@ -774,7 +785,7 @@
                 posOrderType:'takeout',posTableLabel:'',posTables:[],cartDragIdx:null,
                 posPickupDate:"",posPickupTime:"",
                 orderMode:"pos",editingOrder:null,
-                onlineOrders:[],ordersLoading:false,assigningNos:{},orderBuckets:{},orderBucketUnsubs:[],integrationOrdersUnsub:null,integrationOrdersCache:[],phoneOrdersUnsub:null,phoneOrdersCache:[],useIntegrationView:false,ordersReadBackend:'checking',pbOrdersPollTimer:null,pbOrdersReadInFlight:false,pbOrdersEverConnected:false,pbOrdersFailureCount:0,remoteStatusOverrides:{},remoteStatusOverridesUnsub:null,orderHydrateInFlight:{},orderHydrateDone:{},
+                onlineOrders:[],ordersLoading:false,assigningNos:{},orderBuckets:{},orderBucketUnsubs:[],integrationOrdersUnsub:null,integrationOrdersCache:[],phoneOrdersUnsub:null,phoneOrdersCache:[],useIntegrationView:false,ordersReadBackend:'checking',settingsReadBackend:'checking',menuReadBackend:'checking',lastWriteBackend:'',menuSettingsPollTimer:null,pbOrdersPollTimer:null,pbOrdersReadInFlight:false,pbOrdersEverConnected:false,pbOrdersFailureCount:0,remoteStatusOverrides:{},remoteStatusOverridesUnsub:null,orderHydrateInFlight:{},orderHydrateDone:{},
                 orderSearch:"",
                 activeItem:null,tempQty:1,tempNote:"",tempDrinkNote:"",tempSels:[],tempOG:{},tempPosExtras:[],tempComboSize:{},tempDrinkAddons:[],
                 toastMsg:"",toastTimer:null,lastOrderId:null,
@@ -916,6 +927,7 @@
                 });
             },
             writeOrderPrimary:function(orderId,orderData,sourcePage,writeToFirebase){
+                var s=this;
                 var resetTime=this.normalizeCounterResetTime(this.counterResetTime||'00:00');
                 var maxNo=Math.max(1,Math.min(9999,Math.floor(Number(this.counterMaxNo||999)||999)));
                 return writeOrderWithFirebaseFallback(orderId,orderData,{
@@ -929,6 +941,7 @@
                     sourcePage:sourcePage||'pos',
                     writeToFirebase:writeToFirebase
                 }).then(function(result){
+                    if(result&&result.backend)s.lastWriteBackend=result.backend;
                     if(result&&result.backend==='pocketbase')console.info('Order saved to PocketBase primary:',orderId);
                     else if(result&&result.backend==='firebase')console.warn('PocketBase unavailable; order saved to Firebase fallback:',orderId);
                     return result;
@@ -4626,33 +4639,92 @@
                     s.orderBucketUnsubs.push(u1,u2,u3);
                 });
             },
-            startAll:function(){
+
+            applyMenuItemsFromPrimary:function(items){
                 var s=this;
-                onValue(ref(db,"menu"),function(snap){
+                var arr=Array.isArray(items)?items.slice():[];
+                arr.sort(function(a,b){
+                    if(a.sortOrder!==undefined&&b.sortOrder!==undefined)return Number(a.sortOrder)-Number(b.sortOrder);
+                    if(a.sortOrder!==undefined)return-1;
+                    if(b.sortOrder!==undefined)return 1;
+                    return(a.category||"").localeCompare(b.category||"");
+                });
+                s.menu=arr;
+                s.menuLoading=false;
+            },
+            loadMenuFromFirebase:function(){
+                var s=this;
+                return get(ref(db,"menu")).then(function(snap){
                     var d=snap.val();
                     var arr=d?Object.entries(d).map(function(e){return Object.assign({id:e[0]},e[1]);}):[];
-                    arr.sort(function(a,b){
-                        if(a.sortOrder!==undefined&&b.sortOrder!==undefined)return a.sortOrder-b.sortOrder;
-                        if(a.sortOrder!==undefined)return-1;
-                        if(b.sortOrder!==undefined)return 1;
-                        return(a.category||"").localeCompare(b.category||"");
-                    });
-                    s.menu=arr;
-                    s.menuLoading=false;
+                    s.applyMenuItemsFromPrimary(arr);
+                    s.menuReadBackend='firebase';
+                    return arr;
                 });
-                onValue(ref(db,"settings"),function(snap){
-                    if(snap.exists()){var v=snap.val();
-                        var defaultStations=[{name:'湯麵',ip:'192.168.0.6'},{name:'麵包台',ip:'192.168.0.7'},{name:'飲料台',ip:'192.168.0.8'}];
-                        var hasStationSettings=!!(v.stations&&v.stations.length);
-                        s.settings={categories:v.categories||[],hideAllTab:!!v.hideAllTab,posOnlyCategories:v.posOnlyCategories||[],
-                            pocketBaseUrl:v.pocketBaseUrl||v.pocketbaseUrl||'',pocketBaseOrdersCollection:v.pocketBaseOrdersCollection||v.pocketbaseOrdersCollection||'orders',pocketBaseOrderEndpoint:v.pocketBaseOrderEndpoint||v.pocketbaseOrderEndpoint||v.pocketBaseSecureOrderEndpoint||v.secureOrderEndpoint||'',turnstileSiteKey:v.turnstileSiteKey||v.cloudflareTurnstileSiteKey||'',
-                            stations:hasStationSettings?v.stations:defaultStations};
-                        s.settingsStationsLoaded=hasStationSettings;
-                        s.linePayServerUrl=v.linePayServerUrl||'';s.linePayConfirmUrl=v.linePayConfirmUrl||'';s.pocketBaseUrl=v.pocketBaseUrl||v.pocketbaseUrl||'';s.pocketBaseOrdersCollection=v.pocketBaseOrdersCollection||v.pocketbaseOrdersCollection||'orders';s.posTables=v.posTables||[];
-                        s.counterLegacyValue=Number(v.orderCounter||0)||0;
-                        s.counterResetTime=s.normalizeCounterResetTime(v.counterResetTime||'00:00');
-                        s.counterMaxNo=Math.max(1,Number(v.counterMaxNo||999)||999);}
+            },
+            loadMenuPrimary:function(){
+                var s=this;
+                return listMenuItemsFromPocketBase({settings:s.settings||{},timeoutMs:2200}).then(function(result){
+                    if(result&&result.ok){
+                        s.applyMenuItemsFromPrimary(result.items||[]);
+                        s.menuReadBackend='pocketbase';
+                        return result.items||[];
+                    }
+                    return s.loadMenuFromFirebase();
+                }).catch(function(err){
+                    console.warn('PocketBase menu read failed; using Firebase fallback:',err&&err.message?err.message:err);
+                    return s.loadMenuFromFirebase();
                 });
+            },
+            applySettingsFromPrimary:function(v){
+                var s=this;
+                v=v||{};
+                var defaultStations=[{name:'湯麵',ip:'192.168.0.6'},{name:'麵包台',ip:'192.168.0.7'},{name:'飲料台',ip:'192.168.0.8'}];
+                var hasStationSettings=!!(v.stations&&v.stations.length);
+                s.settings={categories:v.categories||[],hideAllTab:!!v.hideAllTab,posOnlyCategories:v.posOnlyCategories||[],
+                    pocketBaseUrl:v.pocketBaseUrl||v.pocketbaseUrl||s.pocketBaseUrl||'https://pb.yuangi168.com',pocketBaseOrdersCollection:v.pocketBaseOrdersCollection||v.pocketbaseOrdersCollection||s.pocketBaseOrdersCollection||'orders',pocketBaseOrderEndpoint:v.pocketBaseOrderEndpoint||v.pocketbaseOrderEndpoint||v.pocketBaseSecureOrderEndpoint||v.secureOrderEndpoint||'',turnstileSiteKey:v.turnstileSiteKey||v.cloudflareTurnstileSiteKey||'',
+                    stations:hasStationSettings?v.stations:defaultStations};
+                s.settingsStationsLoaded=hasStationSettings;
+                s.linePayServerUrl=v.linePayServerUrl||'';s.linePayConfirmUrl=v.linePayConfirmUrl||'';s.pocketBaseUrl=s.settings.pocketBaseUrl;s.pocketBaseOrdersCollection=s.settings.pocketBaseOrdersCollection;s.posTables=v.posTables||[];
+                s.counterLegacyValue=Number(v.orderCounter||0)||0;
+                s.counterResetTime=s.normalizeCounterResetTime(v.counterResetTime||'00:00');
+                s.counterMaxNo=Math.max(1,Number(v.counterMaxNo||999)||999);
+            },
+            loadSettingsFromFirebase:function(){
+                var s=this;
+                return get(ref(db,"settings")).then(function(snap){
+                    if(snap.exists())s.applySettingsFromPrimary(snap.val()||{});
+                    s.settingsReadBackend='firebase';
+                    return s.settings;
+                });
+            },
+            loadSettingsPrimary:function(){
+                var s=this;
+                return readSettingsFromPocketBase({settings:s.settings||{},timeoutMs:2200}).then(function(result){
+                    if(result&&result.ok&&result.settings&&Object.keys(result.settings).length){
+                        s.applySettingsFromPrimary(result.settings);
+                        s.settingsReadBackend='pocketbase';
+                        return s.settings;
+                    }
+                    return s.loadSettingsFromFirebase();
+                }).catch(function(err){
+                    console.warn('PocketBase settings read failed; using Firebase fallback:',err&&err.message?err.message:err);
+                    return s.loadSettingsFromFirebase();
+                });
+            },
+            startMenuSettingsPrimaryRead:function(){
+                var s=this;
+                if(s.menuSettingsPollTimer)return;
+                var run=function(){
+                    s.loadSettingsPrimary().then(function(){return s.loadMenuPrimary();}).catch(function(err){console.warn('menu/settings primary refresh failed:',err&&err.message?err.message:err);});
+                };
+                run();
+                s.menuSettingsPollTimer=setInterval(run,60000);
+            },
+            startAll:function(){
+                var s=this;
+                s.startMenuSettingsPrimaryRead();
+                
                 s.ordersLoading=true;
                 s.startOrdersPrimaryRead();
                 s.listenRemoteStatusOverrides();

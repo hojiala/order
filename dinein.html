@@ -539,7 +539,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getAuth, signInAnonymously, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
     import { getDatabase, ref, push, set, get, update, remove, onValue, query, orderByChild, equalTo, limitToLast } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
-    import { allocateOrderNoFromPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback } from "./pocketbase-order-writer.js";
+    import { allocateOrderNoFromPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, readSettingsFromPocketBase, listMenuItemsFromPocketBase } from "./pocketbase-order-writer.js";
 
     const firebaseConfig = {
         apiKey:"AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -883,45 +883,42 @@
                 Promise.all([s.loadSettings(),s.loadMenu()]).then(function(){
                     s.isLoading=false;
                     s.listenOrders();
-                    onValue(ref(db,'settings'),function(snap){
-                        if(!snap.exists())return;var v=snap.val();
-                        var defaultStations=[{name:'湯麵',ip:'192.168.0.6'},{name:'麵包台',ip:'192.168.0.7'},{name:'飲料台',ip:'192.168.0.8'}];
-                        var hasStationSettings=!!(v.stations&&v.stations.length);
-                        s.settings={isOpen:v.isOpen!==false,dineinIsOpen:v.dineinIsOpen!==false,openTime:v.openTime||'06:00',closeTime:v.closeTime||'13:15',
-                            weeklyDaysOff:Array.isArray(v.weeklyDaysOff)?v.weeklyDaysOff:(v.weeklyDaysOff?Object.values(v.weeklyDaysOff):[]),holidays:v.holidays||[],dailyHours:v.dailyHours||{},pickupInterval:v.pickupInterval||15,linePayServerUrl:v.linePayServerUrl||'',linePayConfirmUrl:v.linePayConfirmUrl||'',pocketBaseUrl:v.pocketBaseUrl||v.pocketbaseUrl||'',pocketBaseOrdersCollection:v.pocketBaseOrdersCollection||v.pocketbaseOrdersCollection||'orders',pocketBaseOrderEndpoint:v.pocketBaseOrderEndpoint||v.pocketbaseOrderEndpoint||v.pocketBaseSecureOrderEndpoint||v.secureOrderEndpoint||'',turnstileSiteKey:v.turnstileSiteKey||v.cloudflareTurnstileSiteKey||'',counterResetTime:v.counterResetTime||'',counterMaxNo:v.counterMaxNo||999,announcements:v.announcements||[],stations:hasStationSettings?v.stations:defaultStations,posOnlyCategories:v.posOnlyCategories||[]};
-                        s.categorySubcategories=s.normalizeCategorySubcategories(v.categorySubcategories,v.categories||s.categories);
-                        s.settingsStationsLoaded=hasStationSettings;
-                        // ★ 設定更新時，自動重新檢查當前分類的公告（即時開啟/關閉公告視窗）
-                        // 只有在初始化完成後才重新檢查，避免初次 onValue 觸發把全站公告關掉
-                        if(s._settingsLoaded && s.currentCategory){
-                            s.$nextTick(function(){s.checkAnnouncements(s.currentCategory);});
-                        }
-                        s._settingsLoaded=true;
-                    });
+                    s.startSettingsPrimaryRefresh();
                 }).catch(function(e){console.error(e);s.menuReady=true;s.isLoading=false});
             },
             loadSettings:function(){
                 var s=this;
-                return get(ref(db,'settings')).then(function(snap){
-                    if(snap.exists()){var v=snap.val();
-                        var defaultStations=[{name:'湯麵',ip:'192.168.0.6'},{name:'麵包台',ip:'192.168.0.7'},{name:'飲料台',ip:'192.168.0.8'}];
-                        var hasStationSettings=!!(v.stations&&v.stations.length);
-                        s.settings={isOpen:v.isOpen!==false,dineinIsOpen:v.dineinIsOpen!==false,openTime:v.openTime||'06:00',closeTime:v.closeTime||'13:15',
-                            weeklyDaysOff:Array.isArray(v.weeklyDaysOff)?v.weeklyDaysOff:(v.weeklyDaysOff?Object.values(v.weeklyDaysOff):[]),holidays:v.holidays||[],dailyHours:v.dailyHours||{},pickupInterval:v.pickupInterval||15,linePayServerUrl:v.linePayServerUrl||'',linePayConfirmUrl:v.linePayConfirmUrl||'',pocketBaseUrl:v.pocketBaseUrl||v.pocketbaseUrl||'',pocketBaseOrdersCollection:v.pocketBaseOrdersCollection||v.pocketbaseOrdersCollection||'orders',pocketBaseOrderEndpoint:v.pocketBaseOrderEndpoint||v.pocketbaseOrderEndpoint||v.pocketBaseSecureOrderEndpoint||v.secureOrderEndpoint||'',turnstileSiteKey:v.turnstileSiteKey||v.cloudflareTurnstileSiteKey||'',counterResetTime:v.counterResetTime||'',counterMaxNo:v.counterMaxNo||999,announcements:v.announcements||[],stations:hasStationSettings?v.stations:defaultStations,posOnlyCategories:v.posOnlyCategories||[]};
-                        s.categorySubcategories=s.normalizeCategorySubcategories(v.categorySubcategories,v.categories||s.categories);
-                        s.settingsStationsLoaded=hasStationSettings;
-                        s.devicePassword=v.dineinPassword||'0000';
-                        // ★ 顯示全站公告
-                        s.$nextTick(function(){s.checkAnnouncements();});
-                    }
+                var apply=function(v){
+                    v=v||{};
+                    var defaultStations=[{name:'湯麵',ip:'192.168.0.6'},{name:'麵包台',ip:'192.168.0.7'},{name:'飲料台',ip:'192.168.0.8'}];
+                    var hasStationSettings=!!(v.stations&&v.stations.length);
+                    s.settings={isOpen:v.isOpen!==false,dineinIsOpen:v.dineinIsOpen!==false,openTime:v.openTime||'06:00',closeTime:v.closeTime||'13:15',
+                        weeklyDaysOff:Array.isArray(v.weeklyDaysOff)?v.weeklyDaysOff:(v.weeklyDaysOff?Object.values(v.weeklyDaysOff):[]),holidays:v.holidays||[],dailyHours:v.dailyHours||{},pickupInterval:v.pickupInterval||15,linePayServerUrl:v.linePayServerUrl||'',linePayConfirmUrl:v.linePayConfirmUrl||'',pocketBaseUrl:v.pocketBaseUrl||v.pocketbaseUrl||s.settings.pocketBaseUrl||'https://pb.yuangi168.com',pocketBaseOrdersCollection:v.pocketBaseOrdersCollection||v.pocketbaseOrdersCollection||'orders',pocketBaseOrderEndpoint:v.pocketBaseOrderEndpoint||v.pocketbaseOrderEndpoint||v.pocketBaseSecureOrderEndpoint||v.secureOrderEndpoint||'',turnstileSiteKey:v.turnstileSiteKey||v.cloudflareTurnstileSiteKey||'',counterResetTime:v.counterResetTime||'',counterMaxNo:v.counterMaxNo||999,announcements:v.announcements||[],stations:hasStationSettings?v.stations:defaultStations,posOnlyCategories:v.posOnlyCategories||[]};
+                    s.categorySubcategories=s.normalizeCategorySubcategories(v.categorySubcategories,v.categories||s.categories);
+                    s.settingsStationsLoaded=hasStationSettings;
+                    s.devicePassword=v.dineinPassword||'0000';
+                    s.$nextTick(function(){s.checkAnnouncements();});
+                    s._settingsLoaded=true;
+                };
+                return readSettingsFromPocketBase({settings:this.settings||{},timeoutMs:2200}).then(function(result){
+                    if(result&&result.ok&&result.settings&&Object.keys(result.settings).length){apply(result.settings);return;}
+                    return get(ref(db,'settings')).then(function(snap){if(snap.exists())apply(snap.val()||{});});
+                }).catch(function(e){
+                    console.warn('PocketBase settings read failed; using Firebase fallback:',e&&e.message?e.message:e);
+                    return get(ref(db,'settings')).then(function(snap){if(snap.exists())apply(snap.val()||{});});
                 });
+            },
+            startSettingsPrimaryRefresh:function(){
+                var s=this;
+                if(s.settingsRefreshTimer)return;
+                s.settingsRefreshTimer=setInterval(function(){s.loadSettings().catch(function(e){console.warn('settings refresh failed:',e&&e.message?e.message:e);});},60000);
             },
             loadMenu:function(){
                 var s=this;
                 s.menuReady=false;
                 var applyMenuSettings=function(items,sv){
                     sv=sv||{};
-                    var ORDER=sv.categories||['套餐','單點','蛋餅、燒餅','漢堡、蝸牛堡','吐司、厚片','其它、飲品'];
+                    var ORDER=sv.categories||s.settings.categories||[];
                     s.categorySubcategories=s.normalizeCategorySubcategories(sv.categorySubcategories,ORDER);
                     var posOnly=sv.posOnlyCategories||[];
                     var found=[];
@@ -933,29 +930,13 @@
                     s.currentCategory=cats.length?cats[0]:'';
                     s.$nextTick(function(){s._menuLoaded=true;});
                 };
-                return get(ref(db,'menu')).then(function(snap){
-                    if(!snap.exists()){
-                        s.menu=[];s.categories=[];s.currentCategory='';s.categorySubcategories={};
-                        return;
-                    }
-                    var d=snap.val(),items=[];
-                    for(var id in d){if(d[id]&&d[id].active!==false)items.push(Object.assign({id:id},d[id]))}
-                    items.sort(function(a,b){
-                        if(a.sortOrder!==undefined&&b.sortOrder!==undefined)return a.sortOrder-b.sortOrder;
-                        if(a.sortOrder!==undefined)return-1;if(b.sortOrder!==undefined)return 1;
-                        return(a.createdAt||0)-(b.createdAt||0)
-                    });
-                    return get(ref(db,'settings')).then(function(sv2){
-                        applyMenuSettings(items,sv2.exists()?sv2.val():{});
-                    }).catch(function(e){
-                        console.warn('分類設定讀取失敗，使用菜單分類',e);
-                        applyMenuSettings(items,{});
-                    });
+                return listMenuItemsFromPocketBase({settings:this.settings||{},activeOnly:true,timeoutMs:2500}).then(function(result){
+                    if(result&&result.ok){applyMenuSettings(result.items||[],s.settings||{});return;}
+                    return get(ref(db,'menu')).then(function(snap){var d=snap.val()||{},items=[];for(var id in d){if(d[id]&&d[id].active!==false)items.push(Object.assign({id:id},d[id]))}applyMenuSettings(items,s.settings||{});});
                 }).catch(function(e){
-                    console.warn('菜單讀取失敗',e);
-                }).then(function(){
-                    s.menuReady=true;
-                });
+                    console.warn('PocketBase menu read failed; using Firebase fallback:',e&&e.message?e.message:e);
+                    return get(ref(db,'menu')).then(function(snap){var d=snap.val()||{},items=[];for(var id in d){if(d[id]&&d[id].active!==false)items.push(Object.assign({id:id},d[id]))}applyMenuSettings(items,s.settings||{});});
+                }).then(function(){s.menuReady=true;});
             },
             listenOrders:function(){
                 var s=this;

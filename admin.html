@@ -277,7 +277,7 @@
         import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
         import { getDatabase, ref, onValue, onChildAdded, onChildChanged, onChildRemoved, update, set, get, remove, query, orderByChild, limitToLast } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
         import { getAuth, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-        import { allocateOrderNoFromPocketBase, listOrdersFromPocketBase, backfillOrdersToPocketBase } from "./pocketbase-order-writer.js";
+        import { allocateOrderNoFromPocketBase, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, listMenuItemsFromPocketBase } from "./pocketbase-order-writer.js";
 
         // ★★★ 請貼入您相同的 Firebase 配置 ★★★
         const firebaseConfig = {
@@ -375,6 +375,10 @@
                     pocketBaseOrdersCollection: 'orders',
                     integrationOrdersUnsub: null,
                     ordersReadBackend: 'checking',
+                    settingsReadBackend: 'checking',
+                    menuReadBackend: 'checking',
+                    lastWriteBackend: '',
+                    menuSettingsPollTimer: null,
                     pbOrdersPollTimer: null,
                     pbOrdersReadInFlight: false,
                     pbOrdersEverConnected: false,
@@ -1223,15 +1227,33 @@
                     return !!item.isCombo || !!String(item.mealDrink || item.comboDrinkText || '').trim() || name.indexOf('\u5957\u9910') !== -1 || name.indexOf('\u62fc\u76e4') !== -1 || hasDrinkGroup || (!!String(item.comboGroupId || '').trim() && !this.isComboDrinkLineForDisplay(item));
                 },
                 listenMenuForDisplay() {
-                    try {
-                        onValue(ref(db, 'menu'), (snap) => {
-                            const data = snap.val() || {};
-                            const flattened = this.flattenMenuItemsForDisplay(data);
-                            this.menuItems = flattened.length ? flattened : Object.keys(data).map((id) => Object.assign({ id }, data[id] || {}));
-                        });
-                    } catch (e) {
-                        console.warn('menu display listener failed', e && e.message ? e.message : e);
-                    }
+                    const apply = (items) => {
+                        const arr = Array.isArray(items) ? items.slice() : [];
+                        const flattened = this.flattenMenuItemsForDisplay(arr.reduce((acc, item) => {
+                            if (item && item.id) acc[item.id] = item;
+                            return acc;
+                        }, {}));
+                        this.menuItems = flattened.length ? flattened : arr;
+                    };
+                    const loadFirebaseOnce = () => get(ref(db, 'menu')).then((snap) => {
+                        const data = snap.val() || {};
+                        const flattened = this.flattenMenuItemsForDisplay(data);
+                        this.menuItems = flattened.length ? flattened : Object.keys(data).map((id) => Object.assign({ id }, data[id] || {}));
+                        this.menuReadBackend = 'firebase';
+                    });
+                    const run = () => listMenuItemsFromPocketBase({ settings: this.settings || {}, timeoutMs: 2200 }).then((result) => {
+                        if (result && result.ok) {
+                            apply(result.items || []);
+                            this.menuReadBackend = 'pocketbase';
+                            return;
+                        }
+                        return loadFirebaseOnce();
+                    }).catch((err) => {
+                        console.warn('PocketBase menu read failed; using Firebase fallback:', err && err.message ? err.message : err);
+                        return loadFirebaseOnce();
+                    });
+                    run();
+                    if (!this.menuSettingsPollTimer) this.menuSettingsPollTimer = setInterval(run, 60000);
                 },
                 getDisplayOrderNote(order) {
                     const note = String((order && (order.orderNote || order['\u8a02\u55ae\u5099\u8a3b'])) || '').trim();
@@ -2352,18 +2374,29 @@
                     self.clearOrderBucketListeners();
                     self.resetIntegrationOrdersListener();
                     const selfS = this;
+                    const applyAdminSettings = (sv, backend) => {
+                        sv = sv || {};
+                        selfS.settings = sv;
+                        selfS.linePayServerUrl = sv.linePayServerUrl || '';
+                        selfS.linePayConfirmUrl = sv.linePayConfirmUrl || '';
+                        selfS.pocketBaseUrl = sv.pocketBaseUrl || sv.pocketbaseUrl || selfS.pocketBaseUrl || 'https://pb.yuangi168.com';
+                        selfS.pocketBaseOrdersCollection = sv.pocketBaseOrdersCollection || sv.pocketbaseOrdersCollection || 'orders';
+                        selfS.settings.pocketBaseUrl = selfS.pocketBaseUrl;
+                        selfS.settings.pocketBaseOrdersCollection = selfS.pocketBaseOrdersCollection;
+                        selfS.settings.pocketBaseOrderEndpoint = sv.pocketBaseOrderEndpoint || sv.pocketbaseOrderEndpoint || sv.pocketBaseSecureOrderEndpoint || sv.secureOrderEndpoint || '';
+                        selfS.settings.turnstileSiteKey = sv.turnstileSiteKey || sv.cloudflareTurnstileSiteKey || '';
+                        selfS.settingsReadBackend = backend || 'pocketbase';
+                    };
                     const _loadAdminSettings = () => {
-                        get(ref(db, 'settings')).then((snap) => {
-                            if (snap.exists()) {
-                                const sv = snap.val();
-                                selfS.settings = sv || {};
-                                selfS.linePayServerUrl = sv.linePayServerUrl || '';
-                                selfS.linePayConfirmUrl = sv.linePayConfirmUrl || '';
-                                selfS.pocketBaseUrl = sv.pocketBaseUrl || sv.pocketbaseUrl || '';
-                                selfS.pocketBaseOrdersCollection = sv.pocketBaseOrdersCollection || sv.pocketbaseOrdersCollection || 'orders';
-                                selfS.settings.pocketBaseOrderEndpoint = sv.pocketBaseOrderEndpoint || sv.pocketbaseOrderEndpoint || sv.pocketBaseSecureOrderEndpoint || sv.secureOrderEndpoint || '';
-                                selfS.settings.turnstileSiteKey = sv.turnstileSiteKey || sv.cloudflareTurnstileSiteKey || '';
+                        return readSettingsFromPocketBase({ settings: selfS.settings || {}, timeoutMs: 2200 }).then((result) => {
+                            if (result && result.ok && result.settings && Object.keys(result.settings).length) {
+                                applyAdminSettings(result.settings, 'pocketbase');
+                                return;
                             }
+                            return get(ref(db, 'settings')).then((snap) => { if (snap.exists()) applyAdminSettings(snap.val() || {}, 'firebase'); });
+                        }).catch((err) => {
+                            console.warn('PocketBase settings read failed; using Firebase fallback:', err && err.message ? err.message : err);
+                            return get(ref(db, 'settings')).then((snap) => { if (snap.exists()) applyAdminSettings(snap.val() || {}, 'firebase'); });
                         });
                     };
                     _loadAdminSettings();

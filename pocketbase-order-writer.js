@@ -1,4 +1,5 @@
 const DEFAULT_COLLECTION = "orders";
+const DEFAULT_POCKETBASE_URL = "https://pb.yuangi168.com";
 const DEFAULT_TIMEOUT_MS = 2500;
 const RESET_TIMEOUT_MS = 10000;
 let backfillPausedUntil = 0;
@@ -180,6 +181,11 @@ function storageValue(keys) {
     return "";
 }
 
+function configuredDefaultBaseUrl() {
+    if (typeof window !== "undefined" && window.POCKETBASE_DEFAULT_URL) return cleanBaseUrl(window.POCKETBASE_DEFAULT_URL);
+    return cleanBaseUrl(DEFAULT_POCKETBASE_URL);
+}
+
 function loadTurnstileScript() {
     if (typeof window === "undefined" || typeof document === "undefined") return Promise.resolve(false);
     if (window.turnstile && typeof window.turnstile.render === "function") return Promise.resolve(true);
@@ -212,15 +218,21 @@ function turnstileContainer() {
     shell.style.display = "flex";
     shell.style.alignItems = "center";
     shell.style.justifyContent = "center";
-    shell.style.background = "rgba(15,23,42,.35)";
+    shell.style.background = "transparent";
     shell.style.padding = "16px";
+    shell.style.pointerEvents = "none";
     var panel = document.createElement("div");
+    panel.id = "pb-turnstile-panel";
     panel.style.background = "#fff";
     panel.style.borderRadius = "8px";
     panel.style.boxShadow = "0 18px 60px rgba(0,0,0,.28)";
     panel.style.padding = "16px";
     panel.style.maxWidth = "360px";
     panel.style.width = "100%";
+    panel.style.opacity = "0";
+    panel.style.transform = "translateY(8px)";
+    panel.style.pointerEvents = "none";
+    panel.style.transition = "opacity .12s ease, transform .12s ease";
     var label = document.createElement("div");
     label.textContent = "Cloudflare verification";
     label.style.font = "700 14px/1.4 system-ui, -apple-system, BlinkMacSystemFont, sans-serif";
@@ -237,10 +249,36 @@ function turnstileContainer() {
     return el;
 }
 
+function showTurnstileContainer() {
+    try {
+        var shell = document.getElementById("pb-turnstile-shell");
+        var panel = document.getElementById("pb-turnstile-panel");
+        if (shell) {
+            shell.style.display = "flex";
+            shell.style.background = "rgba(15,23,42,.35)";
+            shell.style.pointerEvents = "auto";
+        }
+        if (panel) {
+            panel.style.opacity = "1";
+            panel.style.transform = "translateY(0)";
+            panel.style.pointerEvents = "auto";
+        }
+    } catch(e) {}
+}
+
 function hideTurnstileContainer() {
     try {
         var shell = document.getElementById("pb-turnstile-shell");
-        if (shell) shell.style.display = "none";
+        var panel = document.getElementById("pb-turnstile-panel");
+        if (shell) {
+            shell.style.background = "transparent";
+            shell.style.pointerEvents = "none";
+        }
+        if (panel) {
+            panel.style.opacity = "0";
+            panel.style.transform = "translateY(8px)";
+            panel.style.pointerEvents = "none";
+        }
     } catch(e) {}
 }
 
@@ -280,10 +318,16 @@ function requestTurnstileToken(siteKey, timeoutMs) {
                 var widgetId = turnstile.render(turnstileContainer(), {
                     sitekey: siteKey,
                     execution: "execute",
-                    appearance: "always",
+                    appearance: "interaction-only",
                     size: "normal",
                     theme: "light",
                     callback: function(token) { finish(null, token); },
+                    "before-interactive-callback": function() {
+                        showTurnstileContainer();
+                    },
+                    "after-interactive-callback": function() {
+                        hideTurnstileContainer();
+                    },
                     "error-callback": function(code) {
                         console.warn("Turnstile challenge failed:", code || "");
                         finish(new Error("Turnstile challenge failed" + (code ? ": " + code : "")));
@@ -318,6 +362,7 @@ export function resolvePocketBaseConfig(options) {
         nested.url ||
         (typeof window !== "undefined" && (window.POCKETBASE_URL || window.POCKETBASE_BASE_URL)) ||
         storageValue(["pocketbase_url", "POCKETBASE_URL"]) ||
+        configuredDefaultBaseUrl() ||
         ""
     );
     var orderEndpoint = cleanBaseUrl(
@@ -494,6 +539,191 @@ export function listOrdersFromPocketBase(options) {
     }).catch(function(e) {
         return { ok: false, backend: "pocketbase", error: e, message: e && e.message ? e.message : String(e), orders: [] };
     });
+}
+
+function stripPocketBaseSystemFields(record) {
+    var source = record && typeof record === "object" ? record : {};
+    var out = {};
+    Object.keys(source).forEach(function(key) {
+        if (key === "collectionId" || key === "collectionName" || key === "expand" || key === "created" || key === "updated") return;
+        out[key] = decodeJsonLike(source[key]);
+    });
+    return out;
+}
+
+function decodeJsonLike(value) {
+    var current = value;
+    for (var i = 0; i < 3; i++) {
+        if (typeof current !== "string") break;
+        var raw = current.trim();
+        if (!raw) return "";
+        var first = raw.charAt(0);
+        var last = raw.charAt(raw.length - 1);
+        if (!((first === "{" && last === "}") || (first === "[" && last === "]") || (first === '"' && last === '"'))) break;
+        try {
+            current = JSON.parse(raw);
+        } catch(e) {
+            break;
+        }
+    }
+    if (Array.isArray(current)) return current.map(decodeJsonLike);
+    if (current && typeof current === "object") {
+        var out = {};
+        Object.keys(current).forEach(function(key) {
+            out[key] = decodeJsonLike(current[key]);
+        });
+        return out;
+    }
+    return current;
+}
+
+function collectionOption(options, keys, fallback) {
+    options = options || {};
+    var settings = options.settings || {};
+    var nested = settings.pocketBase || settings.pocketbase || {};
+    for (var i = 0; i < keys.length; i++) {
+        var key = keys[i];
+        if (options[key]) return text(options[key]);
+        if (settings[key]) return text(settings[key]);
+        if (nested[key]) return text(nested[key]);
+    }
+    return fallback;
+}
+
+function listPocketBaseCollection(options, collectionName, queryOptions) {
+    options = options || {};
+    queryOptions = queryOptions || {};
+    var config = resolvePocketBaseConfig(options);
+    if (!config.baseUrl) return Promise.resolve({ ok: false, skipped: true, reason: "missing_pocketbase_url", records: [] });
+    var headers = {};
+    if (config.token) headers.Authorization = "Bearer " + config.token;
+    var perPage = Math.max(1, Math.min(500, Math.floor(Number(queryOptions.perPage || 500) || 500)));
+    var maxPages = Math.max(1, Math.floor(Number(queryOptions.maxPages || 6) || 6));
+    var timeoutMs = Number(queryOptions.timeoutMs || options.timeoutMs || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
+    var baseUrl = config.baseUrl + "/api/collections/" + encodeURIComponent(collectionName) + "/records";
+    var records = [];
+    function fetchPage(page) {
+        var url = baseUrl + "?page=" + page + "&perPage=" + perPage;
+        if (queryOptions.sort) url += "&sort=" + encodeURIComponent(queryOptions.sort);
+        if (queryOptions.filter) url += "&filter=" + encodeURIComponent(queryOptions.filter);
+        return requestJson(url, { method: "GET", headers: headers }, timeoutMs).then(function(data) {
+            var items = Array.isArray(data && data.items) ? data.items : [];
+            records = records.concat(items);
+            var totalPages = Number(data && data.totalPages) || page;
+            if (page < totalPages && page < maxPages) return fetchPage(page + 1);
+            return records;
+        });
+    }
+    return fetchPage(1).then(function(rows) {
+        return { ok: true, backend: "pocketbase", records: rows };
+    }).catch(function(e) {
+        return { ok: false, backend: "pocketbase", error: e, message: e && e.message ? e.message : String(e), records: [] };
+    });
+}
+
+function settingsFromRecords(records) {
+    records = Array.isArray(records) ? records : [];
+    var keyed = {};
+    var sawKeyed = false;
+    var firstObject = null;
+    records.forEach(function(record) {
+        var row = stripPocketBaseSystemFields(record);
+        var key = text(row.key || row.name || row.setting_key || row.settingKey);
+        if (key) {
+            sawKeyed = true;
+            var value = row.value;
+            if (value === undefined) value = row.data;
+            if (value === undefined) value = row.json;
+            if (value === undefined) value = row.settings;
+            keyed[key] = decodeJsonLike(value);
+            return;
+        }
+        var payload = row.settings || row.data || row.value || row.json || row;
+        payload = decodeJsonLike(payload);
+        if (payload && typeof payload === "object" && !Array.isArray(payload) && !firstObject) firstObject = payload;
+    });
+    if (sawKeyed) return keyed;
+    return firstObject || {};
+}
+
+function sortMenuItems(items) {
+    return (Array.isArray(items) ? items : []).slice().sort(function(a, b) {
+        if (a.sortOrder !== undefined && b.sortOrder !== undefined) return Number(a.sortOrder) - Number(b.sortOrder);
+        if (a.sortOrder !== undefined) return -1;
+        if (b.sortOrder !== undefined) return 1;
+        var ca = Number(a.createdAt || a.created_at || 0) || 0;
+        var cb = Number(b.createdAt || b.created_at || 0) || 0;
+        if (ca !== cb) return ca - cb;
+        return text(a.category).localeCompare(text(b.category));
+    });
+}
+
+function menuItemFromRecord(record) {
+    var row = stripPocketBaseSystemFields(record);
+    var payload = row.item || row.data || row.value || row.json || row;
+    payload = decodeJsonLike(payload);
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) payload = row;
+    var item = Object.assign({}, payload);
+    item.id = text(item.id || item.item_id || item.itemId || item.menu_id || item.menuId || item.firebase_id || item.firebaseId || (record && record.id));
+    return item;
+}
+
+export function readSettingsFromPocketBase(options) {
+    options = options || {};
+    var config = resolvePocketBaseConfig(options);
+    var timeoutMs = Number(options.timeoutMs || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
+    if (!config.baseUrl) return Promise.resolve({ ok: false, skipped: true, reason: "missing_pocketbase_url", settings: {} });
+    return requestJson(config.baseUrl + "/api/public/settings", { method: "GET" }, timeoutMs)
+        .then(function(data) {
+            var settings = data && data.settings && typeof data.settings === "object" ? decodeJsonLike(data.settings) : {};
+            return { ok: true, backend: "pocketbase", settings: settings, data: data };
+        })
+        .catch(function(endpointErr) {
+            var collection = collectionOption(options, ["pocketBaseSettingsCollection", "pocketbaseSettingsCollection", "settingsCollection"], "settings");
+            return listPocketBaseCollection(options, collection, {
+                perPage: 100,
+                maxPages: 3,
+                sort: "-updated",
+                timeoutMs: timeoutMs
+            }).then(function(result) {
+                if (!result.ok) {
+                    result.endpointError = endpointErr;
+                    result.settings = {};
+                    return result;
+                }
+                return { ok: true, backend: "pocketbase", settings: settingsFromRecords(result.records), records: result.records };
+            });
+        });
+}
+
+export function listMenuItemsFromPocketBase(options) {
+    options = options || {};
+    var config = resolvePocketBaseConfig(options);
+    var timeoutMs = Number(options.timeoutMs || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
+    if (!config.baseUrl) return Promise.resolve({ ok: false, skipped: true, reason: "missing_pocketbase_url", items: [] });
+    return requestJson(config.baseUrl + "/api/public/menu", { method: "GET" }, timeoutMs)
+        .then(function(data) {
+            var items = Array.isArray(data && data.items) ? data.items.map(decodeJsonLike) : [];
+            if (options.activeOnly) items = items.filter(function(item) { return item && item.active !== false; });
+            return { ok: true, backend: "pocketbase", items: sortMenuItems(items), data: data };
+        })
+        .catch(function(endpointErr) {
+            var collection = collectionOption(options, ["pocketBaseMenuCollection", "pocketbaseMenuCollection", "menuCollection", "pocketBaseMenuItemsCollection"], "menu_items");
+            return listPocketBaseCollection(options, collection, {
+                perPage: 500,
+                maxPages: 10,
+                timeoutMs: timeoutMs
+            }).then(function(result) {
+                if (!result.ok) {
+                    result.endpointError = endpointErr;
+                    result.items = [];
+                    return result;
+                }
+                var items = result.records.map(menuItemFromRecord);
+                if (options.activeOnly) items = items.filter(function(item) { return item && item.active !== false; });
+                return { ok: true, backend: "pocketbase", items: sortMenuItems(items), records: result.records };
+            });
+        });
 }
 
 function backfillThrottleKey(order) {
