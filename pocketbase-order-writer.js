@@ -679,20 +679,28 @@ export function readSettingsFromPocketBase(options) {
             return { ok: true, backend: "pocketbase", settings: settings, data: data };
         })
         .catch(function(endpointErr) {
-            var collection = collectionOption(options, ["pocketBaseSettingsCollection", "pocketbaseSettingsCollection", "settingsCollection"], "settings");
-            return listPocketBaseCollection(options, collection, {
-                perPage: 100,
-                maxPages: 3,
-                sort: "-updated",
-                timeoutMs: timeoutMs
-            }).then(function(result) {
-                if (!result.ok) {
-                    result.endpointError = endpointErr;
-                    result.settings = {};
-                    return result;
-                }
-                return { ok: true, backend: "pocketbase", settings: settingsFromRecords(result.records), records: result.records };
-            });
+            if (options.allowDirectCollectionFallback === true) {
+                var collection = collectionOption(options, ["pocketBaseSettingsCollection", "pocketbaseSettingsCollection", "settingsCollection"], "settings");
+                return listPocketBaseCollection(options, collection, {
+                    perPage: 100,
+                    maxPages: 3,
+                    timeoutMs: timeoutMs
+                }).then(function(result) {
+                    if (!result.ok) {
+                        result.endpointError = endpointErr;
+                        result.settings = {};
+                        return result;
+                    }
+                    return { ok: true, backend: "pocketbase", settings: settingsFromRecords(result.records), records: result.records };
+                });
+            }
+            return {
+                ok: false,
+                backend: "pocketbase",
+                endpointError: endpointErr,
+                message: endpointErr && endpointErr.message ? endpointErr.message : String(endpointErr),
+                settings: {}
+            };
         });
 }
 
@@ -708,21 +716,30 @@ export function listMenuItemsFromPocketBase(options) {
             return { ok: true, backend: "pocketbase", items: sortMenuItems(items), data: data };
         })
         .catch(function(endpointErr) {
-            var collection = collectionOption(options, ["pocketBaseMenuCollection", "pocketbaseMenuCollection", "menuCollection", "pocketBaseMenuItemsCollection"], "menu_items");
-            return listPocketBaseCollection(options, collection, {
-                perPage: 500,
-                maxPages: 10,
-                timeoutMs: timeoutMs
-            }).then(function(result) {
-                if (!result.ok) {
-                    result.endpointError = endpointErr;
-                    result.items = [];
-                    return result;
-                }
-                var items = result.records.map(menuItemFromRecord);
-                if (options.activeOnly) items = items.filter(function(item) { return item && item.active !== false; });
-                return { ok: true, backend: "pocketbase", items: sortMenuItems(items), records: result.records };
-            });
+            if (options.allowDirectCollectionFallback === true) {
+                var collection = collectionOption(options, ["pocketBaseMenuCollection", "pocketbaseMenuCollection", "menuCollection", "pocketBaseMenuItemsCollection"], "menu_items");
+                return listPocketBaseCollection(options, collection, {
+                    perPage: 500,
+                    maxPages: 10,
+                    timeoutMs: timeoutMs
+                }).then(function(result) {
+                    if (!result.ok) {
+                        result.endpointError = endpointErr;
+                        result.items = [];
+                        return result;
+                    }
+                    var items = result.records.map(menuItemFromRecord);
+                    if (options.activeOnly) items = items.filter(function(item) { return item && item.active !== false; });
+                    return { ok: true, backend: "pocketbase", items: sortMenuItems(items), records: result.records };
+                });
+            }
+            return {
+                ok: false,
+                backend: "pocketbase",
+                endpointError: endpointErr,
+                message: endpointErr && endpointErr.message ? endpointErr.message : String(endpointErr),
+                items: []
+            };
         });
 }
 
