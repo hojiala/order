@@ -254,12 +254,12 @@ function requestTurnstileToken(siteKey, timeoutMs) {
                 if (done) return;
                 done = true;
                 reject(new Error("Turnstile token timeout"));
-            }, Math.max(10000, Number(timeoutMs || 30000) || 30000));
+            }, Math.max(30000, Number(timeoutMs || 90000) || 90000));
             var finish = function(err, token) {
                 if (done) return;
                 done = true;
                 clearTimeout(timer);
-                hideTurnstileContainer();
+                if (!err) hideTurnstileContainer();
                 if (err) reject(err);
                 else resolve(token || "");
             };
@@ -271,9 +271,24 @@ function requestTurnstileToken(siteKey, timeoutMs) {
                         sitekey: siteKey,
                         execution: "execute",
                         appearance: "always",
+                        size: "normal",
+                        theme: "light",
                         callback: function(token) { finish(null, token); },
-                        "error-callback": function() { finish(new Error("Turnstile challenge failed")); },
-                        "expired-callback": function() { finish(new Error("Turnstile token expired")); }
+                        "error-callback": function(code) {
+                            console.warn("Turnstile challenge failed:", code || "");
+                            finish(new Error("Turnstile challenge failed" + (code ? ": " + code : "")));
+                        },
+                        "expired-callback": function() {
+                            console.warn("Turnstile token expired");
+                            finish(new Error("Turnstile token expired"));
+                        },
+                        "timeout-callback": function() {
+                            console.warn("Turnstile challenge timed out");
+                        },
+                        "unsupported-callback": function() {
+                            console.warn("Turnstile browser unsupported");
+                            finish(new Error("Turnstile browser unsupported"));
+                        }
                     });
                     window.__pbTurnstileWidgetId = widgetId;
                 } else {
@@ -669,7 +684,7 @@ function findExistingRecordId(config, orderId, headers, timeoutMs) {
 }
 
 function writeOrderToSecureEndpoint(config, orderId, orderData, options, record, timeoutMs) {
-    return requestTurnstileToken(config.turnstileSiteKey, options.turnstileTimeoutMs || 10000).then(function(turnstileToken) {
+    return requestTurnstileToken(config.turnstileSiteKey, options.turnstileTimeoutMs || 90000).then(function(turnstileToken) {
         var payload = {
             orderId: text(orderId || (orderData && orderData.id)),
             sourcePage: text(options.sourcePage || (orderData && orderData.source) || ""),
