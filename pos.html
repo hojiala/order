@@ -795,7 +795,7 @@
                 posOrderType:'takeout',posTableLabel:'',posTables:[],cartDragIdx:null,
                 posPickupDate:"",posPickupTime:"",
                 orderMode:"pos",editingOrder:null,
-                onlineOrders:[],ordersLoading:false,assigningNos:{},orderBuckets:{},orderBucketUnsubs:[],integrationOrdersUnsub:null,integrationOrdersCache:[],phoneOrdersUnsub:null,phoneOrdersCache:[],useIntegrationView:false,ordersReadBackend:'checking',settingsReadBackend:'checking',menuReadBackend:'checking',lastWriteBackend:'',menuSettingsPollTimer:null,pbOrdersPollTimer:null,pbOrdersReadInFlight:false,pbOrdersEverConnected:false,pbOrdersFailureCount:0,remoteStatusOverrides:{},remoteStatusOverridesUnsub:null,orderHydrateInFlight:{},orderHydrateDone:{},
+                onlineOrders:[],ordersLoading:false,assigningNos:{},orderBuckets:{},orderBucketUnsubs:[],integrationOrdersUnsub:null,integrationOrdersCache:[],phoneOrdersUnsub:null,phoneOrdersCache:[],useIntegrationView:false,ordersReadBackend:'checking',settingsReadBackend:'checking',menuReadBackend:'checking',lastWriteBackend:'',menuEditOverrideUntil:0,menuSettingsPollTimer:null,pbOrdersPollTimer:null,pbOrdersReadInFlight:false,pbOrdersEverConnected:false,pbOrdersFailureCount:0,remoteStatusOverrides:{},remoteStatusOverridesUnsub:null,orderHydrateInFlight:{},orderHydrateDone:{},
                 orderSearch:"",
                 activeItem:null,tempQty:1,tempNote:"",tempDrinkNote:"",tempSels:[],tempOG:{},tempPosExtras:[],tempComboSize:{},tempDrinkAddons:[],
                 toastMsg:"",toastTimer:null,lastOrderId:null,
@@ -828,17 +828,17 @@
                 catch(e){console.warn('activeOrderCount failed:',e&&e.message?e.message:e);return 0;}
             },
             backendStatusShortLabel:function(){
-                if(this.ordersReadBackend==='firebase'||this.lastWriteBackend==='firebase'||this.menuReadBackend==='firebase'||this.settingsReadBackend==='firebase')return 'Firebase';
+                if(this.ordersReadBackend==='firebase'||this.lastWriteBackend==='firebase')return 'Firebase';
                 return 'PB';
             },
             backendStatusPillClass:function(){
-                if(this.ordersReadBackend==='firebase'||this.lastWriteBackend==='firebase'||this.menuReadBackend==='firebase'||this.settingsReadBackend==='firebase')return 'bg-amber-100 text-amber-900 border-amber-200';
-                if(this.ordersReadBackend==='checking'||this.menuReadBackend==='checking'||this.settingsReadBackend==='checking')return 'bg-sky-100 text-sky-900 border-sky-200';
+                if(this.ordersReadBackend==='firebase'||this.lastWriteBackend==='firebase')return 'bg-amber-100 text-amber-900 border-amber-200';
+                if(this.ordersReadBackend==='checking')return 'bg-sky-100 text-sky-900 border-sky-200';
                 return 'bg-emerald-100 text-emerald-900 border-emerald-200';
             },
             backendStatusDotClass:function(){
-                if(this.ordersReadBackend==='firebase'||this.lastWriteBackend==='firebase'||this.menuReadBackend==='firebase'||this.settingsReadBackend==='firebase')return 'bg-amber-500';
-                if(this.ordersReadBackend==='checking'||this.menuReadBackend==='checking'||this.settingsReadBackend==='checking')return 'bg-sky-500';
+                if(this.ordersReadBackend==='firebase'||this.lastWriteBackend==='firebase')return 'bg-amber-500';
+                if(this.ordersReadBackend==='checking')return 'bg-sky-500';
                 return 'bg-emerald-500';
             },
             ordersReadBackendLabel:function(){
@@ -4703,6 +4703,9 @@
             },
             loadMenuPrimary:function(){
                 var s=this;
+                if(s.menuEditOverrideUntil&&Date.now()<s.menuEditOverrideUntil){
+                    return s.loadMenuFromFirebase();
+                }
                 return listMenuItemsFromPocketBase({settings:s.settings||{},timeoutMs:2200}).then(function(result){
                     if(result&&result.ok){
                         s.applyMenuItemsFromPrimary(result.items||[]);
@@ -6114,8 +6117,17 @@
                     }).catch(function(e){alert("\u66f4\u65b0\u5931\u6557\uff1a"+e.message);});
             },
             toggleActive:function(item){
-                update(ref(db,"menu/"+item.id),{active:!item.active})
-                    .catch(function(e){alert("更新失敗："+e.message);});
+                if(!item||!item.id)return;
+                var next=!item.active;
+                item.active=next;
+                this.menuEditOverrideUntil=Date.now()+10*60*1000;
+                this.menuReadBackend='firebase';
+                update(ref(db,"menu/"+item.id),{active:next})
+                    .then(function(){})
+                    .catch(function(e){
+                        item.active=!next;
+                        alert("更新失敗："+e.message);
+                    });
             },
             // ── 列印功能（從 admin.html 移植：remove+set 確保必然觸發 Node-RED）──
             printOrder:function(order){
