@@ -244,6 +244,13 @@ function hideTurnstileContainer() {
     } catch(e) {}
 }
 
+function removeTurnstileContainer() {
+    try {
+        var shell = document.getElementById("pb-turnstile-shell");
+        if (shell && shell.parentNode) shell.parentNode.removeChild(shell);
+    } catch(e) {}
+}
+
 function requestTurnstileToken(siteKey, timeoutMs) {
     if (!siteKey) return Promise.resolve("");
     if (typeof window === "undefined" || typeof document === "undefined") return Promise.resolve("");
@@ -265,35 +272,35 @@ function requestTurnstileToken(siteKey, timeoutMs) {
             };
             try {
                 var turnstile = window.turnstile;
-                var widgetId = window.__pbTurnstileWidgetId;
-                if (widgetId === undefined || widgetId === null) {
-                    widgetId = turnstile.render(turnstileContainer(), {
-                        sitekey: siteKey,
-                        execution: "execute",
-                        appearance: "always",
-                        size: "normal",
-                        theme: "light",
-                        callback: function(token) { finish(null, token); },
-                        "error-callback": function(code) {
-                            console.warn("Turnstile challenge failed:", code || "");
-                            finish(new Error("Turnstile challenge failed" + (code ? ": " + code : "")));
-                        },
-                        "expired-callback": function() {
-                            console.warn("Turnstile token expired");
-                            finish(new Error("Turnstile token expired"));
-                        },
-                        "timeout-callback": function() {
-                            console.warn("Turnstile challenge timed out");
-                        },
-                        "unsupported-callback": function() {
-                            console.warn("Turnstile browser unsupported");
-                            finish(new Error("Turnstile browser unsupported"));
-                        }
-                    });
-                    window.__pbTurnstileWidgetId = widgetId;
-                } else {
-                    turnstile.reset(widgetId);
+                if (window.__pbTurnstileWidgetId !== undefined && window.__pbTurnstileWidgetId !== null && typeof turnstile.remove === "function") {
+                    try { turnstile.remove(window.__pbTurnstileWidgetId); } catch(removeErr) {}
                 }
+                window.__pbTurnstileWidgetId = null;
+                removeTurnstileContainer();
+                var widgetId = turnstile.render(turnstileContainer(), {
+                    sitekey: siteKey,
+                    execution: "execute",
+                    appearance: "always",
+                    size: "normal",
+                    theme: "light",
+                    callback: function(token) { finish(null, token); },
+                    "error-callback": function(code) {
+                        console.warn("Turnstile challenge failed:", code || "");
+                        finish(new Error("Turnstile challenge failed" + (code ? ": " + code : "")));
+                    },
+                    "expired-callback": function() {
+                        console.warn("Turnstile token expired");
+                        finish(new Error("Turnstile token expired"));
+                    },
+                    "timeout-callback": function() {
+                        console.warn("Turnstile challenge timed out");
+                    },
+                    "unsupported-callback": function() {
+                        console.warn("Turnstile browser unsupported");
+                        finish(new Error("Turnstile browser unsupported"));
+                    }
+                });
+                window.__pbTurnstileWidgetId = widgetId;
                 turnstile.execute(widgetId);
             } catch(e) {
                 finish(e);
