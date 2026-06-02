@@ -703,6 +703,11 @@ export function writeOrderWithFirebaseFallback(orderId, orderData, options) {
     options = options || {};
     var writeToFirebase = typeof options.writeToFirebase === "function" ? options.writeToFirebase : null;
     var fallback = function(reason) {
+        try {
+            var detail = reason && (reason.message || reason.reason || (reason.error && reason.error.message) || "");
+            var body = reason && (reason.body || (reason.error && reason.error.body));
+            if (detail || body) console.warn("PocketBase primary write failed; using Firebase fallback:", detail || "", body || "");
+        } catch(e) {}
         if (!writeToFirebase) {
             return Promise.resolve({ ok: false, backend: "none", fallback: false, pocketBase: reason });
         }
