@@ -180,6 +180,78 @@ function storageValue(keys) {
     return "";
 }
 
+function loadTurnstileScript() {
+    if (typeof window === "undefined" || typeof document === "undefined") return Promise.resolve(false);
+    if (window.turnstile && typeof window.turnstile.render === "function") return Promise.resolve(true);
+    if (window.__pbTurnstileScriptPromise) return window.__pbTurnstileScriptPromise;
+    window.__pbTurnstileScriptPromise = new Promise(function(resolve, reject) {
+        var script = document.createElement("script");
+        script.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+        script.async = true;
+        script.defer = true;
+        script.onload = function() { resolve(true); };
+        script.onerror = function() { reject(new Error("Turnstile script load failed")); };
+        document.head.appendChild(script);
+    });
+    return window.__pbTurnstileScriptPromise;
+}
+
+function turnstileContainer() {
+    var id = "pb-turnstile-container";
+    var el = document.getElementById(id);
+    if (el) return el;
+    el = document.createElement("div");
+    el.id = id;
+    el.style.position = "fixed";
+    el.style.right = "16px";
+    el.style.bottom = "16px";
+    el.style.zIndex = "2147483647";
+    document.body.appendChild(el);
+    return el;
+}
+
+function requestTurnstileToken(siteKey, timeoutMs) {
+    if (!siteKey) return Promise.resolve("");
+    if (typeof window === "undefined" || typeof document === "undefined") return Promise.resolve("");
+    return loadTurnstileScript().then(function() {
+        return new Promise(function(resolve, reject) {
+            var done = false;
+            var timer = setTimeout(function() {
+                if (done) return;
+                done = true;
+                reject(new Error("Turnstile token timeout"));
+            }, Math.max(3000, Number(timeoutMs || 10000) || 10000));
+            var finish = function(err, token) {
+                if (done) return;
+                done = true;
+                clearTimeout(timer);
+                if (err) reject(err);
+                else resolve(token || "");
+            };
+            try {
+                var turnstile = window.turnstile;
+                var widgetId = window.__pbTurnstileWidgetId;
+                if (widgetId === undefined || widgetId === null) {
+                    widgetId = turnstile.render(turnstileContainer(), {
+                        sitekey: siteKey,
+                        execution: "execute",
+                        appearance: "interaction-only",
+                        callback: function(token) { finish(null, token); },
+                        "error-callback": function() { finish(new Error("Turnstile challenge failed")); },
+                        "expired-callback": function() { finish(new Error("Turnstile token expired")); }
+                    });
+                    window.__pbTurnstileWidgetId = widgetId;
+                } else {
+                    turnstile.reset(widgetId);
+                }
+                turnstile.execute(widgetId);
+            } catch(e) {
+                finish(e);
+            }
+        });
+    });
+}
+
 export function resolvePocketBaseConfig(options) {
     options = options || {};
     var settings = options.settings || {};
@@ -189,6 +261,14 @@ export function resolvePocketBaseConfig(options) {
         nested.url ||
         (typeof window !== "undefined" && (window.POCKETBASE_URL || window.POCKETBASE_BASE_URL)) ||
         storageValue(["pocketbase_url", "POCKETBASE_URL"]) ||
+        ""
+    );
+    var orderEndpoint = cleanBaseUrl(
+        optionValue(options, ["pocketBaseOrderEndpoint", "pocketbaseOrderEndpoint", "pocketBaseSecureOrderEndpoint", "secureOrderEndpoint", "orderWriteEndpoint"]) ||
+        nested.orderEndpoint ||
+        nested.secureOrderEndpoint ||
+        (typeof window !== "undefined" && (window.POCKETBASE_ORDER_ENDPOINT || window.SECURE_ORDER_ENDPOINT)) ||
+        storageValue(["pocketbase_order_endpoint", "POCKETBASE_ORDER_ENDPOINT"]) ||
         ""
     );
     var collection = text(
@@ -202,7 +282,13 @@ export function resolvePocketBaseConfig(options) {
         (typeof window !== "undefined" && (window.POCKETBASE_TOKEN || "")) ||
         storageValue(["pocketbase_token"])
     );
-    return { baseUrl: baseUrl, collection: collection, token: token };
+    var turnstileSiteKey = text(
+        optionValue(options, ["turnstileSiteKey", "cloudflareTurnstileSiteKey", "pocketBaseTurnstileSiteKey"]) ||
+        nested.turnstileSiteKey ||
+        (typeof window !== "undefined" && (window.TURNSTILE_SITE_KEY || "")) ||
+        storageValue(["turnstile_site_key", "TURNSTILE_SITE_KEY"])
+    );
+    return { baseUrl: baseUrl, orderEndpoint: orderEndpoint, collection: collection, token: token, turnstileSiteKey: turnstileSiteKey };
 }
 
 export function pocketBaseRecordToOrder(record) {
@@ -547,10 +633,40 @@ function findExistingRecordId(config, orderId, headers, timeoutMs) {
         .catch(function() { return ""; });
 }
 
+function writeOrderToSecureEndpoint(config, orderId, orderData, options, record, timeoutMs) {
+    return requestTurnstileToken(config.turnstileSiteKey, options.turnstileTimeoutMs || 10000).then(function(turnstileToken) {
+        var payload = {
+            orderId: text(orderId || (orderData && orderData.id)),
+            sourcePage: text(options.sourcePage || (orderData && orderData.source) || ""),
+            resetTime: text(options.resetTime || options.counterResetTime || ""),
+            maxNo: numericOrUndefined(options.maxNo || options.counterMaxNo),
+            orderData: plainJson(orderData || {}, {}),
+            record: plainJson(record || {}, {}),
+            turnstileToken: turnstileToken,
+            clientTs: Date.now()
+        };
+        return requestJson(config.orderEndpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        }, Number(options.secureTimeoutMs || timeoutMs || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS).then(function(data) {
+            var savedRecord = data && data.record && typeof data.record === "object" ? data.record : record;
+            return {
+                ok: true,
+                action: text(data && data.action) || "created",
+                id: text((data && data.id) || (savedRecord && savedRecord.id) || ""),
+                record: savedRecord,
+                data: data,
+                secureEndpoint: true
+            };
+        });
+    });
+}
+
 export function writeOrderToPocketBase(orderId, orderData, options) {
     options = options || {};
     var config = resolvePocketBaseConfig(options);
-    if (!config.baseUrl) {
+    if (!config.baseUrl && !config.orderEndpoint) {
         return Promise.resolve({ ok: false, skipped: true, reason: "missing_pocketbase_url" });
     }
     if (typeof window !== "undefined" && window.location && window.location.protocol === "https:" &&
@@ -559,6 +675,9 @@ export function writeOrderToPocketBase(orderId, orderData, options) {
     }
     var timeoutMs = Number(options.timeoutMs || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
     var record = buildPocketBaseOrderRecord(orderId, orderData, options);
+    if (config.orderEndpoint) {
+        return writeOrderToSecureEndpoint(config, orderId, orderData, options, record, timeoutMs);
+    }
     var headers = { "Content-Type": "application/json" };
     if (config.token) headers.Authorization = "Bearer " + config.token;
     var baseRecordsUrl = config.baseUrl + "/api/collections/" + encodeURIComponent(config.collection) + "/records";
