@@ -3,7 +3,7 @@ const DEFAULT_POCKETBASE_URL = "https://pb.yuangi168.com";
 const DEFAULT_TIMEOUT_MS = 2500;
 const RESET_TIMEOUT_MS = 10000;
 const PUBLIC_ENDPOINT_COOLDOWN_MS = 15 * 1000;
-const PUBLIC_CACHE_DB_NAME = "pb_public_snapshots_v1";
+const PUBLIC_CACHE_DB_NAME = "pb_public_snapshots_v2";
 const PUBLIC_CACHE_STORE = "snapshots";
 const PUBLIC_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 let backfillPausedUntil = 0;
@@ -650,7 +650,12 @@ function settingsFromRecords(records) {
             if (value === undefined) value = row.data;
             if (value === undefined) value = row.json;
             if (value === undefined) value = row.settings;
-            keyed[key] = decodeJsonLike(value);
+            var decoded = decodeJsonLike(value);
+            if ((key === "settings" || key === "config") && decoded && typeof decoded === "object" && !Array.isArray(decoded)) {
+                Object.assign(keyed, decoded);
+            } else {
+                keyed[key] = decoded;
+            }
             return;
         }
         var payload = row.settings || row.data || row.value || row.json || {};
@@ -658,7 +663,7 @@ function settingsFromRecords(records) {
         if (!payload || typeof payload !== "object" || Array.isArray(payload)) payload = {};
         if (!firstObject) firstObject = Object.assign({}, row, payload);
     });
-    if (sawKeyed) return keyed;
+    if (sawKeyed) return Object.assign({}, firstObject || {}, keyed);
     return firstObject || {};
 }
 
@@ -698,21 +703,63 @@ function sortMenuItems(items) {
 
 function dedupeMenuItems(items) {
     var out = [];
-    var byId = {};
+    var byKey = {};
+    function idOf(item) {
+        return text(item && (item.id || item.item_id || item.itemId || item.menu_id || item.menuId || item.firebase_id || item.firebaseId));
+    }
+    function idScore(id) {
+        id = text(id);
+        if (id.charAt(0) === "-") return 4;
+        if (/^(menu|item)_/i.test(id)) return 3;
+        if (id.length > 15) return 2;
+        return id ? 1 : 0;
+    }
+    function keyOf(item) {
+        var name = text(item && (item.name || item.printName || item.shortName)).trim().toLowerCase();
+        var category = text(item && item.category).trim().toLowerCase();
+        var price = text(item && item.price).trim();
+        if (name) return "shape:" + [name, category, price].join("|");
+        var id = idOf(item);
+        return id ? "id:" + id : "";
+    }
+    function quality(item) {
+        var score = idScore(idOf(item));
+        if (text(item && item.subCategory).trim()) score += 3;
+        if (text(item && item.img).trim()) score += 3;
+        if (Array.isArray(item && item.optionGroups) && item.optionGroups.length) score += 2;
+        if (Array.isArray(item && item.options) && item.options.length) score += 1;
+        if (finiteNumber(item && item.sortOrder) !== null) score += 1;
+        if (createdNumber(item && (item.createdAt || item.created_at))) score += 1;
+        return score;
+    }
+    function mergeItem(existing, incoming) {
+        existing = existing || {};
+        incoming = incoming || {};
+        var primary = quality(incoming) > quality(existing) ? incoming : existing;
+        var secondary = primary === incoming ? existing : incoming;
+        var merged = Object.assign({}, secondary, primary);
+        ["subCategory", "img", "desc", "shortName", "printName", "category", "price"].forEach(function(field) {
+            if ((merged[field] === undefined || merged[field] === null || merged[field] === "") && secondary[field] !== undefined) merged[field] = secondary[field];
+        });
+        var primaryId = idOf(primary);
+        var secondaryId = idOf(secondary);
+        merged.id = idScore(primaryId) >= idScore(secondaryId) ? primaryId : secondaryId;
+        return merged;
+    }
     (Array.isArray(items) ? items : []).forEach(function(item) {
         item = item || {};
-        var key = text(item.id || item.item_id || item.itemId || item.menu_id || item.menuId || item.firebase_id || item.firebaseId);
+        var key = keyOf(item);
         if (!key) {
             out.push(item);
             return;
         }
-        if (byId[key] === undefined) {
-            byId[key] = out.length;
+        if (byKey[key] === undefined) {
+            byKey[key] = out.length;
             out.push(item);
             return;
         }
-        var idx = byId[key];
-        out[idx] = Object.assign({}, item, out[idx]);
+        var idx = byKey[key];
+        out[idx] = mergeItem(out[idx], item);
     });
     return out;
 }
@@ -723,7 +770,7 @@ function menuItemFromRecord(record) {
     payload = decodeJsonLike(payload);
     if (!payload || typeof payload !== "object" || Array.isArray(payload)) payload = {};
     var item = Object.assign({}, row, payload);
-    item.id = text(payload.id || payload.item_id || payload.itemId || payload.menu_id || payload.menuId || payload.firebase_id || payload.firebaseId || row.id || (record && record.id));
+    item.id = text(payload.id || payload.item_id || payload.itemId || payload.menu_id || payload.menuId || payload.firebase_id || payload.firebaseId || row.firebase_id || row.firebaseId || row.item_id || row.itemId || row.menu_id || row.menuId || row.id || (record && record.id));
     return item;
 }
 
@@ -857,6 +904,20 @@ function parsePublicSettingsResponse(data) {
     return { ok: true, backend: "pocketbase", settings: settings, data: data };
 }
 
+function settingsLooksUsable(settings) {
+    settings = settings || {};
+    var categories = Array.isArray(settings.categories) ? settings.categories : [];
+    if (!categories.length) return false;
+    if (settings.openTime || settings.closeTime || settings.pickupDays || settings.pickupInterval) return true;
+    return false;
+}
+
+function menuLooksUsable(items) {
+    return Array.isArray(items) && items.some(function(item) {
+        return item && text(item.name || item.printName || item.shortName).trim() && text(item.category).trim();
+    });
+}
+
 function parsePublicMenuResponse(data, options) {
     var items = Array.isArray(data && data.items) ? data.items.map(decodeJsonLike) : [];
     items = dedupeMenuItems(items);
@@ -885,6 +946,7 @@ export function readSettingsFromPocketBase(options) {
         .then(function(data) {
             publicSettingsPausedUntil = 0;
             var parsed = parsePublicSettingsResponse(data);
+            if (!settingsLooksUsable(parsed.settings)) throw new Error("PocketBase settings incomplete");
             writePublicCache(cacheKey, parsed);
             return parsed;
         })
@@ -942,7 +1004,8 @@ export function listMenuItemsFromPocketBase(options) {
         .then(function(data) {
             publicMenuPausedUntil = 0;
             var parsed = parsePublicMenuResponse(data, options);
-            writePublicCache(cacheKey, Object.assign({}, parsed, { items: sortMenuItems(Array.isArray(data && data.items) ? data.items.map(decodeJsonLike) : []) }));
+            if (!menuLooksUsable(parsed.items)) throw new Error("PocketBase menu incomplete");
+            writePublicCache(cacheKey, Object.assign({}, parsed, { items: parsed.items || [] }));
             return parsed;
         })
         .catch(function(endpointErr) {
