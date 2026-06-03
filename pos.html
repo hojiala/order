@@ -4686,13 +4686,41 @@
             applyMenuItemsFromPrimary:function(items){
                 var s=this;
                 var arr=Array.isArray(items)?items.slice():[];
-                arr.sort(function(a,b){
-                    if(a.sortOrder!==undefined&&b.sortOrder!==undefined)return Number(a.sortOrder)-Number(b.sortOrder);
-                    if(a.sortOrder!==undefined)return-1;
-                    if(b.sortOrder!==undefined)return 1;
-                    return(a.category||"").localeCompare(b.category||"");
-                });
-                s.menu=arr;
+                var previousById={};
+                (s.menu||[]).forEach(function(item){if(item&&item.id)previousById[item.id]=item;});
+                function hasOwn(row,key){return row&&Object.prototype.hasOwnProperty.call(row,key);}
+                function finiteNumber(value){
+                    if(value===null||value===undefined||value==='')return null;
+                    var n=Number(value);
+                    return Number.isFinite(n)?n:null;
+                }
+                function createdNumber(value){
+                    var n=finiteNumber(value);
+                    if(n!==null)return n;
+                    if(typeof value==='string'&&value.trim()){
+                        var t=Date.parse(value);
+                        return Number.isFinite(t)?t:0;
+                    }
+                    return 0;
+                }
+                s.menu=arr.map(function(item,idx){
+                    item=item||{};
+                    var prev=item.id?previousById[item.id]:null;
+                    var merged=Object.assign({},prev||{},item);
+                    if(prev&&prev.img&&!hasOwn(item,'img'))merged.img=prev.img;
+                    if(prev&&prev.subCategory&&!hasOwn(item,'subCategory'))merged.subCategory=prev.subCategory;
+                    if(prev&&prev.sortOrder!==undefined&&finiteNumber(item.sortOrder)===null&&!hasOwn(item,'sortOrder'))merged.sortOrder=prev.sortOrder;
+                    if(prev&&prev.createdAt&&!hasOwn(item,'createdAt'))merged.createdAt=prev.createdAt;
+                    return{item:merged,idx:idx};
+                }).sort(function(a,b){
+                    var sa=finiteNumber(a.item.sortOrder),sb=finiteNumber(b.item.sortOrder);
+                    if(sa!==null&&sb!==null&&sa!==sb)return sa-sb;
+                    if(sa!==null&&sb===null)return-1;
+                    if(sa===null&&sb!==null)return 1;
+                    var ca=createdNumber(a.item.createdAt||a.item.created_at),cb=createdNumber(b.item.createdAt||b.item.created_at);
+                    if(ca!==cb)return ca-cb;
+                    return a.idx-b.idx;
+                }).map(function(row){return row.item;});
                 s.menuLoading=false;
             },
             loadMenuFromFirebase:function(){
@@ -4727,9 +4755,11 @@
             applySettingsFromPrimary:function(v){
                 var s=this;
                 v=v||{};
+                var prev=s.settings||{};
                 var defaultStations=[{name:'湯麵',ip:'192.168.0.6'},{name:'麵包台',ip:'192.168.0.7'},{name:'飲料台',ip:'192.168.0.8'}];
                 var hasStationSettings=!!(v.stations&&v.stations.length);
-                s.settings={categories:v.categories||[],hideAllTab:!!v.hideAllTab,posOnlyCategories:v.posOnlyCategories||[],
+                var categories=(Array.isArray(v.categories)&&v.categories.length)?v.categories:(prev.categories||[]);
+                s.settings={categories:categories,hideAllTab:!!v.hideAllTab,posOnlyCategories:v.posOnlyCategories||prev.posOnlyCategories||[],
                     pocketBaseUrl:v.pocketBaseUrl||v.pocketbaseUrl||s.pocketBaseUrl||'https://pb.yuangi168.com',pocketBaseOrdersCollection:v.pocketBaseOrdersCollection||v.pocketbaseOrdersCollection||s.pocketBaseOrdersCollection||'orders',pocketBaseOrderEndpoint:v.pocketBaseOrderEndpoint||v.pocketbaseOrderEndpoint||v.pocketBaseSecureOrderEndpoint||v.secureOrderEndpoint||'',turnstileSiteKey:v.turnstileSiteKey||v.cloudflareTurnstileSiteKey||'',
                     stations:hasStationSettings?v.stations:defaultStations};
                 s.settingsStationsLoaded=hasStationSettings;

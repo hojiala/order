@@ -3580,16 +3580,48 @@ window._doCountUp = function() {
                 if (!hasCurrentMenu) this.menuLoading = true;
                 var apply = function(items) {
                     var arr = Array.isArray(items) ? items.slice() : [];
+                    var previousById = {};
+                    (self.menuItems || []).forEach(function(item) { if (item && item.id) previousById[item.id] = item; });
                     var byId = {};
                     arr.forEach(function(item) { if (item && item.id) byId[item.id] = item; });
                     var flattenedMenu = self.flattenDetailMenuItems(byId);
-                    self.menuItems = (flattenedMenu.length ? flattenedMenu : arr)
-                        .sort(function(a,b) {
-                            if (a.sortOrder !== undefined && b.sortOrder !== undefined) return Number(a.sortOrder) - Number(b.sortOrder);
-                            if (a.sortOrder !== undefined) return -1;
-                            if (b.sortOrder !== undefined) return 1;
-                            return (a.category||'').localeCompare(b.category||'');
-                        });
+                    function hasOwn(row, key) { return row && Object.prototype.hasOwnProperty.call(row, key); }
+                    function finiteNumber(value) {
+                        if (value === null || value === undefined || value === '') return null;
+                        var n = Number(value);
+                        return Number.isFinite(n) ? n : null;
+                    }
+                    function createdNumber(value) {
+                        var n = finiteNumber(value);
+                        if (n !== null) return n;
+                        if (typeof value === 'string' && value.trim()) {
+                            var t = Date.parse(value);
+                            return Number.isFinite(t) ? t : 0;
+                        }
+                        return 0;
+                    }
+                    self.menuItems = (flattenedMenu.length ? flattenedMenu : arr).map(function(item, idx) {
+                        item = item || {};
+                        var prev = item.id ? previousById[item.id] : null;
+                        var merged = Object.assign({}, prev || {}, item);
+                        if (prev && prev.img && !hasOwn(item, 'img')) merged.img = prev.img;
+                        if (prev && prev.subCategory && !hasOwn(item, 'subCategory')) merged.subCategory = prev.subCategory;
+                        if (prev && prev.sortOrder !== undefined && finiteNumber(item.sortOrder) === null && !hasOwn(item, 'sortOrder')) merged.sortOrder = prev.sortOrder;
+                        if (prev && prev.createdAt && !hasOwn(item, 'createdAt')) merged.createdAt = prev.createdAt;
+                        return { item: merged, idx: idx };
+                    }).sort(function(a,b) {
+                        var sa = finiteNumber(a.item.sortOrder);
+                        var sb = finiteNumber(b.item.sortOrder);
+                        if (sa !== null && sb !== null && sa !== sb) return sa - sb;
+                        if (sa !== null && sb === null) return -1;
+                        if (sa === null && sb !== null) return 1;
+                        var ca = createdNumber(a.item.createdAt || a.item.created_at);
+                        var cb = createdNumber(b.item.createdAt || b.item.created_at);
+                        if (ca !== cb) return ca - cb;
+                        return a.idx - b.idx;
+                    }).map(function(row) {
+                        return row.item;
+                    });
                     self.menuLoading = false;
                 };
                 var loadFromFirebase = function() {
@@ -3927,6 +3959,10 @@ window._doCountUp = function() {
                 self.menuItems.forEach(function(item, idx) { updates['menu/' + item.id + '/sortOrder'] = idx; });
                 var rows = self.menuItems.map(function(item, idx) { item.sortOrder = idx; return { id: item.id, sortOrder: idx }; });
                 self.updateMenuSortPrimary(rows, function() { return update(ref(db), updates); })
+                    .then(function(result) {
+                        rememberPublicMenuItems({ settings: self.settings || {} }, self.menuItems || []);
+                        return result;
+                    })
                     .then(function() { self.menuOrderDirty = false; alert('✅ 排序已儲存'); })
                     .catch(function(e) { alert('儲存排序失敗：' + e.message); });
             },
@@ -5860,8 +5896,12 @@ window._doCountUp = function() {
                 var self = this;
                 var apply = function(s, backend) {
                     s = s || {};
+                    var prev = self.settings || {};
                     var wd = self.normalizeWeekDays(s.weeklyDaysOff);
-                    var categories = s.categories || self.settings.categories || [];
+                    var categories = (Array.isArray(s.categories) && s.categories.length) ? s.categories : (prev.categories || []);
+                    var categorySubcategories = (s.categorySubcategories && typeof s.categorySubcategories === 'object' && Object.keys(s.categorySubcategories).length)
+                        ? s.categorySubcategories
+                        : (prev.categorySubcategories || {});
                     self.settings = {
                         isOpen: s.isOpen !== false,
                         dineinIsOpen: s.dineinIsOpen !== false,
@@ -5874,8 +5914,8 @@ window._doCountUp = function() {
                         weeklyDaysOff: wd,
                         dailyThemes: self.normalizeDailyThemes(s.dailyThemes || cloneDefaultDailyThemes()),
                         categories: categories,
-                        categorySubcategories: self.normalizeCategorySubcategories(s.categorySubcategories, categories),
-                        stations: (s.stations && s.stations.length) ? s.stations : (self.settings.stations || []),
+                        categorySubcategories: self.normalizeCategorySubcategories(categorySubcategories, categories),
+                        stations: (s.stations && s.stations.length) ? s.stations : (prev.stations || []),
                         storeInfo: s.storeInfo || '',
                         storePhone: s.storePhone || '',
                         storeAddress: s.storeAddress || '',
@@ -5883,7 +5923,7 @@ window._doCountUp = function() {
                         dineinPassword: s.dineinPassword || '0000',
                         linePayServerUrl: s.linePayServerUrl || '',
                         linePayConfirmUrl: s.linePayConfirmUrl || '',
-                        pocketBaseUrl: s.pocketBaseUrl || s.pocketbaseUrl || self.settings.pocketBaseUrl || 'https://pb.yuangi168.com',
+                        pocketBaseUrl: s.pocketBaseUrl || s.pocketbaseUrl || prev.pocketBaseUrl || 'https://pb.yuangi168.com',
                         pocketBaseOrdersCollection: s.pocketBaseOrdersCollection || s.pocketbaseOrdersCollection || 'orders',
                         pocketBaseOrderEndpoint: s.pocketBaseOrderEndpoint || s.pocketbaseOrderEndpoint || s.pocketBaseSecureOrderEndpoint || s.secureOrderEndpoint || '',
                         turnstileSiteKey: s.turnstileSiteKey || s.cloudflareTurnstileSiteKey || '',

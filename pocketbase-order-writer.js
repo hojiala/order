@@ -643,7 +643,7 @@ function settingsFromRecords(records) {
     var firstObject = null;
     records.forEach(function(record) {
         var row = stripPocketBaseSystemFields(record);
-        var key = text(row.key || row.name || row.setting_key || row.settingKey);
+        var key = text(row.key || row.setting_key || row.settingKey || (row.value !== undefined ? row.name : ""));
         if (key) {
             sawKeyed = true;
             var value = row.value;
@@ -653,33 +653,77 @@ function settingsFromRecords(records) {
             keyed[key] = decodeJsonLike(value);
             return;
         }
-        var payload = row.settings || row.data || row.value || row.json || row;
+        var payload = row.settings || row.data || row.value || row.json || {};
         payload = decodeJsonLike(payload);
-        if (payload && typeof payload === "object" && !Array.isArray(payload) && !firstObject) firstObject = payload;
+        if (!payload || typeof payload !== "object" || Array.isArray(payload)) payload = {};
+        if (!firstObject) firstObject = Object.assign({}, row, payload);
     });
     if (sawKeyed) return keyed;
     return firstObject || {};
 }
 
+function finiteNumber(value) {
+    if (value === null || value === undefined || value === "") return null;
+    var n = Number(value);
+    return Number.isFinite(n) ? n : null;
+}
+
+function createdNumber(value) {
+    var n = finiteNumber(value);
+    if (n !== null) return n;
+    if (typeof value === "string" && value.trim()) {
+        var t = Date.parse(value);
+        return Number.isFinite(t) ? t : 0;
+    }
+    return 0;
+}
+
 function sortMenuItems(items) {
-    return (Array.isArray(items) ? items : []).slice().sort(function(a, b) {
-        if (a.sortOrder !== undefined && b.sortOrder !== undefined) return Number(a.sortOrder) - Number(b.sortOrder);
-        if (a.sortOrder !== undefined) return -1;
-        if (b.sortOrder !== undefined) return 1;
-        var ca = Number(a.createdAt || a.created_at || 0) || 0;
-        var cb = Number(b.createdAt || b.created_at || 0) || 0;
+    return (Array.isArray(items) ? items : []).map(function(item, index) {
+        return { item: item || {}, index: index };
+    }).sort(function(a, b) {
+        var sa = finiteNumber(a.item.sortOrder);
+        var sb = finiteNumber(b.item.sortOrder);
+        if (sa !== null && sb !== null && sa !== sb) return sa - sb;
+        if (sa !== null && sb === null) return -1;
+        if (sa === null && sb !== null) return 1;
+        var ca = createdNumber(a.item.createdAt || a.item.created_at);
+        var cb = createdNumber(b.item.createdAt || b.item.created_at);
         if (ca !== cb) return ca - cb;
-        return text(a.category).localeCompare(text(b.category));
+        return a.index - b.index;
+    }).map(function(row) {
+        return row.item;
     });
+}
+
+function dedupeMenuItems(items) {
+    var out = [];
+    var byId = {};
+    (Array.isArray(items) ? items : []).forEach(function(item) {
+        item = item || {};
+        var key = text(item.id || item.item_id || item.itemId || item.menu_id || item.menuId || item.firebase_id || item.firebaseId);
+        if (!key) {
+            out.push(item);
+            return;
+        }
+        if (byId[key] === undefined) {
+            byId[key] = out.length;
+            out.push(item);
+            return;
+        }
+        var idx = byId[key];
+        out[idx] = Object.assign({}, item, out[idx]);
+    });
+    return out;
 }
 
 function menuItemFromRecord(record) {
     var row = stripPocketBaseSystemFields(record);
-    var payload = row.item || row.data || row.value || row.json || row;
+    var payload = row.item || row.data || row.value || row.json || {};
     payload = decodeJsonLike(payload);
-    if (!payload || typeof payload !== "object" || Array.isArray(payload)) payload = row;
-    var item = Object.assign({}, payload);
-    item.id = text(item.id || item.item_id || item.itemId || item.menu_id || item.menuId || item.firebase_id || item.firebaseId || (record && record.id));
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) payload = {};
+    var item = Object.assign({}, row, payload);
+    item.id = text(payload.id || payload.item_id || payload.itemId || payload.menu_id || payload.menuId || payload.firebase_id || payload.firebaseId || row.id || (record && record.id));
     return item;
 }
 
@@ -815,6 +859,7 @@ function parsePublicSettingsResponse(data) {
 
 function parsePublicMenuResponse(data, options) {
     var items = Array.isArray(data && data.items) ? data.items.map(decodeJsonLike) : [];
+    items = dedupeMenuItems(items);
     if (options && options.activeOnly) items = items.filter(function(item) { return item && item.active !== false; });
     return { ok: true, backend: "pocketbase", items: sortMenuItems(items), data: data };
 }
@@ -913,7 +958,7 @@ export function listMenuItemsFromPocketBase(options) {
                         result.items = [];
                         return result;
                     }
-                    var items = result.records.map(menuItemFromRecord);
+                    var items = dedupeMenuItems(result.records.map(menuItemFromRecord));
                     if (options.activeOnly) items = items.filter(function(item) { return item && item.active !== false; });
                     return { ok: true, backend: "pocketbase", items: sortMenuItems(items), records: result.records };
                 });
@@ -938,7 +983,7 @@ export function rememberPublicMenuItems(options, items) {
     options = options || {};
     var config = resolvePocketBaseConfig(options);
     var cacheKey = publicCacheKey("menu", config.baseUrl || configuredDefaultBaseUrl());
-    var parsed = { ok: true, backend: "pocketbase_cache", items: sortMenuItems(Array.isArray(items) ? items.map(decodeJsonLike) : []) };
+    var parsed = { ok: true, backend: "pocketbase_cache", items: sortMenuItems(dedupeMenuItems(Array.isArray(items) ? items.map(decodeJsonLike) : [])) };
     return writePublicCache(cacheKey, parsed);
 }
 
@@ -946,7 +991,11 @@ export function rememberPublicSettings(options, settings) {
     options = options || {};
     var config = resolvePocketBaseConfig(options);
     var cacheKey = publicCacheKey("settings", config.baseUrl || configuredDefaultBaseUrl());
-    var parsed = { ok: true, backend: "pocketbase_cache", settings: decodeJsonLike(settings || {}) };
+    var parsed = {
+        ok: true,
+        backend: "pocketbase_cache",
+        settings: Object.assign({}, decodeJsonLike(options.settings || {}), decodeJsonLike(settings || {}))
+    };
     return writePublicCache(cacheKey, parsed);
 }
 
