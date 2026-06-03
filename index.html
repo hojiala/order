@@ -597,7 +597,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getDatabase, ref, push, set, get, update, onValue } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, signInAnonymously, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-    import { allocateOrderNoFromPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, readSettingsFromPocketBase, listMenuItemsFromPocketBase } from "./pocketbase-order-writer.js";
+    import { allocateOrderNoFromPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings } from "./pocketbase-order-writer.js";
 
     const firebaseConfig = {
         apiKey: "AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -997,10 +997,10 @@
                 };
                 return readSettingsFromPocketBase({ settings: this.settings || {}, timeoutMs: options.timeoutMs || 2200 }).then(function(result) {
                     if (result && result.ok && result.settings && Object.keys(result.settings).length) { apply(result.settings, 'pocketbase'); return; }
-                    return get(ref(db, 'settings')).then(function(snap) { if (snap.exists()) apply(snap.val() || {}, 'firebase'); });
+                    return get(ref(db, 'settings')).then(function(snap) { if (snap.exists()) { var value = snap.val() || {}; apply(value, 'firebase'); rememberPublicSettings({ settings: self.settings || {} }, value); } });
                 }).catch(function(e) {
                     console.warn('PocketBase settings read failed; using Firebase fallback:', e && e.message ? e.message : e);
-                    return get(ref(db, 'settings')).then(function(snap) { if (snap.exists()) apply(snap.val() || {}, 'firebase'); });
+                    return get(ref(db, 'settings')).then(function(snap) { if (snap.exists()) { var value = snap.val() || {}; apply(value, 'firebase'); rememberPublicSettings({ settings: self.settings || {} }, value); } });
                 });
             },
             startSettingsPrimaryRefresh: function() {
@@ -1058,6 +1058,7 @@
                         for (var id in data) if (data[id] && data[id].active !== false) items.push(Object.assign({ id: id }, data[id]));
                         items.sort(function(a, b) { if (a.sortOrder !== undefined && b.sortOrder !== undefined) return a.sortOrder - b.sortOrder; if (a.sortOrder !== undefined) return -1; if (b.sortOrder !== undefined) return 1; return (a.createdAt || 0) - (b.createdAt || 0); });
                         applyMenuSettings(items, self.settings || {});
+                        rememberPublicMenuItems({ settings: self.settings || {} }, items);
                         self.menuReadBackend = 'firebase';
                     });
                 }).catch(function(e) {
@@ -1066,6 +1067,7 @@
                         var data = snap.val() || {}, items = [];
                         for (var id in data) if (data[id] && data[id].active !== false) items.push(Object.assign({ id: id }, data[id]));
                         applyMenuSettings(items, self.settings || {});
+                        rememberPublicMenuItems({ settings: self.settings || {} }, items);
                         self.menuReadBackend = 'firebase';
                     });
                 }).then(function() { self.menuReady = true; });

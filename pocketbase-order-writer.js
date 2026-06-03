@@ -2,10 +2,14 @@ const DEFAULT_COLLECTION = "orders";
 const DEFAULT_POCKETBASE_URL = "https://pb.yuangi168.com";
 const DEFAULT_TIMEOUT_MS = 2500;
 const RESET_TIMEOUT_MS = 10000;
-const PUBLIC_ENDPOINT_COOLDOWN_MS = 5 * 60 * 1000;
+const PUBLIC_ENDPOINT_COOLDOWN_MS = 15 * 1000;
+const PUBLIC_CACHE_DB_NAME = "pb_public_snapshots_v1";
+const PUBLIC_CACHE_STORE = "snapshots";
+const PUBLIC_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 let backfillPausedUntil = 0;
 let publicSettingsPausedUntil = 0;
 let publicMenuPausedUntil = 0;
+let publicCacheDbPromise = null;
 
 function cleanBaseUrl(url) {
     var value = String(url || "").trim();
@@ -683,6 +687,119 @@ function endpointCooldownResult(pausedUntil, payload) {
     }, payload || {});
 }
 
+function envFlag(value, defaultValue) {
+    if (value === true || value === false) return value;
+    if (value === null || value === undefined || value === "") return !!defaultValue;
+    var textValue = String(value).trim().toLowerCase();
+    if (["1", "true", "yes", "on", "required", "require"].indexOf(textValue) !== -1) return true;
+    if (["0", "false", "no", "off", "disabled", "disable"].indexOf(textValue) !== -1) return false;
+    return !!defaultValue;
+}
+
+function shouldRequestTurnstile(config, options) {
+    options = options || {};
+    if (!config || !config.turnstileSiteKey) return false;
+    if (options.skipTurnstile === true || options.disableTurnstile === true) return false;
+    if (options.requireTurnstile !== undefined) return envFlag(options.requireTurnstile, false);
+    if (options.useTurnstile !== undefined) return envFlag(options.useTurnstile, false);
+    if (typeof window !== "undefined") {
+        if (window.PB_REQUIRE_TURNSTILE !== undefined) return envFlag(window.PB_REQUIRE_TURNSTILE, false);
+        if (window.REQUIRE_TURNSTILE !== undefined) return envFlag(window.REQUIRE_TURNSTILE, false);
+    }
+    return false;
+}
+
+function cacheSupported() {
+    return typeof indexedDB !== "undefined" && typeof Promise !== "undefined";
+}
+
+function openPublicCacheDb() {
+    if (!cacheSupported()) return Promise.resolve(null);
+    if (publicCacheDbPromise) return publicCacheDbPromise;
+    publicCacheDbPromise = new Promise(function(resolve) {
+        var req;
+        try {
+            req = indexedDB.open(PUBLIC_CACHE_DB_NAME, 1);
+        } catch(e) {
+            resolve(null);
+            return;
+        }
+        req.onupgradeneeded = function() {
+            try {
+                var db = req.result;
+                if (!db.objectStoreNames.contains(PUBLIC_CACHE_STORE)) db.createObjectStore(PUBLIC_CACHE_STORE, { keyPath: "key" });
+            } catch(e) {}
+        };
+        req.onsuccess = function() { resolve(req.result || null); };
+        req.onerror = function() { resolve(null); };
+        req.onblocked = function() { resolve(null); };
+    });
+    return publicCacheDbPromise;
+}
+
+function publicCacheKey(kind, baseUrl) {
+    return String(kind || "public") + "|" + cleanBaseUrl(baseUrl || configuredDefaultBaseUrl());
+}
+
+function readPublicCache(key, maxAgeMs) {
+    return openPublicCacheDb().then(function(db) {
+        if (!db) return null;
+        return new Promise(function(resolve) {
+            try {
+                var tx = db.transaction(PUBLIC_CACHE_STORE, "readonly");
+                var store = tx.objectStore(PUBLIC_CACHE_STORE);
+                var req = store.get(key);
+                req.onsuccess = function() {
+                    var row = req.result;
+                    if (!row || !row.payload) {
+                        resolve(null);
+                        return;
+                    }
+                    var age = Date.now() - (Number(row.savedAt) || 0);
+                    if (maxAgeMs && age > maxAgeMs) {
+                        resolve(null);
+                        return;
+                    }
+                    resolve(plainJson(row.payload, row.payload));
+                };
+                req.onerror = function() { resolve(null); };
+            } catch(e) {
+                resolve(null);
+            }
+        });
+    });
+}
+
+function writePublicCache(key, payload) {
+    if (!payload || payload.ok !== true) return Promise.resolve(false);
+    return openPublicCacheDb().then(function(db) {
+        if (!db) return false;
+        return new Promise(function(resolve) {
+            try {
+                var tx = db.transaction(PUBLIC_CACHE_STORE, "readwrite");
+                var store = tx.objectStore(PUBLIC_CACHE_STORE);
+                store.put({ key: key, savedAt: Date.now(), payload: plainJson(payload, payload) });
+                tx.oncomplete = function() { resolve(true); };
+                tx.onerror = function() { resolve(false); };
+                tx.onabort = function() { resolve(false); };
+            } catch(e) {
+                resolve(false);
+            }
+        });
+    });
+}
+
+function cachedPublicResult(kind, cacheKey, extra) {
+    return readPublicCache(cacheKey, PUBLIC_CACHE_MAX_AGE_MS).then(function(cached) {
+        if (!cached || cached.ok !== true) return null;
+        return Object.assign({}, cached, {
+            ok: true,
+            backend: "pocketbase_cache",
+            cached: true
+        }, extra || {});
+    });
+}
+
 function parsePublicSettingsResponse(data) {
     var settings = data && data.settings && typeof data.settings === "object" ? decodeJsonLike(data.settings) : {};
     return { ok: true, backend: "pocketbase", settings: settings, data: data };
@@ -699,12 +816,24 @@ export function readSettingsFromPocketBase(options) {
     var config = resolvePocketBaseConfig(options);
     var timeoutMs = Number(options.timeoutMs || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
     if (!config.baseUrl) return Promise.resolve({ ok: false, skipped: true, reason: "missing_pocketbase_url", settings: {} });
+    var cacheKey = publicCacheKey("settings", config.baseUrl);
+    if (options.cacheOnly === true) {
+        return cachedPublicResult("settings", cacheKey, { cacheOnly: true }).then(function(cached) {
+            return cached || { ok: false, backend: "pocketbase_cache", skipped: true, reason: "public_settings_cache_miss", settings: {} };
+        });
+    }
     var paused = endpointCooldownResult(publicSettingsPausedUntil, { settings: {} });
-    if (paused) return Promise.resolve(paused);
+    if (paused) {
+        return cachedPublicResult("settings", cacheKey, { cooldown: true, retryAfterMs: paused.retryAfterMs }).then(function(cached) {
+            return cached || paused;
+        });
+    }
     return requestJson(config.baseUrl + "/api/order-public/settings", { method: "GET" }, timeoutMs)
         .then(function(data) {
             publicSettingsPausedUntil = 0;
-            return parsePublicSettingsResponse(data);
+            var parsed = parsePublicSettingsResponse(data);
+            writePublicCache(cacheKey, parsed);
+            return parsed;
         })
         .catch(function(endpointErr) {
             if (options.allowDirectCollectionFallback === true) {
@@ -723,13 +852,17 @@ export function readSettingsFromPocketBase(options) {
                 });
             }
             publicSettingsPausedUntil = Date.now() + PUBLIC_ENDPOINT_COOLDOWN_MS;
-            return {
+            var failed = {
                 ok: false,
                 backend: "pocketbase",
                 endpointError: endpointErr,
                 message: endpointErr && endpointErr.message ? endpointErr.message : String(endpointErr),
                 settings: {}
             };
+            if (options.disableCacheFallback === true) return failed;
+            return cachedPublicResult("settings", cacheKey, { endpointError: endpointErr }).then(function(cached) {
+                return cached || failed;
+            });
         });
 }
 
@@ -738,12 +871,26 @@ export function listMenuItemsFromPocketBase(options) {
     var config = resolvePocketBaseConfig(options);
     var timeoutMs = Number(options.timeoutMs || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
     if (!config.baseUrl) return Promise.resolve({ ok: false, skipped: true, reason: "missing_pocketbase_url", items: [] });
+    var cacheKey = publicCacheKey("menu", config.baseUrl);
+    if (options.cacheOnly === true) {
+        return cachedPublicResult("menu", cacheKey, { cacheOnly: true }).then(function(cached) {
+            if (cached && options.activeOnly) cached.items = (cached.items || []).filter(function(item) { return item && item.active !== false; });
+            return cached || { ok: false, backend: "pocketbase_cache", skipped: true, reason: "public_menu_cache_miss", items: [] };
+        });
+    }
     var paused = endpointCooldownResult(publicMenuPausedUntil, { items: [] });
-    if (paused) return Promise.resolve(paused);
+    if (paused) {
+        return cachedPublicResult("menu", cacheKey, { cooldown: true, retryAfterMs: paused.retryAfterMs }).then(function(cached) {
+            if (cached && options.activeOnly) cached.items = (cached.items || []).filter(function(item) { return item && item.active !== false; });
+            return cached || paused;
+        });
+    }
     return requestJson(config.baseUrl + "/api/order-public/menu", { method: "GET" }, timeoutMs)
         .then(function(data) {
             publicMenuPausedUntil = 0;
-            return parsePublicMenuResponse(data, options);
+            var parsed = parsePublicMenuResponse(data, options);
+            writePublicCache(cacheKey, Object.assign({}, parsed, { items: sortMenuItems(Array.isArray(data && data.items) ? data.items.map(decodeJsonLike) : []) }));
+            return parsed;
         })
         .catch(function(endpointErr) {
             if (options.allowDirectCollectionFallback === true) {
@@ -764,14 +911,35 @@ export function listMenuItemsFromPocketBase(options) {
                 });
             }
             publicMenuPausedUntil = Date.now() + PUBLIC_ENDPOINT_COOLDOWN_MS;
-            return {
+            var failed = {
                 ok: false,
                 backend: "pocketbase",
                 endpointError: endpointErr,
                 message: endpointErr && endpointErr.message ? endpointErr.message : String(endpointErr),
                 items: []
             };
+            if (options.disableCacheFallback === true) return failed;
+            return cachedPublicResult("menu", cacheKey, { endpointError: endpointErr }).then(function(cached) {
+                if (cached && options.activeOnly) cached.items = (cached.items || []).filter(function(item) { return item && item.active !== false; });
+                return cached || failed;
+            });
         });
+}
+
+export function rememberPublicMenuItems(options, items) {
+    options = options || {};
+    var config = resolvePocketBaseConfig(options);
+    var cacheKey = publicCacheKey("menu", config.baseUrl || configuredDefaultBaseUrl());
+    var parsed = { ok: true, backend: "pocketbase_cache", items: sortMenuItems(Array.isArray(items) ? items.map(decodeJsonLike) : []) };
+    return writePublicCache(cacheKey, parsed);
+}
+
+export function rememberPublicSettings(options, settings) {
+    options = options || {};
+    var config = resolvePocketBaseConfig(options);
+    var cacheKey = publicCacheKey("settings", config.baseUrl || configuredDefaultBaseUrl());
+    var parsed = { ok: true, backend: "pocketbase_cache", settings: decodeJsonLike(settings || {}) };
+    return writePublicCache(cacheKey, parsed);
 }
 
 function backfillThrottleKey(order) {
@@ -969,7 +1137,10 @@ function findExistingRecordId(config, orderId, headers, timeoutMs) {
 }
 
 function writeOrderToSecureEndpoint(config, orderId, orderData, options, record, timeoutMs) {
-    return requestTurnstileToken(config.turnstileSiteKey, options.turnstileTimeoutMs || 90000).then(function(turnstileToken) {
+    var tokenPromise = shouldRequestTurnstile(config, options)
+        ? requestTurnstileToken(config.turnstileSiteKey, options.turnstileTimeoutMs || 90000)
+        : Promise.resolve("");
+    return tokenPromise.then(function(turnstileToken) {
         var payload = {
             orderId: text(orderId || (orderData && orderData.id)),
             sourcePage: text(options.sourcePage || (orderData && orderData.source) || ""),

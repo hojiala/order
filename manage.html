@@ -1645,7 +1645,7 @@ window._doCountUp = function() {
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getDatabase, ref, set, get, push, update, remove, onValue, onChildAdded, onChildChanged, onChildRemoved, query, orderByChild, equalTo, limitToLast } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-    import { listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, listMenuItemsFromPocketBase } from "./pocketbase-order-writer.js";
+    import { listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings } from "./pocketbase-order-writer.js";
 
     const firebaseConfig = {
         apiKey: "AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -3576,7 +3576,8 @@ window._doCountUp = function() {
             },
             loadMenu: function() {
                 var self = this;
-                this.menuLoading = true;
+                var hasCurrentMenu = Array.isArray(this.menuItems) && this.menuItems.length > 0;
+                if (!hasCurrentMenu) this.menuLoading = true;
                 var apply = function(items) {
                     var arr = Array.isArray(items) ? items.slice() : [];
                     var byId = {};
@@ -3591,27 +3592,35 @@ window._doCountUp = function() {
                         });
                     self.menuLoading = false;
                 };
-                return listMenuItemsFromPocketBase({ settings: this.settings || {}, timeoutMs: 2500 }).then(function(result) {
-                    if (result && result.ok) {
-                        apply(result.items || []);
-                        self.menuReadBackend = 'pocketbase';
-                        return;
+                var loadFromFirebase = function() {
+                    return get(ref(db, 'menu')).then(function(snapshot) {
+                        var data = snapshot.val() || {};
+                        var items = Object.entries(data).map(function(e) { return Object.assign({ id: e[0] }, e[1]); });
+                        apply(items);
+                        rememberPublicMenuItems({ settings: self.settings || {} }, items);
+                        self.menuReadBackend = 'firebase';
+                    });
+                };
+                var loadFromPrimary = function() {
+                    return listMenuItemsFromPocketBase({ settings: self.settings || {}, timeoutMs: 2500 }).then(function(result) {
+                        if (result && result.ok) {
+                            apply(result.items || []);
+                            self.menuReadBackend = result.backend || 'pocketbase';
+                            return;
+                        }
+                        return loadFromFirebase();
+                    }).catch(function(err) {
+                        console.warn('PocketBase menu read failed; using Firebase fallback:', err && err.message ? err.message : err);
+                        return loadFromFirebase();
+                    });
+                };
+                if (hasCurrentMenu) return loadFromPrimary();
+                return listMenuItemsFromPocketBase({ settings: this.settings || {}, cacheOnly: true }).then(function(cached) {
+                    if (cached && cached.ok && cached.items && cached.items.length) {
+                        apply(cached.items || []);
+                        self.menuReadBackend = cached.backend || 'pocketbase_cache';
                     }
-                    return get(ref(db, 'menu')).then(function(snapshot) {
-                        var data = snapshot.val() || {};
-                        var items = Object.entries(data).map(function(e) { return Object.assign({ id: e[0] }, e[1]); });
-                        apply(items);
-                        self.menuReadBackend = 'firebase';
-                    });
-                }).catch(function(err) {
-                    console.warn('PocketBase menu read failed; using Firebase fallback:', err && err.message ? err.message : err);
-                    return get(ref(db, 'menu')).then(function(snapshot) {
-                        var data = snapshot.val() || {};
-                        var items = Object.entries(data).map(function(e) { return Object.assign({ id: e[0] }, e[1]); });
-                        apply(items);
-                        self.menuReadBackend = 'firebase';
-                    });
-                });
+                }).catch(function() {}).then(loadFromPrimary);
             },
             openAddModal: function() {
                 var defaultStation = this.getDefaultStationName();
@@ -5728,10 +5737,10 @@ window._doCountUp = function() {
                         apply(result.settings, 'pocketbase');
                         return;
                     }
-                    return get(ref(db, 'settings')).then(function(snap) { if (snap.exists()) apply(snap.val() || {}, 'firebase'); });
+                    return get(ref(db, 'settings')).then(function(snap) { if (snap.exists()) { var value = snap.val() || {}; apply(value, 'firebase'); rememberPublicSettings({ settings: self.settings || {} }, value); } });
                 }).catch(function(err) {
                     console.warn('PocketBase settings read failed; using Firebase fallback:', err && err.message ? err.message : err);
-                    return get(ref(db, 'settings')).then(function(snap) { if (snap.exists()) apply(snap.val() || {}, 'firebase'); });
+                    return get(ref(db, 'settings')).then(function(snap) { if (snap.exists()) { var value = snap.val() || {}; apply(value, 'firebase'); rememberPublicSettings({ settings: self.settings || {} }, value); } });
                 });
             },
             saveSettings: function() {
