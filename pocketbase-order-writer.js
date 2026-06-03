@@ -380,6 +380,14 @@ export function resolvePocketBaseConfig(options) {
         storageValue(["pocketbase_order_endpoint", "POCKETBASE_ORDER_ENDPOINT"]) ||
         ""
     );
+    var manageEndpoint = cleanBaseUrl(
+        optionValue(options, ["pocketBaseManageEndpoint", "pocketbaseManageEndpoint", "pocketBaseSecureManageEndpoint", "secureManageEndpoint", "manageWriteEndpoint"]) ||
+        nested.manageEndpoint ||
+        nested.secureManageEndpoint ||
+        (typeof window !== "undefined" && (window.POCKETBASE_MANAGE_ENDPOINT || window.SECURE_MANAGE_ENDPOINT)) ||
+        storageValue(["pocketbase_manage_endpoint", "POCKETBASE_MANAGE_ENDPOINT"]) ||
+        ""
+    );
     var collection = text(
         optionValue(options, ["pocketBaseOrdersCollection", "pocketbaseOrdersCollection"]) ||
         nested.ordersCollection ||
@@ -397,7 +405,7 @@ export function resolvePocketBaseConfig(options) {
         (typeof window !== "undefined" && (window.TURNSTILE_SITE_KEY || "")) ||
         storageValue(["turnstile_site_key", "TURNSTILE_SITE_KEY"])
     );
-    return { baseUrl: baseUrl, orderEndpoint: orderEndpoint, collection: collection, token: token, turnstileSiteKey: turnstileSiteKey };
+    return { baseUrl: baseUrl, orderEndpoint: orderEndpoint, manageEndpoint: manageEndpoint, collection: collection, token: token, turnstileSiteKey: turnstileSiteKey };
 }
 
 export function pocketBaseRecordToOrder(record) {
@@ -940,6 +948,74 @@ export function rememberPublicSettings(options, settings) {
     var cacheKey = publicCacheKey("settings", config.baseUrl || configuredDefaultBaseUrl());
     var parsed = { ok: true, backend: "pocketbase_cache", settings: decodeJsonLike(settings || {}) };
     return writePublicCache(cacheKey, parsed);
+}
+
+function secureManageEndpoint(config, kind, options) {
+    options = options || {};
+    var explicit = cleanBaseUrl(
+        optionValue(options, kind === "settings"
+            ? ["pocketBaseSettingsWriteEndpoint", "settingsWriteEndpoint", "secureSettingsEndpoint"]
+            : ["pocketBaseMenuWriteEndpoint", "menuWriteEndpoint", "secureMenuEndpoint"]) || ""
+    );
+    if (explicit) return explicit;
+    var base = cleanBaseUrl(config.manageEndpoint || "");
+    if (base) {
+        if (/\/api\/manage\/(menu|settings)$/i.test(base)) return base.replace(/\/(menu|settings)$/i, "/" + kind);
+        return base.replace(/\/+$/, "") + "/" + kind;
+    }
+    var orderEndpoint = cleanBaseUrl(config.orderEndpoint || "");
+    if (orderEndpoint) {
+        if (/\/api\/secure\/orders$/i.test(orderEndpoint)) return orderEndpoint.replace(/\/api\/secure\/orders$/i, "/api/manage/" + kind);
+        if (/\/api\/orders$/i.test(orderEndpoint)) return orderEndpoint.replace(/\/api\/orders$/i, "/api/manage/" + kind);
+        return orderEndpoint.replace(/\/+$/, "") + "/manage/" + kind;
+    }
+    return "";
+}
+
+function writeManageRequest(kind, payload, options) {
+    options = options || {};
+    var config = resolvePocketBaseConfig(options);
+    var endpoint = secureManageEndpoint(config, kind, options);
+    if (!endpoint) return Promise.resolve({ ok: false, skipped: true, reason: "missing_manage_endpoint" });
+    return requestJson(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload || {})
+    }, Number(options.secureTimeoutMs || options.timeoutMs || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS);
+}
+
+export function writeMenuItemToPocketBase(itemId, itemData, options) {
+    options = options || {};
+    var payload = {
+        action: options.action || "upsert",
+        itemId: text(itemId || (itemData && itemData.id)),
+        item: plainJson(itemData || {}, {})
+    };
+    return writeManageRequest("menu", payload, options).then(function(result) {
+        if (result && result.ok && result.item) rememberPublicMenuItems(options, [result.item].concat(options.currentMenuItems || []));
+        return Object.assign({ ok: true, backend: "pocketbase" }, result || {});
+    });
+}
+
+export function deleteMenuItemFromPocketBase(itemId, options) {
+    options = options || {};
+    return writeManageRequest("menu", { action: "delete", itemId: text(itemId) }, options)
+        .then(function(result) { return Object.assign({ ok: true, backend: "pocketbase" }, result || {}); });
+}
+
+export function updateMenuSortInPocketBase(items, options) {
+    options = options || {};
+    return writeManageRequest("menu", { action: "sort", items: plainJson(items || [], []) }, options)
+        .then(function(result) { return Object.assign({ ok: true, backend: "pocketbase" }, result || {}); });
+}
+
+export function writeSettingsToPocketBase(settingsPatch, options) {
+    options = options || {};
+    var patch = plainJson(settingsPatch || {}, {});
+    return writeManageRequest("settings", { settings: patch }, options).then(function(result) {
+        if (result && result.ok) rememberPublicSettings(options, Object.assign({}, (options.settings || {}), patch));
+        return Object.assign({ ok: true, backend: "pocketbase" }, result || {});
+    });
 }
 
 function backfillThrottleKey(order) {

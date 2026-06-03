@@ -1645,7 +1645,7 @@ window._doCountUp = function() {
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getDatabase, ref, set, get, push, update, remove, onValue, onChildAdded, onChildChanged, onChildRemoved, query, orderByChild, equalTo, limitToLast } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-    import { listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings } from "./pocketbase-order-writer.js";
+    import { listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, writeMenuItemToPocketBase, deleteMenuItemFromPocketBase, updateMenuSortInPocketBase, writeSettingsToPocketBase } from "./pocketbase-order-writer.js";
 
     const firebaseConfig = {
         apiKey: "AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -3706,6 +3706,74 @@ window._doCountUp = function() {
                 });
             },
 
+            pocketBaseManageOptions: function(extra) {
+                return Object.assign({
+                    settings: this.settings || {},
+                    timeoutMs: 8000,
+                    secureTimeoutMs: 10000
+                }, extra || {});
+            },
+            syncLocalMenuItem: function(id, itemData) {
+                if (!id || !itemData) return;
+                var item = Object.assign({ id: id }, itemData);
+                var idx = this.menuItems.findIndex(function(row) { return row && row.id === id; });
+                if (idx >= 0) this.menuItems.splice(idx, 1, Object.assign({}, this.menuItems[idx], item));
+                else this.menuItems.push(item);
+                rememberPublicMenuItems({ settings: this.settings || {} }, this.menuItems);
+            },
+            writeMenuItemPrimary: function(itemId, itemData, firebaseFallback) {
+                return writeMenuItemToPocketBase(itemId, itemData, this.pocketBaseManageOptions({ currentMenuItems: this.menuItems || [] }))
+                    .then(function(result) {
+                        if (result && result.ok) return result;
+                        throw new Error((result && (result.message || result.reason)) || 'PocketBase menu write unavailable');
+                    })
+                    .catch(function(err) {
+                        console.warn('PocketBase menu write failed; using Firebase fallback:', err && err.message ? err.message : err);
+                        return Promise.resolve(firebaseFallback()).then(function(firebaseResult) {
+                            return { ok: true, backend: 'firebase', fallback: true, error: err, firebase: firebaseResult };
+                        });
+                    });
+            },
+            deleteMenuItemPrimary: function(itemId, firebaseFallback) {
+                return deleteMenuItemFromPocketBase(itemId, this.pocketBaseManageOptions())
+                    .then(function(result) {
+                        if (result && result.ok) return result;
+                        throw new Error((result && (result.message || result.reason)) || 'PocketBase menu delete unavailable');
+                    })
+                    .catch(function(err) {
+                        console.warn('PocketBase menu delete failed; using Firebase fallback:', err && err.message ? err.message : err);
+                        return Promise.resolve(firebaseFallback()).then(function(firebaseResult) {
+                            return { ok: true, backend: 'firebase', fallback: true, error: err, firebase: firebaseResult };
+                        });
+                    });
+            },
+            updateMenuSortPrimary: function(sortRows, firebaseFallback) {
+                return updateMenuSortInPocketBase(sortRows, this.pocketBaseManageOptions())
+                    .then(function(result) {
+                        if (result && result.ok) return result;
+                        throw new Error((result && (result.message || result.reason)) || 'PocketBase menu sort unavailable');
+                    })
+                    .catch(function(err) {
+                        console.warn('PocketBase menu sort failed; using Firebase fallback:', err && err.message ? err.message : err);
+                        return Promise.resolve(firebaseFallback()).then(function(firebaseResult) {
+                            return { ok: true, backend: 'firebase', fallback: true, error: err, firebase: firebaseResult };
+                        });
+                    });
+            },
+            writeSettingsPrimary: function(settingsPatch, firebaseFallback) {
+                return writeSettingsToPocketBase(settingsPatch, this.pocketBaseManageOptions())
+                    .then(function(result) {
+                        if (result && result.ok) return result;
+                        throw new Error((result && (result.message || result.reason)) || 'PocketBase settings write unavailable');
+                    })
+                    .catch(function(err) {
+                        console.warn('PocketBase settings write failed; using Firebase fallback:', err && err.message ? err.message : err);
+                        return Promise.resolve(firebaseFallback()).then(function(firebaseResult) {
+                            return { ok: true, backend: 'firebase', fallback: true, error: err, firebase: firebaseResult };
+                        });
+                    });
+            },
+
             saveMenuItem: function() {
                 var self = this;
                 if (!this.form.name.trim()) { alert('請輸入餐點名稱'); return; }
@@ -3732,14 +3800,14 @@ window._doCountUp = function() {
                     updatedAt: Date.now()
                 };
 
-                var p;
-                if (this.isEditing) {
-                    p = update(ref(db, 'menu/' + this.form.id), itemData);
-                } else {
-                    itemData.createdAt = Date.now();
-                    p = push(ref(db, 'menu'), itemData);
-                }
-                p.then(function() {
+                var itemId = this.isEditing ? this.form.id : '';
+                if (!this.isEditing) itemData.createdAt = Date.now();
+                this.writeMenuItemPrimary(itemId, itemData, function() {
+                    if (self.isEditing) return update(ref(db, 'menu/' + self.form.id), itemData).then(function() { return { id: self.form.id }; });
+                    return push(ref(db, 'menu'), itemData).then(function(newRef) { return { id: newRef.key }; });
+                }).then(function(result) {
+                    var savedId = (result && result.id) || (result && result.firebase && result.firebase.id) || itemId;
+                    if (savedId) self.syncLocalMenuItem(savedId, Object.assign({}, itemData, { id: savedId }));
                     self.closeModal();
                 }).catch(function(e) {
                     alert('儲存失敗：' + e.message);
@@ -3748,11 +3816,30 @@ window._doCountUp = function() {
                 });
             },
             toggleActive: function(item) {
-                update(ref(db, 'menu/' + item.id), { active: !item.active });
+                var self = this;
+                var nextActive = !item.active;
+                var patch = Object.assign({}, item, { active: nextActive, updatedAt: Date.now() });
+                this.writeMenuItemPrimary(item.id, patch, function() {
+                    return update(ref(db, 'menu/' + item.id), { active: nextActive });
+                }).then(function() {
+                    item.active = nextActive;
+                    item.updatedAt = patch.updatedAt;
+                    rememberPublicMenuItems({ settings: self.settings || {} }, self.menuItems || []);
+                }).catch(function(e) {
+                    alert('上下架失敗：' + (e && e.message ? e.message : e));
+                });
             },
             deleteItem: function(item) {
                 if (!confirm('確定要刪除「' + item.name + '」嗎？\n此操作無法復原。')) return;
-                remove(ref(db, 'menu/' + item.id));
+                var self = this;
+                this.deleteMenuItemPrimary(item.id, function() {
+                    return remove(ref(db, 'menu/' + item.id));
+                }).then(function() {
+                    self.menuItems = self.menuItems.filter(function(row) { return row && row.id !== item.id; });
+                    rememberPublicMenuItems({ settings: self.settings || {} }, self.menuItems || []);
+                }).catch(function(e) {
+                    alert('刪除失敗：' + (e && e.message ? e.message : e));
+                });
             },
             copyItem: function(item, displayIdx) {
                 var self = this;
@@ -3769,9 +3856,14 @@ window._doCountUp = function() {
                 var nextSort = nextItem && typeof nextItem.sortOrder === 'number' ? nextItem.sortOrder : origSort + 1;
                 if (nextSort === origSort) nextSort = origSort + 1;
                 base.sortOrder = (origSort + nextSort) / 2;
-                var newRef = push(ref(db, 'menu'));
-                set(newRef, base).then(function() {
-                    self.openEditModal(Object.assign({ id: newRef.key }, base));
+                this.writeMenuItemPrimary('', base, function() {
+                    var newRef = push(ref(db, 'menu'));
+                    return set(newRef, base).then(function() { return { id: newRef.key }; });
+                }).then(function(result) {
+                    var newId = (result && result.id) || (result && result.firebase && result.firebase.id);
+                    if (!newId) throw new Error('Missing copied menu id');
+                    self.syncLocalMenuItem(newId, Object.assign({}, base, { id: newId }));
+                    self.openEditModal(Object.assign({ id: newId }, base));
                 }).catch(function(e) {
                     alert('複製失敗：' + e.message);
                 });
@@ -3831,8 +3923,10 @@ window._doCountUp = function() {
             saveMenuOrder: function() {
                 var self = this;
                 var updates = {};
+                var changedItems = [];
                 self.menuItems.forEach(function(item, idx) { updates['menu/' + item.id + '/sortOrder'] = idx; });
-                update(ref(db), updates)
+                var rows = self.menuItems.map(function(item, idx) { item.sortOrder = idx; return { id: item.id, sortOrder: idx }; });
+                self.updateMenuSortPrimary(rows, function() { return update(ref(db), updates); })
                     .then(function() { self.menuOrderDirty = false; alert('✅ 排序已儲存'); })
                     .catch(function(e) { alert('儲存排序失敗：' + e.message); });
             },
@@ -3901,10 +3995,14 @@ window._doCountUp = function() {
             saveTemplateOrder: function() {
                 var self = this;
                 var updates = {};
+                var optionTemplates = {};
                 self.optionTemplates.forEach(function(tpl, idx) {
                     updates['settings/optionTemplates/' + tpl.id + '/sortOrder'] = idx;
+                    var copy = Object.assign({}, tpl, { sortOrder: idx });
+                    delete copy.id;
+                    optionTemplates[tpl.id] = copy;
                 });
-                update(ref(db), updates)
+                self.writeSettingsPrimary({ optionTemplates: optionTemplates }, function() { return update(ref(db), updates); })
                     .then(function() { self.tplOrderDirty = false; alert('✅ 模板排序已儲存'); })
                     .catch(function(e) { alert('儲存排序失敗：' + e.message); });
             },
@@ -3938,7 +4036,8 @@ window._doCountUp = function() {
             saveStandardDrinks: function() {
                 var self = this;
                 self.standardDrinksSaving = true;
-                set(ref(db, 'settings/standardDrinks'), self.standardDrinks)
+                var patch = { standardDrinks: self.standardDrinks };
+                self.writeSettingsPrimary(patch, function() { return set(ref(db, 'settings/standardDrinks'), self.standardDrinks); })
                     .then(function() {
                         self.standardDrinksSaved = true;
                         self.syncStandardDrinksToMenu();
@@ -3953,6 +4052,7 @@ window._doCountUp = function() {
                     .map(function(d){ return { name: d.name.trim(), price: Number(d.price)||0 }; });
                 if (!drinks.length) return;
                 var updates = {};
+                var changedItems = [];
                 (self.menuItems || []).forEach(function(item){
                     var ogs = item.optionGroups || [];
                     var changed = false;
@@ -3965,9 +4065,36 @@ window._doCountUp = function() {
                         }
                         return g;
                     });
-                    if (changed) updates['menu/' + item.id + '/optionGroups'] = newOGs;
+                    if (changed) {
+                        updates['menu/' + item.id + '/optionGroups'] = newOGs;
+                        changedItems.push(Object.assign({}, item, { optionGroups: newOGs, updatedAt: Date.now() }));
+                    }
                 });
                 if (!Object.keys(updates).length) return;
+                if (changedItems.length) {
+                    Promise.all(changedItems.map(function(nextItem) {
+                        return self.writeMenuItemPrimary(nextItem.id, nextItem, function() {
+                            return update(ref(db, 'menu/' + nextItem.id), { optionGroups: nextItem.optionGroups });
+                        }).then(function() {
+                            self.syncLocalMenuItem(nextItem.id, nextItem);
+                        });
+                    })).catch(function(e) {
+                        console.warn('template menu sync failed', e && e.message ? e.message : e);
+                    });
+                    return;
+                }
+                if (changedItems.length) {
+                    Promise.all(changedItems.map(function(nextItem) {
+                        return self.writeMenuItemPrimary(nextItem.id, nextItem, function() {
+                            return update(ref(db, 'menu/' + nextItem.id), { optionGroups: nextItem.optionGroups });
+                        }).then(function() {
+                            self.syncLocalMenuItem(nextItem.id, nextItem);
+                        });
+                    })).catch(function(e) {
+                        console.warn('template menu sync failed', e && e.message ? e.message : e);
+                    });
+                    return;
+                }
                 update(ref(db), updates).catch(function(e){ console.warn('同步飲料清單失敗', e.message); });
             },
             addDrink: function() { this.standardDrinks.push({ name:'', price:0 }); },
@@ -4082,7 +4209,16 @@ window._doCountUp = function() {
                     'settings/menu_alias_meta/count': normalized.length,
                     'settings/menu_alias_version': Date.now()
                 };
-                update(ref(db), updates)
+                var settingsPatch = {
+                    menu_alias: updates['settings/menu_alias'],
+                    menu_alias_meta: {
+                        updatedAt: nowIso,
+                        updatedBy: actor,
+                        count: normalized.length
+                    },
+                    menu_alias_version: updates['settings/menu_alias_version']
+                };
+                self.writeSettingsPrimary(settingsPatch, function() { return update(ref(db), updates); })
                     .then(function() {
                         self.menuAliasRows = normalized;
                         self.menuAliasDirty = false;
@@ -4188,11 +4324,20 @@ window._doCountUp = function() {
                     mealUpgradeChargePrefix: mealUpgradeChargePrefix,
                     choices: tf.choices.filter(function(c) { return c.name.trim(); })
                 };
-                var p = tplId
-                    ? update(ref(db, 'settings/optionTemplates/' + tplId), data)
-                    : push(ref(db, 'settings/optionTemplates'), data);
+                var saveId = tplId || ('tpl_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8));
+                var optionTemplates = {};
+                (self.optionTemplates || []).forEach(function(tpl) {
+                    if (!tpl || !tpl.id || tpl.id === saveId) return;
+                    var copy = Object.assign({}, tpl);
+                    delete copy.id;
+                    optionTemplates[tpl.id] = copy;
+                });
+                optionTemplates[saveId] = data;
+                var p = self.writeSettingsPrimary({ optionTemplates: optionTemplates }, function() {
+                    return set(ref(db, 'settings/optionTemplates'), optionTemplates);
+                });
                 p.then(function() {
-                    if (tplId) self.syncTemplateToMenu(tplId, data);
+                    if (tplId) self.syncTemplateToMenu(saveId, data);
                     self.showTemplateForm = false;
                     self.editingTemplateId = null;
                     self.loadTemplates();
@@ -4203,6 +4348,7 @@ window._doCountUp = function() {
                 var self = this;
                 if (!tplId || !tplData) return;
                 var updates = {};
+                var changedItems = [];
                 (self.menuItems || []).forEach(function(item){
                     var ogs = item.optionGroups || [];
                     var changed = false;
@@ -4228,15 +4374,39 @@ window._doCountUp = function() {
                         }
                         return g;
                     });
-                    if (changed) updates['menu/' + item.id + '/optionGroups'] = newOGs;
+                    if (changed) {
+                        updates['menu/' + item.id + '/optionGroups'] = newOGs;
+                        changedItems.push(Object.assign({}, item, { optionGroups: newOGs, updatedAt: Date.now() }));
+                    }
                 });
                 if (!Object.keys(updates).length) return;
+                if (changedItems.length) {
+                    Promise.all(changedItems.map(function(nextItem) {
+                        return self.writeMenuItemPrimary(nextItem.id, nextItem, function() {
+                            return update(ref(db, 'menu/' + nextItem.id), { optionGroups: nextItem.optionGroups });
+                        }).then(function() {
+                            self.syncLocalMenuItem(nextItem.id, nextItem);
+                        });
+                    })).catch(function(e) {
+                        console.warn('template menu sync failed', e && e.message ? e.message : e);
+                    });
+                    return;
+                }
                 update(ref(db), updates).catch(function(e){ console.warn('同步模板失敗', e.message); });
             },
             deleteTemplate: function(id) {
                 if (!confirm('確定刪除此模板？')) return;
                 var self = this;
-                remove(ref(db, 'settings/optionTemplates/' + id)).then(function() {
+                var optionTemplates = {};
+                (self.optionTemplates || []).forEach(function(tpl) {
+                    if (!tpl || !tpl.id || tpl.id === id) return;
+                    var copy = Object.assign({}, tpl);
+                    delete copy.id;
+                    optionTemplates[tpl.id] = copy;
+                });
+                self.writeSettingsPrimary({ optionTemplates: optionTemplates }, function() {
+                    return set(ref(db, 'settings/optionTemplates'), optionTemplates);
+                }).then(function() {
                     self.loadTemplates();
                     self.loadStandardDrinks();
                 });
@@ -5747,7 +5917,7 @@ window._doCountUp = function() {
                 var self = this;
                 self.settingsSaving = true; self.settingsSaved = false;
                 self.settings.announcements = self.normalizeAnnouncementsForSave(self.settings.announcements || []);
-                update(ref(db, 'settings'), {
+                var settingsPatch = {
                     isOpen: self.settings.isOpen,
                     dineinIsOpen: self.settings.dineinIsOpen !== false,
                     openTime: self.settings.openTime,
@@ -5775,8 +5945,10 @@ window._doCountUp = function() {
                     cancelLimitMinutes: Number(self.settings.cancelLimitMinutes)||15,
                     posOnlyCategories: self.settings.posOnlyCategories || [],
                     stations: self.settings.stations || []
-                }).then(function() {
+                };
+                self.writeSettingsPrimary(settingsPatch, function() { return update(ref(db, 'settings'), settingsPatch); }).then(function() {
                     self.settingsSaved = true;
+                    rememberPublicSettings({ settings: self.settings || {} }, settingsPatch);
                     setTimeout(function() { self.settingsSaved = false; }, 3000);
                 }).catch(function(e) {
                     alert('儲存失敗：' + e.message);
@@ -5787,19 +5959,23 @@ window._doCountUp = function() {
             // QR 碼管理
             saveQrSettings: function() {
                 var self = this;
-                update(ref(db, 'settings'), { qrBaseUrl: self.qrBaseUrl || '' }).then(function() {
+                var patch = { qrBaseUrl: self.qrBaseUrl || '' };
+                self.writeSettingsPrimary(patch, function() { return update(ref(db, 'settings'), patch); }).then(function() {
                     alert('✅ 基礎網址已儲存！');
                 }).catch(function(e) { alert('儲存失敗：' + e.message); });
             },
             saveQrPin: function() {
                 var self = this;
-                update(ref(db, 'settings'), { dineinPin: self.qrPin || '' }).then(function() {
+                var patch = { dineinPin: self.qrPin || '' };
+                self.writeSettingsPrimary(patch, function() { return update(ref(db, 'settings'), patch); }).then(function() {
                     if (self.qrPin) alert('✅ 驗證碼已設定為：' + self.qrPin);
                     else alert('✅ 驗證碼已清除');
                 }).catch(function(e) { alert('儲存失敗：' + e.message); });
             },
             saveQrEntries: function() {
-                update(ref(db, 'settings'), { qrEntries: this.qrEntries }).catch(function(e) { console.error(e); });
+                var self = this;
+                var patch = { qrEntries: this.qrEntries };
+                self.writeSettingsPrimary(patch, function() { return update(ref(db, 'settings'), patch); }).catch(function(e) { console.error(e); });
             },
             addQrEntry: function(type) {
                 var max = 0;
@@ -5936,7 +6112,7 @@ window._doCountUp = function() {
                 var arr = this.settings.categories;
                 var tmp = arr[idx-1]; arr[idx-1] = arr[idx]; arr[idx] = tmp;
             },
-            saveHideAllTab: function() { update(ref(db, 'settings'), { hideAllTab: !!this.settings.hideAllTab }); },
+            saveHideAllTab: function() { var self=this,patch={ hideAllTab: !!this.settings.hideAllTab }; self.writeSettingsPrimary(patch,function(){ return update(ref(db, 'settings'), patch); }); },
             togglePosOnly: function(cat) { if(!this.settings.posOnlyCategories)this.settings.posOnlyCategories=[];var a=this.settings.posOnlyCategories;var p=a.indexOf(cat);if(p!==-1)a.splice(p,1);else a.push(cat); },
             addPosTable: function() { var n=(this.newPosTable||'').trim();if(!n)return;if(!this.settings.posTables)this.settings.posTables=[];if(this.settings.posTables.indexOf(n)!==-1)return;this.settings.posTables.push(n);this.newPosTable=''; },
             quickAddPosTables: function() { if(!this.settings.posTables)this.settings.posTables=[];for(var i=1;i<=18;i++){var n=i+'桌';if(this.settings.posTables.indexOf(n)===-1)this.settings.posTables.push(n);} },
