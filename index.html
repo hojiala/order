@@ -595,7 +595,7 @@
 
 <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
-    import { getDatabase, ref, push, set, get, update, onValue } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
+    import { getDatabase, ref, push, set, get, update, onValue, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, signInAnonymously, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
     import { allocateOrderNoFromPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings } from "./pocketbase-order-writer.js";
 
@@ -844,10 +844,59 @@
                     return result;
                 });
             },
+            normalizeCounterResetTime: function(value) {
+                var t = String(value || '00:00').trim();
+                var m = t.match(/^(\d{1,2}):(\d{2})$/);
+                if (!m) return '00:00';
+                var h = Math.max(0, Math.min(23, Number(m[1]) || 0));
+                var mi = Math.max(0, Math.min(59, Number(m[2]) || 0));
+                return ('0' + h).slice(-2) + ':' + ('0' + mi).slice(-2);
+            },
+            getCounterBusinessDateKey: function(ts) {
+                var d = new Date(ts || Date.now());
+                var reset = this.normalizeCounterResetTime((this.settings && this.settings.counterResetTime) || '00:00').split(':');
+                var resetMinutes = (Number(reset[0]) || 0) * 60 + (Number(reset[1]) || 0);
+                var minutes = d.getHours() * 60 + d.getMinutes();
+                if (minutes < resetMinutes) d.setDate(d.getDate() - 1);
+                return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2);
+            },
+            getCounterCycleKey: function(ts) {
+                return this.getCounterBusinessDateKey(ts) + '@' + this.normalizeCounterResetTime((this.settings && this.settings.counterResetTime) || '00:00');
+            },
+            allocateOrderNoFromFirebaseFallback: function(sourcePage, pbResult) {
+                var self = this;
+                var resetTime = self.normalizeCounterResetTime((self.settings && self.settings.counterResetTime) || '00:00');
+                var maxNo = Math.max(1, Math.min(9999, Math.floor(Number((self.settings && self.settings.counterMaxNo) || 999) || 999)));
+                var cycleKey = self.getCounterCycleKey(Date.now());
+                return runTransaction(ref(db, 'settings/orderCounter'), function(current) {
+                    return (Number(current) || 0) + 1;
+                }, { applyLocally: false }).then(function(tx) {
+                    if (!tx || !tx.committed || !tx.snapshot || !tx.snapshot.exists()) throw new Error('Firebase counter transaction failed');
+                    var no = Number(tx.snapshot.val() || 0) || 0;
+                    if (!no) throw new Error('Firebase counter returned empty value');
+                    return {
+                        ok: true,
+                        backend: 'firebase',
+                        fallback: true,
+                        orderNo: no,
+                        serialNumber: no,
+                        cycleKey: cycleKey,
+                        resetTime: resetTime,
+                        maxNo: maxNo,
+                        pbMessage: pbResult && (pbResult.message || pbResult.reason) || ''
+                    };
+                });
+            },
             allocateOrderNoPrimary: function(sourcePage) {
+                var self = this;
                 return allocateOrderNoFromPocketBase({
                     settings: this.settings,
                     sourcePage: sourcePage || 'index'
+                }).then(function(result) {
+                    if (result && result.ok) return result;
+                    return self.allocateOrderNoFromFirebaseFallback(sourcePage || 'index', result);
+                }).catch(function(e) {
+                    return self.allocateOrderNoFromFirebaseFallback(sourcePage || 'index', { message: e && e.message ? e.message : String(e || '') });
                 });
             },
             normalizeCategorySubcategories: function(raw, categories) {

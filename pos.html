@@ -134,7 +134,7 @@
             </div>
             <div class="mt-2 border-t border-gray-100 pt-2 flex items-center justify-between gap-3">
               <span>菜單/設定</span>
-              <b :class="(menuReadBackend==='firebase'||settingsReadBackend==='firebase') ? 'text-amber-700' : ((menuReadBackend==='checking'||settingsReadBackend==='checking') ? 'text-sky-700' : 'text-emerald-700')">{{ menuSettingsBackendLabel }}</b>
+              <b :class="(menuReadBackend==='firebase'||settingsReadBackend==='firebase'||menuReadBackend==='pocketbase_cache'||settingsReadBackend==='pocketbase_cache') ? 'text-amber-700' : ((menuReadBackend==='checking'||settingsReadBackend==='checking') ? 'text-sky-700' : 'text-emerald-700')">{{ menuSettingsBackendLabel }}</b>
             </div>
           </div>
         </div>
@@ -718,7 +718,7 @@
 
 <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
-    import { getDatabase, ref, onValue, onChildAdded, onChildChanged, onChildRemoved, update, push, set, get, remove, query, orderByChild, limitToLast } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
+    import { getDatabase, ref, onValue, onChildAdded, onChildChanged, onChildRemoved, update, push, set, get, remove, query, orderByChild, limitToLast, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
     import { allocateOrderNoFromPocketBase, resetOrderNoInPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings } from "./pocketbase-order-writer.js";
     const firebaseConfig = {
@@ -795,7 +795,7 @@
                 posOrderType:'takeout',posTableLabel:'',posTables:[],cartDragIdx:null,
                 posPickupDate:"",posPickupTime:"",
                 orderMode:"pos",editingOrder:null,
-                onlineOrders:[],ordersLoading:false,assigningNos:{},orderBuckets:{},orderBucketUnsubs:[],integrationOrdersUnsub:null,integrationOrdersCache:[],phoneOrdersUnsub:null,phoneOrdersCache:[],useIntegrationView:false,ordersReadBackend:'checking',settingsReadBackend:'checking',menuReadBackend:'checking',lastWriteBackend:'',menuEditOverrideUntil:0,menuSettingsPollTimer:null,pbOrdersPollTimer:null,pbOrdersReadInFlight:false,pbOrdersEverConnected:false,pbOrdersFailureCount:0,remoteStatusOverrides:{},remoteStatusOverridesUnsub:null,orderHydrateInFlight:{},orderHydrateDone:{},
+                onlineOrders:[],ordersLoading:false,assigningNos:{},orderBuckets:{},orderBucketUnsubs:[],integrationOrdersUnsub:null,integrationOrdersCache:[],phoneOrdersUnsub:null,phoneOrdersCache:[],useIntegrationView:false,ordersReadBackend:'checking',settingsReadBackend:'checking',menuReadBackend:'checking',lastWriteBackend:'',lastWriteAt:0,menuEditOverrideUntil:0,menuSettingsPollTimer:null,pbOrdersPollTimer:null,pbOrdersReadInFlight:false,pbOrdersEverConnected:false,pbOrdersFailureCount:0,remoteStatusOverrides:{},remoteStatusOverridesUnsub:null,orderHydrateInFlight:{},orderHydrateDone:{},
                 orderSearch:"",
                 activeItem:null,tempQty:1,tempNote:"",tempDrinkNote:"",tempSels:[],tempOG:{},tempPosExtras:[],tempComboSize:{},tempDrinkAddons:[],
                 toastMsg:"",toastTimer:null,lastOrderId:null,
@@ -828,17 +828,18 @@
                 catch(e){console.warn('activeOrderCount failed:',e&&e.message?e.message:e);return 0;}
             },
             backendStatusShortLabel:function(){
-                if(this.ordersReadBackend==='firebase'||this.lastWriteBackend==='firebase')return 'Firebase';
+                if(this.ordersReadBackend==='firebase'||this.lastWriteBackend==='firebase'||this.menuReadBackend==='firebase'||this.settingsReadBackend==='firebase')return 'Firebase';
+                if(this.menuReadBackend==='pocketbase_cache'||this.settingsReadBackend==='pocketbase_cache')return '快取';
                 return 'PB';
             },
             backendStatusPillClass:function(){
-                if(this.ordersReadBackend==='firebase'||this.lastWriteBackend==='firebase')return 'bg-amber-100 text-amber-900 border-amber-200';
-                if(this.ordersReadBackend==='checking')return 'bg-sky-100 text-sky-900 border-sky-200';
+                if(this.ordersReadBackend==='firebase'||this.lastWriteBackend==='firebase'||this.menuReadBackend==='firebase'||this.settingsReadBackend==='firebase'||this.menuReadBackend==='pocketbase_cache'||this.settingsReadBackend==='pocketbase_cache')return 'bg-amber-100 text-amber-900 border-amber-200';
+                if(this.ordersReadBackend==='checking'||this.menuReadBackend==='checking'||this.settingsReadBackend==='checking')return 'bg-sky-100 text-sky-900 border-sky-200';
                 return 'bg-emerald-100 text-emerald-900 border-emerald-200';
             },
             backendStatusDotClass:function(){
-                if(this.ordersReadBackend==='firebase'||this.lastWriteBackend==='firebase')return 'bg-amber-500';
-                if(this.ordersReadBackend==='checking')return 'bg-sky-500';
+                if(this.ordersReadBackend==='firebase'||this.lastWriteBackend==='firebase'||this.menuReadBackend==='firebase'||this.settingsReadBackend==='firebase'||this.menuReadBackend==='pocketbase_cache'||this.settingsReadBackend==='pocketbase_cache')return 'bg-amber-500';
+                if(this.ordersReadBackend==='checking'||this.menuReadBackend==='checking'||this.settingsReadBackend==='checking')return 'bg-sky-500';
                 return 'bg-emerald-500';
             },
             ordersReadBackendLabel:function(){
@@ -853,6 +854,7 @@
             },
             menuSettingsBackendLabel:function(){
                 if(this.menuReadBackend==='firebase'||this.settingsReadBackend==='firebase')return 'Firebase 備援';
+                if(this.menuReadBackend==='pocketbase_cache'||this.settingsReadBackend==='pocketbase_cache')return '快取備援';
                 if(this.menuReadBackend==='checking'||this.settingsReadBackend==='checking')return 'PB 檢查中';
                 return 'PB 讀取中';
             },
@@ -984,7 +986,7 @@
                     secureTimeoutMs:10000,
                     writeToFirebase:writeToFirebase
                 }).then(function(result){
-                    if(result&&result.backend)s.lastWriteBackend=result.backend;
+                    if(result&&result.backend){s.lastWriteBackend=result.backend;s.lastWriteAt=Date.now();}
                     if(result&&result.backend==='pocketbase')console.info('Order saved to PocketBase primary:',orderId);
                     else if(result&&result.backend==='firebase')console.warn('PocketBase unavailable; order saved to Firebase fallback:',orderId);
                     return result;
@@ -998,8 +1000,8 @@
                     pocketBaseUrl:s.pocketBaseUrl,
                     pocketBaseOrdersCollection:s.pocketBaseOrdersCollection,
                     sourcePage:sourcePage||'pos_firebase_fallback',
-                    limit:25,
-                    timeoutMs:1200
+                    limit:200,
+                    timeoutMs:2500
                 }).catch(function(){return {ok:false};});
             },
             collectFirebaseFallbackOrders:function(){
@@ -1014,6 +1016,60 @@
                     });
                 });
                 return out;
+            },
+            loadFirebaseFallbackOrdersSnapshot:function(){
+                var s=this;
+                var keys=s.buildWatchDateKeys();
+                var isMirrorKey=function(k){return typeof k==='string'&&k.indexOf('online_')===0;};
+                var bucketReads=keys.map(function(dateKey){
+                    return get(ref(db,'orders/'+dateKey)).then(function(snap){
+                        var bucket=snap.exists()?(snap.val()||{}):{};
+                        return Object.keys(bucket).filter(function(id){return !isMirrorKey(id);}).map(function(id){
+                            var row=bucket[id];
+                            if(!row||typeof row!=='object')return null;
+                            return Object.assign({id:id,orderDateKey:dateKey,pickupDate:row.pickupDate||dateKey,sourceRecordPath:'orders/'+dateKey+'/'+id},row);
+                        }).filter(Boolean);
+                    }).catch(function(err){
+                        console.warn('Firebase fallback bucket snapshot failed ['+dateKey+']:',err&&err.message?err.message:err);
+                        return [];
+                    });
+                });
+                var integrationRead=get(ref(db,'integration_views/merged_orders_active')).then(function(snap){
+                    var view=snap.exists()?(snap.val()||{}):{};
+                    var raw=Array.isArray(view.orders)?view.orders.slice():Object.keys(view).map(function(id){
+                        var row=view[id];
+                        return row&&typeof row==='object'?Object.assign({id:id},row):null;
+                    }).filter(Boolean);
+                    return raw.filter(function(o){
+                        return o&&typeof o==='object'&&typeof o.id==='string'&&o.id.indexOf('online_')!==0;
+                    });
+                }).catch(function(err){
+                    console.warn('Firebase integration snapshot failed:',err&&err.message?err.message:err);
+                    return [];
+                });
+                var phoneRead=get(ref(db,'phone_ai/orders')).then(function(snap){
+                    var raw=snap.exists()?(snap.val()||{}):{};
+                    return Object.keys(raw).filter(function(id){
+                        return typeof id==='string'&&id.indexOf('online_')!==0&&s.isCurrentPhoneFallbackOrder(id,raw[id]);
+                    }).map(function(id){
+                        return Object.assign({
+                            id:id,
+                            source:'phone_ai',
+                            sourceLabel:'\u96fb\u8a71\u9ede\u9910',
+                            sourceRecordPath:'phone_ai/orders/'+id
+                        },raw[id]||{});
+                    });
+                }).catch(function(err){
+                    console.warn('Firebase phone snapshot failed:',err&&err.message?err.message:err);
+                    return [];
+                });
+                return Promise.all(bucketReads.concat([integrationRead,phoneRead])).then(function(parts){
+                    var out=[];
+                    parts.forEach(function(list){
+                        (Array.isArray(list)?list:[]).forEach(function(o){if(o)out.push(o);});
+                    });
+                    return out;
+                });
             },
             resetPocketBaseOrdersPoll:function(){
                 if(this.pbOrdersPollTimer)clearInterval(this.pbOrdersPollTimer);
@@ -1032,7 +1088,10 @@
                 if(s.pbOrdersReadInFlight)return Promise.resolve(false);
                 s.pbOrdersReadInFlight=true;
                 var carry=s.ordersReadBackend==='firebase'?s.collectFirebaseFallbackOrders():[];
-                return listOrdersFromPocketBase({
+                var recentFirebaseWrite=s.lastWriteBackend==='firebase'&&s.lastWriteAt&&(Date.now()-s.lastWriteAt<120000);
+                var shouldMergeFirebase=s.ordersReadBackend==='firebase'||recentFirebaseWrite||(s.pbOrdersFailureCount||0)>0;
+                var firebaseSnapshot=shouldMergeFirebase?s.loadFirebaseFallbackOrdersSnapshot():Promise.resolve([]);
+                var pocketBaseRead=listOrdersFromPocketBase({
                     settings:s.settings||{},
                     pocketBaseUrl:s.pocketBaseUrl,
                     pocketBaseOrdersCollection:s.pocketBaseOrdersCollection,
@@ -1041,7 +1100,10 @@
                     perPage:500,
                     maxPages:4,
                     timeoutMs:1800
-                }).then(function(result){
+                });
+                return Promise.all([pocketBaseRead,firebaseSnapshot]).then(function(parts){
+                    var result=parts[0];
+                    var firebaseRows=Array.isArray(parts[1])?parts[1]:[];
                     if(!result||!result.ok){
                         if(result&&result.skipped&&(result.reason==='missing_pocketbase_url'||result.reason==='mixed_content_http_pocketbase_url')){
                             return false;
@@ -1056,8 +1118,9 @@
                     s.ordersReadBackend='pocketbase';
                     s.pbOrdersEverConnected=true;
                     s.pbOrdersFailureCount=0;
-                    if(carry.length)s.backfillOrdersToPocketBaseBestEffort(carry,'pos_firebase_fallback');
-                    var rows=(Array.isArray(result.orders)?result.orders:[]).concat(carry);
+                    var fallbackRows=carry.concat(firebaseRows);
+                    if(fallbackRows.length)s.backfillOrdersToPocketBaseBestEffort(fallbackRows,'pos_firebase_fallback_recovery');
+                    var rows=(Array.isArray(result.orders)?result.orders:[]).concat(fallbackRows);
                     s.integrationOrdersCache=s.normalizeIncomingOrders(rows).map(function(o){return s.applyStatusOverrideToOrder(o);});
                     s.phoneOrdersCache=[];
                     s.useIntegrationView=true;
@@ -4226,6 +4289,20 @@
                     .then(function(){s.toast("✅ 流水號已歸零，下一筆從 No.001 開始");})
                     .catch(function(e){alert("歸零失敗："+(e&&e.message?e.message:e));});
             },
+            allocateOrderNoFromFirebaseFallback:function(sourcePage,pbResult){
+                var s=this;
+                var resetTime=s.normalizeCounterResetTime(s.counterResetTime||'00:00');
+                var maxNo=Math.max(1,Math.min(9999,Math.floor(Number(s.counterMaxNo||999)||999)));
+                var cycleKey=s.getCounterCycleKey(Date.now());
+                return runTransaction(ref(db,'settings/orderCounter'),function(current){
+                    return(Number(current)||0)+1;
+                },{applyLocally:false}).then(function(tx){
+                    if(!tx||!tx.committed||!tx.snapshot||!tx.snapshot.exists())throw new Error('Firebase counter transaction failed');
+                    var no=Number(tx.snapshot.val()||0)||0;
+                    if(!no)throw new Error('Firebase counter returned empty value');
+                    return{ok:true,backend:'firebase',fallback:true,orderNo:no,serialNumber:no,cycleKey:cycleKey,resetTime:resetTime,maxNo:maxNo,pbMessage:pbResult&&(pbResult.message||pbResult.reason)||''};
+                });
+            },
             allocateNextOrderNo:function(){
                 var s=this;
                 var resetTime=s.normalizeCounterResetTime(s.counterResetTime||'00:00');
@@ -4239,7 +4316,9 @@
                     maxNo:maxNo
                 }).then(function(result){
                     if(result&&result.ok)return result;
-                    return {ok:false,message:(result&&result.message)||'PocketBase counter unavailable'};
+                    return s.allocateOrderNoFromFirebaseFallback('pos',result);
+                }).catch(function(e){
+                    return s.allocateOrderNoFromFirebaseFallback('pos',{message:e&&e.message?e.message:String(e||'')});
                 });
             },
             openCashDrawer:function(){
@@ -4743,7 +4822,7 @@
                 return listMenuItemsFromPocketBase({settings:s.settings||{},timeoutMs:options.timeoutMs||2200}).then(function(result){
                     if(result&&result.ok){
                         s.applyMenuItemsFromPrimary(result.items||[]);
-                        s.menuReadBackend='pocketbase';
+                        s.menuReadBackend=result.backend||'pocketbase';
                         return result.items||[];
                     }
                     return s.loadMenuFromFirebase();
@@ -4786,7 +4865,7 @@
                 return readSettingsFromPocketBase({settings:s.settings||{},timeoutMs:options.timeoutMs||2200}).then(function(result){
                     if(result&&result.ok&&result.settings&&Object.keys(result.settings).length){
                         s.applySettingsFromPrimary(result.settings);
-                        s.settingsReadBackend='pocketbase';
+                        s.settingsReadBackend=result.backend||'pocketbase';
                         return s.settings;
                     }
                     return s.loadSettingsFromFirebase();
