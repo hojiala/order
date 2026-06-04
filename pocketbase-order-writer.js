@@ -760,8 +760,11 @@ function dedupeMenuItems(items) {
         var primary = quality(incoming) > quality(existing) ? incoming : existing;
         var secondary = primary === incoming ? existing : incoming;
         var merged = Object.assign({}, secondary, primary);
-        ["subCategory", "img", "desc", "shortName", "printName", "category", "price"].forEach(function(field) {
+        ["subCategory", "img", "desc", "shortName", "printName", "category", "price", "station", "availableAfter"].forEach(function(field) {
             if ((merged[field] === undefined || merged[field] === null || merged[field] === "") && secondary[field] !== undefined) merged[field] = secondary[field];
+        });
+        ["options", "optionGroups", "posExtras", "printStations"].forEach(function(field) {
+            if ((!Array.isArray(merged[field]) || !merged[field].length) && Array.isArray(secondary[field]) && secondary[field].length) merged[field] = secondary[field];
         });
         var primaryId = idOf(primary);
         var secondaryId = idOf(secondary);
@@ -914,7 +917,10 @@ function cachedPublicResult(kind, cacheKey, extra) {
     return readPublicCache(cacheKey, PUBLIC_CACHE_MAX_AGE_MS).then(function(cached) {
         if (!cached || cached.ok !== true) return null;
         if (kind === "settings") cached.settings = normalizeSettingsObject(cached.settings || {});
-        if (kind === "menu" && Array.isArray(cached.items)) cached.items = sortMenuItems(dedupeMenuItems(cached.items.map(decodeJsonLike)));
+        if (kind === "menu" && Array.isArray(cached.items)) {
+            cached.items = sortMenuItems(dedupeMenuItems(cached.items.map(decodeJsonLike)));
+            if (!menuLooksUsable(cached.items)) return null;
+        }
         return Object.assign({}, cached, {
             ok: true,
             backend: "pocketbase_cache",
@@ -937,9 +943,29 @@ function settingsLooksUsable(settings) {
 }
 
 function menuLooksUsable(items) {
-    return Array.isArray(items) && items.some(function(item) {
-        return item && text(item.name || item.printName || item.shortName).trim() && text(item.category).trim();
+    if (!Array.isArray(items)) return false;
+    var stats = menuRichnessStats(items);
+    if (!stats.basicCount) return false;
+    // This menu normally has many optionGroups and explicit sortOrder values.
+    // If a PB response only has names/categories/addons, treating it as fresh data
+    // would wipe套餐 choices and scramble item order on the storefront.
+    if (stats.count >= 40 && stats.optionGroupCount === 0) return false;
+    if (stats.count >= 40 && stats.sortOrderCount < Math.max(10, Math.floor(stats.count * 0.25))) return false;
+    return true;
+}
+
+function menuRichnessStats(items) {
+    var stats = { count: 0, basicCount: 0, optionGroupCount: 0, optionCount: 0, sortOrderCount: 0, subCategoryCount: 0 };
+    (Array.isArray(items) ? items : []).forEach(function(item) {
+        if (!item || typeof item !== "object") return;
+        stats.count++;
+        if (text(item.name || item.printName || item.shortName).trim() && text(item.category).trim()) stats.basicCount++;
+        if (Array.isArray(item.optionGroups) && item.optionGroups.length) stats.optionGroupCount++;
+        if (Array.isArray(item.options) && item.options.length) stats.optionCount++;
+        if (finiteNumber(item.sortOrder) !== null) stats.sortOrderCount++;
+        if (text(item.subCategory).trim()) stats.subCategoryCount++;
     });
+    return stats;
 }
 
 function parsePublicMenuResponse(data, options) {
@@ -1071,6 +1097,7 @@ export function rememberPublicMenuItems(options, items) {
     var config = resolvePocketBaseConfig(options);
     var cacheKey = publicCacheKey("menu", config.baseUrl || configuredDefaultBaseUrl());
     var parsed = { ok: true, backend: "pocketbase_cache", items: sortMenuItems(dedupeMenuItems(Array.isArray(items) ? items.map(decodeJsonLike) : [])) };
+    if (!menuLooksUsable(parsed.items)) return Promise.resolve(false);
     return writePublicCache(cacheKey, parsed);
 }
 
