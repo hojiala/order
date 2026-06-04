@@ -1011,6 +1011,65 @@
                 </div>
 
                 <!-- ★ 公告訊息管理 -->
+                <!-- Telegram fallback notification -->
+                <div v-show="settingsSubTab==='tools'" :style="{order: 2.5}" class="bg-slate-800 rounded-xl border border-sky-900/50 p-5">
+                    <div class="flex items-center gap-2 mb-1">
+                        <span class="text-lg">📣</span>
+                        <p class="font-bold text-white">Telegram 備援推播</p>
+                    </div>
+                    <p class="text-slate-400 text-sm mb-4">PocketBase 寫入失敗並切到 Firebase 備援時，只在第一次切換推播一次。Bot Token / Chat ID 只送到 Cloudflare Worker，不寫入 Firebase 或 PocketBase。</p>
+                    <div class="space-y-3">
+                        <div>
+                            <label class="text-slate-300 text-sm font-bold block mb-1">Worker 推播 Endpoint</label>
+                            <input v-model="settings.telegramFallbackNotifyEndpoint" type="url"
+                                placeholder="https://yuangi-secure-order.inovaxt.workers.dev/api/notify/fallback"
+                                class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2.5 text-white text-sm placeholder-slate-400 focus:outline-none focus:border-sky-500">
+                            <p class="text-slate-500 text-xs mt-1">這個網址可公開；真正的 Telegram Token 和 Chat ID 由 Worker 保管。</p>
+                        </div>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <div>
+                                <label class="text-slate-300 text-sm font-bold block mb-1">Telegram Bot Token</label>
+                                <input v-model="telegramBotTokenInput" type="password" autocomplete="new-password"
+                                    placeholder="已在 Worker 設定時可留空"
+                                    class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2.5 text-white text-sm placeholder-slate-400 focus:outline-none focus:border-sky-500">
+                            </div>
+                            <div>
+                                <label class="text-slate-300 text-sm font-bold block mb-1">Telegram Chat ID</label>
+                                <input v-model="telegramChatIdInput" type="password" autocomplete="new-password"
+                                    placeholder="例如 123456789"
+                                    class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2.5 text-white text-sm placeholder-slate-400 focus:outline-none focus:border-sky-500">
+                            </div>
+                        </div>
+                        <div>
+                            <label class="text-slate-300 text-sm font-bold block mb-1">Worker 設定金鑰</label>
+                            <input v-model="telegramConfigAdminKeyInput" type="password" autocomplete="new-password"
+                                placeholder="TELEGRAM_CONFIG_ADMIN_KEY"
+                                class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2.5 text-white text-sm placeholder-slate-400 focus:outline-none focus:border-sky-500">
+                            <p class="text-slate-500 text-xs mt-1">只用來把 Token/Chat ID 寫進 Worker KV；不會保存到網頁設定。</p>
+                        </div>
+                        <div>
+                            <label class="text-slate-300 text-sm font-bold block mb-1">推播內容</label>
+                            <textarea v-model="settings.telegramFallbackMessageTemplate" rows="6"
+                                class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2.5 text-white text-sm placeholder-slate-400 focus:outline-none focus:border-sky-500 resize-y"></textarea>
+                            <p class="text-slate-500 text-xs mt-1">可用變數：{storeName}、{reason}、{time}、{sourcePage}、{orderId}</p>
+                        </div>
+                        <div class="flex flex-wrap gap-2">
+                            <button @click="saveTelegramNotifyConfig" :disabled="telegramConfigSaving"
+                                class="bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white font-bold px-4 py-2 rounded-lg text-sm transition">
+                                {{ telegramConfigSaving ? '保存中...' : '保存到 Worker' }}
+                            </button>
+                            <button @click="testTelegramNotify" :disabled="telegramConfigTesting"
+                                class="bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-slate-100 font-bold px-4 py-2 rounded-lg text-sm transition border border-slate-600">
+                                {{ telegramConfigTesting ? '測試中...' : '傳送測試' }}
+                            </button>
+                        </div>
+                        <p v-if="telegramConfigStatus" class="text-xs"
+                            :class="telegramConfigStatus.indexOf('成功') !== -1 ? 'text-emerald-400' : 'text-amber-400'">
+                            {{ telegramConfigStatus }}
+                        </p>
+                    </div>
+                </div>
+
                 <div v-show="settingsSubTab==='tools'" :style="{order: 1}" class="bg-slate-800 rounded-xl border border-amber-900/50 p-5">
                     <div class="flex items-center gap-2 mb-1">
                         <span class="text-lg">📢</span>
@@ -1742,7 +1801,7 @@ window._doCountUp = function() {
                     dineinIsOpen: true,
                     openTime: '06:00', closeTime: '13:15',
                     dailyHours: {},
-                    pickupDays: 3, pickupInterval: 30, linePayServerUrl: '', linePayConfirmUrl: '', pocketBaseUrl: '', pocketBaseOrdersCollection: 'orders', announcements: [],
+                    pickupDays: 3, pickupInterval: 30, linePayServerUrl: '', linePayConfirmUrl: '', pocketBaseUrl: '', pocketBaseOrdersCollection: 'orders', telegramFallbackNotifyEndpoint: '', telegramFallbackMessageTemplate: '⚠️ {storeName}\n線上點餐已切換到 Firebase 備援模式\n\n原因：{reason}\n時間：{time}\n處理方式：請用出餐後台查看新訂單', announcements: [],
                     holidays: [],
                     weeklyDaysOff: [0],
                     dailyThemes: cloneDefaultDailyThemes(),
@@ -1785,6 +1844,12 @@ window._doCountUp = function() {
                 newPosTable: '',
                 newStationName: '',
                 newStationIp: '',
+                telegramBotTokenInput: '',
+                telegramChatIdInput: '',
+                telegramConfigAdminKeyInput: '',
+                telegramConfigSaving: false,
+                telegramConfigTesting: false,
+                telegramConfigStatus: '',
                 showOptionsTemplateDD: false,
                 showPosExtrasTemplateDD: false,
                 settingsSaving: false, settingsSaved: false,
@@ -3803,6 +3868,125 @@ window._doCountUp = function() {
                         return Promise.resolve(firebaseFallback()).then(function(firebaseResult) {
                             return { ok: true, backend: 'firebase', fallback: true, error: err, firebase: firebaseResult };
                         });
+                    });
+            },
+            defaultTelegramFallbackMessage: function() {
+                return '⚠️ {storeName}\n線上點餐已切換到 Firebase 備援模式\n\n原因：{reason}\n時間：{time}\n處理方式：請用出餐後台查看新訂單';
+            },
+            resolveTelegramNotifyEndpoint: function() {
+                var s = this.settings || {};
+                var endpoint = String(s.telegramFallbackNotifyEndpoint || s.telegramNotifyEndpoint || '').trim();
+                if (!endpoint) {
+                    var orderEndpoint = String(s.pocketBaseOrderEndpoint || s.pocketBaseSecureOrderEndpoint || s.secureOrderEndpoint || '').trim();
+                    if (/\/api\/(?:secure\/)?orders\/?$/i.test(orderEndpoint)) {
+                        endpoint = orderEndpoint.replace(/\/api\/(?:secure\/)?orders\/?$/i, '/api/notify/fallback');
+                    }
+                }
+                return endpoint.replace(/\/+$/, '');
+            },
+            telegramWorkerEndpoint: function(kind) {
+                var endpoint = this.resolveTelegramNotifyEndpoint();
+                if (!endpoint) return '';
+                if (/\/api\/notify\/fallback$/i.test(endpoint)) return endpoint.replace(/\/api\/notify\/fallback$/i, '/api/notify/' + kind);
+                if (/\/api\/notify\/(config|test)$/i.test(endpoint)) return endpoint.replace(/\/api\/notify\/(config|test)$/i, '/api/notify/' + kind);
+                if (/\/api\/(?:secure\/)?orders$/i.test(endpoint)) return endpoint.replace(/\/api\/(?:secure\/)?orders$/i, '/api/notify/' + kind);
+                return endpoint.replace(/\/+$/, '') + '/api/notify/' + kind;
+            },
+            parseWorkerJsonResponse: function(res) {
+                return res.text().then(function(text) {
+                    var data = {};
+                    try { data = text ? JSON.parse(text) : {}; } catch (e) { data = { message: text }; }
+                    if (!res.ok || data.ok === false) {
+                        var msg = data.message || data.error || ('HTTP ' + res.status);
+                        throw new Error(msg);
+                    }
+                    return data;
+                });
+            },
+            saveTelegramNotifyConfig: function() {
+                var self = this;
+                var endpoint = self.telegramWorkerEndpoint('config');
+                if (!endpoint) {
+                    self.telegramConfigStatus = '請先填寫 Worker 推播 Endpoint';
+                    return;
+                }
+                var adminKey = String(self.telegramConfigAdminKeyInput || '').trim();
+                if (!adminKey) {
+                    self.telegramConfigStatus = '請先輸入 Worker 設定金鑰';
+                    return;
+                }
+                self.telegramConfigSaving = true;
+                self.telegramConfigStatus = '';
+                fetch(endpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        adminKey: adminKey,
+                        botToken: String(self.telegramBotTokenInput || '').trim(),
+                        chatId: String(self.telegramChatIdInput || '').trim(),
+                        messageTemplate: self.settings.telegramFallbackMessageTemplate || self.defaultTelegramFallbackMessage()
+                    })
+                })
+                    .then(self.parseWorkerJsonResponse)
+                    .then(function(data) {
+                        var publicPatch = {
+                            telegramFallbackNotifyEndpoint: self.settings.telegramFallbackNotifyEndpoint || self.resolveTelegramNotifyEndpoint(),
+                            telegramFallbackMessageTemplate: self.settings.telegramFallbackMessageTemplate || self.defaultTelegramFallbackMessage()
+                        };
+                        self.settings.telegramFallbackNotifyEndpoint = publicPatch.telegramFallbackNotifyEndpoint;
+                        self.settings.telegramFallbackMessageTemplate = publicPatch.telegramFallbackMessageTemplate;
+                        return self.writeSettingsPrimary(publicPatch, function() {
+                            return update(ref(db, 'settings'), publicPatch);
+                        }).then(function() {
+                            rememberPublicSettings({ settings: self.settings || {} }, publicPatch);
+                            return data;
+                        });
+                    })
+                    .then(function(data) {
+                        self.telegramBotTokenInput = '';
+                        self.telegramChatIdInput = '';
+                        self.telegramConfigAdminKeyInput = '';
+                        var masked = data && data.config && data.config.botTokenMasked;
+                        self.telegramConfigStatus = masked
+                            ? ('Telegram 設定成功，Token ' + masked)
+                            : 'Telegram 設定成功';
+                    })
+                    .catch(function(err) {
+                        self.telegramConfigStatus = 'Telegram 設定失敗：' + (err && err.message ? err.message : err);
+                    })
+                    .finally(function() {
+                        self.telegramConfigSaving = false;
+                    });
+            },
+            testTelegramNotify: function() {
+                var self = this;
+                var endpoint = self.telegramWorkerEndpoint('test');
+                if (!endpoint) {
+                    self.telegramConfigStatus = '請先填寫 Worker 推播 Endpoint';
+                    return;
+                }
+                self.telegramConfigTesting = true;
+                self.telegramConfigStatus = '';
+                fetch(endpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        storeName: (self.settings && (self.settings.storeInfo || self.settings.storeName)) || '元氣早午餐善化中山店',
+                        reason: '測試推播',
+                        sourcePage: 'manage',
+                        orderId: 'test',
+                        messageTemplate: self.settings.telegramFallbackMessageTemplate || self.defaultTelegramFallbackMessage()
+                    })
+                })
+                    .then(self.parseWorkerJsonResponse)
+                    .then(function() {
+                        self.telegramConfigStatus = 'Telegram 測試成功';
+                    })
+                    .catch(function(err) {
+                        self.telegramConfigStatus = 'Telegram 測試失敗：' + (err && err.message ? err.message : err);
+                    })
+                    .finally(function() {
+                        self.telegramConfigTesting = false;
                     });
             },
 
@@ -5927,6 +6111,8 @@ window._doCountUp = function() {
                         pocketBaseOrdersCollection: s.pocketBaseOrdersCollection || s.pocketbaseOrdersCollection || 'orders',
                         pocketBaseOrderEndpoint: s.pocketBaseOrderEndpoint || s.pocketbaseOrderEndpoint || s.pocketBaseSecureOrderEndpoint || s.secureOrderEndpoint || '',
                         turnstileSiteKey: s.turnstileSiteKey || s.cloudflareTurnstileSiteKey || '',
+                        telegramFallbackNotifyEndpoint: s.telegramFallbackNotifyEndpoint || s.telegramNotifyEndpoint || prev.telegramFallbackNotifyEndpoint || '',
+                        telegramFallbackMessageTemplate: s.telegramFallbackMessageTemplate || prev.telegramFallbackMessageTemplate || self.defaultTelegramFallbackMessage(),
                         announcements: self.normalizeAnnouncementsForSave(s.announcements || []),
                         hideAllTab: !!s.hideAllTab,
                         posTables: s.posTables || [],
@@ -5979,6 +6165,8 @@ window._doCountUp = function() {
                     linePayConfirmUrl: self.settings.linePayConfirmUrl || '',
                     pocketBaseUrl: self.settings.pocketBaseUrl || '',
                     pocketBaseOrdersCollection: self.settings.pocketBaseOrdersCollection || 'orders',
+                    telegramFallbackNotifyEndpoint: self.settings.telegramFallbackNotifyEndpoint || '',
+                    telegramFallbackMessageTemplate: self.settings.telegramFallbackMessageTemplate || self.defaultTelegramFallbackMessage(),
                     announcements: self.settings.announcements || [],
                     hideAllTab: !!self.settings.hideAllTab,
                     posTables: self.settings.posTables || [],

@@ -1408,6 +1408,87 @@ function writeOrderToSecureEndpoint(config, orderId, orderData, options, record,
     });
 }
 
+function deriveTelegramNotifyEndpoint(settings) {
+    settings = settings || {};
+    var explicit = cleanBaseUrl(
+        settings.telegramFallbackNotifyEndpoint ||
+        settings.telegramNotifyEndpoint ||
+        settings.firebaseFallbackNotifyEndpoint ||
+        ""
+    );
+    if (explicit) return explicit;
+    var orderEndpoint = cleanBaseUrl(
+        settings.pocketBaseOrderEndpoint ||
+        settings.pocketbaseOrderEndpoint ||
+        settings.pocketBaseSecureOrderEndpoint ||
+        settings.secureOrderEndpoint ||
+        ""
+    );
+    if (!orderEndpoint) return "";
+    if (/\/api\/(?:secure\/)?orders$/i.test(orderEndpoint)) {
+        return orderEndpoint.replace(/\/api\/(?:secure\/)?orders$/i, "/api/notify/fallback");
+    }
+    return orderEndpoint.replace(/\/+$/, "") + "/notify/fallback";
+}
+
+function fallbackNotifyDateKey() {
+    var d = new Date();
+    return d.getFullYear() + "-" + ("0" + (d.getMonth() + 1)).slice(-2) + "-" + ("0" + d.getDate()).slice(-2);
+}
+
+function summarizeFallbackReason(reason) {
+    var textValue = text(
+        (reason && (reason.message || reason.reason)) ||
+        (reason && reason.error && (reason.error.message || reason.error.reason)) ||
+        ""
+    );
+    if (/timeout|failed|unavailable|fetch|network|PocketBase/i.test(textValue)) return "Pi PocketBase 無法連線";
+    return textValue || "Pi PocketBase 無法連線";
+}
+
+function notifyFirebaseFallbackOnce(orderId, orderData, options, reason, firebaseResult) {
+    options = options || {};
+    var settings = options.settings || {};
+    var endpoint = deriveTelegramNotifyEndpoint(settings);
+    if (!endpoint || typeof fetch !== "function") return Promise.resolve({ ok: false, skipped: true, reason: "missing_notify_endpoint" });
+    var dateKey = fallbackNotifyDateKey();
+    var origin = (typeof window !== "undefined" && window.location && window.location.origin) ? window.location.origin : "unknown-origin";
+    var eventKey = origin + ":firebase_fallback:" + dateKey;
+    var storageKey = "telegram_fallback_notified:" + eventKey;
+    var localDedupeMs = Math.max(60000, Number(settings.telegramFallbackNotifyTtlMs || settings.telegramFallbackNotifyLocalTtlMs || 21600000) || 21600000);
+    try {
+        var lastNotifiedAt = typeof localStorage !== "undefined" ? Number(localStorage.getItem(storageKey) || 0) : 0;
+        if (lastNotifiedAt && Date.now() - lastNotifiedAt < localDedupeMs) {
+            return Promise.resolve({ ok: true, skipped: true, reason: "local_already_notified" });
+        }
+    } catch(e) {}
+    var storeName = text(settings.storeName || settings.storeTitle || settings.storeInfo || "元氣早午餐善化中山店");
+    var body = {
+        type: "firebase_fallback",
+        eventKey: eventKey,
+        orderId: text(orderId || (orderData && orderData.id)),
+        sourcePage: text(options.sourcePage || (orderData && orderData.source) || ""),
+        storeName: storeName,
+        reason: summarizeFallbackReason(reason),
+        messageTemplate: text(settings.telegramFallbackMessageTemplate || ""),
+        clientTs: Date.now(),
+        firebase: plainJson(firebaseResult || {}, {})
+    };
+    return requestJson(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+    }, Number(options.notifyTimeoutMs || 3500) || 3500).then(function(result) {
+        try {
+            if (typeof localStorage !== "undefined") localStorage.setItem(storageKey, String(Date.now()));
+        } catch(e) {}
+        return result || { ok: true };
+    }).catch(function(err) {
+        console.warn("Firebase fallback Telegram notify failed:", err && err.message ? err.message : err);
+        return { ok: false, error: err, message: err && err.message ? err.message : String(err) };
+    });
+}
+
 export function writeOrderToPocketBase(orderId, orderData, options) {
     options = options || {};
     var config = resolvePocketBaseConfig(options);
@@ -1459,6 +1540,7 @@ export function writeOrderWithFirebaseFallback(orderId, orderData, options) {
         return Promise.resolve()
             .then(function() { return writeToFirebase(reason); })
             .then(function(firebaseResult) {
+                notifyFirebaseFallbackOnce(orderId, orderData, options, reason, firebaseResult);
                 return { ok: true, backend: "firebase", fallback: true, pocketBase: reason, firebase: firebaseResult };
             });
     };
