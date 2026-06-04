@@ -1071,6 +1071,59 @@
                     return out;
                 });
             },
+            orderIdentityKeys:function(order){
+                var s=this;
+                var keys=[];
+                if(!order||typeof order!=='object')return keys;
+                var sourcePath='';
+                try{sourcePath=s.normalizeSourceRecordPath(order,order.id||'');}catch(_){}
+                if(sourcePath)keys.push('path:'+sourcePath);
+                var id=String(order.id||order.orderId||order.sourceOrderId||'').trim();
+                if(id)keys.push('id:'+id);
+                var day=String(order.orderDateKey||order.pickupDate||order._sourceDateKey||'').trim();
+                if(day&&id)keys.push('bucket:'+day+'/'+id);
+                return keys.filter(function(k,i,arr){return k&&arr.indexOf(k)===i;});
+            },
+            syncPocketBaseOrderNosToFirebase:function(rows){
+                var s=this;
+                (Array.isArray(rows)?rows:[]).forEach(function(order){
+                    var no=Number(order&&order.orderNo);
+                    if(!Number.isFinite(no)||no<=0)return;
+                    var path='';
+                    try{path=s.normalizeSourceRecordPath(order,order&&order.id||'');}catch(_){}
+                    if(!path||path.indexOf('orders/')!==0)return;
+                    update(ref(db,path),{orderNo:no,serialNumber:String(no).padStart(3,'0'),counterPending:false}).catch(function(err){
+                        console.warn('Firebase orderNo mirror sync failed:',err&&err.message?err.message:err);
+                    });
+                });
+            },
+            fillMissingOrderNosFromKnown:function(rows,knownRows){
+                var s=this;
+                var byKey={};
+                (Array.isArray(knownRows)?knownRows:[]).forEach(function(order){
+                    var no=Number(order&&order.orderNo);
+                    if(!Number.isFinite(no)||no<=0)return;
+                    s.orderIdentityKeys(order).forEach(function(key){if(!byKey[key])byKey[key]=no;});
+                });
+                return (Array.isArray(rows)?rows:[]).map(function(order){
+                    if(!order||typeof order!=='object')return order;
+                    var no=Number(order.orderNo);
+                    if(Number.isFinite(no)&&no>0)return order;
+                    var found=0;
+                    s.orderIdentityKeys(order).some(function(key){
+                        if(byKey[key]){found=byKey[key];return true;}
+                        return false;
+                    });
+                    if(!found)return order;
+                    var patched=Object.assign({},order,{orderNo:found,serialNumber:String(found).padStart(3,'0'),counterPending:false});
+                    var path='';
+                    try{path=s.normalizeSourceRecordPath(patched,patched.id||'');}catch(_){}
+                    if(path&&path.indexOf('orders/')===0){
+                        update(ref(db,path),{orderNo:found,serialNumber:String(found).padStart(3,'0'),counterPending:false}).catch(function(){});
+                    }
+                    return patched;
+                });
+            },
             resetPocketBaseOrdersPoll:function(){
                 if(this.pbOrdersPollTimer)clearInterval(this.pbOrdersPollTimer);
                 this.pbOrdersPollTimer=null;
@@ -1118,9 +1171,12 @@
                     s.ordersReadBackend='pocketbase';
                     s.pbOrdersEverConnected=true;
                     s.pbOrdersFailureCount=0;
+                    var pbRows=Array.isArray(result.orders)?result.orders:[];
+                    s.syncPocketBaseOrderNosToFirebase(pbRows);
+                    firebaseRows=s.fillMissingOrderNosFromKnown(firebaseRows,pbRows.concat(carry).concat(s.onlineOrders||[]));
                     var fallbackRows=carry.concat(firebaseRows);
                     if(fallbackRows.length)s.backfillOrdersToPocketBaseBestEffort(fallbackRows,'pos_firebase_fallback_recovery');
-                    var rows=(Array.isArray(result.orders)?result.orders:[]).concat(fallbackRows);
+                    var rows=pbRows.concat(fallbackRows);
                     s.integrationOrdersCache=s.normalizeIncomingOrders(rows).map(function(o){return s.applyStatusOverrideToOrder(o);});
                     s.phoneOrdersCache=[];
                     s.useIntegrationView=true;
@@ -1189,10 +1245,29 @@
                 var pad=function(n){return('0'+n).slice(-2);};
                 return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+' '+pad(d.getHours())+':'+pad(d.getMinutes());
             },
+            deriveDineInTableLabel:function(order){
+                if(!order||typeof order!=='object')return '';
+                var c=(order.customer&&typeof order.customer==='object')?order.customer:{};
+                var candidates=[order.tableLabel,order.table_label,c.tableLabel,c.table_label,c.table,c.tableName,c.label,order.deviceLabel,order.tableName];
+                for(var i=0;i<candidates.length;i++){
+                    if(typeof candidates[i]==='string'){
+                        var t=candidates[i].trim();
+                        if(t&&t!=='[object Object]'&&t!=='顧客'&&t!=='電話顧客')return t;
+                    }
+                }
+                var raw=String(order.tableDevice||order.table_device||order.deviceId||order.device_id||c.deviceId||'').trim();
+                var m=raw.match(/(?:table|desk|seat)[_-]?(\d+)/i);
+                if(m&&m[1])return m[1]+'桌';
+                var k=raw.match(/(?:kiosk|takeout)[_-]?(\d+)/i);
+                if(k&&k[1])return '自助'+k[1]+'號';
+                return '';
+            },
             getDisplayCustomerName:function(order){
                 if(!order||typeof order!=='object')return '\u9867\u5ba2';
                 var src0=String(order.source||'').toLowerCase();
                 var defaultName=(src0==='phone_ai'||src0==='pos_local')?'\u96fb\u8a71\u9867\u5ba2':'\u9867\u5ba2';
+                var tableName=this.deriveDineInTableLabel(order);
+                if(tableName&&(src0==='dinein'||src0==='qrcode'||String(order.type||order.pickupMode||'').toLowerCase()==='dinein'))return tableName;
                 var c=order.customer;
                 if(typeof c==='string'){
                     var t=c.trim();
@@ -1208,7 +1283,7 @@
                         if(typeof nested==='string'&&nested.trim()&&nested.trim()!=='[object Object]')return nested.trim();
                     }
                 }
-                var fallback=[order.customerName,order.name,order.tableLabel];
+                var fallback=[order.customerName,order.name,order.tableLabel,tableName];
                 for(var j=0;j<fallback.length;j++){
                     if(typeof fallback[j]==='string'&&fallback[j].trim()&&fallback[j].trim()!=='[object Object]')return fallback[j].trim();
                 }
@@ -1693,6 +1768,17 @@
                 if(!customerName&&typeof out.customerName==='string'&&out.customerName.trim()&&out.customerName.trim()!=='[object Object]')customerName=out.customerName.trim();
                 if(!customerName&&typeof out.name==='string'&&out.name.trim()&&out.name.trim()!=='[object Object]')customerName=out.name.trim();
                 if(!customerName&&typeof out.tableLabel==='string'&&out.tableLabel.trim()&&out.tableLabel.trim()!=='[object Object]')customerName=out.tableLabel.trim();
+                var derivedTableLabel=this.deriveDineInTableLabel(out);
+                var dineinLike=(out.source==='dinein'||out.source==='qrcode'||String(out.type||out.pickupMode||'').toLowerCase()==='dinein');
+                if(derivedTableLabel){
+                    out.tableLabel=derivedTableLabel;
+                    if(dineinLike)customerName=derivedTableLabel;
+                    if(dineinLike&&!out.tableType)out.tableType=/^自助/.test(derivedTableLabel)?'kiosk':'table';
+                    if(dineinLike){
+                        out.type='dinein';
+                        out.pickupMode='dinein';
+                    }
+                }
                 if(!customerName){
                     var srcName=String(out.source||'').toLowerCase();
                     customerName=(srcName==='phone_ai'||srcName==='pos_local')?'\u96fb\u8a71\u9867\u5ba2':'\u9867\u5ba2';
@@ -1708,7 +1794,7 @@
                 if(!out.pickupTime&&out.pickupTimeLabel)out.pickupTime=out.pickupTimeLabel;
                 if(typeof out.pickupTime==='string'&&out.pickupTime.trim().toUpperCase()==='ASAP')out.pickupTime='\u76e1\u5feb';
                 if(typeof out.pickupTime==='string'&&out.pickupTime.trim()==='[object Object]')out.pickupTime='\u76e1\u5feb';
-                if(typeof out.tableLabel!=='string'||!out.tableLabel.trim()||out.tableLabel.trim()==='[object Object]')out.tableLabel='';
+                if(typeof out.tableLabel!=='string'||!out.tableLabel.trim()||out.tableLabel.trim()==='[object Object]')out.tableLabel=derivedTableLabel||'';
                 if((out.timestamp===undefined||out.timestamp===null||out.timestamp===0)){
                     if(typeof out.createdAt==='number'&&Number.isFinite(out.createdAt))out.timestamp=out.createdAt;
                     else if(out.createdAt){
@@ -4528,6 +4614,15 @@
                     var bestItems=pickRicherItems(current.items,incoming.items);
                     if(bestItems&&bestItems.length)merged.items=bestItems.map(function(it){return Object.assign({},it);});
                     merged.total=s.preferOrderTotalForDisplay(merged,Number(current.total),Number(incoming.total),merged.items);
+                    if((!merged.orderNo||!Number.isFinite(Number(merged.orderNo)))&&(current.orderNo||incoming.orderNo)){
+                        merged.orderNo=current.orderNo||incoming.orderNo;
+                        merged.serialNumber=String(merged.orderNo).padStart(3,'0');
+                        merged.counterPending=false;
+                    }
+                    if(!merged.tableLabel){
+                        var tableLabel=s.deriveDineInTableLabel(merged)||s.deriveDineInTableLabel(current)||s.deriveDineInTableLabel(incoming);
+                        if(tableLabel)merged.tableLabel=tableLabel;
+                    }
                     if(!merged.id)merged.id=preferIncoming?(incoming.id||current.id):(current.id||incoming.id);
                     return merged;
                 };
@@ -4686,6 +4781,12 @@
                 var mergedOrders=s.normalizeIncomingOrders(collapseByDisplaySignature(collapseMergedValues(Object.values(mergedMap)))).map(function(o){
                     var normalized=s.normalizeIncomingOrder(o);
                     var previous=findPreviousOrder(normalized);
+                    if(previous&&(!normalized.orderNo||!Number.isFinite(Number(normalized.orderNo)))&&previous.orderNo){
+                        normalized.orderNo=previous.orderNo;
+                        normalized.serialNumber=String(previous.orderNo).padStart(3,'0');
+                        normalized.counterPending=false;
+                    }
+                    if(previous&&!normalized.tableLabel&&previous.tableLabel)normalized.tableLabel=previous.tableLabel;
                     if(previous&&Array.isArray(previous.items)&&previous.items.length){
                         var bestItems=pickRicherItems(normalized.items,previous.items);
                         if(bestItems===previous.items){
@@ -4879,8 +4980,8 @@
                 if(s.menuSettingsPollTimer)return;
                 var run=function(fast){
                     Promise.all([
-                        s.loadSettingsPrimary({timeoutMs:fast?900:1800}),
-                        s.loadMenuPrimary({timeoutMs:fast?1100:1800})
+                        s.loadSettingsPrimary({timeoutMs:fast?900:5500}),
+                        s.loadMenuPrimary({timeoutMs:fast?1100:5500})
                     ]).catch(function(err){console.warn('menu/settings primary refresh failed:',err&&err.message?err.message:err);});
                 };
                 run(true);
