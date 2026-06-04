@@ -1408,16 +1408,20 @@ function writeOrderToSecureEndpoint(config, orderId, orderData, options, record,
     });
 }
 
-function deriveTelegramNotifyEndpoint(settings) {
+function deriveTelegramNotifyEndpoint(settings, options) {
     settings = settings || {};
+    options = options || {};
     var explicit = cleanBaseUrl(
+        optionValue(options, ["telegramFallbackNotifyEndpoint", "telegramNotifyEndpoint", "firebaseFallbackNotifyEndpoint"]) ||
         settings.telegramFallbackNotifyEndpoint ||
         settings.telegramNotifyEndpoint ||
         settings.firebaseFallbackNotifyEndpoint ||
         ""
     );
     if (explicit) return explicit;
+    var resolvedConfig = resolvePocketBaseConfig(Object.assign({}, options, { settings: settings }));
     var orderEndpoint = cleanBaseUrl(
+        resolvedConfig.orderEndpoint ||
         settings.pocketBaseOrderEndpoint ||
         settings.pocketbaseOrderEndpoint ||
         settings.pocketBaseSecureOrderEndpoint ||
@@ -1449,8 +1453,11 @@ function summarizeFallbackReason(reason) {
 function notifyFirebaseFallbackOnce(orderId, orderData, options, reason, firebaseResult) {
     options = options || {};
     var settings = options.settings || {};
-    var endpoint = deriveTelegramNotifyEndpoint(settings);
-    if (!endpoint || typeof fetch !== "function") return Promise.resolve({ ok: false, skipped: true, reason: "missing_notify_endpoint" });
+    var endpoint = deriveTelegramNotifyEndpoint(settings, options);
+    if (!endpoint || typeof fetch !== "function") {
+        console.warn("Firebase fallback Telegram notify skipped: missing notify endpoint");
+        return Promise.resolve({ ok: false, skipped: true, reason: "missing_notify_endpoint" });
+    }
     var dateKey = fallbackNotifyDateKey();
     var origin = (typeof window !== "undefined" && window.location && window.location.origin) ? window.location.origin : "unknown-origin";
     var eventKey = origin + ":firebase_fallback:" + dateKey;
@@ -1476,12 +1483,18 @@ function notifyFirebaseFallbackOnce(orderId, orderData, options, reason, firebas
     };
     return requestJson(endpoint, {
         method: "POST",
+        keepalive: true,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body)
     }, Number(options.notifyTimeoutMs || 3500) || 3500).then(function(result) {
         try {
             if (typeof localStorage !== "undefined") localStorage.setItem(storageKey, String(Date.now()));
         } catch(e) {}
+        if (result && result.skipped) {
+            console.info("Firebase fallback Telegram notify skipped:", result.message || result.reason || result.eventKey || "");
+        } else {
+            console.info("Firebase fallback Telegram notify sent:", result && result.eventKey ? result.eventKey : endpoint);
+        }
         return result || { ok: true };
     }).catch(function(err) {
         console.warn("Firebase fallback Telegram notify failed:", err && err.message ? err.message : err);
@@ -1540,8 +1553,9 @@ export function writeOrderWithFirebaseFallback(orderId, orderData, options) {
         return Promise.resolve()
             .then(function() { return writeToFirebase(reason); })
             .then(function(firebaseResult) {
-                notifyFirebaseFallbackOnce(orderId, orderData, options, reason, firebaseResult);
-                return { ok: true, backend: "firebase", fallback: true, pocketBase: reason, firebase: firebaseResult };
+                return notifyFirebaseFallbackOnce(orderId, orderData, options, reason, firebaseResult).then(function(notifyResult) {
+                    return { ok: true, backend: "firebase", fallback: true, pocketBase: reason, firebase: firebaseResult, telegramNotify: notifyResult };
+                });
             });
     };
     return writeOrderToPocketBase(orderId, orderData, options)
