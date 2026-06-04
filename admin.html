@@ -383,6 +383,8 @@
                     pbOrdersReadInFlight: false,
                     pbOrdersEverConnected: false,
                     pbOrdersFailureCount: 0,
+                    pbOrdersSuccessStreak: 0,
+                    ordersFallbackHoldUntil: 0,
                     useIntegrationView: false,
                     orderSearch: '',
                     toastMsg: '', toastTimer: null,
@@ -2307,6 +2309,8 @@
                     this.pbOrdersPollTimer = null;
                     this.pbOrdersReadInFlight = false;
                     this.pbOrdersFailureCount = 0;
+                    this.pbOrdersSuccessStreak = 0;
+                    this.ordersFallbackHoldUntil = 0;
                 },
                 clearOrderBucketListeners() {
                     (this.orderBucketUnsubs || []).forEach(fn => { try { fn && fn(); } catch(_) {} });
@@ -2325,7 +2329,7 @@
                         dateKeys: this.buildWatchDateKeys(),
                         perPage: 500,
                         maxPages: 4,
-                        timeoutMs: 1800
+                        timeoutMs: 4500
                     }).then((result) => {
                         if (!result || !result.ok) {
                             if (result && result.skipped && (result.reason === 'missing_pocketbase_url' || result.reason === 'mixed_content_http_pocketbase_url')) {
@@ -2341,6 +2345,8 @@
                         this.ordersReadBackend = 'pocketbase';
                         this.pbOrdersEverConnected = true;
                         this.pbOrdersFailureCount = 0;
+                        this.pbOrdersSuccessStreak = (this.pbOrdersSuccessStreak || 0) + 1;
+                        this.ordersFallbackHoldUntil = 0;
                         if (carry.length) this.backfillOrdersToPocketBaseBestEffort(carry, 'admin_firebase_fallback');
                         const rows = (Array.isArray(result.orders) ? result.orders : []).concat(carry);
                         this.integrationOrdersCache = this.normalizeIncomingOrders(rows);
@@ -2355,6 +2361,8 @@
                 switchToFirebaseOrdersFallback(reason) {
                     if (this.ordersReadBackend === 'firebase' && this.integrationOrdersUnsub) return;
                     console.warn('PocketBase orders read failed; using Firebase fallback:', reason && reason.message ? reason.message : reason);
+                    this.pbOrdersSuccessStreak = 0;
+                    this.ordersFallbackHoldUntil = Date.now() + 30000;
                     this.ordersReadBackend = 'firebase';
                     this.resetOrderBucketListeners();
                     this.listenIntegratedOrdersFallback();
@@ -2362,8 +2370,12 @@
                 startOrdersPrimaryRead() {
                     this.resetPocketBaseOrdersPoll();
                     const run = () => {
+                        if (this.ordersReadBackend === 'firebase' && this.ordersFallbackHoldUntil && Date.now() < this.ordersFallbackHoldUntil) {
+                            return;
+                        }
                         this.readPocketBaseOrdersPrimary().catch((err) => {
                             this.pbOrdersFailureCount = (this.pbOrdersFailureCount || 0) + 1;
+                            this.pbOrdersSuccessStreak = 0;
                             if (this.pbOrdersEverConnected && this.pbOrdersFailureCount < 3) {
                                 console.warn('PocketBase orders read retrying; keeping PB primary:', err && err.message ? err.message : err);
                                 return;
