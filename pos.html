@@ -795,7 +795,7 @@
                 posOrderType:'takeout',posTableLabel:'',posTables:[],cartDragIdx:null,
                 posPickupDate:"",posPickupTime:"",
                 orderMode:"pos",editingOrder:null,
-                onlineOrders:[],ordersLoading:false,assigningNos:{},orderBuckets:{},orderBucketUnsubs:[],integrationOrdersUnsub:null,integrationOrdersCache:[],phoneOrdersUnsub:null,phoneOrdersCache:[],useIntegrationView:false,ordersReadBackend:'checking',settingsReadBackend:'checking',menuReadBackend:'checking',lastWriteBackend:'',lastWriteAt:0,menuEditOverrideUntil:0,menuSettingsPollTimer:null,pbOrdersPollTimer:null,pbOrdersReadInFlight:false,pbOrdersEverConnected:false,pbOrdersFailureCount:0,remoteStatusOverrides:{},remoteStatusOverridesUnsub:null,orderHydrateInFlight:{},orderHydrateDone:{},
+                onlineOrders:[],ordersLoading:false,assigningNos:{},orderBuckets:{},orderBucketUnsubs:[],integrationOrdersUnsub:null,integrationOrdersCache:[],phoneOrdersUnsub:null,phoneOrdersCache:[],useIntegrationView:false,ordersReadBackend:'checking',settingsReadBackend:'checking',menuReadBackend:'checking',lastWriteBackend:'',lastWriteAt:0,menuEditOverrideUntil:0,menuSettingsPollTimer:null,pbOrdersPollTimer:null,pbOrdersReadInFlight:false,pbOrdersEverConnected:false,pbOrdersFailureCount:0,pbOrdersSuccessStreak:0,ordersFallbackHoldUntil:0,remoteStatusOverrides:{},remoteStatusOverridesUnsub:null,orderHydrateInFlight:{},orderHydrateDone:{},
                 orderSearch:"",
                 activeItem:null,tempQty:1,tempNote:"",tempDrinkNote:"",tempSels:[],tempOG:{},tempPosExtras:[],tempComboSize:{},tempDrinkAddons:[],
                 toastMsg:"",toastTimer:null,lastOrderId:null,
@@ -828,17 +828,17 @@
                 catch(e){console.warn('activeOrderCount failed:',e&&e.message?e.message:e);return 0;}
             },
             backendStatusShortLabel:function(){
-                if(this.ordersReadBackend==='firebase'||this.lastWriteBackend==='firebase'||this.menuReadBackend==='firebase'||this.settingsReadBackend==='firebase')return 'Firebase';
+                if(this.ordersReadBackend==='firebase'||this.menuReadBackend==='firebase'||this.settingsReadBackend==='firebase')return 'Firebase';
                 if(this.menuReadBackend==='pocketbase_cache'||this.settingsReadBackend==='pocketbase_cache')return '快取';
                 return 'PB';
             },
             backendStatusPillClass:function(){
-                if(this.ordersReadBackend==='firebase'||this.lastWriteBackend==='firebase'||this.menuReadBackend==='firebase'||this.settingsReadBackend==='firebase'||this.menuReadBackend==='pocketbase_cache'||this.settingsReadBackend==='pocketbase_cache')return 'bg-amber-100 text-amber-900 border-amber-200';
+                if(this.ordersReadBackend==='firebase'||this.menuReadBackend==='firebase'||this.settingsReadBackend==='firebase'||this.menuReadBackend==='pocketbase_cache'||this.settingsReadBackend==='pocketbase_cache')return 'bg-amber-100 text-amber-900 border-amber-200';
                 if(this.ordersReadBackend==='checking'||this.menuReadBackend==='checking'||this.settingsReadBackend==='checking')return 'bg-sky-100 text-sky-900 border-sky-200';
                 return 'bg-emerald-100 text-emerald-900 border-emerald-200';
             },
             backendStatusDotClass:function(){
-                if(this.ordersReadBackend==='firebase'||this.lastWriteBackend==='firebase'||this.menuReadBackend==='firebase'||this.settingsReadBackend==='firebase'||this.menuReadBackend==='pocketbase_cache'||this.settingsReadBackend==='pocketbase_cache')return 'bg-amber-500';
+                if(this.ordersReadBackend==='firebase'||this.menuReadBackend==='firebase'||this.settingsReadBackend==='firebase'||this.menuReadBackend==='pocketbase_cache'||this.settingsReadBackend==='pocketbase_cache')return 'bg-amber-500';
                 if(this.ordersReadBackend==='checking'||this.menuReadBackend==='checking'||this.settingsReadBackend==='checking')return 'bg-sky-500';
                 return 'bg-emerald-500';
             },
@@ -1129,6 +1129,8 @@
                 this.pbOrdersPollTimer=null;
                 this.pbOrdersReadInFlight=false;
                 this.pbOrdersFailureCount=0;
+                this.pbOrdersSuccessStreak=0;
+                this.ordersFallbackHoldUntil=0;
             },
             clearOrderBucketListeners:function(){
                 var s=this;
@@ -1140,6 +1142,7 @@
                 var s=this;
                 if(s.pbOrdersReadInFlight)return Promise.resolve(false);
                 s.pbOrdersReadInFlight=true;
+                var wasFirebase=s.ordersReadBackend==='firebase';
                 var carry=s.ordersReadBackend==='firebase'?s.collectFirebaseFallbackOrders():[];
                 var recentFirebaseWrite=s.lastWriteBackend==='firebase'&&s.lastWriteAt&&(Date.now()-s.lastWriteAt<120000);
                 var shouldMergeFirebase=s.ordersReadBackend==='firebase'||recentFirebaseWrite||(s.pbOrdersFailureCount||0)>0;
@@ -1152,7 +1155,7 @@
                     dateKeys:s.buildWatchDateKeys(),
                     perPage:500,
                     maxPages:4,
-                    timeoutMs:1800
+                    timeoutMs:4500
                 });
                 return Promise.all([pocketBaseRead,firebaseSnapshot]).then(function(parts){
                     var result=parts[0];
@@ -1163,20 +1166,27 @@
                         }
                         throw new Error((result&&(result.message||result.reason))||'PocketBase orders unavailable');
                     }
-                    if(s.ordersReadBackend!=='pocketbase'){
-                        s.clearOrderBucketListeners();
-                        s.resetIntegrationOrdersListener();
-                        s.resetPhoneOrdersListener();
-                    }
-                    s.ordersReadBackend='pocketbase';
-                    s.pbOrdersEverConnected=true;
-                    s.pbOrdersFailureCount=0;
                     var pbRows=Array.isArray(result.orders)?result.orders:[];
                     s.syncPocketBaseOrderNosToFirebase(pbRows);
                     firebaseRows=s.fillMissingOrderNosFromKnown(firebaseRows,pbRows.concat(carry).concat(s.onlineOrders||[]));
                     var fallbackRows=carry.concat(firebaseRows);
                     if(fallbackRows.length)s.backfillOrdersToPocketBaseBestEffort(fallbackRows,'pos_firebase_fallback_recovery');
                     var rows=pbRows.concat(fallbackRows);
+                    s.pbOrdersEverConnected=true;
+                    s.pbOrdersFailureCount=0;
+                    s.pbOrdersSuccessStreak=(s.pbOrdersSuccessStreak||0)+1;
+                    if(wasFirebase&&s.pbOrdersSuccessStreak<2){
+                        console.info('PocketBase orders recovered once; waiting for one more stable read before switching back.');
+                        s.ordersLoading=false;
+                        return true;
+                    }
+                    if(s.ordersReadBackend!=='pocketbase'){
+                        s.clearOrderBucketListeners();
+                        s.resetIntegrationOrdersListener();
+                        s.resetPhoneOrdersListener();
+                    }
+                    s.ordersReadBackend='pocketbase';
+                    s.ordersFallbackHoldUntil=0;
                     s.integrationOrdersCache=s.normalizeIncomingOrders(rows).map(function(o){return s.applyStatusOverrideToOrder(o);});
                     s.phoneOrdersCache=[];
                     s.useIntegrationView=true;
@@ -1189,8 +1199,10 @@
             },
             switchToFirebaseOrdersFallback:function(reason){
                 var s=this;
-                if(s.ordersReadBackend==='firebase'&&s.integrationOrdersUnsub)return;
                 console.warn('PocketBase orders read failed; using Firebase fallback:',reason&&reason.message?reason.message:reason);
+                s.pbOrdersSuccessStreak=0;
+                s.ordersFallbackHoldUntil=Date.now()+30000;
+                if(s.ordersReadBackend==='firebase'&&s.integrationOrdersUnsub)return;
                 s.ordersReadBackend='firebase';
                 s.ordersLoading=true;
                 s.resetOrderBucketListeners();
@@ -1201,8 +1213,12 @@
                 s.resetPocketBaseOrdersPoll();
                 s.ordersLoading=true;
                 var run=function(){
+                    if(s.ordersReadBackend==='firebase'&&s.ordersFallbackHoldUntil&&Date.now()<s.ordersFallbackHoldUntil){
+                        return;
+                    }
                     s.readPocketBaseOrdersPrimary().catch(function(err){
                         s.pbOrdersFailureCount=(s.pbOrdersFailureCount||0)+1;
+                        s.pbOrdersSuccessStreak=0;
                         if(s.pbOrdersEverConnected&&s.pbOrdersFailureCount<3){
                             console.warn('PocketBase orders read retrying; keeping PB primary:',err&&err.message?err.message:err);
                             return;
@@ -1288,6 +1304,46 @@
                     if(typeof fallback[j]==='string'&&fallback[j].trim()&&fallback[j].trim()!=='[object Object]')return fallback[j].trim();
                 }
                 return defaultName;
+            },
+            isDefaultOrderCustomerName:function(name){
+                var t=String(name||'').trim();
+                return !t||t==='[object Object]'||t==='\u9867\u5ba2'||t==='\u96fb\u8a71\u9867\u5ba2';
+            },
+            getMeaningfulOrderCustomerName:function(order){
+                var name=this.getDisplayCustomerName(order);
+                return this.isDefaultOrderCustomerName(name)?'':name;
+            },
+            applyTrustedOrderIdentity:function(target,trusted){
+                if(!target||!trusted||typeof target!=='object'||typeof trusted!=='object')return target;
+                var out=Object.assign({},target);
+                var trustedName=this.getMeaningfulOrderCustomerName(trusted);
+                var currentName=this.getMeaningfulOrderCustomerName(out);
+                if(trustedName&&!currentName){
+                    var customer=(out.customer&&typeof out.customer==='object')?Object.assign({},out.customer):{};
+                    customer.name=trustedName;
+                    out.customer=customer;
+                    out.customerName=trustedName;
+                }
+                var trustedPhone=String((trusted.customer&&trusted.customer.phone)||trusted.phone||'').trim();
+                if(trustedPhone&&!String((out.customer&&out.customer.phone)||out.phone||'').trim()){
+                    out.phone=trustedPhone;
+                    var c=(out.customer&&typeof out.customer==='object')?Object.assign({},out.customer):{};
+                    c.phone=trustedPhone;
+                    out.customer=c;
+                }
+                var trustedTable=this.deriveDineInTableLabel(trusted)||String(trusted.tableLabel||'').trim();
+                if(trustedTable&&trustedTable!=='[object Object]'&&!String(out.tableLabel||'').trim()){
+                    out.tableLabel=trustedTable;
+                    if(/^自助/.test(trustedTable))out.tableType=out.tableType||'kiosk';
+                    else if(/\u684c$/.test(trustedTable))out.tableType=out.tableType||'table';
+                }
+                var outTs=Number(out.timestamp||out.createdAt||0);
+                var trustedTs=Number(trusted.timestamp||trusted.createdAt||0);
+                if(Number.isFinite(trustedTs)&&trustedTs>0&&(!Number.isFinite(outTs)||outTs<=0||trustedTs<outTs)){
+                    out.timestamp=trustedTs;
+                    out.createdAt=trustedTs;
+                }
+                return out;
             },
             getDisplayPickupTime:function(pickupTime){
                 var t=String(pickupTime||'').trim();
@@ -4623,6 +4679,7 @@
                         var tableLabel=s.deriveDineInTableLabel(merged)||s.deriveDineInTableLabel(current)||s.deriveDineInTableLabel(incoming);
                         if(tableLabel)merged.tableLabel=tableLabel;
                     }
+                    merged=s.applyTrustedOrderIdentity(s.applyTrustedOrderIdentity(merged,current),incoming);
                     if(!merged.id)merged.id=preferIncoming?(incoming.id||current.id):(current.id||incoming.id);
                     return merged;
                 };
@@ -4787,6 +4844,7 @@
                         normalized.counterPending=false;
                     }
                     if(previous&&!normalized.tableLabel&&previous.tableLabel)normalized.tableLabel=previous.tableLabel;
+                    if(previous)normalized=s.applyTrustedOrderIdentity(normalized,previous);
                     if(previous&&Array.isArray(previous.items)&&previous.items.length){
                         var bestItems=pickRicherItems(normalized.items,previous.items);
                         if(bestItems===previous.items){
@@ -4920,7 +4978,7 @@
                 if(s.menuEditOverrideUntil&&Date.now()<s.menuEditOverrideUntil){
                     return s.loadMenuFromFirebase();
                 }
-                return listMenuItemsFromPocketBase({settings:s.settings||{},timeoutMs:options.timeoutMs||2200}).then(function(result){
+                return listMenuItemsFromPocketBase({settings:s.settings||{},timeoutMs:options.timeoutMs||2200,forceFresh:!!options.forceFresh,ignoreCooldown:!!options.ignoreCooldown}).then(function(result){
                     if(result&&result.ok){
                         s.applyMenuItemsFromPrimary(result.items||[]);
                         s.menuReadBackend=result.backend||'pocketbase';
@@ -4963,7 +5021,7 @@
             loadSettingsPrimary:function(options){
                 options=options||{};
                 var s=this;
-                return readSettingsFromPocketBase({settings:s.settings||{},timeoutMs:options.timeoutMs||2200}).then(function(result){
+                return readSettingsFromPocketBase({settings:s.settings||{},timeoutMs:options.timeoutMs||2200,forceFresh:!!options.forceFresh,ignoreCooldown:!!options.ignoreCooldown}).then(function(result){
                     if(result&&result.ok&&result.settings&&Object.keys(result.settings).length){
                         s.applySettingsFromPrimary(result.settings);
                         s.settingsReadBackend=result.backend||'pocketbase';
@@ -4978,14 +5036,14 @@
             startMenuSettingsPrimaryRead:function(){
                 var s=this;
                 if(s.menuSettingsPollTimer)return;
-                var run=function(fast){
+                var run=function(fast,forceFresh){
                     Promise.all([
-                        s.loadSettingsPrimary({timeoutMs:fast?900:5500}),
-                        s.loadMenuPrimary({timeoutMs:fast?1100:5500})
+                        s.loadSettingsPrimary({timeoutMs:fast?900:5500,forceFresh:!!forceFresh,ignoreCooldown:!!forceFresh}),
+                        s.loadMenuPrimary({timeoutMs:fast?1100:5500,forceFresh:!!forceFresh,ignoreCooldown:!!forceFresh})
                     ]).catch(function(err){console.warn('menu/settings primary refresh failed:',err&&err.message?err.message:err);});
                 };
-                run(true);
-                setTimeout(function(){run(false);},5000);
+                run(true,false);
+                setTimeout(function(){run(false,true);},5000);
                 s.menuSettingsPollTimer=setInterval(function(){run(false);},60000);
             },
             startAll:function(){

@@ -960,7 +960,7 @@ export function readSettingsFromPocketBase(options) {
             return cached || { ok: false, backend: "pocketbase_cache", skipped: true, reason: "public_settings_cache_miss", settings: {} };
         });
     }
-    var paused = endpointCooldownResult(publicSettingsPausedUntil, { settings: {} });
+    var paused = (options.ignoreCooldown === true || options.forceFresh === true) ? null : endpointCooldownResult(publicSettingsPausedUntil, { settings: {} });
     if (paused) {
         return cachedPublicResult("settings", cacheKey, { cooldown: true, retryAfterMs: paused.retryAfterMs }).then(function(cached) {
             return cached || paused;
@@ -1017,7 +1017,7 @@ export function listMenuItemsFromPocketBase(options) {
             return cached || { ok: false, backend: "pocketbase_cache", skipped: true, reason: "public_menu_cache_miss", items: [] };
         });
     }
-    var paused = endpointCooldownResult(publicMenuPausedUntil, { items: [] });
+    var paused = (options.ignoreCooldown === true || options.forceFresh === true) ? null : endpointCooldownResult(publicMenuPausedUntil, { items: [] });
     if (paused) {
         return cachedPublicResult("menu", cacheKey, { cooldown: true, retryAfterMs: paused.retryAfterMs }).then(function(cached) {
             if (cached && options.activeOnly) cached.items = (cached.items || []).filter(function(item) { return item && item.active !== false; });
