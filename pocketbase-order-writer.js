@@ -1,5 +1,6 @@
 const DEFAULT_COLLECTION = "orders";
 const DEFAULT_POCKETBASE_URL = "https://pb.yuangi168.com";
+const DEFAULT_TELEGRAM_NOTIFY_ENDPOINT = "https://yuangi-secure-order.inovaxt.workers.dev/api/notify/fallback";
 const DEFAULT_TIMEOUT_MS = 2500;
 const RESET_TIMEOUT_MS = 10000;
 const PUBLIC_ENDPOINT_COOLDOWN_MS = 15 * 1000;
@@ -191,6 +192,14 @@ function storageValue(keys) {
 function configuredDefaultBaseUrl() {
     if (typeof window !== "undefined" && window.POCKETBASE_DEFAULT_URL) return cleanBaseUrl(window.POCKETBASE_DEFAULT_URL);
     return cleanBaseUrl(DEFAULT_POCKETBASE_URL);
+}
+
+function configuredDefaultTelegramNotifyEndpoint() {
+    if (typeof window !== "undefined") {
+        var direct = window.TELEGRAM_FALLBACK_NOTIFY_ENDPOINT || window.FIREBASE_FALLBACK_NOTIFY_ENDPOINT;
+        if (direct) return cleanBaseUrl(direct);
+    }
+    return cleanBaseUrl(DEFAULT_TELEGRAM_NOTIFY_ENDPOINT);
 }
 
 function loadTurnstileScript() {
@@ -1428,11 +1437,12 @@ function deriveTelegramNotifyEndpoint(settings, options) {
         settings.secureOrderEndpoint ||
         ""
     );
-    if (!orderEndpoint) return "";
+    if (!orderEndpoint) return configuredDefaultTelegramNotifyEndpoint();
     if (/\/api\/(?:secure\/)?orders$/i.test(orderEndpoint)) {
         return orderEndpoint.replace(/\/api\/(?:secure\/)?orders$/i, "/api/notify/fallback");
     }
-    return orderEndpoint.replace(/\/+$/, "") + "/notify/fallback";
+    if (orderEndpoint) return orderEndpoint.replace(/\/+$/, "") + "/notify/fallback";
+    return configuredDefaultTelegramNotifyEndpoint();
 }
 
 function fallbackNotifyDateKey() {
