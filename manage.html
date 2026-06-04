@@ -1779,6 +1779,8 @@ window._doCountUp = function() {
                 viewingOrder: null,
                 lpConfirmed: {},
                 lpTxnState: {},
+                linePayTxnUnsubs: [],
+                linePayTxnListening: false,
                 reportLoading: false,
                 reportRevenueMode: 'today',
                 reportDashboard: {
@@ -1989,26 +1991,8 @@ window._doCountUp = function() {
                     self.isLoggedIn = true;
                     self.loadMenu();
                     self.loadSettings();
-                    self.loadStats();
-                    self.loadDashboardReports();
                     self.loadTemplates();
                     self.loadStandardDrinks();
-                    // ★ 監聽 linepay_transactions — 改用 child 事件，只下載變更的單筆
-                    (function(){
-                        var txnQ=query(ref(db,'linepay_transactions'), limitToLast(200));
-                        var _confirmed={},_txnState={},_timer=null;
-                        var _flush=function(){self.lpConfirmed=Object.assign({},_confirmed);self.lpTxnState=Object.assign({},_txnState);};
-                        var _update=function(snap){
-                            var oid=snap.key,st=(snap.val()&&snap.val().status)?String(snap.val().status).toLowerCase():'';
-                            if(!st)return;
-                            _txnState[oid]=st;
-                            if(st==='confirmed')_confirmed[oid]=true;else delete _confirmed[oid];
-                            clearTimeout(_timer);_timer=setTimeout(_flush,150);
-                        };
-                        onChildAdded(txnQ,_update);
-                        onChildChanged(txnQ,_update);
-                        onChildRemoved(txnQ,function(snap){delete _txnState[snap.key];delete _confirmed[snap.key];clearTimeout(_timer);_timer=setTimeout(_flush,150);});
-                    })();
                 } else {
                     self.isLoggedIn = false;
                 }
@@ -4661,10 +4645,46 @@ window._doCountUp = function() {
             // ── STATS ──
             setQuickDate: function(mode) {
                 this.statsMode = mode;
+                this.startLinePayTransactionsListener();
                 this.loadStats();
+            },
+            startLinePayTransactionsListener: function() {
+                var self = this;
+                if (self.linePayTxnListening) return;
+                self.linePayTxnListening = true;
+                var txnQ = query(ref(db, 'linepay_transactions'), limitToLast(200));
+                var confirmed = {};
+                var txnState = {};
+                var timer = null;
+                var flush = function() {
+                    self.lpConfirmed = Object.assign({}, confirmed);
+                    self.lpTxnState = Object.assign({}, txnState);
+                };
+                var update = function(snap) {
+                    var val = snap.val() || {};
+                    var oid = snap.key;
+                    var st = val && val.status ? String(val.status).toLowerCase() : '';
+                    if (!st) return;
+                    txnState[oid] = st;
+                    if (st === 'confirmed') confirmed[oid] = true;
+                    else delete confirmed[oid];
+                    clearTimeout(timer);
+                    timer = setTimeout(flush, 150);
+                };
+                self.linePayTxnUnsubs = [
+                    onChildAdded(txnQ, update),
+                    onChildChanged(txnQ, update),
+                    onChildRemoved(txnQ, function(snap) {
+                        delete txnState[snap.key];
+                        delete confirmed[snap.key];
+                        clearTimeout(timer);
+                        timer = setTimeout(flush, 150);
+                    })
+                ];
             },
             activateStatsView: function() {
                 var self = this;
+                self.startLinePayTransactionsListener();
                 this.$nextTick(function() {
                     Promise.all([
                         self.loadStats(),
@@ -4688,6 +4708,7 @@ window._doCountUp = function() {
             },
             refreshStats: function() {
                 var self = this;
+                this.startLinePayTransactionsListener();
                 this.allOrdersCache = null;
                 Promise.all([
                     this.loadStats(),
@@ -5645,27 +5666,15 @@ window._doCountUp = function() {
                         dateKeys: datesToFetch,
                         perPage: 500,
                         maxPages: 12,
-                        timeoutMs: 2200
+                        timeoutMs: 8000
                     }).then(function(result) {
                         if (!result || !result.ok) throw new Error((result && result.message) || 'PocketBase stats unavailable');
-                        return Promise.all([
-                            get(ref(db, 'integration_sync/display_status_overrides'))
-                                .then(function(snap) { return snap.exists() ? (snap.val() || {}) : {}; })
-                                .catch(function() { return {}; }),
-                            readFirebaseBucketOrdersForStats()
-                        ])
-                            .catch(function() { return {}; })
-                            .then(function(parts) {
-                                var overrides = parts[0] || {};
-                                var firebaseRows = Array.isArray(parts[1]) ? parts[1] : [];
-                                self.remoteStatusOverrides = overrides;
-                                if (firebaseRows.length) self.backfillStatsOrdersToPocketBase(firebaseRows);
-                                self.allOrdersCache = (Array.isArray(result.orders) ? result.orders : []).concat(firebaseRows).map(function(o) {
-                                    return self.applyStatusOverrideToOrder(self.normalizeStatsOrder(o));
-                                });
-                                self.doFilter();
-                                return self.statsOrders;
-                            });
+                        self.remoteStatusOverrides = {};
+                        self.allOrdersCache = (Array.isArray(result.orders) ? result.orders : []).map(function(o) {
+                            return self.applyStatusOverrideToOrder(self.normalizeStatsOrder(o));
+                        });
+                        self.doFilter();
+                        return self.statsOrders;
                     }).catch(function(e) {
                         console.warn('PocketBase stats read failed; using Firebase fallback:', e && e.message ? e.message : e);
                         self._forceFirebaseStatsOnce = true;
