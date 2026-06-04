@@ -5509,6 +5509,29 @@ window._doCountUp = function() {
                         var family = (src === 'phone_ai' || src === 'pos_local' || label.indexOf('電話') !== -1 || label.indexOf('phone') !== -1)
                             ? 'phone_ai'
                             : ((src === 'pos') ? 'pos' : ((src === 'qrcode' || src === 'qr_takeout' || src === 'dinein' || src === 'line' || src === 'web_liff') ? src : 'web'));
+                        var stableOrderId = String((order && (order.sourceOrderId || order.orderId || order.id)) || '').trim();
+                        if (stableOrderId && stableOrderId.charAt(0) === '-') {
+                            var stableKey = 'order:' + stableOrderId;
+                            var stableScore = function(row) {
+                                var customerName = String((row && row.customer) || '').trim();
+                                var customerPhone = String((row && row.phone) || ((row && row.customer && row.customer.phone) || '')).replace(/\D/g, '');
+                                return score(row)
+                                    + (customerName && customerName !== '顧客' ? 10 : 0)
+                                    + (customerPhone ? 10 : 0)
+                                    + (Number(row && row.timestamp) ? 4 : 0);
+                            };
+                            if (!bySig[stableKey]) {
+                                bySig[stableKey] = order;
+                            } else {
+                                var oldStable = bySig[stableKey];
+                                var useIncoming = stableScore(order) >= stableScore(oldStable);
+                                var mergedStable = useIncoming ? Object.assign({}, oldStable, order) : Object.assign({}, order, oldStable);
+                                var bestStableItems = useIncoming ? order.items : oldStable.items;
+                                if (Array.isArray(bestStableItems)) mergedStable.items = bestStableItems.map(function(item) { return Object.assign({}, item); });
+                                bySig[stableKey] = self.normalizeStatsOrder(mergedStable);
+                            }
+                            return;
+                        }
                         if (family === 'phone_ai') {
                             if (sourcePath) {
                                 bySig['path:' + sourcePath] = bySig['path:' + sourcePath] ? self.normalizeStatsOrder(Object.assign({}, bySig['path:' + sourcePath], order)) : order;
@@ -5584,7 +5607,8 @@ window._doCountUp = function() {
                     pocketBaseOrdersCollection: (self.settings && self.settings.pocketBaseOrdersCollection) || 'orders',
                     sourcePage: 'manage_firebase_fallback',
                     limit: 50,
-                    timeoutMs: 1200
+                    lookupTimeoutMs: 4500,
+                    timeoutMs: 2500
                 }).catch(function() { return { ok: false }; });
             },
             loadStats: function() {

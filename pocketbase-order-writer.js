@@ -520,6 +520,72 @@ function sortOrderRecords(records) {
     });
 }
 
+function orderRecordIdentity(record) {
+    record = record || {};
+    return text(record.order_id || record.orderId || record.id);
+}
+
+function orderRecordQuality(record) {
+    record = record || {};
+    var customer = jsonObject(record.customer);
+    var items = jsonArray(record.items);
+    var score = 0;
+    if (numericOrUndefined(customer.timestamp)) score += 1000;
+    if (items.length) score += items.length * 20;
+    if (numericOrUndefined(record.total)) score += 10;
+    if (numericOrUndefined(record.order_no || record.orderNo)) score += 8;
+    if (text(record.status)) score += 4;
+    if (text(customer.name || customer.tableLabel)) score += 3;
+    if (text(customer.phone)) score += 3;
+    if (text(record.pickup_time || record.pickupTime)) score += 2;
+    var created = Date.parse(text(record.created));
+    if (Number.isFinite(created)) score += 1;
+    return score;
+}
+
+function mergeOrderRecord(primary, secondary) {
+    primary = primary || {};
+    secondary = secondary || {};
+    var merged = Object.assign({}, secondary, primary);
+    var pc = jsonObject(primary.customer);
+    var sc = jsonObject(secondary.customer);
+    var customer = Object.assign({}, sc, pc);
+    if (!numericOrUndefined(customer.timestamp) && numericOrUndefined(sc.timestamp)) customer.timestamp = sc.timestamp;
+    if (!text(customer.name) && text(sc.name)) customer.name = sc.name;
+    if (!text(customer.phone) && text(sc.phone)) customer.phone = sc.phone;
+    merged.customer = customer;
+    if ((!Array.isArray(jsonArray(merged.items)) || !jsonArray(merged.items).length) && jsonArray(secondary.items).length) {
+        merged.items = jsonArray(secondary.items);
+    }
+    return merged;
+}
+
+function dedupeOrderRecords(records) {
+    var out = [];
+    var byKey = {};
+    (Array.isArray(records) ? records : []).forEach(function(record) {
+        var key = orderRecordIdentity(record);
+        if (!key) {
+            out.push(record);
+            return;
+        }
+        if (byKey[key] === undefined) {
+            byKey[key] = out.length;
+            out.push(record);
+            return;
+        }
+        var idx = byKey[key];
+        var existing = out[idx];
+        var incoming = record;
+        var existingQuality = orderRecordQuality(existing);
+        var incomingQuality = orderRecordQuality(incoming);
+        var primary = incomingQuality > existingQuality ? incoming : existing;
+        var secondary = primary === incoming ? existing : incoming;
+        out[idx] = mergeOrderRecord(primary, secondary);
+    });
+    return out;
+}
+
 export function listOrdersFromPocketBase(options) {
     options = options || {};
     var config = resolvePocketBaseConfig(options);
@@ -558,12 +624,12 @@ export function listOrdersFromPocketBase(options) {
     function fallbackAfterBadQuery(err) {
         if (!err || Number(err.status) !== 400) throw err;
         return fetchRecords("", "").then(function(rows) {
-            return sortOrderRecords(filterRecordsByDateKeys(rows, options.dateKeys));
+            return dedupeOrderRecords(sortOrderRecords(filterRecordsByDateKeys(rows, options.dateKeys)));
         });
     }
 
     return fetchRecords(filter, "").catch(fallbackAfterBadQuery).then(function(rows) {
-        rows = sortOrderRecords(filterRecordsByDateKeys(rows, options.dateKeys));
+        rows = dedupeOrderRecords(sortOrderRecords(filterRecordsByDateKeys(rows, options.dateKeys)));
         return {
             ok: true,
             backend: "pocketbase",
@@ -1247,28 +1313,46 @@ export function backfillOrdersToPocketBase(orders, options) {
     }).slice(0, limit);
     var success = 0;
     var failed = 0;
+    var skipped = 0;
+    var config = resolvePocketBaseConfig(options);
+    var headers = {};
+    if (config.token) headers.Authorization = "Bearer " + config.token;
 
     return candidates.reduce(function(promise, order) {
         return promise.then(function() {
             var key = backfillThrottleKey(order);
-            return writeOrderToPocketBase(text(order.id || order.sourceOrderId || order.orderId), order, Object.assign({}, options, {
-                sourcePage: text(order.source || options.sourcePage || "firebase_fallback"),
-                timeoutMs: Number(options.timeoutMs || 1200) || 1200
-            })).then(function(result) {
-                if (result && result.ok) {
+            var orderId = text(order.id || order.sourceOrderId || order.orderId);
+            var lookupTimeoutMs = Number(options.lookupTimeoutMs || options.timeoutMs || 3500) || 3500;
+            return findExistingRecordIdChecked(config, orderId, headers, lookupTimeoutMs).then(function(existing) {
+                if (existing && existing.ok && existing.id) {
                     success++;
                     markBackfilled(key);
-                    return;
+                    return { ok: true, action: "exists", id: existing.id };
                 }
-                failed++;
-                backfillPausedUntil = Date.now() + 10000;
-            }).catch(function() {
-                failed++;
-                backfillPausedUntil = Date.now() + 10000;
+                if (!existing || existing.ok !== true) {
+                    skipped++;
+                    backfillPausedUntil = Date.now() + 10000;
+                    return { ok: false, skipped: true, reason: "pocketbase_backfill_lookup_failed", lookup: existing };
+                }
+                return writeOrderToPocketBase(orderId, order, Object.assign({}, options, {
+                    sourcePage: text(order.source || options.sourcePage || "firebase_fallback"),
+                    timeoutMs: Number(options.timeoutMs || 1200) || 1200
+                })).then(function(result) {
+                    if (result && result.ok) {
+                        success++;
+                        markBackfilled(key);
+                        return;
+                    }
+                    failed++;
+                    backfillPausedUntil = Date.now() + 10000;
+                }).catch(function() {
+                    failed++;
+                    backfillPausedUntil = Date.now() + 10000;
+                });
             });
         });
     }, Promise.resolve()).then(function() {
-        return { ok: failed === 0, attempted: candidates.length, success: success, failed: failed };
+        return { ok: failed === 0, attempted: candidates.length, success: success, failed: failed, skipped: skipped };
     });
 }
 
@@ -1392,6 +1476,21 @@ function findExistingRecordId(config, orderId, headers, timeoutMs) {
             return data && data.items && data.items[0] && data.items[0].id ? data.items[0].id : "";
         })
         .catch(function() { return ""; });
+}
+
+function findExistingRecordIdChecked(config, orderId, headers, timeoutMs) {
+    if (!config || !config.baseUrl || !orderId) return Promise.resolve({ ok: true, id: "" });
+    var filter = 'order_id="' + encodeFilterValue(orderId) + '"';
+    var url = config.baseUrl + "/api/collections/" + encodeURIComponent(config.collection) + "/records?perPage=1&filter=" + encodeURIComponent(filter);
+    var lookupTimeout = Math.max(2000, Math.min(Number(timeoutMs || 3500) || 3500, 6000));
+    return requestJson(url, { method: "GET", headers: headers || {} }, lookupTimeout)
+        .then(function(data) {
+            var id = data && data.items && data.items[0] && data.items[0].id ? text(data.items[0].id) : "";
+            return { ok: true, id: id };
+        })
+        .catch(function(error) {
+            return { ok: false, id: "", error: error, message: error && error.message ? error.message : String(error) };
+        });
 }
 
 function writeOrderToSecureEndpoint(config, orderId, orderData, options, record, timeoutMs) {
