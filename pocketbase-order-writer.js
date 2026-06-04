@@ -3,7 +3,7 @@ const DEFAULT_POCKETBASE_URL = "https://pb.yuangi168.com";
 const DEFAULT_TIMEOUT_MS = 2500;
 const RESET_TIMEOUT_MS = 10000;
 const PUBLIC_ENDPOINT_COOLDOWN_MS = 15 * 1000;
-const PUBLIC_CACHE_DB_NAME = "pb_public_snapshots_v2";
+const PUBLIC_CACHE_DB_NAME = "pb_public_snapshots_v3";
 const PUBLIC_CACHE_STORE = "snapshots";
 const PUBLIC_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 let backfillPausedUntil = 0;
@@ -592,6 +592,28 @@ function decodeJsonLike(value) {
     return current;
 }
 
+function unwrapValueWrapper(value) {
+    var current = decodeJsonLike(value);
+    if (Array.isArray(current)) return current.map(unwrapValueWrapper);
+    if (current && typeof current === "object") {
+        var keys = Object.keys(current);
+        if (keys.length === 1 && (keys[0] === "v" || keys[0] === "val")) {
+            return unwrapValueWrapper(current[keys[0]]);
+        }
+        var out = {};
+        keys.forEach(function(key) {
+            out[key] = unwrapValueWrapper(current[key]);
+        });
+        return out;
+    }
+    return current;
+}
+
+function normalizeSettingsObject(value) {
+    var decoded = unwrapValueWrapper(value);
+    return decoded && typeof decoded === "object" && !Array.isArray(decoded) ? decoded : {};
+}
+
 function collectionOption(options, keys, fallback) {
     options = options || {};
     var settings = options.settings || {};
@@ -650,21 +672,21 @@ function settingsFromRecords(records) {
             if (value === undefined) value = row.data;
             if (value === undefined) value = row.json;
             if (value === undefined) value = row.settings;
-            var decoded = decodeJsonLike(value);
+            var decoded = unwrapValueWrapper(value);
             if ((key === "settings" || key === "config") && decoded && typeof decoded === "object" && !Array.isArray(decoded)) {
-                Object.assign(keyed, decoded);
+                Object.assign(keyed, normalizeSettingsObject(decoded));
             } else {
                 keyed[key] = decoded;
             }
             return;
         }
         var payload = row.settings || row.data || row.value || row.json || {};
-        payload = decodeJsonLike(payload);
+        payload = normalizeSettingsObject(payload);
         if (!payload || typeof payload !== "object" || Array.isArray(payload)) payload = {};
         if (!firstObject) firstObject = Object.assign({}, row, payload);
     });
-    if (sawKeyed) return Object.assign({}, firstObject || {}, keyed);
-    return firstObject || {};
+    if (sawKeyed) return normalizeSettingsObject(Object.assign({}, firstObject || {}, keyed));
+    return normalizeSettingsObject(firstObject || {});
 }
 
 function finiteNumber(value) {
@@ -891,6 +913,8 @@ function writePublicCache(key, payload) {
 function cachedPublicResult(kind, cacheKey, extra) {
     return readPublicCache(cacheKey, PUBLIC_CACHE_MAX_AGE_MS).then(function(cached) {
         if (!cached || cached.ok !== true) return null;
+        if (kind === "settings") cached.settings = normalizeSettingsObject(cached.settings || {});
+        if (kind === "menu" && Array.isArray(cached.items)) cached.items = sortMenuItems(dedupeMenuItems(cached.items.map(decodeJsonLike)));
         return Object.assign({}, cached, {
             ok: true,
             backend: "pocketbase_cache",
@@ -900,7 +924,7 @@ function cachedPublicResult(kind, cacheKey, extra) {
 }
 
 function parsePublicSettingsResponse(data) {
-    var settings = data && data.settings && typeof data.settings === "object" ? decodeJsonLike(data.settings) : {};
+    var settings = data && data.settings && typeof data.settings === "object" ? normalizeSettingsObject(data.settings) : {};
     return { ok: true, backend: "pocketbase", settings: settings, data: data };
 }
 
@@ -963,7 +987,7 @@ export function readSettingsFromPocketBase(options) {
                         result.settings = {};
                         return result;
                     }
-                    return { ok: true, backend: "pocketbase", settings: settingsFromRecords(result.records), records: result.records };
+                    return { ok: true, backend: "pocketbase", settings: normalizeSettingsObject(settingsFromRecords(result.records)), records: result.records };
                 });
             }
             publicSettingsPausedUntil = Date.now() + PUBLIC_ENDPOINT_COOLDOWN_MS;
@@ -1057,7 +1081,7 @@ export function rememberPublicSettings(options, settings) {
     var parsed = {
         ok: true,
         backend: "pocketbase_cache",
-        settings: Object.assign({}, decodeJsonLike(options.settings || {}), decodeJsonLike(settings || {}))
+        settings: normalizeSettingsObject(Object.assign({}, decodeJsonLike(options.settings || {}), decodeJsonLike(settings || {})))
     };
     return writePublicCache(cacheKey, parsed);
 }
