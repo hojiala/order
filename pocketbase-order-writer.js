@@ -1,5 +1,6 @@
 const DEFAULT_COLLECTION = "orders";
 const DEFAULT_POCKETBASE_URL = "https://pb.yuangi168.com";
+const DEFAULT_POCKETBASE_ORDER_ENDPOINT = "https://yuangi-secure-order.inovaxt.workers.dev/api/orders";
 const DEFAULT_TELEGRAM_NOTIFY_ENDPOINT = "https://yuangi-secure-order.inovaxt.workers.dev/api/notify/fallback";
 const DEFAULT_TIMEOUT_MS = 2500;
 const RESET_TIMEOUT_MS = 10000;
@@ -192,6 +193,14 @@ function storageValue(keys) {
 function configuredDefaultBaseUrl() {
     if (typeof window !== "undefined" && window.POCKETBASE_DEFAULT_URL) return cleanBaseUrl(window.POCKETBASE_DEFAULT_URL);
     return cleanBaseUrl(DEFAULT_POCKETBASE_URL);
+}
+
+function configuredDefaultOrderEndpoint() {
+    if (typeof window !== "undefined") {
+        var direct = window.POCKETBASE_ORDER_ENDPOINT || window.SECURE_ORDER_ENDPOINT || window.POCKETBASE_DEFAULT_ORDER_ENDPOINT;
+        if (direct) return cleanBaseUrl(direct);
+    }
+    return cleanBaseUrl(DEFAULT_POCKETBASE_ORDER_ENDPOINT);
 }
 
 function configuredDefaultTelegramNotifyEndpoint() {
@@ -387,6 +396,7 @@ export function resolvePocketBaseConfig(options) {
         nested.secureOrderEndpoint ||
         (typeof window !== "undefined" && (window.POCKETBASE_ORDER_ENDPOINT || window.SECURE_ORDER_ENDPOINT)) ||
         storageValue(["pocketbase_order_endpoint", "POCKETBASE_ORDER_ENDPOINT"]) ||
+        configuredDefaultOrderEndpoint() ||
         ""
     );
     var manageEndpoint = cleanBaseUrl(

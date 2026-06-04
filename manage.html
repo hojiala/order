@@ -5596,6 +5596,22 @@ window._doCountUp = function() {
                 }
                 var datesToFetch = self.buildDateListForStatsMode(self.statsMode);
                 self.reportRevenueMode = self.getReportRevenueModeForStats(datesToFetch);
+                var readFirebaseBucketOrdersForStats = function() {
+                    if (!datesToFetch.length) return Promise.resolve([]);
+                    var isMirrorKey = function(k) { return typeof k === 'string' && k.indexOf('online_') === 0; };
+                    return Promise.all(datesToFetch.map(function(dateKey) {
+                        return get(ref(db, 'orders/' + dateKey)).then(function(snap) {
+                            var bucket = snap.exists() ? (snap.val() || {}) : {};
+                            return Object.keys(bucket).filter(function(id) { return !isMirrorKey(id); }).map(function(id) {
+                                var row = bucket[id];
+                                if (!row || typeof row !== 'object' || !row.status) return null;
+                                return Object.assign({ id: id, orderDateKey: dateKey, pickupDate: row.pickupDate || dateKey, _readBackend: 'firebase' }, row);
+                            }).filter(Boolean);
+                        }).catch(function() { return []; });
+                    })).then(function(groups) {
+                        return groups.reduce(function(out, list) { return out.concat(Array.isArray(list) ? list : []); }, []);
+                    });
+                };
                 if (!self._forceFirebaseStatsOnce) {
                     return listOrdersFromPocketBase({
                         settings: self.settings || {},
@@ -5608,12 +5624,19 @@ window._doCountUp = function() {
                         timeoutMs: 2200
                     }).then(function(result) {
                         if (!result || !result.ok) throw new Error((result && result.message) || 'PocketBase stats unavailable');
-                        return get(ref(db, 'integration_sync/display_status_overrides'))
-                            .then(function(snap) { return snap.exists() ? (snap.val() || {}) : {}; })
+                        return Promise.all([
+                            get(ref(db, 'integration_sync/display_status_overrides'))
+                                .then(function(snap) { return snap.exists() ? (snap.val() || {}) : {}; })
+                                .catch(function() { return {}; }),
+                            readFirebaseBucketOrdersForStats()
+                        ])
                             .catch(function() { return {}; })
-                            .then(function(overrides) {
-                                self.remoteStatusOverrides = overrides || {};
-                                self.allOrdersCache = (Array.isArray(result.orders) ? result.orders : []).map(function(o) {
+                            .then(function(parts) {
+                                var overrides = parts[0] || {};
+                                var firebaseRows = Array.isArray(parts[1]) ? parts[1] : [];
+                                self.remoteStatusOverrides = overrides;
+                                if (firebaseRows.length) self.backfillStatsOrdersToPocketBase(firebaseRows);
+                                self.allOrdersCache = (Array.isArray(result.orders) ? result.orders : []).concat(firebaseRows).map(function(o) {
                                     return self.applyStatusOverrideToOrder(self.normalizeStatsOrder(o));
                                 });
                                 self.doFilter();

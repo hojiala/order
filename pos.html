@@ -1005,13 +1005,18 @@
             },
             collectFirebaseFallbackOrders:function(){
                 var s=this,out=[];
-                (Array.isArray(s.integrationOrdersCache)?s.integrationOrdersCache:[]).forEach(function(o){if(o)out.push(o);});
-                (Array.isArray(s.phoneOrdersCache)?s.phoneOrdersCache:[]).forEach(function(o){if(o)out.push(o);});
+                function add(o){
+                    if(!o||typeof o!=='object')return;
+                    if(o._readBackend==='pocketbase'||o._pocketBaseRecordId)return;
+                    out.push(Object.assign({_readBackend:'firebase'},o));
+                }
+                (Array.isArray(s.integrationOrdersCache)?s.integrationOrdersCache:[]).forEach(add);
+                (Array.isArray(s.phoneOrdersCache)?s.phoneOrdersCache:[]).forEach(add);
                 Object.keys(s.orderBuckets||{}).forEach(function(dateKey){
                     var bucket=s.orderBuckets[dateKey]||{};
                     Object.keys(bucket).forEach(function(id){
                         var o=bucket[id];
-                        if(o&&typeof o==='object')out.push(Object.assign({id:id,orderDateKey:dateKey,pickupDate:o.pickupDate||dateKey},o));
+                        if(o&&typeof o==='object')add(Object.assign({id:id,orderDateKey:dateKey,pickupDate:o.pickupDate||dateKey},o));
                     });
                 });
                 return out;
@@ -1026,7 +1031,7 @@
                         return Object.keys(bucket).filter(function(id){return !isMirrorKey(id);}).map(function(id){
                             var row=bucket[id];
                             if(!row||typeof row!=='object')return null;
-                            return Object.assign({id:id,orderDateKey:dateKey,pickupDate:row.pickupDate||dateKey,sourceRecordPath:'orders/'+dateKey+'/'+id},row);
+                            return Object.assign({_readBackend:'firebase',id:id,orderDateKey:dateKey,pickupDate:row.pickupDate||dateKey,sourceRecordPath:'orders/'+dateKey+'/'+id},row);
                         }).filter(Boolean);
                     }).catch(function(err){
                         console.warn('Firebase fallback bucket snapshot failed ['+dateKey+']:',err&&err.message?err.message:err);
@@ -1037,7 +1042,7 @@
                     var view=snap.exists()?(snap.val()||{}):{};
                     var raw=Array.isArray(view.orders)?view.orders.slice():Object.keys(view).map(function(id){
                         var row=view[id];
-                        return row&&typeof row==='object'?Object.assign({id:id},row):null;
+                        return row&&typeof row==='object'?Object.assign({_readBackend:'firebase',id:id},row):null;
                     }).filter(Boolean);
                     return raw.filter(function(o){
                         return o&&typeof o==='object'&&typeof o.id==='string'&&o.id.indexOf('online_')!==0;
@@ -1053,6 +1058,7 @@
                     }).map(function(id){
                         return Object.assign({
                             id:id,
+                            _readBackend:'firebase',
                             source:'phone_ai',
                             sourceLabel:'\u96fb\u8a71\u9ede\u9910',
                             sourceRecordPath:'phone_ai/orders/'+id
@@ -1142,9 +1148,9 @@
                 if(s.pbOrdersReadInFlight)return Promise.resolve(false);
                 s.pbOrdersReadInFlight=true;
                 var wasFirebase=s.ordersReadBackend==='firebase';
-                var carry=s.ordersReadBackend==='firebase'?s.collectFirebaseFallbackOrders():[];
+                var carry=s.collectFirebaseFallbackOrders();
                 var recentFirebaseWrite=s.lastWriteBackend==='firebase'&&s.lastWriteAt&&(Date.now()-s.lastWriteAt<120000);
-                var shouldMergeFirebase=s.ordersReadBackend==='firebase'||recentFirebaseWrite||(s.pbOrdersFailureCount||0)>0;
+                var shouldMergeFirebase=s.ordersReadBackend==='firebase'||recentFirebaseWrite||(s.pbOrdersFailureCount||0)>0||carry.length>0||(s.ordersFallbackHoldUntil&&Date.now()<s.ordersFallbackHoldUntil);
                 var firebaseSnapshot=shouldMergeFirebase?s.loadFirebaseFallbackOrdersSnapshot():Promise.resolve([]);
                 var pocketBaseRead=listOrdersFromPocketBase({
                     settings:s.settings||{},
