@@ -785,6 +785,8 @@
                 lpStatus:{},
                 lpConfirmAt:{},
                 lpQueueResent:{},
+                linePayTxnUnsubs:[],
+                linePayTxnListening:false,
                 menu:[],menuItems:[],menuLoading:true,filterCat:"",settings:{categories:[],stations:[{name:'湯麵',ip:'192.168.0.6'},{name:'麵包台',ip:'192.168.0.7'},{name:'飲料台',ip:'192.168.0.8'}]},settingsStationsLoaded:false,
                 activeView:"menu",editMode:false,
                 cart:[],custName:"",custPhone:"",isSubmitting:false,
@@ -4865,6 +4867,7 @@
                     if(aNo!==bNo)return bNo-aNo;
                     return (b.timestamp||0)-(a.timestamp||0);
                 });
+                s.maybeStartLinePayTransactionsListener();
                 var keepHydrate={};
                 s.onlineOrders.forEach(function(o){if(o&&o.id)keepHydrate[o.id]=true;});
                 Object.keys(s.orderHydrateDone||{}).forEach(function(k){if(!keepHydrate[k])delete s.orderHydrateDone[k];});
@@ -5048,15 +5051,26 @@
                 setTimeout(function(){run(false,true);},5000);
                 s.menuSettingsPollTimer=setInterval(function(){run(false);},60000);
             },
-            startAll:function(){
+            hasVisibleLinePayOrders:function(){
+                return (this.onlineOrders||[]).some(function(o){
+                    var pm=String(o&&o.paymentMethod||'');
+                    return pm==='linepay'||pm==='linepay_offline'||pm==='linepay_refund';
+                });
+            },
+            stopLinePayTransactionsListener:function(){
                 var s=this;
-                s.startMenuSettingsPrimaryRead();
-                
-                s.ordersLoading=true;
-                s.startOrdersPrimaryRead();
-                s.listenRemoteStatusOverrides();
-                // ★ 監聽 linepay_transactions（限最近100筆）— 改用 child 事件，只下載變更的單筆
-                (function(){
+                (s.linePayTxnUnsubs||[]).forEach(function(fn){try{fn&&fn();}catch(e){}});
+                s.linePayTxnUnsubs=[];
+                s.linePayTxnListening=false;
+            },
+            maybeStartLinePayTransactionsListener:function(){
+                if(this.hasVisibleLinePayOrders())this.startLinePayTransactionsListener();
+                else if(this.linePayTxnListening)this.stopLinePayTransactionsListener();
+            },
+            startLinePayTransactionsListener:function(){
+                var s=this;
+                if(s.linePayTxnListening)return;
+                s.linePayTxnListening=true;
                     var txnQ=query(ref(db,'linepay_transactions'),limitToLast(100));
                     var _confirmed={},_statusMap={},_confirmAt={},_timer=null;
                     var _flush=function(){
@@ -5081,15 +5095,23 @@
                         }
                         clearTimeout(_timer);_timer=setTimeout(_flush,150);
                     };
-                    onChildAdded(txnQ,_update);
-                    onChildChanged(txnQ,_update);
-                    onChildRemoved(txnQ,function(snap){
+                    var u1=onChildAdded(txnQ,_update);
+                    var u2=onChildChanged(txnQ,_update);
+                    var u3=onChildRemoved(txnQ,function(snap){
                         delete _statusMap[snap.key];
-                        delete _confirmed[snap.key];
-                        delete _confirmAt[snap.key];
-                        clearTimeout(_timer);_timer=setTimeout(_flush,150);
-                    });
-                })();
+                            delete _confirmed[snap.key];
+                            delete _confirmAt[snap.key];
+                            clearTimeout(_timer);_timer=setTimeout(_flush,150);
+                        });
+                s.linePayTxnUnsubs=[u1,u2,u3];
+            },
+            startAll:function(){
+                var s=this;
+                s.startMenuSettingsPrimaryRead();
+                
+                s.ordersLoading=true;
+                s.startOrdersPrimaryRead();
+                s.listenRemoteStatusOverrides();
             },
             getLinePayState:function(order){
                 if(!order)return'pending';

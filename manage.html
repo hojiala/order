@@ -1989,10 +1989,13 @@ window._doCountUp = function() {
                 onAuthStateChanged(auth, function(user) {
                 if (user) {
                     self.isLoggedIn = true;
-                    self.loadMenu();
-                    self.loadSettings();
-                    self.loadTemplates();
-                    self.loadStandardDrinks();
+                    self.loadSettings().catch(function(e) {
+                        console.warn('manage settings primary read failed during startup:', e && e.message ? e.message : e);
+                    }).finally(function() {
+                        self.loadMenu();
+                        self.loadTemplates();
+                        self.loadStandardDrinks();
+                    });
                 } else {
                     self.isLoggedIn = false;
                 }
@@ -4213,7 +4216,16 @@ window._doCountUp = function() {
             // ── 標準飲料清單 ──
             loadStandardDrinks: function() {
                 var self = this;
-                get(ref(db, 'settings/standardDrinks')).then(function(snap) {
+                var fromSettings = self.settings && self.settings.standardDrinks;
+                if (Array.isArray(fromSettings) && fromSettings.length) {
+                    self.standardDrinks = fromSettings.slice();
+                    return Promise.resolve();
+                }
+                if (fromSettings && typeof fromSettings === 'object' && Object.keys(fromSettings).length) {
+                    self.standardDrinks = Object.values(fromSettings);
+                    return Promise.resolve();
+                }
+                return get(ref(db, 'settings/standardDrinks')).then(function(snap) {
                     if (snap.exists()) {
                         // Firebase 存為 array
                         var val = snap.val();
@@ -4343,12 +4355,21 @@ window._doCountUp = function() {
             loadMenuAliases: function() {
                 var self = this;
                 self.menuAliasLoading = true;
-                get(ref(db, 'settings/menu_alias'))
+                var applyRows = function(raw) {
+                    var rows = self.normalizeMenuAliasRows(raw || []);
+                    self.menuAliasRows = rows;
+                    self.menuAliasLoaded = true;
+                    self.menuAliasDirty = false;
+                };
+                var fromSettings = self.settings && (self.settings.menu_alias || self.settings.menuAlias);
+                if ((Array.isArray(fromSettings) && fromSettings.length) || (fromSettings && typeof fromSettings === 'object' && Object.keys(fromSettings).length)) {
+                    applyRows(fromSettings);
+                    self.menuAliasLoading = false;
+                    return Promise.resolve();
+                }
+                return get(ref(db, 'settings/menu_alias'))
                     .then(function(snap) {
-                        var rows = self.normalizeMenuAliasRows(snap.exists() ? snap.val() : []);
-                        self.menuAliasRows = rows;
-                        self.menuAliasLoaded = true;
-                        self.menuAliasDirty = false;
+                        applyRows(snap.exists() ? snap.val() : []);
                     })
                     .catch(function(e) {
                         console.warn('load menu_alias failed:', e && e.message ? e.message : e);
@@ -4469,7 +4490,22 @@ window._doCountUp = function() {
             },
             loadTemplates: function() {
                 var self = this;
-                get(ref(db, 'settings/optionTemplates')).then(function(snap) {
+                var fromSettings = self.settings && self.settings.optionTemplates;
+                if ((Array.isArray(fromSettings) && fromSettings.length) || (fromSettings && typeof fromSettings === 'object' && Object.keys(fromSettings).length)) {
+                    var entries = Array.isArray(fromSettings)
+                        ? fromSettings.map(function(row, idx) { row = row || {}; return [row.id || String(idx), row]; })
+                        : Object.entries(fromSettings);
+                    self.optionTemplates = entries.map(function(e) {
+                        return self.normalizeOptionTemplateConfig(Object.assign({ id: e[0] }, e[1]));
+                    }).sort(function(a, b) {
+                        if (a.sortOrder !== undefined && b.sortOrder !== undefined) return a.sortOrder - b.sortOrder;
+                        if (a.sortOrder !== undefined) return -1;
+                        if (b.sortOrder !== undefined) return 1;
+                        return (a.templateName || '').localeCompare(b.templateName || '');
+                    });
+                    return Promise.resolve();
+                }
+                return get(ref(db, 'settings/optionTemplates')).then(function(snap) {
                     if (snap.exists()) {
                         var data = snap.val();
                         self.optionTemplates = Object.entries(data).map(function(e) {
@@ -6164,6 +6200,11 @@ window._doCountUp = function() {
                         telegramFallbackNotifyEndpoint: s.telegramFallbackNotifyEndpoint || s.telegramNotifyEndpoint || prev.telegramFallbackNotifyEndpoint || '',
                         telegramFallbackMessageTemplate: s.telegramFallbackMessageTemplate || prev.telegramFallbackMessageTemplate || self.defaultTelegramFallbackMessage(),
                         announcements: self.normalizeAnnouncementsForSave(s.announcements || []),
+                        standardDrinks: Array.isArray(s.standardDrinks) ? s.standardDrinks : (s.standardDrinks && typeof s.standardDrinks === 'object' ? Object.values(s.standardDrinks) : (prev.standardDrinks || [])),
+                        optionTemplates: (s.optionTemplates && typeof s.optionTemplates === 'object') ? s.optionTemplates : (prev.optionTemplates || {}),
+                        menu_alias: s.menu_alias || s.menuAlias || prev.menu_alias || [],
+                        menu_alias_meta: s.menu_alias_meta || prev.menu_alias_meta || {},
+                        menu_alias_version: s.menu_alias_version || prev.menu_alias_version || 0,
                         hideAllTab: !!s.hideAllTab,
                         posTables: s.posTables || [],
                         cancelLimitMinutes: s.cancelLimitMinutes || 15,
