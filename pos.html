@@ -1093,17 +1093,9 @@
                 return keys.filter(function(k,i,arr){return k&&arr.indexOf(k)===i;});
             },
             syncPocketBaseOrderNosToFirebase:function(rows){
-                var s=this;
-                (Array.isArray(rows)?rows:[]).forEach(function(order){
-                    var no=Number(order&&order.orderNo);
-                    if(!Number.isFinite(no)||no<=0)return;
-                    var path='';
-                    try{path=s.normalizeSourceRecordPath(order,order&&order.id||'');}catch(_){}
-                    if(!path||path.indexOf('orders/')!==0)return;
-                    update(ref(db,path),{orderNo:no,serialNumber:String(no).padStart(3,'0'),counterPending:false}).catch(function(err){
-                        console.warn('Firebase orderNo mirror sync failed:',err&&err.message?err.message:err);
-                    });
-                });
+                // PocketBase now owns order number allocation and Firebase mirroring.
+                // Frontend writes to /orders are blocked by production rules.
+                return;
             },
             fillMissingOrderNosFromKnown:function(rows,knownRows){
                 var s=this;
@@ -1124,11 +1116,6 @@
                     });
                     if(!found)return order;
                     var patched=Object.assign({},order,{orderNo:found,serialNumber:String(found).padStart(3,'0'),counterPending:false});
-                    var path='';
-                    try{path=s.normalizeSourceRecordPath(patched,patched.id||'');}catch(_){}
-                    if(path&&path.indexOf('orders/')===0){
-                        update(ref(db,path),{orderNo:found,serialNumber:String(found).padStart(3,'0'),counterPending:false}).catch(function(){});
-                    }
                     return patched;
                 });
             },
@@ -1533,6 +1520,9 @@
                 try{
                     var sourcePath=s.normalizeSourceRecordPath(order,orderId);
                     if(!sourcePath)return null;
+                    if(sourcePath.indexOf('orders/')===0&&s.ordersReadBackend!=='firebase'){
+                        return null;
+                    }
                     var snap=await get(ref(db,sourcePath));
                     if(!snap.exists())return null;
                     var sourceNorm=s.normalizeIncomingOrder(Object.assign({id:orderId},snap.val()||{}));
