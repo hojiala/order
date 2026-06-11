@@ -1636,7 +1636,17 @@
                     const explicitCharge = String(item && item.comboDrinkChargeText || sibling && sibling.comboDrinkChargeText || '').trim();
                     if (explicitCharge && upgrade <= 0) {
                         const m = explicitCharge.match(/(?:\u88dc\u5dee\u50f9|\u98f2\u6599\u52a0\u8cfc)\s*\$?\s*(\d+)/);
-                        if (m && m[1]) upgrade = Number(m[1]);
+                        if (m && m[1]) {
+                            const explicitAmount = Number(m[1]);
+                            const owners = [item, sibling];
+                            const includedBase = owners.some((owner) => {
+                                const full = Number(owner && owner.comboDrinkFullPrice || 0);
+                                const credit = Number(owner && owner.comboDrinkCredit || 0);
+                                const surcharge = Number(owner && owner.comboDrinkSurcharge || 0);
+                                return Number.isFinite(full) && Number.isFinite(credit) && full > 0 && credit >= full && surcharge <= 0 && explicitAmount === full;
+                            });
+                            if (!includedBase) upgrade = explicitAmount;
+                        }
                     }
                     if (sibling && (!drinkName || !state.size || !state.temp)) {
                         drinkName = drinkName || this.normalizeDisplayDrinkName(sibling.name || sibling['\u54c1\u9805'] || '', state);
@@ -2229,6 +2239,7 @@
                     this.integrationOrdersUnsub = null;
                 },
                 async autoArchiveOldOrders() {
+                    if (this._firebaseArchiveDisabled) return;
                     if (this.pocketBaseUrl && this.ordersReadBackend !== 'firebase') return;
                     try {
                         const today = new Date(); today.setHours(0, 0, 0, 0);
@@ -2270,7 +2281,14 @@
                             }
                             if (lc > 0) { await update(ref(db), lpUp); console.log('✅ 歸檔 ' + lc + ' 筆舊交易'); }
                         }
-                    } catch(e) { console.warn('歸檔失敗:', e.message); }
+                    } catch(e) {
+                        const msg = String(e && e.message || e || '');
+                        if (/permission[_\s-]*denied/i.test(msg)) {
+                            this._firebaseArchiveDisabled = true;
+                            return;
+                        }
+                        console.warn('歸檔失敗:', e.message);
+                    }
                 },
                 async login() {
                     try {
