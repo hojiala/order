@@ -1120,7 +1120,13 @@
                         <span class="text-red-400 text-lg">📅</span>
                         <p class="font-bold text-white">固定公休星期設定</p>
                     </div>
-                    <p class="text-slate-400 text-sm mb-4">每週固定公休，紅色=公休。目前設定：週日公休。</p>
+                    <p class="text-slate-400 text-sm mb-4">
+                        每週固定公休，紅色=公休。目前設定：
+                        <span v-if="settings.weeklyDaysOff.length">
+                            {{ settings.weeklyDaysOff.slice().sort().map(function(d){ return weekDayNames[d]; }).join('、') }}公休
+                        </span>
+                        <span v-else>無固定公休</span>。
+                    </p>
                     <div class="flex gap-2 flex-wrap">
                         <button v-for="(dayName, idx) in weekDayNames" :key="idx"
                             @click="toggleWeeklyOff(idx)"
@@ -2754,6 +2760,12 @@ window._doCountUp = function() {
                             return Number.isFinite(full) && Number.isFinite(credit) && full > 0 && credit >= full && explicitAmount === full;
                         };
                         includedByMealBase = inspectMealBase(item) || inspectMealBase(sibling);
+                        var looksLikeIncludedBaseDrink = explicitAmount > 0
+                            && explicitAmount <= 30
+                            && explicitCharge.indexOf('\u88dc\u5dee\u50f9') !== -1
+                            && this.isDetailComboMainLine(item)
+                            && !this.isDetailDiscount5Meal(item, order, index);
+                        if (looksLikeIncludedBaseDrink) includedByMealBase = true;
                         if (!includedByMealBase) upgrade = explicitAmount;
                     }
                 }
@@ -4118,7 +4130,7 @@ window._doCountUp = function() {
             addOption: function() { this.form.options.push({ name: '', price: 0 }); },
             removeOption: function(idx) { this.form.options.splice(idx, 1); },
             // ── DRAG SORT: Menu Items ──
-            menuDragStart: function(e, i) { this.dragIdx = i; this.dragType = 'menu'; e.dataTransfer.effectAllowed = 'move'; },
+            menuDragStart: function(e, i) { this.dragIdx = i; this.dragType = 'menu'; if (e && e.dataTransfer) e.dataTransfer.effectAllowed = 'move'; },
             menuDrop: function(e, toIdx) {
                 e.preventDefault();
                 var fromIdx = this.dragIdx;
@@ -4172,7 +4184,7 @@ window._doCountUp = function() {
                     .catch(function(e) { alert('儲存排序失敗：' + e.message); });
             },
             // ── DRAG SORT: Categories ──
-            catDragStart: function(e, i) { this.dragIdx = i; this.dragType = 'cat'; e.dataTransfer.effectAllowed = 'move'; },
+            catDragStart: function(e, i) { this.dragIdx = i; this.dragType = 'cat'; if (e && e.dataTransfer) e.dataTransfer.effectAllowed = 'move'; },
             catDrop: function(e, toIdx) {
                 e.preventDefault();
                 var fromIdx = this.dragIdx;
@@ -4183,7 +4195,7 @@ window._doCountUp = function() {
                 this.dragIdx = null; this.dragOverIdx = null;
             },
             // ── DRAG SORT: Drinks ──
-            drinkDragStart: function(e, i) { this.dragIdx = i; this.dragType = 'drink'; e.dataTransfer.effectAllowed = 'move'; },
+            drinkDragStart: function(e, i) { this.dragIdx = i; this.dragType = 'drink'; if (e && e.dataTransfer) e.dataTransfer.effectAllowed = 'move'; },
             drinkDrop: function(e, toIdx) {
                 e.preventDefault();
                 var fromIdx = this.dragIdx;
@@ -4194,7 +4206,7 @@ window._doCountUp = function() {
                 this.dragIdx = null; this.dragOverIdx = null;
             },
             // ── DRAG SORT: Templates ──
-            tplDragStart: function(e, i) { this.dragIdx = i; this.dragType = 'tpl'; e.dataTransfer.effectAllowed = 'move'; },
+            tplDragStart: function(e, i) { this.dragIdx = i; this.dragType = 'tpl'; if (e && e.dataTransfer) e.dataTransfer.effectAllowed = 'move'; },
             tplDrop: function(e, toIdx) {
                 e.preventDefault();
                 var fromIdx = this.dragIdx;
@@ -4206,7 +4218,7 @@ window._doCountUp = function() {
                 this.tplOrderDirty = true;
             },
             // ── TEMPLATE CHOICE SORT ──
-            tplChoiceDragStart: function(e, i) { this.tplChoiceDragIdx = i; e.dataTransfer.effectAllowed = 'move'; },
+            tplChoiceDragStart: function(e, i) { this.tplChoiceDragIdx = i; if (e && e.dataTransfer) e.dataTransfer.effectAllowed = 'move'; },
             tplChoiceDrop: function(e, toIdx) {
                 var fromIdx = this.tplChoiceDragIdx;
                 if (fromIdx === null || fromIdx === toIdx) { this.tplChoiceDragIdx = null; return; }
@@ -5168,7 +5180,11 @@ window._doCountUp = function() {
             setReportChartOption: function(chart, title, option) {
                 if (!chart) return;
                 try {
-                    chart.setOption(option, true);
+                    if (!option || !Array.isArray(option.series) || option.series.some(function(row) { return !row || !row.type; })) {
+                        throw new Error('invalid chart option series');
+                    }
+                    try { chart.clear(); } catch (clearErr) {}
+                    chart.setOption(option, { notMerge: true, lazyUpdate: false });
                 } catch (e) {
                     console.warn('report chart render failed: ' + (title || ''), e);
                     this.setEmptyReportChart(chart, title || '統計圖');
@@ -6518,7 +6534,7 @@ window._doCountUp = function() {
             moveOG: function(i,d){var a=this.form.optionGroups;if(!a)return;var n=i+d;if(n<0||n>=a.length)return;var t=a[i];a.splice(i,1);a.splice(n,0,t);},
             moveChoice: function(gi,ci,d){var a=(this.form.optionGroups[gi]||{}).choices;if(!a)return;var n=ci+d;if(n<0||n>=a.length)return;var t=a[ci];a.splice(ci,1);a.splice(n,0,t);},
             moveOption: function(i,d){var a=this.form.options;if(!a)return;var n=i+d;if(n<0||n>=a.length)return;var t=a[i];a.splice(i,1);a.splice(n,0,t);},
-            posExtraDragStart: function(e, i){ this.posExtraDragIdx = i; e.dataTransfer.effectAllowed = 'move'; },
+            posExtraDragStart: function(e, i){ this.posExtraDragIdx = i; if (e && e.dataTransfer) e.dataTransfer.effectAllowed = 'move'; },
             posExtraDrop: function(e, toIdx){
                 var fromIdx = this.posExtraDragIdx;
                 if (fromIdx === null || fromIdx === toIdx) { this.posExtraDragIdx = null; return; }
