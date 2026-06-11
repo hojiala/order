@@ -2737,7 +2737,25 @@ window._doCountUp = function() {
                 var explicitCharge = String(item.comboDrinkChargeText || sibling && sibling.comboDrinkChargeText || '').trim();
                 if (explicitCharge && upgrade <= 0) {
                     var em = explicitCharge.match(/(?:\u88dc\u5dee\u50f9|\u98f2\u6599\u52a0\u8cfc)\s*\$?\s*(\d+)/);
-                    if (em && em[1]) upgrade = Number(em[1] || 0);
+                    if (em && em[1]) {
+                        var explicitAmount = Number(em[1] || 0);
+                        var includedByMealBase = false;
+                        var inspectMealBase = function(row) {
+                            var rowSels = Array.isArray(row && row.optionGroupSelections) ? row.optionGroupSelections : [];
+                            for (var si = 0; si < rowSels.length; si++) {
+                                var sel = rowSels[si] || {};
+                                var pricing = String(sel.pricing || '');
+                                var price = Number(sel.price);
+                                var base = Number(sel.baseValue);
+                                if (pricing === 'mealUpgrade' && Number.isFinite(price) && Number.isFinite(base) && price <= base && explicitAmount === price) return true;
+                            }
+                            var full = Number(row && row.comboDrinkFullPrice || 0);
+                            var credit = Number(row && row.comboDrinkCredit || 0);
+                            return Number.isFinite(full) && Number.isFinite(credit) && full > 0 && credit >= full && explicitAmount === full;
+                        };
+                        includedByMealBase = inspectMealBase(item) || inspectMealBase(sibling);
+                        if (!includedByMealBase) upgrade = explicitAmount;
+                    }
                 }
                 if (sibling && (!drink || !state.size || !state.temp)) {
                     drink = drink || this.normalizeDetailDrinkName(sibling.name || sibling['\u54c1\u9805'] || '', state);
@@ -3806,55 +3824,71 @@ window._doCountUp = function() {
                 rememberPublicMenuItems({ settings: this.settings || {} }, this.menuItems);
             },
             writeMenuItemPrimary: function(itemId, itemData, firebaseFallback) {
+                var self = this;
                 return writeMenuItemToPocketBase(itemId, itemData, this.pocketBaseManageOptions({ currentMenuItems: this.menuItems || [] }))
                     .then(function(result) {
                         if (result && result.ok) return result;
                         throw new Error((result && (result.message || result.reason)) || 'PocketBase menu write unavailable');
                     })
                     .catch(function(err) {
-                        console.warn('PocketBase menu write failed; using Firebase fallback:', err && err.message ? err.message : err);
-                        return Promise.resolve(firebaseFallback()).then(function(firebaseResult) {
-                            return { ok: true, backend: 'firebase', fallback: true, error: err, firebase: firebaseResult };
-                        });
+                        console.warn('PocketBase menu write failed:', err && err.message ? err.message : err);
+                        if (self.allowFirebaseManageFallback === true && typeof firebaseFallback === 'function') {
+                            return Promise.resolve(firebaseFallback()).then(function(firebaseResult) {
+                                return { ok: true, backend: 'firebase', fallback: true, error: err, firebase: firebaseResult };
+                            });
+                        }
+                        throw err;
                     });
             },
             deleteMenuItemPrimary: function(itemId, firebaseFallback) {
+                var self = this;
                 return deleteMenuItemFromPocketBase(itemId, this.pocketBaseManageOptions())
                     .then(function(result) {
                         if (result && result.ok) return result;
                         throw new Error((result && (result.message || result.reason)) || 'PocketBase menu delete unavailable');
                     })
                     .catch(function(err) {
-                        console.warn('PocketBase menu delete failed; using Firebase fallback:', err && err.message ? err.message : err);
-                        return Promise.resolve(firebaseFallback()).then(function(firebaseResult) {
-                            return { ok: true, backend: 'firebase', fallback: true, error: err, firebase: firebaseResult };
-                        });
+                        console.warn('PocketBase menu delete failed:', err && err.message ? err.message : err);
+                        if (self.allowFirebaseManageFallback === true && typeof firebaseFallback === 'function') {
+                            return Promise.resolve(firebaseFallback()).then(function(firebaseResult) {
+                                return { ok: true, backend: 'firebase', fallback: true, error: err, firebase: firebaseResult };
+                            });
+                        }
+                        throw err;
                     });
             },
             updateMenuSortPrimary: function(sortRows, firebaseFallback) {
+                var self = this;
                 return updateMenuSortInPocketBase(sortRows, this.pocketBaseManageOptions())
                     .then(function(result) {
                         if (result && result.ok) return result;
                         throw new Error((result && (result.message || result.reason)) || 'PocketBase menu sort unavailable');
                     })
                     .catch(function(err) {
-                        console.warn('PocketBase menu sort failed; using Firebase fallback:', err && err.message ? err.message : err);
-                        return Promise.resolve(firebaseFallback()).then(function(firebaseResult) {
-                            return { ok: true, backend: 'firebase', fallback: true, error: err, firebase: firebaseResult };
-                        });
+                        console.warn('PocketBase menu sort failed:', err && err.message ? err.message : err);
+                        if (self.allowFirebaseManageFallback === true && typeof firebaseFallback === 'function') {
+                            return Promise.resolve(firebaseFallback()).then(function(firebaseResult) {
+                                return { ok: true, backend: 'firebase', fallback: true, error: err, firebase: firebaseResult };
+                            });
+                        }
+                        throw err;
                     });
             },
             writeSettingsPrimary: function(settingsPatch, firebaseFallback) {
+                var self = this;
                 return writeSettingsToPocketBase(settingsPatch, this.pocketBaseManageOptions())
                     .then(function(result) {
                         if (result && result.ok) return result;
                         throw new Error((result && (result.message || result.reason)) || 'PocketBase settings write unavailable');
                     })
                     .catch(function(err) {
-                        console.warn('PocketBase settings write failed; using Firebase fallback:', err && err.message ? err.message : err);
-                        return Promise.resolve(firebaseFallback()).then(function(firebaseResult) {
-                            return { ok: true, backend: 'firebase', fallback: true, error: err, firebase: firebaseResult };
-                        });
+                        console.warn('PocketBase settings write failed:', err && err.message ? err.message : err);
+                        if (self.allowFirebaseManageFallback === true && typeof firebaseFallback === 'function') {
+                            return Promise.resolve(firebaseFallback()).then(function(firebaseResult) {
+                                return { ok: true, backend: 'firebase', fallback: true, error: err, firebase: firebaseResult };
+                            });
+                        }
+                        throw err;
                     });
             },
             defaultTelegramFallbackMessage: function() {
@@ -5131,6 +5165,15 @@ window._doCountUp = function() {
                     console.warn('report empty chart render failed:', e);
                 }
             },
+            setReportChartOption: function(chart, title, option) {
+                if (!chart) return;
+                try {
+                    chart.setOption(option, true);
+                } catch (e) {
+                    console.warn('report chart render failed: ' + (title || ''), e);
+                    this.setEmptyReportChart(chart, title || '統計圖');
+                }
+            },
             escapeReportTooltipHtml: function(value) {
                 return String(value === undefined || value === null ? '' : value)
                     .replace(/&/g, '&amp;')
@@ -5258,7 +5301,7 @@ window._doCountUp = function() {
                     if (!revenueRows.length) {
                         self.setEmptyReportChart(revenueChart, '營業額折線圖');
                         self.bindReportAxisHoverTooltip(revenueChart, 'report-revenue-chart', function() { return null; }, 0);
-                    } else revenueChart.setOption({
+                    } else self.setReportChartOption(revenueChart, '營業額折線圖', {
                         backgroundColor: 'transparent',
                         tooltip: {
                             show: false,
@@ -5277,7 +5320,7 @@ window._doCountUp = function() {
                         xAxis: Object.assign({ type: 'category', data: revenueRows.map(function(r) { return r.label; }), axisLabel: { color: '#cbd5e1', interval: 0 } }, axisStyle),
                         yAxis: Object.assign({ type: 'value' }, axisStyle),
                         series: [{ name: '營業額', type: 'line', smooth: true, data: revenueRows.map(function(r) { return Number(r.amount || 0); }), showSymbol: true, symbolSize: 7, lineStyle: { width: 3, color: '#34d399' }, itemStyle: { color: '#34d399' }, areaStyle: { color: 'rgba(52, 211, 153, 0.16)' } }]
-                    }, true);
+                    });
                     if (revenueRows.length) {
                         self.bindReportAxisHoverTooltip(revenueChart, 'report-revenue-chart', function(idx) {
                             if (idx < 0 || idx >= revenueRows.length) return null;
@@ -5299,7 +5342,7 @@ window._doCountUp = function() {
                     if (!hourLabels.length) {
                         self.setEmptyReportChart(hourChart, '時段分析');
                         self.bindReportAxisHoverTooltip(hourChart, 'report-orders-hour-chart', function() { return null; }, 0);
-                    } else hourChart.setOption({
+                    } else self.setReportChartOption(hourChart, '時段分析', {
                         backgroundColor: 'transparent',
                         tooltip: {
                             show: false,
@@ -5330,7 +5373,7 @@ window._doCountUp = function() {
                             { name: '營業額', type: 'bar', data: hourRevenueValues, itemStyle: { color: '#38bdf8', borderRadius: [6, 6, 0, 0] }, barMaxWidth: 28 },
                             { name: '訂單量', type: 'line', yAxisIndex: 1, data: hourOrderCounts, smooth: false, symbol: 'circle', symbolSize: 8, lineStyle: { width: 3, color: '#f59e0b' }, itemStyle: { color: '#f59e0b' } }
                         ]
-                    }, true);
+                    });
                     if (hourLabels.length) {
                         self.bindReportAxisHoverTooltip(hourChart, 'report-orders-hour-chart', function(idx) {
                             if (idx < 0 || idx >= hourLabels.length) return null;
@@ -5347,27 +5390,27 @@ window._doCountUp = function() {
                     var sourceItems = (((self.reportDashboard || {}).orders_by_source || {}).items || []);
                     var sourceChart = self.getOrCreateReportChart('report-source-chart');
                     if (!sourceItems.length) self.setEmptyReportChart(sourceChart, '訂單來源占比');
-                    else sourceChart.setOption({
+                    else self.setReportChartOption(sourceChart, '訂單來源占比', {
                         backgroundColor: 'transparent',
                         tooltip: { trigger: 'item', triggerOn: 'mousemove|click', confine: true, appendToBody: true, formatter: function(p) { return p.marker + ' ' + p.name + '<br/>訂單量：' + Number(p.value || 0) + ' 筆<br/>占比：' + Number(p.percent || 0).toFixed(1) + '%'; } },
                         legend: { bottom: 0, textStyle: { color: '#cbd5e1' } },
                         series: [{ type: 'pie', radius: ['38%', '70%'], center: ['50%', '45%'], data: sourceItems.map(function(item, idx) { return { value: Number(item.value || 0), name: self.translateReportSourceName(item.name), itemStyle: { color: palette[idx % palette.length] } }; }), label: { color: '#e2e8f0', formatter: '{b}\n{d}%' } }]
-                    }, true);
+                    });
 
                     var paymentItems = (((self.reportDashboard || {}).payments || {}).items || []);
                     var paymentChart = self.getOrCreateReportChart('report-payment-chart');
                     if (!paymentItems.length) self.setEmptyReportChart(paymentChart, '付款方式占比');
-                    else paymentChart.setOption({
+                    else self.setReportChartOption(paymentChart, '付款方式占比', {
                         backgroundColor: 'transparent',
                         tooltip: { trigger: 'item', triggerOn: 'mousemove|click', confine: true, appendToBody: true, formatter: function(p) { return p.marker + ' ' + p.name + '<br/>訂單量：' + Number(p.value || 0) + ' 筆<br/>占比：' + Number(p.percent || 0).toFixed(1) + '%'; } },
                         legend: { bottom: 0, textStyle: { color: '#cbd5e1' } },
                         series: [{ type: 'pie', radius: ['38%', '70%'], center: ['50%', '45%'], data: paymentItems.map(function(item, idx) { return { value: Number(item.value || 0), name: self.translateReportPaymentName(item.name), itemStyle: { color: palette[(idx + 2) % palette.length] } }; }), label: { color: '#e2e8f0', formatter: '{b}\n{d}%' } }]
-                    }, true);
+                    });
 
                     var topItems = (((self.reportDashboard || {}).top_items || {}).items || []).slice(0, 10);
                     var topChart = self.getOrCreateReportChart('report-top-items-chart');
                     if (!topItems.length) self.setEmptyReportChart(topChart, '熱門品項 Top 10');
-                    else topChart.setOption({
+                    else self.setReportChartOption(topChart, '熱門品項 Top 10', {
                         backgroundColor: 'transparent',
                         tooltip: {
                             trigger: 'axis',
@@ -5392,12 +5435,12 @@ window._doCountUp = function() {
                             }
                         }, axisStyle),
                         series: [{ type: 'bar', data: topItems.map(function(item, idx) { return { value: Number(item.value !== undefined ? item.value : (item.qty || 0)), itemStyle: { color: palette[(idx + 2) % palette.length], borderRadius: [0, 6, 6, 0] } }; }).reverse(), label: { show: true, position: 'right', color: '#f8fafc' } }]
-                    }, true);
+                    });
 
                     var channelItems = (((self.reportDashboard || {}).channel_compare || {}).items || []);
                     var channelChart = self.getOrCreateReportChart('report-channel-chart');
                     if (!channelItems.length) self.setEmptyReportChart(channelChart, '來源比較圖');
-                    else channelChart.setOption({
+                    else self.setReportChartOption(channelChart, '來源比較圖', {
                         backgroundColor: 'transparent',
                         tooltip: { trigger: 'axis', triggerOn: 'mousemove|click', confine: true },
                         grid: { left: 180, right: 20, top: 18, bottom: 18 },
@@ -5408,7 +5451,7 @@ window._doCountUp = function() {
                             axisLabel: { color: '#cbd5e1', width: 150, formatter: function(value) { return wrapAxisLabel(value, 6); } }
                         }, axisStyle),
                         series: [{ type: 'bar', data: channelItems.map(function(item, idx) { return { value: Number(item.value || 0), itemStyle: { color: palette[idx % palette.length], borderRadius: [0, 6, 6, 0] } }; }).reverse() }]
-                    }, true);
+                    });
 
                     Object.keys(self.reportCharts || {}).forEach(function(key) {
                         var chart = self.reportCharts[key];
@@ -6080,7 +6123,13 @@ window._doCountUp = function() {
             normalizeWeekDays: function(arr) {
                 if (!arr) return [];
                 var list = Array.isArray(arr) ? arr : Object.values(arr);
-                return list.map(function(v){ return parseInt(v,10); }).filter(function(v){ return !isNaN(v); });
+                var seen = {};
+                return list.map(function(v){ return parseInt(v,10); })
+                    .filter(function(v){
+                        if (isNaN(v) || v < 0 || v > 6 || seen[v]) return false;
+                        seen[v] = true;
+                        return true;
+                    });
             },
             applyDefaultHoursToAll: function() {
                 var self = this;

@@ -720,7 +720,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getDatabase, ref, onValue, onChildAdded, onChildChanged, onChildRemoved, update, push, set, get, remove, query, orderByChild, limitToLast, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-    import { allocateOrderNoFromPocketBase, resetOrderNoInPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings } from "./pocketbase-order-writer.js";
+    import { allocateOrderNoFromPocketBase, resetOrderNoInPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, listMenuItemsFromPocketBase, writeMenuItemToPocketBase, writeSettingsToPocketBase, rememberPublicMenuItems, rememberPublicSettings } from "./pocketbase-order-writer.js";
     const firebaseConfig = {
         apiKey:"AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
         authDomain:"breakfast-ai-system.firebaseapp.com",
@@ -4392,9 +4392,15 @@
                 var time=s.normalizeCounterResetTime(s.counterResetTime||'00:00');
                 var maxNo=Math.max(1,Math.min(9999,Math.floor(Number(s.counterMaxNo||999)||999)));
                 s.counterSaving=true;
-                update(ref(db,'settings'),{counterResetTime:time,counterMaxNo:maxNo})
+                writeSettingsToPocketBase({counterResetTime:time,counterMaxNo:maxNo},{
+                    settings:s.settings||{},
+                    timeoutMs:8000,
+                    secureTimeoutMs:10000
+                })
                     .then(function(){
+                        s.settings=Object.assign({},s.settings||{},{counterResetTime:time,counterMaxNo:maxNo});
                         s.counterResetTime=time;s.counterMaxNo=maxNo;s.showCounterSettingsModal=false;
+                        rememberPublicSettings({settings:s.settings||{}},s.settings);
                         s.toast('✅ 流水號設定已儲存');
                     })
                     .catch(function(e){alert('儲存失敗：'+(e&&e.message?e.message:e));})
@@ -4413,9 +4419,10 @@
                     maxNo:maxNo
                 }).then(function(result){
                     if(!result||!result.ok)throw new Error((result&&result.message)||'PocketBase counter reset failed');
-                    return update(ref(db,'settings'),{
-                        counterResetTime:resetTime,
-                        counterMaxNo:maxNo
+                    return writeSettingsToPocketBase({counterResetTime:resetTime,counterMaxNo:maxNo},{
+                        settings:s.settings||{},
+                        timeoutMs:8000,
+                        secureTimeoutMs:10000
                     });
                 });
             },
@@ -5040,7 +5047,7 @@
                 };
                 run(true,false);
                 setTimeout(function(){run(false,true);},5000);
-                s.menuSettingsPollTimer=setInterval(function(){run(false);},60000);
+                s.menuSettingsPollTimer=setInterval(function(){run(false);},8000);
             },
             hasVisibleLinePayOrders:function(){
                 return (this.onlineOrders||[]).some(function(o){
@@ -5604,9 +5611,6 @@
                                 o.orderNo=pbNo;
                                 o.counterPending=false;
                             }
-                            if(result&&result.backend==='pocketbase'){
-                                set(bucketOrderRef,o).catch(function(e){console.warn('Firebase order mirror write failed:',e&&e.message?e.message:e);});
-                            }
                             return {key:orderId,writeBackend:o._writeBackend};
                         });
                     })
@@ -5810,9 +5814,6 @@
                             if(!no&&Number.isFinite(pbNo)&&pbNo>0){
                                 o.orderNo=pbNo;
                                 o.counterPending=false;
-                            }
-                            if(result&&result.backend==='pocketbase'){
-                                set(bucketOrderRef,o).catch(function(e){console.warn('Firebase order mirror write failed:',e&&e.message?e.message:e);});
                             }
                             return {key:orderId,writeBackend:o._writeBackend};
                         });
@@ -6416,12 +6417,22 @@
             },
             toggleActive:function(item){
                 if(!item||!item.id)return;
+                var s=this;
                 var next=!item.active;
                 item.active=next;
                 this.menuEditOverrideUntil=Date.now()+10*60*1000;
-                this.menuReadBackend='firebase';
-                update(ref(db,"menu/"+item.id),{active:next})
-                    .then(function(){})
+                this.menuReadBackend='pocketbase';
+                var patch=Object.assign({},item,{active:next,updatedAt:Date.now()});
+                writeMenuItemToPocketBase(item.id,patch,{
+                    settings:this.settings||{},
+                    currentMenuItems:this.menu||[],
+                    timeoutMs:8000,
+                    secureTimeoutMs:10000
+                })
+                    .then(function(){
+                        item.updatedAt=patch.updatedAt;
+                        rememberPublicMenuItems({settings:s.settings||{}},s.menu||[]);
+                    })
                     .catch(function(e){
                         item.active=!next;
                         alert("更新失敗："+e.message);
