@@ -4406,6 +4406,7 @@
                 if(!confirm(msg))return;
                 var updates={};
                 var phoneCmds=[];
+                var pbArchiveJobs=[];
                 s.onlineOrders.forEach(function(o){
                     if(futureIds.indexOf(o.id)!==-1)return;
                     if(o.status==="archived")return;
@@ -4444,13 +4445,30 @@
                         console.warn('archive status override failed:',err&&err.message?err.message:err);
                         return false;
                     }));
-                    updates["orders_archive/" + dateKey + "/" + o.id] = archivedOrder;
-                    dateCandidates.forEach(function(k){updates["orders/"+k+"/"+o.id]=null;});
+                    if(s.ordersReadBackend==='firebase'||o._readBackend==='firebase'){
+                        updates["orders_archive/" + dateKey + "/" + o.id] = archivedOrder;
+                        dateCandidates.forEach(function(k){updates["orders/"+k+"/"+o.id]=null;});
+                    }else{
+                        pbArchiveJobs.push(s.syncPocketBaseOrder(o.id,archivedOrder,'pos_archive').then(function(result){
+                            if(!result||!result.ok)throw new Error((result&&(result.message||result.reason||result.error&&result.error.message))||'PocketBase archive unavailable');
+                            return result;
+                        }).catch(function(err){
+                            console.warn('PB archive failed:',err&&err.message?err.message:err);
+                            throw err;
+                        }));
+                    }
                   });
-                if(!Object.keys(updates).length&&!phoneCmds.length){s.toast("✅ 目前沒有待結單訂單");return;}
+                if(!Object.keys(updates).length&&!phoneCmds.length&&!pbArchiveJobs.length){s.toast("✅ 目前沒有待結單訂單");return;}
                 try{
                     if(Object.keys(updates).length){
                         await update(ref(db),updates);
+                    }
+                    if(pbArchiveJobs.length){
+                        var pbResults=await Promise.allSettled(pbArchiveJobs);
+                        var pbFailed=pbResults.filter(function(r){return r.status!=='fulfilled';}).length;
+                        if(pbFailed>0){
+                            throw new Error("PB 訂單結單失敗 "+pbFailed+" 筆");
+                        }
                     }
                     if(phoneCmds.length){
                         var cmdResults=await Promise.allSettled(phoneCmds);
