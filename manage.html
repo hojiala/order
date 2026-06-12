@@ -2285,7 +2285,9 @@ window._doCountUp = function() {
             enrichStatsOrderFromSource: async function(order) {
                 var normalized = this.normalizeStatsOrder(order || {});
                 var sourcePath = this.resolveStatsSourceOrderPath(normalized);
+                if (Array.isArray(normalized.items) && normalized.items.length) return normalized;
                 if (!sourcePath) return normalized;
+                if (String(sourcePath || '').indexOf('orders/') === 0) return normalized;
                 try {
                     var snap = await get(ref(db, sourcePath));
                     if (!snap.exists()) return normalized;
@@ -2296,7 +2298,8 @@ window._doCountUp = function() {
                     merged.total = this.pickStatsDisplayTotal(merged, Number(this.getOrderTotalValue(normalized) || 0), Number(this.getOrderTotalValue(sourceOrder) || 0), merged.items);
                     return merged;
                 } catch (e) {
-                    console.warn('enrichStatsOrderFromSource failed:', normalized && normalized.id, e && e.message ? e.message : e);
+                    var msg = String(e && e.message ? e.message : e || '');
+                    if (!/permission[_\s-]*denied/i.test(msg)) console.warn('enrichStatsOrderFromSource failed:', normalized && normalized.id, msg);
                     return normalized;
                 }
             },
@@ -2560,19 +2563,23 @@ window._doCountUp = function() {
                 if (Number.isFinite(explicit) && explicit > 0) setReliable(explicit);
                 var full = Number(item.comboDrinkFullPrice || 0);
                 var credit = Number(item.comboDrinkCredit || 0);
-                if (Number.isFinite(full) && full > 0 && Number.isFinite(credit) && credit > 0 && full >= credit) setReliable(full - credit);
+                var includedBaseDrink = Number.isFinite(full) && full > 0 && Number.isFinite(credit) && credit >= full && (!Number.isFinite(explicit) || explicit <= 0);
+                if (Number.isFinite(full) && full > 0 && Number.isFinite(credit) && credit > 0 && full > credit) setReliable(full - credit);
                 var sibling = this.findComboDrinkSibling(order, item, index);
                 if (sibling) {
                     var sibExplicit = Number(sibling.comboDrinkSurcharge || 0);
                     if (Number.isFinite(sibExplicit) && sibExplicit > 0) setReliable(sibExplicit);
                     var sibFull = Number(sibling.comboDrinkFullPrice || 0);
                     var sibCredit = Number(sibling.comboDrinkCredit || 0);
-                    if (Number.isFinite(sibFull) && sibFull > 0 && Number.isFinite(sibCredit) && sibCredit > 0 && sibFull >= sibCredit) setReliable(sibFull - sibCredit);
+                    if (Number.isFinite(sibFull) && sibFull > 0 && Number.isFinite(sibCredit) && sibCredit >= sibFull && (!Number.isFinite(sibExplicit) || sibExplicit <= 0)) includedBaseDrink = true;
+                    if (Number.isFinite(sibFull) && sibFull > 0 && Number.isFinite(sibCredit) && sibCredit > 0 && sibFull > sibCredit) setReliable(sibFull - sibCredit);
                     var sibLine = this.getDetailLineTotal(sibling);
                     var sibQty = this.getDetailItemQty(sibling);
                     if (sibLine > 0 && sibQty > 0) setReliable(sibLine / sibQty);
                 }
+                if (includedBaseDrink && reliableUpgrade <= 0 && fallbackUpgrade <= 30) fallbackUpgrade = 0;
                 var upgrade = reliableUpgrade > 0 ? reliableUpgrade : fallbackUpgrade;
+                if (includedBaseDrink && upgrade <= 30 && reliableUpgrade <= 0) upgrade = 0;
                 if (upgrade > 0 && reliableUpgrade <= 0) {
                     var capBaseUnit = 0;
                     var capBaseCandidates = [item.basePrice, item.originalPrice, item['\u539f\u50f9']];
@@ -5114,25 +5121,10 @@ window._doCountUp = function() {
             loadDashboardReports: function(force) {
                 var self = this;
                 self.reportLoading = true;
-                return get(ref(db, 'reports/dashboard'))
-                    .then(function(snap) {
-                        var raw = snap.exists() ? snap.val() : {};
-                        self.reportDashboardSource = self.normalizeReportDashboard(raw);
-                        if (self.statsLoading) {
-                            self.reportDashboard = self.reportHasData(self.reportDashboardSource) ? self.reportDashboardSource : self.createEmptyReportDashboard();
-                            self.scheduleReportChartRender();
-                        } else {
-                            self.applyReportFallbackFromStats();
-                        }
-                    })
-                    .catch(function(err) {
-                        console.error('讀取 reports/dashboard 失敗:', err);
-                        self.reportDashboardSource = self.createEmptyReportDashboard();
-                        self.applyReportFallbackFromStats();
-                    })
-                    .finally(function() {
-                        self.reportLoading = false;
-                    });
+                self.reportDashboardSource = self.createEmptyReportDashboard();
+                self.applyReportFallbackFromStats();
+                self.reportLoading = false;
+                return Promise.resolve(self.reportDashboard);
             },
             formatReportUpdatedAt: function(ts) {
                 var n = Number(ts || 0);
