@@ -2593,10 +2593,10 @@ window._doCountUp = function() {
                             if (Number.isFinite(selPrice) && selPrice > 0) return selPrice;
                         }
                     }
-                    var fullCandidate = Number(row.comboDrinkFullPrice || row.basePrice || row['\u539f\u50f9'] || 0);
+                    var fullCandidate = Number(row.comboDrinkFullPrice || 0);
                     if (Number.isFinite(fullCandidate) && fullCandidate > 0) return fullCandidate;
                     if (row === sibling) {
-                        var unit = Number(this.getDetailUnitPrice ? this.getDetailUnitPrice(row) : (row.price || row['\u55ae\u50f9'] || 0));
+                        var unit = Number(row.basePrice || row['\u539f\u50f9'] || (this.getDetailUnitPrice ? this.getDetailUnitPrice(row) : (row.price || row['\u55ae\u50f9'] || 0)));
                         if (Number.isFinite(unit) && unit > 0) return unit;
                     }
                     return 0;
@@ -2607,6 +2607,9 @@ window._doCountUp = function() {
                     var drinkMenuItem = drinkMenuName && this.findDetailMenuItemByName ? this.findDetailMenuItemByName(drinkMenuName) : null;
                     var drinkMenuPrice = Number(drinkMenuItem && drinkMenuItem.price);
                     if (Number.isFinite(drinkMenuPrice) && drinkMenuPrice > 0) ruleFull = drinkMenuPrice;
+                }
+                if (!ruleFull && this.getKnownDetailComboDrinkFullPrice) {
+                    ruleFull = this.getKnownDetailComboDrinkFullPrice(item, sibling);
                 }
                 if (ruleCredit > 0 && ruleFull > 0) {
                     reliableUpgrade = Math.max(0, Math.round(ruleFull - ruleCredit));
@@ -2718,6 +2721,52 @@ window._doCountUp = function() {
                 text = text.replace(/\s*\+\s*\$?\d+\s*$/, '').trim();
                 return text;
             },
+            getKnownDetailDrinkPrice: function(name) {
+                var raw = String(name || '').trim();
+                if (!raw) return 0;
+                var size = raw.indexOf('\u4e2d\u676f') !== -1 ? '\u4e2d\u676f' : '\u5927\u676f';
+                var clean = raw
+                    .replace(/[（(]\s*(?:\u5927\u676f|\u4e2d\u676f|\u5c0f\u676f)\s*[）)]/g, '')
+                    .replace(/^(?:\u5927\u676f|\u4e2d\u676f|\u5c0f\u676f)/, '')
+                    .trim();
+                if (clean.indexOf('\u7d05\u8336') !== -1) return size === '\u4e2d\u676f' ? 20 : 25;
+                if (clean.indexOf('\u932b\u862d\u5976\u8336') !== -1 || clean === '\u5976\u8336' || clean.indexOf('\u5976\u8336') !== -1) return size === '\u4e2d\u676f' ? 25 : 30;
+                if (clean.indexOf('\u9bae\u5976\u5496\u5561') !== -1) return 45;
+                if (clean.indexOf('\u7f8e\u5f0f\u5496\u5561') !== -1) return 35;
+                if (clean.indexOf('\u4e09\u5408\u4e00\u5496\u5561') !== -1) return 20;
+                if (clean.indexOf('\u8c46\u6f3f') !== -1 || clean.indexOf('\u67f3\u6a59') !== -1 || clean.indexOf('\u53ef\u53ef') !== -1 || clean.indexOf('\u6ab8\u6aac') !== -1) return 20;
+                return 0;
+            },
+            getKnownDetailComboDrinkFullPrice: function(item, sibling) {
+                var self = this;
+                var candidates = [];
+                var addCandidate = function(raw) {
+                    var source = String(raw || '').trim();
+                    if (!source) return;
+                    var state = { size: '' };
+                    var drink = '';
+                    source.split(/[\/\uFF0F\u3001,]+/).forEach(function(part) {
+                        var text = String(part || '').trim();
+                        if (!text) return;
+                        if (!state.size && (text === '\u5927\u676f' || text === '\u4e2d\u676f' || text === '\u5c0f\u676f')) {
+                            state.size = text;
+                            return;
+                        }
+                        if (/(?:\u88dc\u5dee\u50f9|\u98f2\u6599\u52a0\u8cfc|\u5957\u9910\u98f2\u6599|\u642d\u914d\u98f2\u6599|\u88dc|\+)\s*\$?\s*\d+/.test(text)) return;
+                        if (!drink && !/\u51b0|\u71b1|\u6eab/.test(text)) drink = self.normalizeDetailDrinkName(text, state);
+                    });
+                    if (!drink) drink = self.normalizeDetailDrinkName(source, state);
+                    if (!drink) return;
+                    if (state.size) candidates.push(state.size + drink);
+                    candidates.push(drink);
+                };
+                [item && item.mealDrink, item && item.comboDrinkText, sibling && sibling.mealDrink, sibling && sibling.comboDrinkText, sibling && (sibling.name || sibling['\u54c1\u9805'])].forEach(addCandidate);
+                for (var i = 0; i < candidates.length; i++) {
+                    var price = this.getKnownDetailDrinkPrice(candidates[i]);
+                    if (price > 0) return price;
+                }
+                return 0;
+            },
             isDetailDiscount5Meal: function(item, order, index) {
                 if (!item || typeof item !== 'object') return false;
                 if (item.comboDrinkDiscount5) return true;
@@ -2770,12 +2819,14 @@ window._doCountUp = function() {
                 if (mealDrink && (!drink || !state.size || !state.temp)) {
                     var parsedComboState = { size: '', temp: '' };
                     var parsedComboDrink = '';
+                    var allowChargeTextFallback = !/^[1-9]\s*\u865f/.test(String(item.name || item['\u54c1\u9805'] || '').trim())
+                        && !this.isDetailDiscount5Meal(item, order, index);
                     mealDrink.split(/[\/\u3001,]+/).forEach(function(part) {
                         var text = String(part || '').trim();
                         if (!text) return;
                         var m = text.match(/(?:\u88dc\u5dee\u50f9|\u98f2\u6599\u52a0\u8cfc|\u88dc|\+)\s*\$?\s*(\d+)/);
                         if (m && m[1]) {
-                            if (upgrade <= 0) upgrade = Number(m[1] || 0);
+                            if (allowChargeTextFallback && upgrade <= 0) upgrade = Number(m[1] || 0);
                             return;
                         }
                         if (!parsedComboState.size && (text === '\u5927\u676f' || text === '\u4e2d\u676f')) parsedComboState.size = text;
@@ -3887,15 +3938,6 @@ window._doCountUp = function() {
                 return writeMenuItemToPocketBase(itemId, itemData, this.pocketBaseManageOptions({ currentMenuItems: this.menuItems || [] }))
                     .then(function(result) {
                         if (result && result.ok) {
-                            if (typeof firebaseFallback === 'function') {
-                                return Promise.resolve(firebaseFallback()).catch(function(mirrorErr) {
-                                    console.warn('Firebase menu mirror after PB write failed:', mirrorErr && mirrorErr.message ? mirrorErr.message : mirrorErr);
-                                    return null;
-                                }).then(function(firebaseResult) {
-                                    if (firebaseResult !== null) result.firebaseBrowserMirror = firebaseResult;
-                                    return result;
-                                });
-                            }
                             return result;
                         }
                         throw new Error((result && (result.message || result.reason)) || 'PocketBase menu write unavailable');
@@ -3915,15 +3957,6 @@ window._doCountUp = function() {
                 return deleteMenuItemFromPocketBase(itemId, this.pocketBaseManageOptions())
                     .then(function(result) {
                         if (result && result.ok) {
-                            if (typeof firebaseFallback === 'function') {
-                                return Promise.resolve(firebaseFallback()).catch(function(mirrorErr) {
-                                    console.warn('Firebase menu delete mirror after PB write failed:', mirrorErr && mirrorErr.message ? mirrorErr.message : mirrorErr);
-                                    return null;
-                                }).then(function(firebaseResult) {
-                                    if (firebaseResult !== null) result.firebaseBrowserMirror = firebaseResult;
-                                    return result;
-                                });
-                            }
                             return result;
                         }
                         throw new Error((result && (result.message || result.reason)) || 'PocketBase menu delete unavailable');
@@ -3943,15 +3976,6 @@ window._doCountUp = function() {
                 return updateMenuSortInPocketBase(sortRows, this.pocketBaseManageOptions())
                     .then(function(result) {
                         if (result && result.ok) {
-                            if (typeof firebaseFallback === 'function') {
-                                return Promise.resolve(firebaseFallback()).catch(function(mirrorErr) {
-                                    console.warn('Firebase menu sort mirror after PB write failed:', mirrorErr && mirrorErr.message ? mirrorErr.message : mirrorErr);
-                                    return null;
-                                }).then(function(firebaseResult) {
-                                    if (firebaseResult !== null) result.firebaseBrowserMirror = firebaseResult;
-                                    return result;
-                                });
-                            }
                             return result;
                         }
                         throw new Error((result && (result.message || result.reason)) || 'PocketBase menu sort unavailable');
@@ -3971,15 +3995,6 @@ window._doCountUp = function() {
                 return writeSettingsToPocketBase(settingsPatch, this.pocketBaseManageOptions())
                     .then(function(result) {
                         if (result && result.ok) {
-                            if (typeof firebaseFallback === 'function') {
-                                return Promise.resolve(firebaseFallback()).catch(function(mirrorErr) {
-                                    console.warn('Firebase settings mirror after PB write failed:', mirrorErr && mirrorErr.message ? mirrorErr.message : mirrorErr);
-                                    return null;
-                                }).then(function(firebaseResult) {
-                                    if (firebaseResult !== null) result.firebaseBrowserMirror = firebaseResult;
-                                    return result;
-                                });
-                            }
                             return result;
                         }
                         throw new Error((result && (result.message || result.reason)) || 'PocketBase settings write unavailable');
@@ -5258,9 +5273,37 @@ window._doCountUp = function() {
                     console.warn('report empty chart render failed:', e);
                 }
             },
+            normalizeReportChartOption: function(option) {
+                var normalized = Object.assign({}, option || {});
+                var normalizeAxis = function(axis, fallbackType) {
+                    var fixOne = function(row) {
+                        var out = Object.assign({}, row && typeof row === 'object' ? row : {});
+                        if (!out.type) out.type = fallbackType;
+                        return out;
+                    };
+                    if (Array.isArray(axis)) {
+                        var list = axis.filter(function(row) { return row && typeof row === 'object'; }).map(fixOne);
+                        return list.length ? list : { type: fallbackType };
+                    }
+                    if (axis && typeof axis === 'object') return fixOne(axis);
+                    return { type: fallbackType };
+                };
+                normalized.series = (Array.isArray(normalized.series) ? normalized.series : [])
+                    .filter(function(row) { return row && typeof row === 'object'; })
+                    .map(function(row) {
+                        var out = Object.assign({}, row);
+                        if (!out.type) out.type = out.radius ? 'pie' : 'bar';
+                        if (!Array.isArray(out.data)) out.data = [];
+                        return out;
+                    });
+                if (normalized.xAxis !== undefined) normalized.xAxis = normalizeAxis(normalized.xAxis, 'category');
+                if (normalized.yAxis !== undefined) normalized.yAxis = normalizeAxis(normalized.yAxis, 'value');
+                return normalized;
+            },
             setReportChartOption: function(chart, title, option) {
                 if (!chart) return;
                 try {
+                    option = this.normalizeReportChartOption(option);
                     if (!option || !Array.isArray(option.series) || option.series.some(function(row) { return !row || !row.type; })) {
                         throw new Error('invalid chart option series');
                     }
