@@ -942,10 +942,10 @@
                         <div v-for="(dayName, idx) in weekDayNames" :key="idx"
                              class="flex items-center gap-3 bg-slate-700/30 rounded-lg px-3 py-2.5 flex-wrap">
                             <span class="w-8 text-center font-bold text-sm"
-                                  :class="settings.weeklyDaysOff.indexOf(idx) !== -1 ? 'text-red-400' : 'text-slate-300'">
+                                  :class="isWeeklyOff(idx) ? 'text-red-400' : 'text-slate-300'">
                                 週{{ dayName }}
                             </span>
-                            <template v-if="settings.weeklyDaysOff.indexOf(idx) !== -1">
+                            <template v-if="isWeeklyOff(idx)">
                                 <span class="text-red-400 text-sm font-bold">公休日</span>
                             </template>
                             <template v-else>
@@ -1130,7 +1130,7 @@
                     <div class="flex gap-2 flex-wrap">
                         <button v-for="(dayName, idx) in weekDayNames" :key="idx"
                             @click="toggleWeeklyOff(idx)"
-                            :class="settings.weeklyDaysOff.indexOf(idx) !== -1 ? 'day-btn day-off' : 'day-btn day-on'">
+                            :class="isWeeklyOff(idx) ? 'day-btn day-off' : 'day-btn day-on'">
                             {{ dayName }}
                         </button>
                     </div>
@@ -1233,7 +1233,7 @@
                         <p class="text-slate-400 text-xs font-bold uppercase tracking-wider mb-3">預覽（顧客看到的樣子）</p>
                         <p class="text-white text-sm font-bold mb-2">🎈 營業時間</p>
                         <div v-for="(dayName, idx) in weekDayNames" :key="idx" class="text-sm ml-4 mb-0.5">
-                            <template v-if="settings.weeklyDaysOff.indexOf(idx) !== -1">
+                            <template v-if="isWeeklyOff(idx)">
                                 <span class="text-slate-400">週{{ dayName }}</span>
                                 <span class="text-red-400 ml-2">店休</span>
                             </template>
@@ -1861,6 +1861,7 @@ window._doCountUp = function() {
                 showOptionsTemplateDD: false,
                 showPosExtrasTemplateDD: false,
                 settingsSaving: false, settingsSaved: false,
+                allowFirebaseManageFallback: true,
                 // QR Code 管理
                 qrBaseUrl: '', qrPin: '', qrEntries: [],
                 // Week day names
@@ -2576,6 +2577,45 @@ window._doCountUp = function() {
                     var sibLine = this.getDetailLineTotal(sibling);
                     var sibQty = this.getDetailItemQty(sibling);
                     if (sibLine > 0 && sibQty > 0) setReliable(sibLine / sibQty);
+                }
+                var ruleName = String(item.name || item['\u54c1\u9805'] || '').trim();
+                var numberedMealRule = /^[1-9]\s*\u865f/.test(ruleName);
+                var discount5Rule = !numberedMealRule && this.isDetailDiscount5Meal && this.isDetailDiscount5Meal(item, order, index);
+                var menuMetaRule = this.getDetailMealUpgradeMetaFromMenu ? (this.getDetailMealUpgradeMetaFromMenu(ruleName) || {}) : {};
+                var ruleCredit = discount5Rule ? 5 : (numberedMealRule ? 30 : Number(menuMetaRule.baseValue || 0));
+                var collectRuleFull = function(row) {
+                    if (!row) return 0;
+                    var rowSels = Array.isArray(row.optionGroupSelections) ? row.optionGroupSelections : [];
+                    for (var si = 0; si < rowSels.length; si++) {
+                        var sel = rowSels[si] || {};
+                        if (String(sel.pricing || '') === 'mealUpgrade') {
+                            var selPrice = Number(sel.price);
+                            if (Number.isFinite(selPrice) && selPrice > 0) return selPrice;
+                        }
+                    }
+                    var fullCandidate = Number(row.comboDrinkFullPrice || row.basePrice || row['\u539f\u50f9'] || 0);
+                    if (Number.isFinite(fullCandidate) && fullCandidate > 0) return fullCandidate;
+                    if (row === sibling) {
+                        var unit = Number(this.getDetailUnitPrice ? this.getDetailUnitPrice(row) : (row.price || row['\u55ae\u50f9'] || 0));
+                        if (Number.isFinite(unit) && unit > 0) return unit;
+                    }
+                    return 0;
+                }.bind(this);
+                var ruleFull = Math.max(collectRuleFull(item), collectRuleFull(sibling));
+                if (!ruleFull && sibling) {
+                    var drinkMenuName = String(sibling.name || sibling['\u54c1\u9805'] || '').replace(/[（(]\s*(?:\u5927\u676f|\u4e2d\u676f|\u5c0f\u676f)\s*[)）]/g, '').trim();
+                    var drinkMenuItem = drinkMenuName && this.findDetailMenuItemByName ? this.findDetailMenuItemByName(drinkMenuName) : null;
+                    var drinkMenuPrice = Number(drinkMenuItem && drinkMenuItem.price);
+                    if (Number.isFinite(drinkMenuPrice) && drinkMenuPrice > 0) ruleFull = drinkMenuPrice;
+                }
+                if (ruleCredit > 0 && ruleFull > 0) {
+                    reliableUpgrade = Math.max(0, Math.round(ruleFull - ruleCredit));
+                    fallbackUpgrade = 0;
+                    includedBaseDrink = ruleFull <= ruleCredit;
+                } else if (numberedMealRule && reliableUpgrade <= 30 && fallbackUpgrade <= 30) {
+                    reliableUpgrade = 0;
+                    fallbackUpgrade = 0;
+                    includedBaseDrink = true;
                 }
                 if (includedBaseDrink && reliableUpgrade <= 0 && fallbackUpgrade <= 30) fallbackUpgrade = 0;
                 var upgrade = reliableUpgrade > 0 ? reliableUpgrade : fallbackUpgrade;
@@ -3846,7 +3886,18 @@ window._doCountUp = function() {
                 var self = this;
                 return writeMenuItemToPocketBase(itemId, itemData, this.pocketBaseManageOptions({ currentMenuItems: this.menuItems || [] }))
                     .then(function(result) {
-                        if (result && result.ok) return result;
+                        if (result && result.ok) {
+                            if (typeof firebaseFallback === 'function') {
+                                return Promise.resolve(firebaseFallback()).catch(function(mirrorErr) {
+                                    console.warn('Firebase menu mirror after PB write failed:', mirrorErr && mirrorErr.message ? mirrorErr.message : mirrorErr);
+                                    return null;
+                                }).then(function(firebaseResult) {
+                                    if (firebaseResult !== null) result.firebaseBrowserMirror = firebaseResult;
+                                    return result;
+                                });
+                            }
+                            return result;
+                        }
                         throw new Error((result && (result.message || result.reason)) || 'PocketBase menu write unavailable');
                     })
                     .catch(function(err) {
@@ -3863,7 +3914,18 @@ window._doCountUp = function() {
                 var self = this;
                 return deleteMenuItemFromPocketBase(itemId, this.pocketBaseManageOptions())
                     .then(function(result) {
-                        if (result && result.ok) return result;
+                        if (result && result.ok) {
+                            if (typeof firebaseFallback === 'function') {
+                                return Promise.resolve(firebaseFallback()).catch(function(mirrorErr) {
+                                    console.warn('Firebase menu delete mirror after PB write failed:', mirrorErr && mirrorErr.message ? mirrorErr.message : mirrorErr);
+                                    return null;
+                                }).then(function(firebaseResult) {
+                                    if (firebaseResult !== null) result.firebaseBrowserMirror = firebaseResult;
+                                    return result;
+                                });
+                            }
+                            return result;
+                        }
                         throw new Error((result && (result.message || result.reason)) || 'PocketBase menu delete unavailable');
                     })
                     .catch(function(err) {
@@ -3880,7 +3942,18 @@ window._doCountUp = function() {
                 var self = this;
                 return updateMenuSortInPocketBase(sortRows, this.pocketBaseManageOptions())
                     .then(function(result) {
-                        if (result && result.ok) return result;
+                        if (result && result.ok) {
+                            if (typeof firebaseFallback === 'function') {
+                                return Promise.resolve(firebaseFallback()).catch(function(mirrorErr) {
+                                    console.warn('Firebase menu sort mirror after PB write failed:', mirrorErr && mirrorErr.message ? mirrorErr.message : mirrorErr);
+                                    return null;
+                                }).then(function(firebaseResult) {
+                                    if (firebaseResult !== null) result.firebaseBrowserMirror = firebaseResult;
+                                    return result;
+                                });
+                            }
+                            return result;
+                        }
                         throw new Error((result && (result.message || result.reason)) || 'PocketBase menu sort unavailable');
                     })
                     .catch(function(err) {
@@ -3897,7 +3970,18 @@ window._doCountUp = function() {
                 var self = this;
                 return writeSettingsToPocketBase(settingsPatch, this.pocketBaseManageOptions())
                     .then(function(result) {
-                        if (result && result.ok) return result;
+                        if (result && result.ok) {
+                            if (typeof firebaseFallback === 'function') {
+                                return Promise.resolve(firebaseFallback()).catch(function(mirrorErr) {
+                                    console.warn('Firebase settings mirror after PB write failed:', mirrorErr && mirrorErr.message ? mirrorErr.message : mirrorErr);
+                                    return null;
+                                }).then(function(firebaseResult) {
+                                    if (firebaseResult !== null) result.firebaseBrowserMirror = firebaseResult;
+                                    return result;
+                                });
+                            }
+                            return result;
+                        }
                         throw new Error((result && (result.message || result.reason)) || 'PocketBase settings write unavailable');
                     })
                     .catch(function(err) {
@@ -5136,14 +5220,19 @@ window._doCountUp = function() {
             scheduleReportChartRender: function() {
                 var self = this;
                 clearTimeout(self.reportRenderTimer);
+                clearTimeout(self.reportRenderRetryTimer);
                 self.reportRenderTimer = setTimeout(function() {
                     self.renderDashboardCharts();
+                    self.reportRenderRetryTimer = setTimeout(function() {
+                        self.renderDashboardCharts();
+                    }, 360);
                 }, 80);
             },
             getOrCreateReportChart: function(id) {
                 if (typeof echarts === 'undefined') return null;
                 var el = document.getElementById(id);
                 if (!el) return null;
+                if (!el.style.minHeight) el.style.minHeight = el.classList && el.classList.contains('chart-canvas-sm') ? '240px' : '300px';
                 var chart = this.reportCharts[id];
                 if (chart && typeof chart.getDom === 'function' && chart.getDom() !== el) {
                     try { chart.dispose(); } catch (e) {}
@@ -5177,6 +5266,7 @@ window._doCountUp = function() {
                     }
                     try { chart.clear(); } catch (clearErr) {}
                     chart.setOption(option, { notMerge: true, lazyUpdate: false });
+                    if (typeof chart.resize === 'function') chart.resize();
                 } catch (e) {
                     console.warn('report chart render failed: ' + (title || ''), e);
                     this.setEmptyReportChart(chart, title || '統計圖');
@@ -5273,7 +5363,13 @@ window._doCountUp = function() {
                 if (this.activeTab !== 'stats') return;
                 var self = this;
                 this.$nextTick(function() {
-                    if (typeof echarts === 'undefined') return;
+                    if (typeof echarts === 'undefined') {
+                        clearTimeout(self.reportEchartsWaitTimer);
+                        self.reportEchartsWaitTimer = setTimeout(function() {
+                            self.renderDashboardCharts();
+                        }, 300);
+                        return;
+                    }
                     if (Array.isArray(self.statsOrders) && self.statsOrders.length) {
                         try {
                             var liveReport = self.normalizeReportDashboard(self.buildDashboardReportFromOrders(self.statsOrders));
@@ -6147,6 +6243,10 @@ window._doCountUp = function() {
                         return true;
                     });
             },
+            isWeeklyOff: function(dayIdx) {
+                var day = parseInt(dayIdx, 10);
+                return this.normalizeWeekDays(this.settings && this.settings.weeklyDaysOff).indexOf(day) !== -1;
+            },
             applyDefaultHoursToAll: function() {
                 var self = this;
                 self.settings.dailyHours = {};
@@ -6348,6 +6448,7 @@ window._doCountUp = function() {
                     posOnlyCategories: self.settings.posOnlyCategories || [],
                     stations: self.settings.stations || []
                 };
+                self.settings.weeklyDaysOff = settingsPatch.weeklyDaysOff.slice();
                 self.writeSettingsPrimary(settingsPatch, function() { return update(ref(db, 'settings'), settingsPatch); }).then(function() {
                     self.settingsSaved = true;
                     rememberPublicSettings({ settings: self.settings || {} }, settingsPatch);

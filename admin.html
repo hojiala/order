@@ -1459,6 +1459,40 @@
                         const sibQty = this.getDisplayQty(sibling);
                         if (sibLine > 0 && sibQty > 0) setReliable(sibLine / sibQty);
                     }
+                    const ruleName = String(item && (item.name || item['\u54c1\u9805']) || '').trim();
+                    const numberedMealRule = /^[1-9]\s*\u865f/.test(ruleName);
+                    const discount5Rule = !numberedMealRule && this.isDiscount5MealForDisplay(item, order);
+                    const menuMetaRule = this.getMealUpgradeMetaFromMenu(item && (item.name || item['\u54c1\u9805'])) || {};
+                    let ruleCredit = discount5Rule ? 5 : (numberedMealRule ? 30 : Number(menuMetaRule.baseValue || 0));
+                    const collectRuleFull = (owner) => {
+                        if (!owner) return 0;
+                        const ownerSels = Array.isArray(owner.optionGroupSelections) ? owner.optionGroupSelections : [];
+                        for (let si = 0; si < ownerSels.length; si++) {
+                            const sel = ownerSels[si] || {};
+                            if (String(sel.pricing || '') === 'mealUpgrade') {
+                                const selPrice = Number(sel.price);
+                                if (Number.isFinite(selPrice) && selPrice > 0) return selPrice;
+                            }
+                        }
+                        const fullCandidate = Number(owner.comboDrinkFullPrice || owner.basePrice || owner['\u539f\u50f9'] || 0);
+                        if (Number.isFinite(fullCandidate) && fullCandidate > 0) return fullCandidate;
+                        if (owner === sibling) {
+                            const unit = Number(this.getDisplayUnitPrice ? this.getDisplayUnitPrice(owner) : (owner.price || owner['\u55ae\u50f9'] || 0));
+                            if (Number.isFinite(unit) && unit > 0) return unit;
+                        }
+                        return 0;
+                    };
+                    let ruleFull = Math.max(collectRuleFull(item), collectRuleFull(sibling));
+                    if (!ruleFull) ruleFull = this.getMealUpgradeDrinkFullPriceForDisplay(item, order);
+                    if (ruleCredit > 0 && ruleFull > 0) {
+                        reliableUpgrade = Math.max(0, Math.round(ruleFull - ruleCredit));
+                        fallbackUpgrade = 0;
+                        includedBaseDrink = ruleFull <= ruleCredit;
+                    } else if (numberedMealRule && reliableUpgrade <= 30 && fallbackUpgrade <= 30) {
+                        reliableUpgrade = 0;
+                        fallbackUpgrade = 0;
+                        includedBaseDrink = true;
+                    }
                     if (includedBaseDrink && reliableUpgrade <= 0 && fallbackUpgrade <= 30) fallbackUpgrade = 0;
                     let upgrade = reliableUpgrade > 0 ? reliableUpgrade : fallbackUpgrade;
                     if (includedBaseDrink && upgrade <= 30 && reliableUpgrade <= 0) upgrade = 0;
