@@ -3921,8 +3921,8 @@ window._doCountUp = function() {
             pocketBaseManageOptions: function(extra) {
                 return Object.assign({
                     settings: this.settings || {},
-                    timeoutMs: 8000,
-                    secureTimeoutMs: 10000
+                    timeoutMs: 20000,
+                    secureTimeoutMs: 30000
                 }, extra || {});
             },
             syncLocalMenuItem: function(id, itemData) {
@@ -4281,7 +4281,7 @@ window._doCountUp = function() {
                 var changedItems = [];
                 self.menuItems.forEach(function(item, idx) { updates['menu/' + item.id + '/sortOrder'] = idx; });
                 var rows = self.menuItems.map(function(item, idx) { item.sortOrder = idx; return { id: item.id, sortOrder: idx }; });
-                self.updateMenuSortPrimary(rows, function() { return update(ref(db), updates); })
+                self.updateMenuSortPrimary(rows, null)
                     .then(function(result) {
                         rememberPublicMenuItems({ settings: self.settings || {} }, self.menuItems || []);
                         return result;
@@ -5296,23 +5296,51 @@ window._doCountUp = function() {
                         if (!Array.isArray(out.data)) out.data = [];
                         return out;
                     });
+                var needsAxis = normalized.series.some(function(row) {
+                    return row && (row.type === 'bar' || row.type === 'line' || row.type === 'scatter');
+                });
+                if (needsAxis && normalized.xAxis === undefined) normalized.xAxis = { type: 'category', data: [] };
+                if (needsAxis && normalized.yAxis === undefined) normalized.yAxis = { type: 'value' };
                 if (normalized.xAxis !== undefined) normalized.xAxis = normalizeAxis(normalized.xAxis, 'category');
                 if (normalized.yAxis !== undefined) normalized.yAxis = normalizeAxis(normalized.yAxis, 'value');
                 return normalized;
             },
             setReportChartOption: function(chart, title, option) {
                 if (!chart) return;
-                try {
-                    option = this.normalizeReportChartOption(option);
-                    if (!option || !Array.isArray(option.series) || option.series.some(function(row) { return !row || !row.type; })) {
+                var self = this;
+                var normalizedOption = null;
+                var applyOption = function(targetChart) {
+                    if (!targetChart) throw new Error('missing chart instance');
+                    if (!normalizedOption || !Array.isArray(normalizedOption.series) || normalizedOption.series.some(function(row) { return !row || !row.type; })) {
                         throw new Error('invalid chart option series');
                     }
-                    try { chart.clear(); } catch (clearErr) {}
-                    chart.setOption(option, { notMerge: true, lazyUpdate: false });
-                    if (typeof chart.resize === 'function') chart.resize();
+                    try { targetChart.clear(); } catch (clearErr) {}
+                    targetChart.setOption(normalizedOption, { notMerge: true, lazyUpdate: false });
+                    if (typeof targetChart.resize === 'function') targetChart.resize();
+                    return targetChart;
+                };
+                try {
+                    normalizedOption = this.normalizeReportChartOption(option);
+                    applyOption(chart);
                 } catch (e) {
-                    console.warn('report chart render failed: ' + (title || ''), e);
-                    this.setEmptyReportChart(chart, title || '統計圖');
+                    var recovered = false;
+                    try {
+                        var dom = chart && typeof chart.getDom === 'function' ? chart.getDom() : null;
+                        var chartId = dom && dom.id ? dom.id : '';
+                        if (dom && typeof echarts !== 'undefined') {
+                            try { if (chart && typeof chart.dispose === 'function') chart.dispose(); } catch (disposeErr) {}
+                            var freshChart = echarts.init(dom, null, { renderer: 'canvas' });
+                            if (chartId) self.reportCharts[chartId] = freshChart;
+                            applyOption(freshChart);
+                            recovered = true;
+                        }
+                    } catch (retryErr) {
+                        console.warn('report chart retry failed: ' + (title || ''), retryErr);
+                    }
+                    if (!recovered) {
+                        console.warn('report chart render failed: ' + (title || ''), e);
+                        this.setEmptyReportChart(chart, title || '圖表');
+                    }
                 }
             },
             escapeReportTooltipHtml: function(value) {
