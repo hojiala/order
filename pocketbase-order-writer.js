@@ -1077,7 +1077,13 @@ export function readSettingsFromPocketBase(options) {
             return cached || paused;
         });
     }
-    return requestJson(config.baseUrl + "/api/order-public/settings", { method: "GET" }, timeoutMs)
+    var settingsEndpoints = ["/api/order-public/settings-inline", "/api/order-public/settings-safe", "/api/order-public/settings"];
+    function trySettingsEndpoint(index, lastErr) {
+        if (index >= settingsEndpoints.length) return Promise.reject(lastErr || new Error("PocketBase settings endpoint failed"));
+        return requestJson(config.baseUrl + settingsEndpoints[index], { method: "GET" }, timeoutMs)
+            .catch(function(err) { return trySettingsEndpoint(index + 1, err); });
+    }
+    return trySettingsEndpoint(0)
         .then(function(data) {
             publicSettingsPausedUntil = 0;
             var parsed = parsePublicSettingsResponse(data);
@@ -1135,7 +1141,13 @@ export function listMenuItemsFromPocketBase(options) {
             return cached || paused;
         });
     }
-    return requestJson(config.baseUrl + "/api/order-public/menu", { method: "GET" }, timeoutMs)
+    var menuEndpoints = ["/api/order-public/menu-inline", "/api/order-public/menu-safe", "/api/order-public/menu"];
+    function tryMenuEndpoint(index, lastErr) {
+        if (index >= menuEndpoints.length) return Promise.reject(lastErr || new Error("PocketBase menu endpoint failed"));
+        return requestJson(config.baseUrl + menuEndpoints[index], { method: "GET" }, timeoutMs)
+            .catch(function(err) { return tryMenuEndpoint(index + 1, err); });
+    }
+    return tryMenuEndpoint(0)
         .then(function(data) {
             publicMenuPausedUntil = 0;
             var parsed = parsePublicMenuResponse(data, options);
