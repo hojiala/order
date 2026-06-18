@@ -1073,13 +1073,19 @@ export function readSettingsFromPocketBase(options) {
             return cached || { ok: false, backend: "pocketbase_cache", skipped: true, reason: "public_settings_cache_miss", settings: {} };
         });
     }
+    if (options.forceFresh !== true) {
+        return cachedPublicResult("settings", cacheKey).then(function(cached) {
+            if (cached) return cached;
+            return readSettingsFromPocketBase(Object.assign({}, options, { forceFresh: true }));
+        });
+    }
     var paused = (options.ignoreCooldown === true || options.forceFresh === true) ? null : endpointCooldownResult(publicSettingsPausedUntil, { settings: {} });
     if (paused) {
         return cachedPublicResult("settings", cacheKey, { cooldown: true, retryAfterMs: paused.retryAfterMs }).then(function(cached) {
             return cached || paused;
         });
     }
-    var settingsEndpoints = ["/api/order-public/settings-inline", "/api/order-public/settings-safe", "/api/order-public/settings"];
+    var settingsEndpoints = ["/api/order-public/settings"];
     function trySettingsEndpoint(index, lastErr) {
         if (index >= settingsEndpoints.length) return Promise.reject(lastErr || new Error("PocketBase settings endpoint failed"));
         return requestJson(config.baseUrl + settingsEndpoints[index], { method: "GET" }, timeoutMs)
@@ -1136,6 +1142,15 @@ export function listMenuItemsFromPocketBase(options) {
             return cached || { ok: false, backend: "pocketbase_cache", skipped: true, reason: "public_menu_cache_miss", items: [] };
         });
     }
+    if (options.forceFresh !== true) {
+        return cachedPublicResult("menu", cacheKey).then(function(cached) {
+            if (cached) {
+                if (options.activeOnly) cached.items = (cached.items || []).filter(function(item) { return item && item.active !== false; });
+                return cached;
+            }
+            return listMenuItemsFromPocketBase(Object.assign({}, options, { forceFresh: true }));
+        });
+    }
     var paused = (options.ignoreCooldown === true || options.forceFresh === true) ? null : endpointCooldownResult(publicMenuPausedUntil, { items: [] });
     if (paused) {
         return cachedPublicResult("menu", cacheKey, { cooldown: true, retryAfterMs: paused.retryAfterMs }).then(function(cached) {
@@ -1143,7 +1158,7 @@ export function listMenuItemsFromPocketBase(options) {
             return cached || paused;
         });
     }
-    var menuEndpoints = ["/api/order-public/menu-inline", "/api/order-public/menu-safe", "/api/order-public/menu"];
+    var menuEndpoints = ["/api/order-public/menu"];
     function tryMenuEndpoint(index, lastErr) {
         if (index >= menuEndpoints.length) return Promise.reject(lastErr || new Error("PocketBase menu endpoint failed"));
         return requestJson(config.baseUrl + menuEndpoints[index], { method: "GET" }, timeoutMs)
@@ -1268,7 +1283,10 @@ export function deleteMenuItemFromPocketBase(itemId, options) {
 export function updateMenuSortInPocketBase(items, options) {
     options = options || {};
     return writeManageRequest("menu", { action: "sort", items: plainJson(items || [], []) }, options)
-        .then(function(result) { return Object.assign({ ok: true, backend: "pocketbase" }, result || {}); });
+        .then(function(result) {
+            if (result && result.ok) rememberPublicMenuItems(options, items || []);
+            return Object.assign({ ok: true, backend: "pocketbase" }, result || {});
+        });
 }
 
 export function writeSettingsToPocketBase(settingsPatch, options) {
