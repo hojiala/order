@@ -1811,7 +1811,7 @@ window._doCountUp = function() {
                     dailyHours: {},
                     pickupDays: 3, pickupInterval: 30, linePayServerUrl: '', linePayConfirmUrl: '', pocketBaseUrl: '', pocketBaseOrdersCollection: 'orders', telegramFallbackNotifyEndpoint: '', telegramFallbackMessageTemplate: '⚠️ {storeName}\n線上點餐已切換到 Firebase 備援模式\n\n原因：{reason}\n時間：{time}\n處理方式：請用出餐後台查看新訂單', announcements: [],
                     holidays: [],
-                    weeklyDaysOff: [0],
+                    weeklyDaysOff: [],
                     dailyThemes: cloneDefaultDailyThemes(),
                     categories: ['套餐','單點','蛋餅、燒餅','漢堡、蝸牛堡','吐司、厚片','其它、飲品'],
                     categorySubcategories: {},
@@ -3820,10 +3820,11 @@ window._doCountUp = function() {
                             self.menuReadBackend = result.backend || 'pocketbase';
                             return;
                         }
-                        return loadFromFirebase();
+                        console.warn('PocketBase menu empty; keeping current menu');
+                        return;
                     }).catch(function(err) {
-                        console.warn('PocketBase menu read failed; using Firebase fallback:', err && err.message ? err.message : err);
-                        return loadFromFirebase();
+                        console.warn('PocketBase menu read failed; keeping current menu:', err && err.message ? err.message : err);
+                        return;
                     });
                 };
                 if (hasCurrentMenu) return loadFromPrimary();
@@ -4277,10 +4278,13 @@ window._doCountUp = function() {
             },
             saveMenuOrder: function() {
                 var self = this;
-                var updates = {};
-                var changedItems = [];
-                self.menuItems.forEach(function(item, idx) { updates['menu/' + item.id + '/sortOrder'] = idx; });
-                var rows = self.menuItems.map(function(item, idx) { item.sortOrder = idx; return { id: item.id, sortOrder: idx }; });
+                var rows = [];
+                self.menuItems.forEach(function(item, idx) {
+                    var oldSort = Number(item.sortOrder);
+                    if (!Number.isFinite(oldSort) || oldSort !== idx) rows.push({ id: item.id, sortOrder: idx });
+                    item.sortOrder = idx;
+                });
+                if (!rows.length) { self.menuOrderDirty = false; alert('✅ 排序已儲存'); return; }
                 self.updateMenuSortPrimary(rows, null)
                     .then(function(result) {
                         rememberPublicMenuItems({ settings: self.settings || {} }, self.menuItems || []);
@@ -6482,10 +6486,9 @@ window._doCountUp = function() {
                         apply(result.settings, 'pocketbase');
                         return;
                     }
-                    return get(ref(db, 'settings')).then(function(snap) { if (snap.exists()) { var value = snap.val() || {}; apply(value, 'firebase'); rememberPublicSettings({ settings: self.settings || {} }, value); } });
+                    console.warn('PocketBase settings empty; keeping current settings');
                 }).catch(function(err) {
-                    console.warn('PocketBase settings read failed; using Firebase fallback:', err && err.message ? err.message : err);
-                    return get(ref(db, 'settings')).then(function(snap) { if (snap.exists()) { var value = snap.val() || {}; apply(value, 'firebase'); rememberPublicSettings({ settings: self.settings || {} }, value); } });
+                    console.warn('PocketBase settings read failed; keeping current settings:', err && err.message ? err.message : err);
                 });
             },
             saveSettings: function() {

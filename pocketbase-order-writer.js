@@ -880,6 +880,8 @@ function menuItemFromRecord(record) {
     payload = decodeJsonLike(payload);
     if (!payload || typeof payload !== "object" || Array.isArray(payload)) payload = {};
     var item = Object.assign({}, row, payload);
+    var rowSort = finiteNumber(row.sortOrder);
+    if (rowSort !== null) item.sortOrder = rowSort;
     item.id = text(payload.id || payload.item_id || payload.itemId || payload.menu_id || payload.menuId || payload.firebase_id || payload.firebaseId || row.firebase_id || row.firebaseId || row.item_id || row.itemId || row.menu_id || row.menuId || row.id || (record && record.id));
     return item;
 }

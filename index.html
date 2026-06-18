@@ -675,7 +675,7 @@
                     pickupDays: 3,
                     pickupInterval: 30, linePayServerUrl: '', linePayConfirmUrl: '', pocketBaseUrl: '', pocketBaseOrdersCollection: 'orders', counterResetTime: '', counterMaxNo: 999, announcements: [],
                     holidays: [],
-                    weeklyDaysOff: [0]
+                    weeklyDaysOff: []
                 },
                 currentView: 'menu',
                 categories: [],
@@ -819,14 +819,11 @@
         methods: {
 
             knownMenuImageFallback:function(item){
-                var raw=[item&&item.name,item&&item.label,item&&item.key,item&&item.shortName,item&&item.printName].join('').replace(/\s+/g,'');
-                if(raw.indexOf('\u82dc\u84ff\u82bd')!==-1&&raw.indexOf('\u8778\u725b\u5821')!==-1)return 'https://i.ibb.co/dJmxyXJ9/image.webp';
                 return '';
             },
             handleMenuImageError:function(item){
-                var url=this.knownMenuImageFallback(item);
-                if(!item||!url||item.img===url)return;
-                if(this.$set)this.$set(item,'img',url);else item.img=url;
+                if(!item)return;
+                if(this.$set)this.$set(item,'img','');else item.img='';
             },
             syncPocketBaseOrder: function(orderId, orderData, sourcePage) {
                 return writeOrderToPocketBase(orderId, orderData, {
@@ -1074,10 +1071,9 @@
                 };
                 return readSettingsFromPocketBase({ settings: this.settings || {}, timeoutMs: options.timeoutMs || 2200, forceFresh: !!options.forceFresh, ignoreCooldown: !!options.ignoreCooldown }).then(function(result) {
                     if (result && result.ok && result.settings && Object.keys(result.settings).length) { apply(result.settings, 'pocketbase'); return; }
-                    return get(ref(db, 'settings')).then(function(snap) { if (snap.exists()) { var value = snap.val() || {}; apply(value, 'firebase'); rememberPublicSettings({ settings: self.settings || {} }, value); } });
+                    console.warn('PocketBase settings empty; keeping current settings');
                 }).catch(function(e) {
-                    console.warn('PocketBase settings read failed; using Firebase fallback:', e && e.message ? e.message : e);
-                    return get(ref(db, 'settings')).then(function(snap) { if (snap.exists()) { var value = snap.val() || {}; apply(value, 'firebase'); rememberPublicSettings({ settings: self.settings || {} }, value); } });
+                    console.warn('PocketBase settings read failed; keeping current settings:', e && e.message ? e.message : e);
                 });
             },
             startSettingsPrimaryRefresh: function() {
@@ -1130,23 +1126,11 @@
                 };
                 return listMenuItemsFromPocketBase({ settings: this.settings || {}, activeOnly: true, timeoutMs: options.timeoutMs || 2500, forceFresh: !!options.forceFresh, ignoreCooldown: !!options.ignoreCooldown }).then(function(result) {
                     if (result && result.ok) { applyMenuSettings(result.items || [], self.settings || {}); self.menuReadBackend = 'pocketbase'; return; }
-                    return get(ref(db, 'menu')).then(function(snap) {
-                        var data = snap.val() || {}, items = [];
-                        for (var id in data) if (data[id] && data[id].active !== false) items.push(Object.assign({ id: id }, data[id]));
-                        items.sort(function(a, b) { if (a.sortOrder !== undefined && b.sortOrder !== undefined) return a.sortOrder - b.sortOrder; if (a.sortOrder !== undefined) return -1; if (b.sortOrder !== undefined) return 1; return (a.createdAt || 0) - (b.createdAt || 0); });
-                        applyMenuSettings(items, self.settings || {});
-                        rememberPublicMenuItems({ settings: self.settings || {} }, items);
-                        self.menuReadBackend = 'firebase';
-                    });
+                    console.warn('PocketBase menu empty; keeping current/cache menu');
+                    return;
                 }).catch(function(e) {
-                    console.warn('PocketBase menu read failed; using Firebase fallback:', e && e.message ? e.message : e);
-                    return get(ref(db, 'menu')).then(function(snap) {
-                        var data = snap.val() || {}, items = [];
-                        for (var id in data) if (data[id] && data[id].active !== false) items.push(Object.assign({ id: id }, data[id]));
-                        applyMenuSettings(items, self.settings || {});
-                        rememberPublicMenuItems({ settings: self.settings || {} }, items);
-                        self.menuReadBackend = 'firebase';
-                    });
+                    console.warn('PocketBase menu read failed; keeping current/cache menu:', e && e.message ? e.message : e);
+                    return;
                 }).then(function() { self.menuReady = true; });
             },
             initDateTime: function() {
