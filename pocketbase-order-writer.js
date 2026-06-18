@@ -882,6 +882,10 @@ function menuItemFromRecord(record) {
     var item = Object.assign({}, row, payload);
     var rowSort = finiteNumber(row.sortOrder);
     if (rowSort !== null) item.sortOrder = rowSort;
+    if (!item.img && item.imageUrl) item.img = item.imageUrl;
+    if (!item.img && item.image) item.img = item.image;
+    if (!item.img && item.photo) item.img = item.photo;
+    if (!item.imageUrl && item.img) item.imageUrl = item.img;
     item.id = text(payload.id || payload.item_id || payload.itemId || payload.menu_id || payload.menuId || payload.firebase_id || payload.firebaseId || row.firebase_id || row.firebaseId || row.item_id || row.itemId || row.menu_id || row.menuId || row.id || (record && record.id));
     return item;
 }
@@ -1032,6 +1036,7 @@ function settingsLooksUsable(settings) {
 function menuLooksUsable(items) {
     if (!Array.isArray(items)) return false;
     var stats = menuRichnessStats(items);
+    return stats.basicCount >= Math.min(10, Math.max(1, stats.count));
     if (!stats.basicCount) return false;
     // This menu normally has many optionGroups and explicit sortOrder values.
     // If a PB response only has names/categories/addons, treating it as fresh data
