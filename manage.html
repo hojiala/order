@@ -3756,7 +3756,8 @@ window._doCountUp = function() {
             },
             loadMenu: function() {
                 var self = this;
-                if (!(Array.isArray(this.menuItems) && this.menuItems.length > 0)) this.menuLoading = true;
+                var hasCurrentMenu = Array.isArray(this.menuItems) && this.menuItems.length > 0;
+                if (!hasCurrentMenu) this.menuLoading = true;
                 var apply = function(items) {
                     var arr = Array.isArray(items) ? items.slice() : [];
                     var previousById = {};
@@ -3823,6 +3824,12 @@ window._doCountUp = function() {
                         self.menuReadBackend = 'firebase';
                     });
                 };
+                var finishWithoutMenu = function(backend) {
+                    self.menuLoading = false;
+                    if (!Array.isArray(self.menuItems)) self.menuItems = [];
+                    if (backend) self.menuReadBackend = backend;
+                    return;
+                };
                 var loadFromPrimary = function() {
                     return listMenuItemsFromPocketBase({ settings: self.settings || {}, timeoutMs: 6000, allowDirectCollectionFallback: true }).then(function(result) {
                         if (result && result.ok && result.items && result.items.length) {
@@ -3831,10 +3838,18 @@ window._doCountUp = function() {
                             return;
                         }
                         console.warn('PocketBase menu empty; keeping current menu');
-                        return;
+                        if (hasCurrentMenu) return finishWithoutMenu(self.menuReadBackend || 'current');
+                        return loadFromFirebase().catch(function(firebaseErr) {
+                            console.warn('Firebase menu fallback failed:', firebaseErr && firebaseErr.message ? firebaseErr.message : firebaseErr);
+                            return finishWithoutMenu('empty');
+                        });
                     }).catch(function(err) {
                         console.warn('PocketBase menu read failed; keeping current menu:', err && err.message ? err.message : err);
-                        return;
+                        if (hasCurrentMenu) return finishWithoutMenu(self.menuReadBackend || 'current');
+                        return loadFromFirebase().catch(function(firebaseErr) {
+                            console.warn('Firebase menu fallback failed:', firebaseErr && firebaseErr.message ? firebaseErr.message : firebaseErr);
+                            return finishWithoutMenu('error');
+                        });
                     });
                 };
                 return loadFromPrimary();
