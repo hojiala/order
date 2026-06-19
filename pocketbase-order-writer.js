@@ -1036,8 +1036,8 @@ function settingsLooksUsable(settings) {
 function menuLooksUsable(items) {
     if (!Array.isArray(items)) return false;
     var stats = menuRichnessStats(items);
-    return stats.basicCount >= Math.min(10, Math.max(1, stats.count));
     if (!stats.basicCount) return false;
+    if (stats.basicCount < Math.min(10, Math.max(1, stats.count))) return false;
     // This menu normally has many optionGroups and explicit sortOrder values.
     // If a PB response only has names/categories/addons, treating it as fresh data
     // would wipe套餐 choices and scramble item order on the storefront.
