@@ -1133,7 +1133,9 @@ export function readSettingsFromPocketBase(options) {
                         result.settings = {};
                         return result;
                     }
-                    return { ok: true, backend: "pocketbase", settings: normalizeSettingsObject(settingsFromRecords(result.records)), records: result.records };
+                    var parsed = { ok: true, backend: "pocketbase", settings: normalizeSettingsObject(settingsFromRecords(result.records)), records: result.records };
+                    writePublicCache(cacheKey, parsed);
+                    return parsed;
                 });
             }
             publicSettingsPausedUntil = Date.now() + PUBLIC_ENDPOINT_COOLDOWN_MS;
@@ -1224,7 +1226,9 @@ export function listMenuItemsFromPocketBase(options) {
                     }
                     var items = dedupeMenuItems(result.records.map(menuItemFromRecord));
                     if (options.activeOnly) items = items.filter(function(item) { return item && item.active !== false; });
-                    return { ok: true, backend: "pocketbase", items: sortMenuItems(items), records: result.records };
+                    var parsed = { ok: true, backend: "pocketbase", items: sortMenuItems(items), records: result.records };
+                    writePublicCache(cacheKey, Object.assign({}, parsed, { items: parsed.items || [] }));
+                    return parsed;
                 });
             }
             publicMenuPausedUntil = Date.now() + PUBLIC_ENDPOINT_COOLDOWN_MS;
@@ -1321,7 +1325,24 @@ export function updateMenuSortInPocketBase(items, options) {
     options = options || {};
     return writeManageRequest("menu", { action: "sort", items: plainJson(items || [], []) }, options)
         .then(function(result) {
-            if (result && result.ok) rememberPublicMenuItems(options, items || []);
+            if (result && result.ok) {
+                var nextItems = Array.isArray(result.items) && result.items.length ? result.items : null;
+                if (!nextItems && Array.isArray(options.currentMenuItems) && options.currentMenuItems.length) {
+                    var orderById = {};
+                    (items || []).forEach(function(row) {
+                        var id = text(row && row.id);
+                        var sortOrder = finiteNumber(row && row.sortOrder);
+                        if (!id || sortOrder === null) return;
+                        orderById[id] = sortOrder;
+                    });
+                    nextItems = options.currentMenuItems.map(function(item) {
+                        var id = text(item && item.id);
+                        if (!id || orderById[id] === undefined) return item;
+                        return Object.assign({}, item, { sortOrder: orderById[id] });
+                    });
+                }
+                if (Array.isArray(nextItems) && nextItems.length) rememberPublicMenuItems(options, nextItems);
+            }
             return Object.assign({ ok: true, backend: "pocketbase" }, result || {});
         });
 }
