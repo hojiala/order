@@ -1079,9 +1079,25 @@ export function readSettingsFromPocketBase(options) {
         });
     }
     if (options.forceFresh !== true) {
-        return cachedPublicResult("settings", cacheKey).then(function(cached) {
-            if (cached) return cached;
-            return readSettingsFromPocketBase(Object.assign({}, options, { forceFresh: true }));
+        return readSettingsFromPocketBase(Object.assign({}, options, {
+            forceFresh: true,
+            disableCacheFallback: true
+        })).then(function(fresh) {
+            if (fresh && fresh.ok && settingsLooksUsable(fresh.settings)) return fresh;
+            return cachedPublicResult("settings", cacheKey).then(function(cached) {
+                return cached || fresh || { ok: false, backend: "pocketbase", settings: {} };
+            });
+        }).catch(function(err) {
+            return cachedPublicResult("settings", cacheKey).then(function(cached) {
+                if (cached) return cached;
+                return {
+                    ok: false,
+                    backend: "pocketbase",
+                    endpointError: err,
+                    message: err && err.message ? err.message : String(err),
+                    settings: {}
+                };
+            });
         });
     }
     var paused = (options.ignoreCooldown === true || options.forceFresh === true) ? null : endpointCooldownResult(publicSettingsPausedUntil, { settings: {} });
@@ -1148,12 +1164,28 @@ export function listMenuItemsFromPocketBase(options) {
         });
     }
     if (options.forceFresh !== true) {
-        return cachedPublicResult("menu", cacheKey).then(function(cached) {
-            if (cached) {
-                if (options.activeOnly) cached.items = (cached.items || []).filter(function(item) { return item && item.active !== false; });
-                return cached;
-            }
-            return listMenuItemsFromPocketBase(Object.assign({}, options, { forceFresh: true }));
+        return listMenuItemsFromPocketBase(Object.assign({}, options, {
+            forceFresh: true,
+            disableCacheFallback: true
+        })).then(function(fresh) {
+            if (fresh && fresh.ok && menuLooksUsable(fresh.items)) return fresh;
+            return cachedPublicResult("menu", cacheKey).then(function(cached) {
+                if (cached && options.activeOnly) cached.items = (cached.items || []).filter(function(item) { return item && item.active !== false; });
+                if (fresh && options.activeOnly) fresh.items = (fresh.items || []).filter(function(item) { return item && item.active !== false; });
+                return cached || fresh || { ok: false, backend: "pocketbase", items: [] };
+            });
+        }).catch(function(err) {
+            return cachedPublicResult("menu", cacheKey).then(function(cached) {
+                if (cached && options.activeOnly) cached.items = (cached.items || []).filter(function(item) { return item && item.active !== false; });
+                if (cached) return cached;
+                return {
+                    ok: false,
+                    backend: "pocketbase",
+                    endpointError: err,
+                    message: err && err.message ? err.message : String(err),
+                    items: []
+                };
+            });
         });
     }
     var paused = (options.ignoreCooldown === true || options.forceFresh === true) ? null : endpointCooldownResult(publicMenuPausedUntil, { items: [] });
