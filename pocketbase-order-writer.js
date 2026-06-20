@@ -1059,23 +1059,17 @@ function parsePublicSettingsResponse(data) {
 
 function settingsLooksUsable(settings) {
     settings = settings || {};
-    var categories = Array.isArray(settings.categories) ? settings.categories : [];
-    if (!categories.length) return false;
     if (settings.openTime || settings.closeTime || settings.pickupDays || settings.pickupInterval) return true;
-    return false;
+    if (Array.isArray(settings.categories) && settings.categories.length) return true;
+    if (Array.isArray(settings.weeklyDaysOff) && settings.weeklyDaysOff.length) return true;
+    return Object.keys(settings).length > 0;
 }
 
 function menuLooksUsable(items) {
     if (!Array.isArray(items)) return false;
     var stats = menuRichnessStats(items);
-    if (!stats.basicCount) return false;
-    if (stats.basicCount < Math.min(10, Math.max(1, stats.count))) return false;
-    // This menu normally has many optionGroups and explicit sortOrder values.
-    // If a PB response only has names/categories/addons, treating it as fresh data
-    // would wipe套餐 choices and scramble item order on the storefront.
-    if (stats.count >= 40 && stats.optionGroupCount === 0) return false;
-    if (stats.count >= 40 && stats.sortOrderCount < Math.max(10, Math.floor(stats.count * 0.25))) return false;
-    return true;
+    if (!stats.count || !stats.basicCount) return false;
+    return stats.basicCount >= Math.min(3, stats.count);
 }
 
 function menuRichnessStats(items) {
