@@ -750,7 +750,8 @@ function settingsFromRecords(records) {
     var firstObject = null;
     records.forEach(function(record) {
         var row = stripPocketBaseSystemFields(record);
-        var key = text(row.key || row.setting_key || row.settingKey || (row.value !== undefined ? row.name : ""));
+        var hasStoredValue = row.value !== undefined || row.data !== undefined || row.json !== undefined || row.settings !== undefined;
+        var key = text(row.key || row.setting_key || row.settingKey || (hasStoredValue ? row.name : ""));
         if (key) {
             sawKeyed = true;
             var value = row.value;
