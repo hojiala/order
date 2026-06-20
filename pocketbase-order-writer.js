@@ -4,7 +4,7 @@ const DEFAULT_POCKETBASE_ORDER_ENDPOINT = "https://yuangi-secure-order.inovaxt.w
 const DEFAULT_TELEGRAM_NOTIFY_ENDPOINT = "https://yuangi-secure-order.inovaxt.workers.dev/api/notify/fallback";
 const DEFAULT_TIMEOUT_MS = 6000;
 const RESET_TIMEOUT_MS = 10000;
-const PUBLIC_ENDPOINT_COOLDOWN_MS = 15 * 1000;
+const PUBLIC_ENDPOINT_COOLDOWN_MS = 2 * 1000;
 const PUBLIC_CACHE_DB_NAME = "pb_public_snapshots_v3";
 const PUBLIC_CACHE_STORE = "snapshots";
 const PUBLIC_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -768,7 +768,15 @@ function settingsFromRecords(records) {
         var payload = row.settings || row.data || row.value || row.json || {};
         payload = normalizeSettingsObject(payload);
         if (!payload || typeof payload !== "object" || Array.isArray(payload)) payload = {};
-        if (!firstObject) firstObject = Object.assign({}, row, payload);
+        if (!firstObject) {
+            firstObject = Object.assign({}, payload);
+            Object.keys(row || {}).forEach(function(field) {
+                if (["settings", "data", "value", "json"].indexOf(field) !== -1) return;
+                var value = row[field];
+                if (value === undefined || value === null || value === "") return;
+                firstObject[field] = decodeJsonLike(value);
+            });
+        }
     });
     if (sawKeyed) return normalizeSettingsObject(Object.assign({}, firstObject || {}, keyed));
     return normalizeSettingsObject(firstObject || {});
@@ -839,10 +847,16 @@ function dedupeMenuItems(items) {
         if (createdNumber(item && (item.createdAt || item.created_at))) score += 1;
         return score;
     }
+    function freshness(item) {
+        return createdNumber(item && (item.updatedAt || item.updated_at || item.createdAt || item.created_at));
+    }
     function mergeItem(existing, incoming) {
         existing = existing || {};
         incoming = incoming || {};
-        var primary = quality(incoming) > quality(existing) ? incoming : existing;
+        var incomingQuality = quality(incoming);
+        var existingQuality = quality(existing);
+        var primary = incomingQuality > existingQuality ? incoming : existing;
+        if (incomingQuality === existingQuality && freshness(incoming) > freshness(existing)) primary = incoming;
         var secondary = primary === incoming ? existing : incoming;
         var merged = Object.assign({}, secondary, primary);
         ["subCategory", "img", "desc", "shortName", "printName", "category", "price", "station", "availableAfter"].forEach(function(field) {
@@ -879,9 +893,27 @@ function menuItemFromRecord(record) {
     var payload = row.item || row.data || row.value || row.json || {};
     payload = decodeJsonLike(payload);
     if (!payload || typeof payload !== "object" || Array.isArray(payload)) payload = {};
-    var item = Object.assign({}, row, payload);
+    var item = Object.assign({}, payload);
+    [
+        "name", "shortName", "printName", "price", "category", "subCategory", "desc", "img",
+        "imageUrl", "image", "photo", "options", "optionGroups", "posExtras", "station",
+        "printStations", "availableAfter", "active", "sortOrder", "createdAt", "updatedAt",
+        "firebase_id", "firebaseId", "item_id", "itemId", "menu_id", "menuId"
+    ].forEach(function(field) {
+        var value = row[field];
+        if (value === undefined || value === null || value === "") return;
+        item[field] = decodeJsonLike(value);
+    });
     var rowSort = finiteNumber(row.sortOrder);
     if (rowSort !== null) item.sortOrder = rowSort;
+    var canonicalImage = text(
+        item.img || item.imageUrl || item.image || item.photo || item.photoUrl || item.imgUrl || item.picture ||
+        row.img || row.imageUrl || row.image || row.photo || row.photoUrl || row.imgUrl || row.picture
+    ).trim();
+    if (canonicalImage) {
+        item.img = canonicalImage;
+        item.imageUrl = canonicalImage;
+    }
     if (!item.img && item.imageUrl) item.img = item.imageUrl;
     if (!item.img && item.image) item.img = item.image;
     if (!item.img && item.photo) item.img = item.photo;
@@ -1106,6 +1138,27 @@ export function readSettingsFromPocketBase(options) {
             return cached || paused;
         });
     }
+    function loadSettingsCollection(endpointErr) {
+        var collection = collectionOption(options, ["pocketBaseSettingsCollection", "pocketbaseSettingsCollection", "settingsCollection"], "settings");
+        return listPocketBaseCollection(options, collection, {
+            perPage: 100,
+            maxPages: 3,
+            timeoutMs: timeoutMs
+        }).then(function(result) {
+            if (!result.ok) {
+                result.endpointError = endpointErr;
+                result.settings = {};
+                return result;
+            }
+            var parsed = { ok: true, backend: "pocketbase", settings: normalizeSettingsObject(settingsFromRecords(result.records)), records: result.records };
+            writePublicCache(cacheKey, parsed);
+            return parsed;
+        });
+    }
+    var canUseDirectSettingsCollection = options.allowDirectCollectionFallback === true && !!config.token;
+    if (canUseDirectSettingsCollection && options.forceFresh === true && options.disableCacheFallback === true) {
+        return loadSettingsCollection(null);
+    }
     var settingsEndpoints = ["/api/order-public/settings"];
     function trySettingsEndpoint(index, lastErr) {
         if (index >= settingsEndpoints.length) return Promise.reject(lastErr || new Error("PocketBase settings endpoint failed"));
@@ -1121,23 +1174,7 @@ export function readSettingsFromPocketBase(options) {
             return parsed;
         })
         .catch(function(endpointErr) {
-            if (options.allowDirectCollectionFallback === true) {
-                var collection = collectionOption(options, ["pocketBaseSettingsCollection", "pocketbaseSettingsCollection", "settingsCollection"], "settings");
-                return listPocketBaseCollection(options, collection, {
-                    perPage: 100,
-                    maxPages: 3,
-                    timeoutMs: timeoutMs
-                }).then(function(result) {
-                    if (!result.ok) {
-                        result.endpointError = endpointErr;
-                        result.settings = {};
-                        return result;
-                    }
-                    var parsed = { ok: true, backend: "pocketbase", settings: normalizeSettingsObject(settingsFromRecords(result.records)), records: result.records };
-                    writePublicCache(cacheKey, parsed);
-                    return parsed;
-                });
-            }
+            if (canUseDirectSettingsCollection) return loadSettingsCollection(endpointErr);
             publicSettingsPausedUntil = Date.now() + PUBLIC_ENDPOINT_COOLDOWN_MS;
             var failed = {
                 ok: false,
@@ -1197,6 +1234,29 @@ export function listMenuItemsFromPocketBase(options) {
             return cached || paused;
         });
     }
+    function loadMenuCollection(endpointErr) {
+        var collection = collectionOption(options, ["pocketBaseMenuCollection", "pocketbaseMenuCollection", "menuCollection", "pocketBaseMenuItemsCollection"], "menu_items");
+        return listPocketBaseCollection(options, collection, {
+            perPage: 500,
+            maxPages: 10,
+            timeoutMs: timeoutMs
+        }).then(function(result) {
+            if (!result.ok) {
+                result.endpointError = endpointErr;
+                result.items = [];
+                return result;
+            }
+            var items = dedupeMenuItems(result.records.map(menuItemFromRecord));
+            if (options.activeOnly) items = items.filter(function(item) { return item && item.active !== false; });
+            var parsed = { ok: true, backend: "pocketbase", items: sortMenuItems(items), records: result.records };
+            writePublicCache(cacheKey, Object.assign({}, parsed, { items: parsed.items || [] }));
+            return parsed;
+        });
+    }
+    var canUseDirectMenuCollection = options.allowDirectCollectionFallback === true && !!config.token;
+    if (canUseDirectMenuCollection && options.forceFresh === true && options.disableCacheFallback === true) {
+        return loadMenuCollection(null);
+    }
     var menuEndpoints = ["/api/order-public/menu"];
     function tryMenuEndpoint(index, lastErr) {
         if (index >= menuEndpoints.length) return Promise.reject(lastErr || new Error("PocketBase menu endpoint failed"));
@@ -1212,25 +1272,7 @@ export function listMenuItemsFromPocketBase(options) {
             return parsed;
         })
         .catch(function(endpointErr) {
-            if (options.allowDirectCollectionFallback === true) {
-                var collection = collectionOption(options, ["pocketBaseMenuCollection", "pocketbaseMenuCollection", "menuCollection", "pocketBaseMenuItemsCollection"], "menu_items");
-                return listPocketBaseCollection(options, collection, {
-                    perPage: 500,
-                    maxPages: 10,
-                    timeoutMs: timeoutMs
-                }).then(function(result) {
-                    if (!result.ok) {
-                        result.endpointError = endpointErr;
-                        result.items = [];
-                        return result;
-                    }
-                    var items = dedupeMenuItems(result.records.map(menuItemFromRecord));
-                    if (options.activeOnly) items = items.filter(function(item) { return item && item.active !== false; });
-                    var parsed = { ok: true, backend: "pocketbase", items: sortMenuItems(items), records: result.records };
-                    writePublicCache(cacheKey, Object.assign({}, parsed, { items: parsed.items || [] }));
-                    return parsed;
-                });
-            }
+            if (canUseDirectMenuCollection) return loadMenuCollection(endpointErr);
             publicMenuPausedUntil = Date.now() + PUBLIC_ENDPOINT_COOLDOWN_MS;
             var failed = {
                 ok: false,
