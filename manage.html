@@ -3999,13 +3999,18 @@ window._doCountUp = function() {
                 return updateMenuSortInPocketBase(sortRows, this.pocketBaseManageOptions({ currentMenuItems: this.menuItems || [] }))
                     .then(function(result) {
                         if (result && result.ok) {
+                            if (typeof firebaseFallback === 'function') {
+                                return Promise.resolve(firebaseFallback()).catch(function(e) {
+                                    console.warn('Firebase menu sort mirror failed:', e && e.message ? e.message : e);
+                                }).then(function() { return result; });
+                            }
                             return result;
                         }
                         throw new Error((result && (result.message || result.reason)) || 'PocketBase menu sort unavailable');
                     })
                     .catch(function(err) {
                         console.warn('PocketBase menu sort failed:', err && err.message ? err.message : err);
-                        if (self.allowFirebaseManageFallback === true && typeof firebaseFallback === 'function') {
+                        if (typeof firebaseFallback === 'function') {
                             return Promise.resolve(firebaseFallback()).then(function(firebaseResult) {
                                 return { ok: true, backend: 'firebase', fallback: true, error: err, firebase: firebaseResult };
                             });
@@ -4018,13 +4023,18 @@ window._doCountUp = function() {
                 return writeSettingsToPocketBase(settingsPatch, this.pocketBaseManageOptions())
                     .then(function(result) {
                         if (result && result.ok) {
+                            if (typeof firebaseFallback === 'function') {
+                                return Promise.resolve(firebaseFallback()).catch(function(e) {
+                                    console.warn('Firebase settings mirror failed:', e && e.message ? e.message : e);
+                                }).then(function() { return result; });
+                            }
                             return result;
                         }
                         throw new Error((result && (result.message || result.reason)) || 'PocketBase settings write unavailable');
                     })
                     .catch(function(err) {
                         console.warn('PocketBase settings write failed:', err && err.message ? err.message : err);
-                        if (self.allowFirebaseManageFallback === true && typeof firebaseFallback === 'function') {
+                        if (typeof firebaseFallback === 'function') {
                             return Promise.resolve(firebaseFallback()).then(function(firebaseResult) {
                                 return { ok: true, backend: 'firebase', fallback: true, error: err, firebase: firebaseResult };
                             });
@@ -4303,11 +4313,18 @@ window._doCountUp = function() {
                 var rows = [];
                 self.menuItems.forEach(function(item, idx) {
                     var oldSort = Number(item.sortOrder);
-                    if (!Number.isFinite(oldSort) || oldSort !== idx) rows.push({ id: item.id, sortOrder: idx });
+                    if (!Number.isFinite(oldSort) || oldSort !== idx) rows.push({ id: item.id, name: item.name, category: item.category, price: item.price, sortOrder: idx });
                     item.sortOrder = idx;
                 });
                 if (!rows.length) { self.menuOrderDirty = false; alert('✅ 排序已儲存'); return; }
-                self.updateMenuSortPrimary(rows, null)
+                self.updateMenuSortPrimary(rows, function() {
+                    var updates = {};
+                    rows.forEach(function(row) {
+                        if (!row || !row.id) return;
+                        updates['menu/' + row.id + '/sortOrder'] = row.sortOrder;
+                    });
+                    return Object.keys(updates).length ? update(ref(db), updates) : Promise.resolve();
+                })
                     .then(function(result) {
                         rememberPublicMenuItems({ settings: self.settings || {} }, self.menuItems || []);
                         return result;

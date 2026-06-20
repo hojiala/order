@@ -743,6 +743,17 @@ function listPocketBaseCollection(options, collectionName, queryOptions) {
     });
 }
 
+function looksLikeSettingsPayload(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    return [
+        "isOpen", "dineinIsOpen", "openTime", "closeTime", "dailyHours",
+        "pickupDays", "pickupInterval", "holidays", "weeklyDaysOff",
+        "categories", "categorySubcategories", "posOnlyCategories", "stations"
+    ].some(function(key) {
+        return Object.prototype.hasOwnProperty.call(value, key);
+    });
+}
+
 function settingsFromRecords(records) {
     records = Array.isArray(records) ? records : [];
     var keyed = {};
@@ -752,6 +763,12 @@ function settingsFromRecords(records) {
         var row = stripPocketBaseSystemFields(record);
         var hasStoredValue = row.value !== undefined || row.data !== undefined || row.json !== undefined || row.settings !== undefined;
         var key = text(row.key || row.setting_key || row.settingKey || (hasStoredValue ? row.name : ""));
+        var payload = row.settings || row.data || row.value || row.json || {};
+        var normalizedPayload = normalizeSettingsObject(payload);
+        if (looksLikeSettingsPayload(normalizedPayload)) {
+            firstObject = Object.assign(firstObject || {}, normalizedPayload);
+            return;
+        }
         if (key) {
             sawKeyed = true;
             var value = row.value;
@@ -766,8 +783,7 @@ function settingsFromRecords(records) {
             }
             return;
         }
-        var payload = row.settings || row.data || row.value || row.json || {};
-        payload = normalizeSettingsObject(payload);
+        payload = normalizedPayload;
         if (!payload || typeof payload !== "object" || Array.isArray(payload)) payload = {};
         if (!firstObject) {
             firstObject = Object.assign({}, payload);
