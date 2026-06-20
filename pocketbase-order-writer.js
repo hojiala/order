@@ -653,7 +653,7 @@ function stripPocketBaseSystemFields(record) {
 
 function decodeJsonLike(value) {
     function bytesToString(bytes) {
-        if (!Array.isArray(bytes) || bytes.length < 4) return "";
+        if (!Array.isArray(bytes) || !bytes.length) return "";
         for (var i = 0; i < bytes.length; i++) {
             var n = Number(bytes[i]);
             if (!Number.isFinite(n) || n < 0 || n > 255) return "";
@@ -718,7 +718,8 @@ function normalizeSettingsObject(value) {
     if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) return {};
     var out = Object.assign({}, decoded);
     function stringList(input) {
-        var list = Array.isArray(input) ? input : (input && typeof input === "object" ? Object.values(input) : []);
+        var normalized = decodeJsonLike(input);
+        var list = Array.isArray(normalized) ? normalized : (normalized && typeof normalized === "object" ? Object.values(normalized) : []);
         var seen = {};
         return list.map(function(entry) {
             return text(decodeJsonLike(entry)).trim();
@@ -729,7 +730,8 @@ function normalizeSettingsObject(value) {
         });
     }
     function weekDayList(input) {
-        var list = Array.isArray(input) ? input : (input && typeof input === "object" ? Object.values(input) : []);
+        var normalized = decodeJsonLike(input);
+        var list = Array.isArray(normalized) ? normalized : (normalized && typeof normalized === "object" ? Object.values(normalized) : []);
         var seen = {};
         return list.map(function(entry) {
             return parseInt(decodeJsonLike(entry), 10);
@@ -740,7 +742,8 @@ function normalizeSettingsObject(value) {
         });
     }
     function subcategoryMap(raw, categories) {
-        var source = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+        var normalized = decodeJsonLike(raw);
+        var source = normalized && typeof normalized === "object" && !Array.isArray(normalized) ? normalized : {};
         var cats = Array.isArray(categories) ? categories : [];
         var result = {};
         cats.forEach(function(cat) {
@@ -1399,7 +1402,7 @@ function secureManageEndpoint(config, kind, options) {
     }
     var orderEndpoint = cleanBaseUrl(config.orderEndpoint || "");
     if (orderEndpoint) {
-        if (/\/api\/secure\/orders$/i.test(orderEndpoint)) return orderEndpoint.replace(/\/api\/secure\/orders$/i, "/api/manage/" + kind);
+        if (/\/api\/secure\/orders$/i.test(orderEndpoint)) return orderEndpoint.replace(/\/api\/secure\/orders$/i, "/api/secure/manage/" + kind);
         if (/\/api\/orders$/i.test(orderEndpoint)) return orderEndpoint.replace(/\/api\/orders$/i, "/api/manage/" + kind);
         return orderEndpoint.replace(/\/+$/, "") + "/manage/" + kind;
     }
