@@ -36,6 +36,41 @@ function text(value) {
     return value === null || value === undefined ? "" : String(value);
 }
 
+function hasCjkText(value) {
+    return /[\u3400-\u9fff\uf900-\ufaff]/.test(text(value));
+}
+
+function suspiciousTextScore(value) {
+    var raw = text(value);
+    if (!raw) return 0;
+    var matches = raw.match(/[ÃÂÅÆÇÐÑÕÖØåæçéèêëíìîïóòôõöúùûü¤¦¬œŸ\u0080-\u009f]/g);
+    return matches ? matches.length : 0;
+}
+
+function repairSuspiciousText(value) {
+    if (typeof value !== "string") return value;
+    var raw = value;
+    var trimmed = raw.trim();
+    if (!trimmed) return raw;
+    if (!suspiciousTextScore(raw) && !/[\u0080-\u00ff]/.test(raw)) return raw;
+    var candidate = raw;
+    for (var i = 0; i < 2; i++) {
+        try {
+            var repaired = decodeURIComponent(escape(candidate));
+            if (!repaired || repaired === candidate) break;
+            candidate = repaired;
+        } catch (e) {
+            break;
+        }
+    }
+    if (candidate === raw) return raw;
+    var rawScore = suspiciousTextScore(raw);
+    var candidateScore = suspiciousTextScore(candidate);
+    if (hasCjkText(candidate) && !hasCjkText(raw)) return candidate;
+    if (candidateScore < rawScore) return candidate;
+    return raw;
+}
+
 function plainJson(value, fallback) {
     if (value === null || value === undefined) return fallback;
     try {
@@ -693,7 +728,7 @@ function decodeJsonLike(value) {
         });
         return out;
     }
-    return current;
+    return typeof current === "string" ? repairSuspiciousText(current) : current;
 }
 
 function unwrapValueWrapper(value) {
@@ -717,9 +752,21 @@ function normalizeSettingsObject(value) {
     var decoded = unwrapValueWrapper(value);
     if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) return {};
     var out = Object.assign({}, decoded);
-    function stringList(input) {
+    function listLike(input) {
         var normalized = decodeJsonLike(input);
-        var list = Array.isArray(normalized) ? normalized : (normalized && typeof normalized === "object" ? Object.values(normalized) : []);
+        if (Array.isArray(normalized)) return normalized;
+        if (normalized && typeof normalized === "object") return Object.values(normalized);
+        if (normalized === undefined || normalized === null || normalized === "") return [];
+        if (typeof normalized === "string") {
+            var raw = normalized.trim();
+            if (!raw) return [];
+            if (raw.indexOf("、") !== -1) return raw.split("、");
+            if (raw.indexOf(",") !== -1) return raw.split(",");
+        }
+        return [normalized];
+    }
+    function stringList(input) {
+        var list = listLike(input);
         var seen = {};
         return list.map(function(entry) {
             return text(decodeJsonLike(entry)).trim();
@@ -730,8 +777,7 @@ function normalizeSettingsObject(value) {
         });
     }
     function weekDayList(input) {
-        var normalized = decodeJsonLike(input);
-        var list = Array.isArray(normalized) ? normalized : (normalized && typeof normalized === "object" ? Object.values(normalized) : []);
+        var list = listLike(input);
         var seen = {};
         return list.map(function(entry) {
             return parseInt(decodeJsonLike(entry), 10);
@@ -1148,6 +1194,58 @@ function settingsLooksUsable(settings) {
     return Object.keys(settings).length > 0;
 }
 
+function suspiciousValueCount(value) {
+    if (typeof value === "string") return suspiciousTextScore(value) > 0 ? 1 : 0;
+    if (Array.isArray(value)) {
+        return value.reduce(function(total, entry) {
+            return total + suspiciousValueCount(entry);
+        }, 0);
+    }
+    if (value && typeof value === "object") {
+        return Object.keys(value).reduce(function(total, key) {
+            return total + suspiciousValueCount(value[key]);
+        }, 0);
+    }
+    return 0;
+}
+
+function countCategorySubcategories(map) {
+    if (!map || typeof map !== "object") return 0;
+    return Object.keys(map).reduce(function(total, key) {
+        return total + (Array.isArray(map[key]) ? map[key].length : 0);
+    }, 0);
+}
+
+function settingsRichnessScore(settings) {
+    settings = settings || {};
+    var score = 0;
+    score += (Array.isArray(settings.categories) ? settings.categories.length : 0) * 10;
+    score += (Array.isArray(settings.weeklyDaysOff) ? settings.weeklyDaysOff.length : 0) * 4;
+    score += (Array.isArray(settings.holidays) ? settings.holidays.length : 0) * 2;
+    score += countCategorySubcategories(settings.categorySubcategories) * 2;
+    score += (Array.isArray(settings.stations) ? settings.stations.length : 0) * 3;
+    if (text(settings.openTime).trim()) score += 3;
+    if (text(settings.closeTime).trim()) score += 3;
+    if (Number.isFinite(Number(settings.pickupDays))) score += 4;
+    if (Number.isFinite(Number(settings.pickupInterval))) score += 4;
+    if (text(settings.storeInfo).trim()) score += 8;
+    if (text(settings.storePhone).trim()) score += 6;
+    if (text(settings.storeAddress).trim()) score += 6;
+    if (text(settings.storeInfoExtra).trim()) score += 3;
+    score -= suspiciousValueCount(settings) * 20;
+    return score;
+}
+
+function preferCachedSettingsResult(fresh, cached) {
+    if (cached && cached.ok && settingsLooksUsable(cached.settings)) {
+        if (!fresh || fresh.ok !== true || !settingsLooksUsable(fresh.settings)) return cached;
+        var freshScore = settingsRichnessScore(fresh.settings);
+        var cachedScore = settingsRichnessScore(cached.settings);
+        if (cachedScore > freshScore + 12) return cached;
+    }
+    return fresh;
+}
+
 function menuLooksUsable(items) {
     if (!Array.isArray(items)) return false;
     var stats = menuRichnessStats(items);
@@ -1156,7 +1254,7 @@ function menuLooksUsable(items) {
 }
 
 function menuRichnessStats(items) {
-    var stats = { count: 0, basicCount: 0, optionGroupCount: 0, optionCount: 0, sortOrderCount: 0, subCategoryCount: 0 };
+    var stats = { count: 0, basicCount: 0, optionGroupCount: 0, optionCount: 0, sortOrderCount: 0, subCategoryCount: 0, suspiciousCount: 0 };
     (Array.isArray(items) ? items : []).forEach(function(item) {
         if (!item || typeof item !== "object") return;
         stats.count++;
@@ -1165,8 +1263,37 @@ function menuRichnessStats(items) {
         if (Array.isArray(item.options) && item.options.length) stats.optionCount++;
         if (finiteNumber(item.sortOrder) !== null) stats.sortOrderCount++;
         if (text(item.subCategory).trim()) stats.subCategoryCount++;
+        if (
+            suspiciousTextScore(item.name || item.printName || item.shortName) > 0 ||
+            suspiciousTextScore(item.category) > 0 ||
+            suspiciousTextScore(item.subCategory) > 0 ||
+            suspiciousTextScore(item.station) > 0
+        ) stats.suspiciousCount++;
     });
     return stats;
+}
+
+function menuRichnessScore(items) {
+    var stats = menuRichnessStats(items);
+    return (
+        stats.basicCount * 12 +
+        stats.sortOrderCount * 10 +
+        stats.subCategoryCount * 3 +
+        stats.optionGroupCount * 2 +
+        stats.optionCount -
+        stats.suspiciousCount * 25
+    );
+}
+
+function preferCachedMenuResult(fresh, cached) {
+    if (cached && cached.ok && menuLooksUsable(cached.items)) {
+        if (!fresh || fresh.ok !== true || !menuLooksUsable(fresh.items)) return cached;
+        var freshStats = menuRichnessStats(fresh.items);
+        var cachedStats = menuRichnessStats(cached.items);
+        if (cachedStats.sortOrderCount > freshStats.sortOrderCount + 5) return cached;
+        if (menuRichnessScore(cached.items) > menuRichnessScore(fresh.items) + 20) return cached;
+    }
+    return fresh;
 }
 
 function parsePublicMenuResponse(data, options) {
@@ -1188,16 +1315,16 @@ export function readSettingsFromPocketBase(options) {
         });
     }
     if (options.forceFresh !== true) {
-        return readSettingsFromPocketBase(Object.assign({}, options, {
-            forceFresh: true,
-            disableCacheFallback: true
-        })).then(function(fresh) {
-            if (fresh && fresh.ok && settingsLooksUsable(fresh.settings)) return fresh;
-            return cachedPublicResult("settings", cacheKey).then(function(cached) {
-                return cached || fresh || { ok: false, backend: "pocketbase", settings: {} };
-            });
-        }).catch(function(err) {
-            return cachedPublicResult("settings", cacheKey).then(function(cached) {
+        return cachedPublicResult("settings", cacheKey).then(function(cached) {
+            return readSettingsFromPocketBase(Object.assign({}, options, {
+                forceFresh: true,
+                disableCacheFallback: true,
+                skipCacheWrite: true
+            })).then(function(fresh) {
+                var preferred = preferCachedSettingsResult(fresh, cached);
+                if (preferred && preferred === fresh && fresh.ok && settingsLooksUsable(fresh.settings)) writePublicCache(cacheKey, fresh);
+                return preferred || cached || fresh || { ok: false, backend: "pocketbase", settings: {} };
+            }).catch(function(err) {
                 if (cached) return cached;
                 return {
                     ok: false,
@@ -1228,7 +1355,7 @@ export function readSettingsFromPocketBase(options) {
                 return result;
             }
             var parsed = { ok: true, backend: "pocketbase", settings: normalizeSettingsObject(settingsFromRecords(result.records)), records: result.records };
-            writePublicCache(cacheKey, parsed);
+            if (options.skipCacheWrite !== true) writePublicCache(cacheKey, parsed);
             return parsed;
         });
     }
@@ -1247,7 +1374,7 @@ export function readSettingsFromPocketBase(options) {
             publicSettingsPausedUntil = 0;
             var parsed = parsePublicSettingsResponse(data);
             if (!settingsLooksUsable(parsed.settings)) throw new Error("PocketBase settings incomplete");
-            writePublicCache(cacheKey, parsed);
+            if (options.skipCacheWrite !== true) writePublicCache(cacheKey, parsed);
             return parsed;
         })
         .catch(function(endpointErr) {
@@ -1280,19 +1407,21 @@ export function listMenuItemsFromPocketBase(options) {
         });
     }
     if (options.forceFresh !== true) {
-        return listMenuItemsFromPocketBase(Object.assign({}, options, {
-            forceFresh: true,
-            disableCacheFallback: true
-        })).then(function(fresh) {
-            if (fresh && fresh.ok && menuLooksUsable(fresh.items)) return fresh;
-            return cachedPublicResult("menu", cacheKey).then(function(cached) {
-                if (cached && options.activeOnly) cached.items = (cached.items || []).filter(function(item) { return item && item.active !== false; });
-                if (fresh && options.activeOnly) fresh.items = (fresh.items || []).filter(function(item) { return item && item.active !== false; });
-                return cached || fresh || { ok: false, backend: "pocketbase", items: [] };
+        return cachedPublicResult("menu", cacheKey).then(function(cached) {
+            if (cached && options.activeOnly) cached = Object.assign({}, cached, {
+                items: (cached.items || []).filter(function(item) { return item && item.active !== false; })
             });
-        }).catch(function(err) {
-            return cachedPublicResult("menu", cacheKey).then(function(cached) {
-                if (cached && options.activeOnly) cached.items = (cached.items || []).filter(function(item) { return item && item.active !== false; });
+            return listMenuItemsFromPocketBase(Object.assign({}, options, {
+                forceFresh: true,
+                disableCacheFallback: true,
+                skipCacheWrite: true
+            })).then(function(fresh) {
+                var preferred = preferCachedMenuResult(fresh, cached);
+                if (preferred && preferred === fresh && fresh.ok && menuLooksUsable(fresh.items)) {
+                    writePublicCache(cacheKey, Object.assign({}, fresh, { items: fresh.items || [] }));
+                }
+                return preferred || cached || fresh || { ok: false, backend: "pocketbase", items: [] };
+            }).catch(function(err) {
                 if (cached) return cached;
                 return {
                     ok: false,
@@ -1326,7 +1455,7 @@ export function listMenuItemsFromPocketBase(options) {
             var items = dedupeMenuItems(result.records.map(menuItemFromRecord));
             if (options.activeOnly) items = items.filter(function(item) { return item && item.active !== false; });
             var parsed = { ok: true, backend: "pocketbase", items: sortMenuItems(items), records: result.records };
-            writePublicCache(cacheKey, Object.assign({}, parsed, { items: parsed.items || [] }));
+            if (options.skipCacheWrite !== true) writePublicCache(cacheKey, Object.assign({}, parsed, { items: parsed.items || [] }));
             return parsed;
         });
     }
@@ -1345,7 +1474,7 @@ export function listMenuItemsFromPocketBase(options) {
             publicMenuPausedUntil = 0;
             var parsed = parsePublicMenuResponse(data, options);
             if (!menuLooksUsable(parsed.items)) throw new Error("PocketBase menu incomplete");
-            writePublicCache(cacheKey, Object.assign({}, parsed, { items: parsed.items || [] }));
+            if (options.skipCacheWrite !== true) writePublicCache(cacheKey, Object.assign({}, parsed, { items: parsed.items || [] }));
             return parsed;
         })
         .catch(function(endpointErr) {
@@ -1389,6 +1518,12 @@ export function rememberPublicSettings(options, settings) {
 
 function secureManageEndpoint(config, kind, options) {
     options = options || {};
+    function defaultWorkerManageEndpoint() {
+        var fallback = cleanBaseUrl(configuredDefaultOrderEndpoint() || "");
+        if (/\/api\/orders$/i.test(fallback)) return fallback.replace(/\/api\/orders$/i, "/api/manage/" + kind);
+        if (/\/api\/secure\/orders$/i.test(fallback)) return fallback.replace(/\/api\/secure\/orders$/i, "/api/secure/manage/" + kind);
+        return "";
+    }
     var explicit = cleanBaseUrl(
         optionValue(options, kind === "settings"
             ? ["pocketBaseSettingsWriteEndpoint", "settingsWriteEndpoint", "secureSettingsEndpoint"]
@@ -1402,6 +1537,11 @@ function secureManageEndpoint(config, kind, options) {
     }
     var orderEndpoint = cleanBaseUrl(config.orderEndpoint || "");
     if (orderEndpoint) {
+        var directSecureBase = cleanBaseUrl(config.baseUrl || "") + "/api/secure/orders";
+        if (!config.token && cleanBaseUrl(config.baseUrl || "") && orderEndpoint.toLowerCase() === directSecureBase.toLowerCase()) {
+            var proxy = defaultWorkerManageEndpoint();
+            if (proxy) return proxy;
+        }
         if (/\/api\/secure\/orders$/i.test(orderEndpoint)) return orderEndpoint.replace(/\/api\/secure\/orders$/i, "/api/secure/manage/" + kind);
         if (/\/api\/orders$/i.test(orderEndpoint)) return orderEndpoint.replace(/\/api\/orders$/i, "/api/manage/" + kind);
         return orderEndpoint.replace(/\/+$/, "") + "/manage/" + kind;
@@ -1415,6 +1555,14 @@ function recordFieldName(record, fields) {
         if (Object.prototype.hasOwnProperty.call(record, fields[i])) return fields[i];
     }
     return "";
+}
+
+function collectionStoredValue(value) {
+    var decoded = decodeJsonLike(value);
+    if (Array.isArray(decoded) || (decoded && typeof decoded === "object")) {
+        return JSON.stringify(plainJson(decoded, decoded));
+    }
+    return decoded;
 }
 
 function menuIdentityKey(item) {
@@ -1520,7 +1668,7 @@ function updateMenuSortViaCollection(items, options) {
                 if (nestedField) {
                     var nested = decodeJsonLike(record[nestedField]);
                     if (!nested || typeof nested !== "object" || Array.isArray(nested)) nested = {};
-                    payload[nestedField] = Object.assign({}, nested, { sortOrder: sortOrder });
+                    payload[nestedField] = collectionStoredValue(Object.assign({}, nested, { sortOrder: sortOrder }));
                 }
                 if (Object.prototype.hasOwnProperty.call(record, "updatedAt")) payload.updatedAt = Date.now();
                 if (!Object.keys(payload).length) payload = { sortOrder: sortOrder };
@@ -1586,7 +1734,7 @@ function writeSettingsViaCollection(settingsPatch, options) {
                     }
                 });
                 payload[keyField] = key;
-                payload[valueField] = plainJson(settingsPatch[key], settingsPatch[key]);
+                payload[valueField] = collectionStoredValue(settingsPatch[key]);
                 keyedTasks.push(function() {
                     if (record && record.id) return patchCollectionRecord(config, collection, record.id, payload, options);
                     return createCollectionRecord(config, collection, payload, options);
@@ -1617,10 +1765,10 @@ function writeSettingsViaCollection(settingsPatch, options) {
         if (objectField) {
             var existing = decodeJsonLike(record[objectField]);
             if (!existing || typeof existing !== "object" || Array.isArray(existing)) existing = {};
-            payload[objectField] = Object.assign({}, existing, plainJson(settingsPatch || {}, {}));
+            payload[objectField] = collectionStoredValue(Object.assign({}, existing, plainJson(settingsPatch || {}, {})));
         }
         Object.keys(settingsPatch || {}).forEach(function(key) {
-            if (Object.prototype.hasOwnProperty.call(record, key)) payload[key] = plainJson(settingsPatch[key], settingsPatch[key]);
+            if (Object.prototype.hasOwnProperty.call(record, key)) payload[key] = collectionStoredValue(settingsPatch[key]);
         });
         if (!Object.keys(payload).length) return { ok: false, backend: "pocketbase_collection", reason: "settings_collection_no_writable_fields" };
         return patchCollectionRecord(config, collection, record.id, payload, options).then(function(step) {
