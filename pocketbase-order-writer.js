@@ -866,6 +866,11 @@ function dedupeMenuItems(items) {
         ["options", "optionGroups", "posExtras", "printStations"].forEach(function(field) {
             if ((!Array.isArray(merged[field]) || !merged[field].length) && Array.isArray(secondary[field]) && secondary[field].length) merged[field] = secondary[field];
         });
+        var primarySort = finiteNumber(primary && primary.sortOrder);
+        var secondarySort = finiteNumber(secondary && secondary.sortOrder);
+        if (primarySort === null && secondarySort !== null) merged.sortOrder = secondarySort;
+        else if (primarySort !== null && secondarySort === null) merged.sortOrder = primarySort;
+        else if (primarySort !== null && secondarySort !== null && primarySort !== secondarySort) merged.sortOrder = freshness(primary) >= freshness(secondary) ? primarySort : secondarySort;
         var primaryId = idOf(primary);
         var secondaryId = idOf(secondary);
         merged.id = idScore(primaryId) >= idScore(secondaryId) ? primaryId : secondaryId;
