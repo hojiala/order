@@ -5,7 +5,7 @@ const DEFAULT_TELEGRAM_NOTIFY_ENDPOINT = "https://yuangi-secure-order.inovaxt.wo
 const DEFAULT_TIMEOUT_MS = 6000;
 const RESET_TIMEOUT_MS = 10000;
 const PUBLIC_ENDPOINT_COOLDOWN_MS = 2 * 1000;
-const PUBLIC_CACHE_DB_NAME = "pb_public_snapshots_v3";
+const PUBLIC_CACHE_DB_NAME = "pb_public_snapshots_v4";
 const PUBLIC_CACHE_STORE = "snapshots";
 const PUBLIC_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 let backfillPausedUntil = 0;
@@ -652,7 +652,26 @@ function stripPocketBaseSystemFields(record) {
 }
 
 function decodeJsonLike(value) {
+    function bytesToString(bytes) {
+        if (!Array.isArray(bytes) || bytes.length < 4) return "";
+        for (var i = 0; i < bytes.length; i++) {
+            var n = Number(bytes[i]);
+            if (!Number.isFinite(n) || n < 0 || n > 255) return "";
+        }
+        var out = "";
+        for (var j = 0; j < bytes.length; j++) out += String.fromCharCode(Number(bytes[j]) || 0);
+        try {
+            return decodeURIComponent(escape(out));
+        } catch (e) {
+            return out;
+        }
+    }
     var current = value;
+    if (Array.isArray(current)) {
+        var decodedBytes = bytesToString(current);
+        var trimmedBytes = text(decodedBytes).trim();
+        if (trimmedBytes && !/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/.test(trimmedBytes)) current = decodedBytes;
+    }
     for (var i = 0; i < 3; i++) {
         if (typeof current !== "string") break;
         var raw = current.trim();
@@ -696,7 +715,46 @@ function unwrapValueWrapper(value) {
 
 function normalizeSettingsObject(value) {
     var decoded = unwrapValueWrapper(value);
-    return decoded && typeof decoded === "object" && !Array.isArray(decoded) ? decoded : {};
+    if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) return {};
+    var out = Object.assign({}, decoded);
+    function stringList(input) {
+        var list = Array.isArray(input) ? input : (input && typeof input === "object" ? Object.values(input) : []);
+        var seen = {};
+        return list.map(function(entry) {
+            return text(decodeJsonLike(entry)).trim();
+        }).filter(function(entry) {
+            if (!entry || seen[entry]) return false;
+            seen[entry] = true;
+            return true;
+        });
+    }
+    function weekDayList(input) {
+        var list = Array.isArray(input) ? input : (input && typeof input === "object" ? Object.values(input) : []);
+        var seen = {};
+        return list.map(function(entry) {
+            return parseInt(decodeJsonLike(entry), 10);
+        }).filter(function(entry) {
+            if (!Number.isFinite(entry) || entry < 0 || entry > 6 || seen[entry]) return false;
+            seen[entry] = true;
+            return true;
+        });
+    }
+    function subcategoryMap(raw, categories) {
+        var source = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+        var cats = Array.isArray(categories) ? categories : [];
+        var result = {};
+        cats.forEach(function(cat) {
+            result[cat] = stringList(source[cat]);
+        });
+        return result;
+    }
+    var categories = stringList(out.categories);
+    if (categories.length || out.categories !== undefined) out.categories = categories;
+    if (out.posOnlyCategories !== undefined) out.posOnlyCategories = stringList(out.posOnlyCategories);
+    if (out.holidays !== undefined) out.holidays = stringList(out.holidays);
+    if (out.weeklyDaysOff !== undefined) out.weeklyDaysOff = weekDayList(out.weeklyDaysOff);
+    if (out.categorySubcategories !== undefined) out.categorySubcategories = subcategoryMap(out.categorySubcategories, categories);
+    return out;
 }
 
 function collectionOption(options, keys, fallback) {
@@ -1348,6 +1406,226 @@ function secureManageEndpoint(config, kind, options) {
     return "";
 }
 
+function recordFieldName(record, fields) {
+    record = record || {};
+    for (var i = 0; i < fields.length; i++) {
+        if (Object.prototype.hasOwnProperty.call(record, fields[i])) return fields[i];
+    }
+    return "";
+}
+
+function menuIdentityKey(item) {
+    var name = text(item && (item.name || item.printName || item.shortName)).trim().toLowerCase();
+    var category = text(item && item.category).trim().toLowerCase();
+    var price = text(item && item.price).trim();
+    if (!name) return "";
+    return [name, category, price].join("|");
+}
+
+function patchCollectionRecord(config, collection, recordId, payload, options) {
+    if (!config || !config.baseUrl || !config.token || !recordId) {
+        return Promise.resolve({ ok: false, skipped: true, reason: "missing_collection_patch_target" });
+    }
+    return requestJson(
+        config.baseUrl + "/api/collections/" + encodeURIComponent(collection) + "/records/" + encodeURIComponent(recordId),
+        {
+            method: "PATCH",
+            headers: {
+                "Content-Type": "application/json",
+                Authorization: "Bearer " + config.token
+            },
+            body: JSON.stringify(payload || {})
+        },
+        Number(options && (options.secureTimeoutMs || options.timeoutMs || DEFAULT_TIMEOUT_MS)) || DEFAULT_TIMEOUT_MS
+    ).then(function(data) {
+        return { ok: true, backend: "pocketbase_collection", id: recordId, data: data };
+    }).catch(function(error) {
+        return { ok: false, backend: "pocketbase_collection", id: recordId, error: error, message: error && error.message ? error.message : String(error) };
+    });
+}
+
+function createCollectionRecord(config, collection, payload, options) {
+    if (!config || !config.baseUrl || !config.token) {
+        return Promise.resolve({ ok: false, skipped: true, reason: "missing_collection_create_target" });
+    }
+    return requestJson(
+        config.baseUrl + "/api/collections/" + encodeURIComponent(collection) + "/records",
+        {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                Authorization: "Bearer " + config.token
+            },
+            body: JSON.stringify(payload || {})
+        },
+        Number(options && (options.secureTimeoutMs || options.timeoutMs || DEFAULT_TIMEOUT_MS)) || DEFAULT_TIMEOUT_MS
+    ).then(function(data) {
+        return { ok: true, backend: "pocketbase_collection", data: data, id: text(data && data.id) };
+    }).catch(function(error) {
+        return { ok: false, backend: "pocketbase_collection", error: error, message: error && error.message ? error.message : String(error) };
+    });
+}
+
+function updateMenuSortViaCollection(items, options) {
+    options = options || {};
+    var config = resolvePocketBaseConfig(options);
+    if (!config.baseUrl || !config.token) {
+        return Promise.resolve({ ok: false, skipped: true, reason: "missing_menu_collection_token" });
+    }
+    var collection = collectionOption(options, ["pocketBaseMenuCollection", "pocketbaseMenuCollection", "menuCollection", "pocketBaseMenuItemsCollection"], "menu_items");
+    return listPocketBaseCollection(options, collection, {
+        perPage: 500,
+        maxPages: 10,
+        timeoutMs: Number(options.secureTimeoutMs || options.timeoutMs || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS
+    }).then(function(result) {
+        if (!result || !result.ok) return Object.assign({ ok: false, reason: "menu_collection_lookup_failed" }, result || {});
+        var records = Array.isArray(result.records) ? result.records : [];
+        var touched = {};
+        var tasks = [];
+        var updated = 0;
+        var missed = 0;
+        (items || []).forEach(function(row) {
+            var sortOrder = finiteNumber(row && row.sortOrder);
+            if (sortOrder === null) return;
+            var wantedId = text(row && row.id);
+            var wantedKey = menuIdentityKey(row);
+            var matches = records.filter(function(record) {
+                if (!record || !record.id || touched[record.id]) return false;
+                if (wantedId) {
+                    var ids = [
+                        text(record.id),
+                        text(record.firebase_id),
+                        text(record.firebaseId),
+                        text(record.item_id),
+                        text(record.itemId),
+                        text(record.menu_id),
+                        text(record.menuId)
+                    ];
+                    if (ids.indexOf(wantedId) !== -1) return true;
+                }
+                return wantedKey && menuIdentityKey(menuItemFromRecord(record)) === wantedKey;
+            });
+            if (!matches.length) {
+                missed++;
+                return;
+            }
+            matches.forEach(function(record) {
+                touched[record.id] = true;
+                var payload = {};
+                if (Object.prototype.hasOwnProperty.call(record, "sortOrder")) payload.sortOrder = sortOrder;
+                var nestedField = recordFieldName(record, ["item", "data", "json", "value"]);
+                if (nestedField) {
+                    var nested = decodeJsonLike(record[nestedField]);
+                    if (!nested || typeof nested !== "object" || Array.isArray(nested)) nested = {};
+                    payload[nestedField] = Object.assign({}, nested, { sortOrder: sortOrder });
+                }
+                if (Object.prototype.hasOwnProperty.call(record, "updatedAt")) payload.updatedAt = Date.now();
+                if (!Object.keys(payload).length) payload = { sortOrder: sortOrder };
+                tasks.push(function() {
+                    return patchCollectionRecord(config, collection, record.id, payload, options).then(function(step) {
+                        if (step && step.ok) updated++;
+                        return step;
+                    });
+                });
+            });
+        });
+        return tasks.reduce(function(promise, task) {
+            return promise.then(function(list) {
+                return Promise.resolve(task()).then(function(step) {
+                    list.push(step);
+                    return list;
+                });
+            });
+        }, Promise.resolve([])).then(function(steps) {
+            return {
+                ok: updated > 0 && missed === 0 && !steps.some(function(step) { return !step || step.ok !== true; }),
+                backend: "pocketbase_collection",
+                action: "sorted",
+                updated: updated,
+                missed: missed,
+                steps: steps
+            };
+        });
+    });
+}
+
+function writeSettingsViaCollection(settingsPatch, options) {
+    options = options || {};
+    var config = resolvePocketBaseConfig(options);
+    if (!config.baseUrl || !config.token) {
+        return Promise.resolve({ ok: false, skipped: true, reason: "missing_settings_collection_token" });
+    }
+    var collection = collectionOption(options, ["pocketBaseSettingsCollection", "pocketbaseSettingsCollection", "settingsCollection"], "settings");
+    return listPocketBaseCollection(options, collection, {
+        perPage: 100,
+        maxPages: 3,
+        timeoutMs: Number(options.secureTimeoutMs || options.timeoutMs || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS
+    }).then(function(result) {
+        if (!result || !result.ok) return Object.assign({ ok: false, reason: "settings_collection_lookup_failed" }, result || {});
+        var records = Array.isArray(result.records) ? result.records : [];
+        var sample = records[0] || null;
+        var sampleKeyField = recordFieldName(sample, ["key", "name", "setting_key", "settingKey"]);
+        var sampleValueField = recordFieldName(sample, ["value", "data", "json", "settings"]);
+        var useKeyedRecords = !!(sampleKeyField && sampleValueField && sampleValueField !== "settings");
+        if (useKeyedRecords) {
+            var keyedTasks = [];
+            Object.keys(settingsPatch || {}).forEach(function(key) {
+                var record = records.find(function(row) {
+                    return text(row && (row.key || row.name || row.setting_key || row.settingKey)) === key;
+                }) || null;
+                var keyField = recordFieldName(record || sample, ["key", "name", "setting_key", "settingKey"]) || sampleKeyField;
+                var valueField = recordFieldName(record || sample, ["value", "data", "json", "settings"]) || sampleValueField;
+                if (!keyField || !valueField) return;
+                var payload = {};
+                [keyField].concat(["key", "name", "setting_key", "settingKey"]).forEach(function(field) {
+                    if ((record && Object.prototype.hasOwnProperty.call(record, field)) || (sample && Object.prototype.hasOwnProperty.call(sample, field))) {
+                        payload[field] = key;
+                    }
+                });
+                payload[keyField] = key;
+                payload[valueField] = plainJson(settingsPatch[key], settingsPatch[key]);
+                keyedTasks.push(function() {
+                    if (record && record.id) return patchCollectionRecord(config, collection, record.id, payload, options);
+                    return createCollectionRecord(config, collection, payload, options);
+                });
+            });
+            return keyedTasks.reduce(function(promise, task) {
+                return promise.then(function(list) {
+                    return Promise.resolve(task()).then(function(step) {
+                        list.push(step);
+                        return list;
+                    });
+                });
+            }, Promise.resolve([])).then(function(steps) {
+                return {
+                    ok: steps.length > 0 && steps.every(function(step) { return step && step.ok === true; }),
+                    backend: "pocketbase_collection",
+                    action: "settings_updated",
+                    steps: steps
+                };
+            });
+        }
+        var record = sample;
+        if (!record || !record.id) {
+            return { ok: false, backend: "pocketbase_collection", reason: "settings_collection_empty" };
+        }
+        var objectField = recordFieldName(record, ["settings", "data", "json", "value"]);
+        var payload = {};
+        if (objectField) {
+            var existing = decodeJsonLike(record[objectField]);
+            if (!existing || typeof existing !== "object" || Array.isArray(existing)) existing = {};
+            payload[objectField] = Object.assign({}, existing, plainJson(settingsPatch || {}, {}));
+        }
+        Object.keys(settingsPatch || {}).forEach(function(key) {
+            if (Object.prototype.hasOwnProperty.call(record, key)) payload[key] = plainJson(settingsPatch[key], settingsPatch[key]);
+        });
+        if (!Object.keys(payload).length) return { ok: false, backend: "pocketbase_collection", reason: "settings_collection_no_writable_fields" };
+        return patchCollectionRecord(config, collection, record.id, payload, options).then(function(step) {
+            return Object.assign({ action: "settings_updated" }, step || {});
+        });
+    });
+}
+
 function writeManageRequest(kind, payload, options) {
     options = options || {};
     var config = resolvePocketBaseConfig(options);
@@ -1381,27 +1659,55 @@ export function deleteMenuItemFromPocketBase(itemId, options) {
 
 export function updateMenuSortInPocketBase(items, options) {
     options = options || {};
+    function rememberSortedItems() {
+        var nextItems = null;
+        if (Array.isArray(options.currentMenuItems) && options.currentMenuItems.length) {
+            var orderById = {};
+            var orderByKey = {};
+            (items || []).forEach(function(row) {
+                var id = text(row && row.id);
+                var sortOrder = finiteNumber(row && row.sortOrder);
+                if (sortOrder === null) return;
+                if (id) orderById[id] = sortOrder;
+                var key = menuIdentityKey(row);
+                if (key) orderByKey[key] = sortOrder;
+            });
+            nextItems = options.currentMenuItems.map(function(item) {
+                var id = text(item && item.id);
+                var key = menuIdentityKey(item);
+                var nextSort = orderById[id];
+                if (nextSort === undefined && key) nextSort = orderByKey[key];
+                if (nextSort === undefined) return item;
+                return Object.assign({}, item, { sortOrder: nextSort });
+            });
+        }
+        if (Array.isArray(nextItems) && nextItems.length) rememberPublicMenuItems(options, nextItems);
+    }
     return writeManageRequest("menu", { action: "sort", items: plainJson(items || [], []) }, options)
         .then(function(result) {
             if (result && result.ok) {
-                var nextItems = Array.isArray(result.items) && result.items.length ? result.items : null;
-                if (!nextItems && Array.isArray(options.currentMenuItems) && options.currentMenuItems.length) {
-                    var orderById = {};
-                    (items || []).forEach(function(row) {
-                        var id = text(row && row.id);
-                        var sortOrder = finiteNumber(row && row.sortOrder);
-                        if (!id || sortOrder === null) return;
-                        orderById[id] = sortOrder;
-                    });
-                    nextItems = options.currentMenuItems.map(function(item) {
-                        var id = text(item && item.id);
-                        if (!id || orderById[id] === undefined) return item;
-                        return Object.assign({}, item, { sortOrder: orderById[id] });
-                    });
-                }
-                if (Array.isArray(nextItems) && nextItems.length) rememberPublicMenuItems(options, nextItems);
+                if (Array.isArray(result.items) && result.items.length) rememberPublicMenuItems(options, result.items);
+                else rememberSortedItems();
+                return Object.assign({ ok: true, backend: "pocketbase" }, result || {});
             }
-            return Object.assign({ ok: true, backend: "pocketbase" }, result || {});
+            return result || { ok: false, backend: "pocketbase", reason: "menu_sort_write_failed" };
+        }).then(function(result) {
+            if (result && result.ok) return result;
+            return updateMenuSortViaCollection(items, options);
+        }).then(function(result) {
+            if (result && result.ok) {
+                rememberSortedItems();
+                return result;
+            }
+            return result;
+        }).catch(function(error) {
+            return updateMenuSortViaCollection(items, options).then(function(result) {
+                if (result && result.ok) {
+                    rememberSortedItems();
+                    return result;
+                }
+                return { ok: false, backend: "pocketbase", error: error, fallback: result, message: error && error.message ? error.message : String(error) };
+            });
         });
 }
 
@@ -1409,8 +1715,22 @@ export function writeSettingsToPocketBase(settingsPatch, options) {
     options = options || {};
     var patch = plainJson(settingsPatch || {}, {});
     return writeManageRequest("settings", { settings: patch }, options).then(function(result) {
+        if (result && result.ok) {
+            rememberPublicSettings(options, Object.assign({}, (options.settings || {}), patch));
+            return Object.assign({ ok: true, backend: "pocketbase" }, result || {});
+        }
+        return writeSettingsViaCollection(patch, options);
+    }).catch(function(error) {
+        return writeSettingsViaCollection(patch, options).then(function(result) {
+            if (result && result.ok) {
+                rememberPublicSettings(options, Object.assign({}, (options.settings || {}), patch));
+                return result;
+            }
+            return { ok: false, backend: "pocketbase", error: error, fallback: result, message: error && error.message ? error.message : String(error) };
+        });
+    }).then(function(result) {
         if (result && result.ok) rememberPublicSettings(options, Object.assign({}, (options.settings || {}), patch));
-        return Object.assign({ ok: true, backend: "pocketbase" }, result || {});
+        return result;
     });
 }
 

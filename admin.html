@@ -1269,17 +1269,22 @@
                         this.menuItems = flattened.length ? flattened : Object.keys(data).map((id) => Object.assign({ id }, data[id] || {}));
                         this.menuReadBackend = 'firebase';
                     });
-                    const run = () => listMenuItemsFromPocketBase({ settings: this.settings || {}, timeoutMs: 2200 }).then((result) => {
-                        if (result && result.ok) {
+                    const run = () => {
+                        const hasCurrentMenu = Array.isArray(this.menuItems) && this.menuItems.length > 0;
+                        return listMenuItemsFromPocketBase({ settings: this.settings || {}, timeoutMs: 2200, allowDirectCollectionFallback: true }).then((result) => {
+                        if (result && result.ok && Array.isArray(result.items) && result.items.length) {
                             apply(result.items || []);
                             this.menuReadBackend = 'pocketbase';
                             return;
                         }
+                        if (hasCurrentMenu) return;
                         return loadFirebaseOnce();
                     }).catch((err) => {
-                        console.warn('PocketBase menu read failed; using Firebase fallback:', err && err.message ? err.message : err);
+                        console.warn('PocketBase menu read failed; keeping current menu:', err && err.message ? err.message : err);
+                        if (hasCurrentMenu) return;
                         return loadFirebaseOnce();
                     });
+                    };
                     run();
                     if (!this.menuSettingsPollTimer) this.menuSettingsPollTimer = setInterval(run, 60000);
                 },
@@ -2496,14 +2501,21 @@
                         selfS.settingsReadBackend = backend || 'pocketbase';
                     };
                     const _loadAdminSettings = () => {
-                        return readSettingsFromPocketBase({ settings: selfS.settings || {}, timeoutMs: 2200 }).then((result) => {
+                        const hasCurrentSettings = !!(
+                            (selfS.settings && Array.isArray(selfS.settings.categories) && selfS.settings.categories.length) ||
+                            (selfS.settings && Array.isArray(selfS.settings.stations) && selfS.settings.stations.length) ||
+                            String(selfS.pocketBaseUrl || (selfS.settings && (selfS.settings.pocketBaseUrl || selfS.settings.pocketbaseUrl)) || '').trim()
+                        );
+                        return readSettingsFromPocketBase({ settings: selfS.settings || {}, timeoutMs: 2200, allowDirectCollectionFallback: true }).then((result) => {
                             if (result && result.ok && result.settings && Object.keys(result.settings).length) {
                                 applyAdminSettings(result.settings, 'pocketbase');
                                 return;
                             }
+                            if (hasCurrentSettings) return;
                             return get(ref(db, 'settings')).then((snap) => { if (snap.exists()) applyAdminSettings(snap.val() || {}, 'firebase'); });
                         }).catch((err) => {
-                            console.warn('PocketBase settings read failed; using Firebase fallback:', err && err.message ? err.message : err);
+                            console.warn('PocketBase settings read failed; keeping current settings:', err && err.message ? err.message : err);
+                            if (hasCurrentSettings) return;
                             return get(ref(db, 'settings')).then((snap) => { if (snap.exists()) applyAdminSettings(snap.val() || {}, 'firebase'); });
                         });
                     };
