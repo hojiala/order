@@ -1,5 +1,6 @@
 const DEFAULT_COLLECTION = "orders";
 const DEFAULT_POCKETBASE_URL = "https://pb.yuangi168.com";
+const DEFAULT_FIREBASE_DATABASE_URL = "https://breakfast-ai-system-default-rtdb.asia-southeast1.firebasedatabase.app";
 const DEFAULT_POCKETBASE_ORDER_ENDPOINT = "https://yuangi-secure-order.inovaxt.workers.dev/api/orders";
 const DEFAULT_TELEGRAM_NOTIFY_ENDPOINT = "https://yuangi-secure-order.inovaxt.workers.dev/api/notify/fallback";
 const DEFAULT_TIMEOUT_MS = 6000;
@@ -236,6 +237,14 @@ function configuredDefaultOrderEndpoint() {
         if (direct) return cleanBaseUrl(direct);
     }
     return cleanBaseUrl(DEFAULT_POCKETBASE_ORDER_ENDPOINT);
+}
+
+function configuredDefaultFirebaseDatabaseUrl() {
+    if (typeof window !== "undefined") {
+        var direct = window.FIREBASE_DATABASE_URL || window.FIREBASE_DB_URL || window.FIREBASE_RTDB_URL;
+        if (direct) return cleanBaseUrl(direct);
+    }
+    return cleanBaseUrl(DEFAULT_FIREBASE_DATABASE_URL);
 }
 
 function configuredDefaultTelegramNotifyEndpoint() {
@@ -1061,6 +1070,25 @@ function menuItemFromRecord(record) {
     return item;
 }
 
+function menuItemLooksRenderable(item) {
+    item = item || {};
+    var name = text(item.name || item.printName || item.shortName || item.label || item.title).trim();
+    var category = text(item.category).trim();
+    var subCategory = text(item.subCategory).trim();
+    var desc = text(item.desc).trim();
+    var img = text(item.img || item.imageUrl || item.image || item.photo).trim();
+    var station = text(item.station).trim();
+    var hasPrice = item.price !== undefined && item.price !== null && item.price !== "";
+    var hasOptions = Array.isArray(item.options) && item.options.length > 0;
+    var hasOptionGroups = Array.isArray(item.optionGroups) && item.optionGroups.length > 0;
+    var hasPosExtras = Array.isArray(item.posExtras) && item.posExtras.length > 0;
+    var hasPrintStations = Array.isArray(item.printStations) && item.printStations.length > 0;
+    if (name || category || subCategory || desc || img || station || hasPrice || hasOptions || hasOptionGroups || hasPosExtras || hasPrintStations) return true;
+    var id = text(item.id || item.item_id || item.itemId || item.menu_id || item.menuId || item.firebase_id || item.firebaseId).trim();
+    if (/_(pos_extras|options|choices)_/i.test(id)) return false;
+    return false;
+}
+
 function endpointCooldownResult(pausedUntil, payload) {
     var now = Date.now();
     if (!pausedUntil || now >= pausedUntil) return null;
@@ -1308,9 +1336,39 @@ function preferCachedMenuResult(fresh, cached) {
 
 function parsePublicMenuResponse(data, options) {
     var items = Array.isArray(data && data.items) ? data.items.map(decodeJsonLike) : [];
+    items = items.filter(menuItemLooksRenderable);
     items = dedupeMenuItems(items);
     if (options && options.activeOnly) items = items.filter(function(item) { return item && item.active !== false; });
     return { ok: true, backend: "pocketbase", items: sortMenuItems(items), data: data };
+}
+
+function firebasePublicUrl(path) {
+    var baseUrl = configuredDefaultFirebaseDatabaseUrl();
+    if (!baseUrl) return "";
+    return baseUrl + "/" + String(path || "").replace(/^\/+/, "") + ".json";
+}
+
+function requestFirebasePublicJson(path, timeoutMs) {
+    var url = firebasePublicUrl(path);
+    if (!url) return Promise.reject(new Error("missing_firebase_database_url"));
+    return requestJson(url, { method: "GET" }, timeoutMs);
+}
+
+function parseFirebaseSettingsResponse(data) {
+    var settings = normalizeSettingsObject(data && typeof data === "object" && !Array.isArray(data) ? data : {});
+    return { ok: true, backend: "firebase", settings: settings, data: data };
+}
+
+function parseFirebaseMenuResponse(data, options) {
+    var source = data && typeof data === "object" && !Array.isArray(data) ? data : {};
+    var items = Object.keys(source).map(function(id) {
+        var row = source[id];
+        if (!row || typeof row !== "object" || Array.isArray(row)) return null;
+        return decodeJsonLike(Object.assign({ id: id }, row));
+    }).filter(Boolean).filter(menuItemLooksRenderable);
+    items = dedupeMenuItems(items);
+    if (options && options.activeOnly) items = items.filter(function(item) { return item && item.active !== false; });
+    return { ok: true, backend: "firebase", items: sortMenuItems(items), data: data };
 }
 
 export function readSettingsFromPocketBase(options) {
@@ -1369,6 +1427,27 @@ export function readSettingsFromPocketBase(options) {
             return parsed;
         });
     }
+    function loadFirebaseSettings(endpointErr) {
+        return requestFirebasePublicJson("settings", timeoutMs).then(function(data) {
+            var parsed = parseFirebaseSettingsResponse(data);
+            if (!settingsLooksUsable(parsed.settings)) throw new Error("Firebase settings incomplete");
+            if (options.skipCacheWrite !== true) writePublicCache(cacheKey, parsed);
+            return parsed;
+        }).catch(function(firebaseErr) {
+            var failed = {
+                ok: false,
+                backend: "firebase",
+                endpointError: endpointErr,
+                firebaseError: firebaseErr,
+                message: firebaseErr && firebaseErr.message ? firebaseErr.message : String(firebaseErr),
+                settings: {}
+            };
+            if (options.disableCacheFallback === true) return failed;
+            return cachedPublicResult("settings", cacheKey, { endpointError: endpointErr, firebaseError: firebaseErr }).then(function(cached) {
+                return cached || failed;
+            });
+        });
+    }
     var canUseDirectSettingsCollection = options.allowDirectCollectionFallback === true && !!config.token;
     if (canUseDirectSettingsCollection && options.forceFresh === true && options.disableCacheFallback === true) {
         return loadSettingsCollection(null);
@@ -1389,6 +1468,8 @@ export function readSettingsFromPocketBase(options) {
         })
         .catch(function(endpointErr) {
             if (canUseDirectSettingsCollection) return loadSettingsCollection(endpointErr);
+            return loadFirebaseSettings(endpointErr).then(function(firebaseResult) {
+                if (firebaseResult && firebaseResult.ok) return firebaseResult;
             publicSettingsPausedUntil = Date.now() + PUBLIC_ENDPOINT_COOLDOWN_MS;
             var failed = {
                 ok: false,
@@ -1400,6 +1481,7 @@ export function readSettingsFromPocketBase(options) {
             if (options.disableCacheFallback === true) return failed;
             return cachedPublicResult("settings", cacheKey, { endpointError: endpointErr }).then(function(cached) {
                 return cached || failed;
+            });
             });
         });
 }
@@ -1462,11 +1544,33 @@ export function listMenuItemsFromPocketBase(options) {
                 result.items = [];
                 return result;
             }
-            var items = dedupeMenuItems(result.records.map(menuItemFromRecord));
+            var items = dedupeMenuItems(result.records.map(menuItemFromRecord).filter(menuItemLooksRenderable));
             if (options.activeOnly) items = items.filter(function(item) { return item && item.active !== false; });
             var parsed = { ok: true, backend: "pocketbase", items: sortMenuItems(items), records: result.records };
             if (options.skipCacheWrite !== true) writePublicCache(cacheKey, Object.assign({}, parsed, { items: parsed.items || [] }));
             return parsed;
+        });
+    }
+    function loadFirebaseMenu(endpointErr) {
+        return requestFirebasePublicJson("menu", timeoutMs).then(function(data) {
+            var parsed = parseFirebaseMenuResponse(data, options);
+            if (!menuLooksUsable(parsed.items)) throw new Error("Firebase menu incomplete");
+            if (options.skipCacheWrite !== true) writePublicCache(cacheKey, Object.assign({}, parsed, { items: parsed.items || [] }));
+            return parsed;
+        }).catch(function(firebaseErr) {
+            var failed = {
+                ok: false,
+                backend: "firebase",
+                endpointError: endpointErr,
+                firebaseError: firebaseErr,
+                message: firebaseErr && firebaseErr.message ? firebaseErr.message : String(firebaseErr),
+                items: []
+            };
+            if (options.disableCacheFallback === true) return failed;
+            return cachedPublicResult("menu", cacheKey, { endpointError: endpointErr, firebaseError: firebaseErr }).then(function(cached) {
+                if (cached && options.activeOnly) cached.items = (cached.items || []).filter(function(item) { return item && item.active !== false; });
+                return cached || failed;
+            });
         });
     }
     var canUseDirectMenuCollection = options.allowDirectCollectionFallback === true && !!config.token;
@@ -1489,6 +1593,8 @@ export function listMenuItemsFromPocketBase(options) {
         })
         .catch(function(endpointErr) {
             if (canUseDirectMenuCollection) return loadMenuCollection(endpointErr);
+            return loadFirebaseMenu(endpointErr).then(function(firebaseResult) {
+                if (firebaseResult && firebaseResult.ok) return firebaseResult;
             publicMenuPausedUntil = Date.now() + PUBLIC_ENDPOINT_COOLDOWN_MS;
             var failed = {
                 ok: false,
@@ -1501,6 +1607,7 @@ export function listMenuItemsFromPocketBase(options) {
             return cachedPublicResult("menu", cacheKey, { endpointError: endpointErr }).then(function(cached) {
                 if (cached && options.activeOnly) cached.items = (cached.items || []).filter(function(item) { return item && item.active !== false; });
                 return cached || failed;
+            });
             });
         });
 }
