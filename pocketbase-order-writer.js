@@ -1026,14 +1026,24 @@ function menuItemFromRecord(record) {
     [
         "name", "shortName", "printName", "price", "category", "subCategory", "desc", "img",
         "imageUrl", "image", "photo", "options", "optionGroups", "posExtras", "station",
-        "printStations", "availableAfter", "active", "sortOrder", "createdAt", "updatedAt",
+        "printStations", "availableAfter", "active", "sortOrder", "sort_order", "order", "sortIndex", "__sortIndex", "createdAt", "updatedAt",
         "firebase_id", "firebaseId", "item_id", "itemId", "menu_id", "menuId"
     ].forEach(function(field) {
         var value = row[field];
         if (value === undefined || value === null || value === "") return;
         item[field] = decodeJsonLike(value);
     });
-    var rowSort = finiteNumber(row.sortOrder);
+    var rawSort = row.sortOrder;
+    if (rawSort === undefined) rawSort = row.sort_order;
+    if (rawSort === undefined) rawSort = row.order;
+    if (rawSort === undefined) rawSort = row.sortIndex;
+    if (rawSort === undefined) rawSort = row.__sortIndex;
+    if (rawSort === undefined) rawSort = item.sortOrder;
+    if (rawSort === undefined) rawSort = item.sort_order;
+    if (rawSort === undefined) rawSort = item.order;
+    if (rawSort === undefined) rawSort = item.sortIndex;
+    if (rawSort === undefined) rawSort = item.__sortIndex;
+    var rowSort = finiteNumber(rawSort);
     if (rowSort !== null) item.sortOrder = rowSort;
     var canonicalImage = text(
         item.img || item.imageUrl || item.image || item.photo || item.photoUrl || item.imgUrl || item.picture ||
