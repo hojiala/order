@@ -806,13 +806,36 @@ function normalizeSettingsObject(value) {
         });
         return result;
     }
+    function normalizedPinString(input) {
+        var raw = text(decodeJsonLike(input)).trim();
+        return /^\d{4}$/.test(raw) ? raw : "";
+    }
+    function normalizedUrlString(input) {
+        var raw = text(decodeJsonLike(input)).trim();
+        if (!raw) return "";
+        return /^https?:\/\//i.test(raw) ? raw.replace(/\/+$/, "") : "";
+    }
     var categories = stringList(out.categories);
     if (categories.length || out.categories !== undefined) out.categories = categories;
     if (out.posOnlyCategories !== undefined) out.posOnlyCategories = stringList(out.posOnlyCategories);
     if (out.holidays !== undefined) out.holidays = stringList(out.holidays);
     if (out.weeklyDaysOff !== undefined) out.weeklyDaysOff = weekDayList(out.weeklyDaysOff);
     if (out.categorySubcategories !== undefined) out.categorySubcategories = subcategoryMap(out.categorySubcategories, categories);
+    if (out.telegramFallbackNotifyEndpoint !== undefined) out.telegramFallbackNotifyEndpoint = normalizedUrlString(out.telegramFallbackNotifyEndpoint);
+    if (out.telegramNotifyEndpoint !== undefined) out.telegramNotifyEndpoint = normalizedUrlString(out.telegramNotifyEndpoint);
+    if (
+        Object.prototype.hasOwnProperty.call(out, "dineinPin") ||
+        Object.prototype.hasOwnProperty.call(out, "qrPin")
+    ) {
+        var finalPin = normalizedPinString(out.dineinPin) || normalizedPinString(out.qrPin) || "";
+        out.dineinPin = finalPin;
+        out.qrPin = finalPin;
+    }
     return out;
+}
+
+export function normalizePublicSettings(value) {
+    return normalizeSettingsObject(value);
 }
 
 function collectionOption(options, keys, fallback) {
