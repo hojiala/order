@@ -4350,11 +4350,33 @@ window._doCountUp = function() {
                 if (!rows.length) { self.menuOrderDirty = false; alert('✅ 排序已儲存'); return; }
                 self.updateMenuSortPrimary(rows, function() {
                     var updates = {};
+                    var rowById = {};
+                    var rowByShape = {};
+                    function shapeKey(item) {
+                        if (!item) return '';
+                        return [
+                            String(item.name || '').trim().toLowerCase(),
+                            String(item.category || '').trim().toLowerCase(),
+                            String(item.price || '').trim()
+                        ].join('|');
+                    }
                     rows.forEach(function(row) {
                         if (!row || !row.id) return;
+                        rowById[row.id] = row;
+                        var key = shapeKey(row);
+                        if (key) rowByShape[key] = row;
                         updates['menu/' + row.id + '/sortOrder'] = row.sortOrder;
                     });
-                    return Object.keys(updates).length ? update(ref(db), updates) : Promise.resolve();
+                    if (!Object.keys(updates).length) return Promise.resolve();
+                    return get(ref(db, 'menu')).then(function(snap) {
+                        var menu = snap.val() || {};
+                        Object.keys(menu).forEach(function(id) {
+                            var item = menu[id] || {};
+                            var row = rowById[id] || rowByShape[shapeKey(item)];
+                            if (row) updates['menu/' + id + '/sortOrder'] = row.sortOrder;
+                        });
+                        return update(ref(db), updates);
+                    });
                 })
                     .then(function(result) {
                         rememberPublicMenuItems({ settings: self.settings || {} }, self.menuItems || []);
