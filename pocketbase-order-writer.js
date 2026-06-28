@@ -1477,10 +1477,11 @@ export function readSettingsFromPocketBase(options) {
         return loadSettingsCollection(null);
     }
     var settingsEndpoints = options.tryAllPublicEndpoints === true ? [
+        "/api/order-public/settings-snapshot",
         "/api/order-public/settings-safe",
         "/api/order-public/settings-inline",
         "/api/order-public/settings"
-    ] : ["/api/order-public/settings-safe"];
+    ] : ["/api/order-public/settings-snapshot"];
     function trySettingsEndpoint(index, lastErr) {
         if (index >= settingsEndpoints.length) return Promise.reject(lastErr || new Error("PocketBase settings endpoint failed"));
         return requestJson(config.baseUrl + settingsEndpoints[index], { method: "GET" }, timeoutMs)
@@ -1497,7 +1498,7 @@ export function readSettingsFromPocketBase(options) {
         .catch(function(endpointErr) {
             publicSettingsPausedUntil = Date.now() + PUBLIC_ENDPOINT_COOLDOWN_MS;
             if (canUseDirectSettingsCollection) return loadSettingsCollection(endpointErr);
-            return loadFirebaseSettings(endpointErr).then(function(firebaseResult) {
+            if (options.allowFirebasePublicFallback === true) return loadFirebaseSettings(endpointErr).then(function(firebaseResult) {
                 if (firebaseResult && firebaseResult.ok) return firebaseResult;
             var failed = {
                 ok: false,
@@ -1510,6 +1511,17 @@ export function readSettingsFromPocketBase(options) {
             return cachedPublicResult("settings", cacheKey, { endpointError: endpointErr }).then(function(cached) {
                 return cached || failed;
             });
+            });
+            var failed = {
+                ok: false,
+                backend: "pocketbase_snapshot",
+                endpointError: endpointErr,
+                message: endpointErr && endpointErr.message ? endpointErr.message : String(endpointErr),
+                settings: {}
+            };
+            if (options.disableCacheFallback === true) return failed;
+            return cachedPublicResult("settings", cacheKey, { endpointError: endpointErr }).then(function(cached) {
+                return cached || failed;
             });
         });
 }
@@ -1607,10 +1619,11 @@ export function listMenuItemsFromPocketBase(options) {
         return loadMenuCollection(null);
     }
     var menuEndpoints = options.tryAllPublicEndpoints === true ? [
+        "/api/order-public/menu-snapshot",
         "/api/order-public/menu-safe",
         "/api/order-public/menu-inline",
         "/api/order-public/menu"
-    ] : ["/api/order-public/menu-safe"];
+    ] : ["/api/order-public/menu-snapshot"];
     function tryMenuEndpoint(index, lastErr) {
         if (index >= menuEndpoints.length) return Promise.reject(lastErr || new Error("PocketBase menu endpoint failed"));
         return requestJson(config.baseUrl + menuEndpoints[index], { method: "GET" }, timeoutMs)
@@ -1627,7 +1640,7 @@ export function listMenuItemsFromPocketBase(options) {
         .catch(function(endpointErr) {
             publicMenuPausedUntil = Date.now() + PUBLIC_ENDPOINT_COOLDOWN_MS;
             if (canUseDirectMenuCollection) return loadMenuCollection(endpointErr);
-            return loadFirebaseMenu(endpointErr).then(function(firebaseResult) {
+            if (options.allowFirebasePublicFallback === true) return loadFirebaseMenu(endpointErr).then(function(firebaseResult) {
                 if (firebaseResult && firebaseResult.ok) return firebaseResult;
             var failed = {
                 ok: false,
@@ -1641,6 +1654,18 @@ export function listMenuItemsFromPocketBase(options) {
                 if (cached && options.activeOnly) cached.items = (cached.items || []).filter(function(item) { return item && item.active !== false; });
                 return cached || failed;
             });
+            });
+            var failed = {
+                ok: false,
+                backend: "pocketbase_snapshot",
+                endpointError: endpointErr,
+                message: endpointErr && endpointErr.message ? endpointErr.message : String(endpointErr),
+                items: []
+            };
+            if (options.disableCacheFallback === true) return failed;
+            return cachedPublicResult("menu", cacheKey, { endpointError: endpointErr }).then(function(cached) {
+                if (cached && options.activeOnly) cached.items = (cached.items || []).filter(function(item) { return item && item.active !== false; });
+                return cached || failed;
             });
         });
 }
