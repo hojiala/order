@@ -5,7 +5,7 @@ const DEFAULT_POCKETBASE_ORDER_ENDPOINT = "https://yuangi-secure-order.inovaxt.w
 const DEFAULT_TELEGRAM_NOTIFY_ENDPOINT = "https://yuangi-secure-order.inovaxt.workers.dev/api/notify/fallback";
 const DEFAULT_TIMEOUT_MS = 6000;
 const RESET_TIMEOUT_MS = 10000;
-const PUBLIC_ENDPOINT_COOLDOWN_MS = 2 * 1000;
+const PUBLIC_ENDPOINT_COOLDOWN_MS = 60 * 1000;
 const PUBLIC_CACHE_DB_NAME = "pb_public_snapshots_v4";
 const PUBLIC_CACHE_STORE = "snapshots";
 const PUBLIC_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -1427,7 +1427,7 @@ export function readSettingsFromPocketBase(options) {
             });
         });
     }
-    var paused = (options.ignoreCooldown === true || options.forceFresh === true) ? null : endpointCooldownResult(publicSettingsPausedUntil, { settings: {} });
+    var paused = options.ignoreCooldown === true ? null : endpointCooldownResult(publicSettingsPausedUntil, { settings: {} });
     if (paused) {
         return cachedPublicResult("settings", cacheKey, { cooldown: true, retryAfterMs: paused.retryAfterMs }).then(function(cached) {
             return cached || paused;
@@ -1475,7 +1475,11 @@ export function readSettingsFromPocketBase(options) {
     if (canUseDirectSettingsCollection && options.forceFresh === true && options.disableCacheFallback === true) {
         return loadSettingsCollection(null);
     }
-    var settingsEndpoints = ["/api/order-public/settings"];
+    var settingsEndpoints = options.tryAllPublicEndpoints === true ? [
+        "/api/order-public/settings-safe",
+        "/api/order-public/settings-inline",
+        "/api/order-public/settings"
+    ] : ["/api/order-public/settings-safe"];
     function trySettingsEndpoint(index, lastErr) {
         if (index >= settingsEndpoints.length) return Promise.reject(lastErr || new Error("PocketBase settings endpoint failed"));
         return requestJson(config.baseUrl + settingsEndpoints[index], { method: "GET" }, timeoutMs)
@@ -1490,10 +1494,10 @@ export function readSettingsFromPocketBase(options) {
             return parsed;
         })
         .catch(function(endpointErr) {
+            publicSettingsPausedUntil = Date.now() + PUBLIC_ENDPOINT_COOLDOWN_MS;
             if (canUseDirectSettingsCollection) return loadSettingsCollection(endpointErr);
             return loadFirebaseSettings(endpointErr).then(function(firebaseResult) {
                 if (firebaseResult && firebaseResult.ok) return firebaseResult;
-            publicSettingsPausedUntil = Date.now() + PUBLIC_ENDPOINT_COOLDOWN_MS;
             var failed = {
                 ok: false,
                 backend: "pocketbase",
@@ -1548,7 +1552,7 @@ export function listMenuItemsFromPocketBase(options) {
             });
         });
     }
-    var paused = (options.ignoreCooldown === true || options.forceFresh === true) ? null : endpointCooldownResult(publicMenuPausedUntil, { items: [] });
+    var paused = options.ignoreCooldown === true ? null : endpointCooldownResult(publicMenuPausedUntil, { items: [] });
     if (paused) {
         return cachedPublicResult("menu", cacheKey, { cooldown: true, retryAfterMs: paused.retryAfterMs }).then(function(cached) {
             if (cached && options.activeOnly) cached.items = (cached.items || []).filter(function(item) { return item && item.active !== false; });
@@ -1600,7 +1604,11 @@ export function listMenuItemsFromPocketBase(options) {
     if (canUseDirectMenuCollection && options.forceFresh === true && options.disableCacheFallback === true) {
         return loadMenuCollection(null);
     }
-    var menuEndpoints = ["/api/order-public/menu"];
+    var menuEndpoints = options.tryAllPublicEndpoints === true ? [
+        "/api/order-public/menu-safe",
+        "/api/order-public/menu-inline",
+        "/api/order-public/menu"
+    ] : ["/api/order-public/menu-safe"];
     function tryMenuEndpoint(index, lastErr) {
         if (index >= menuEndpoints.length) return Promise.reject(lastErr || new Error("PocketBase menu endpoint failed"));
         return requestJson(config.baseUrl + menuEndpoints[index], { method: "GET" }, timeoutMs)
@@ -1615,10 +1623,10 @@ export function listMenuItemsFromPocketBase(options) {
             return parsed;
         })
         .catch(function(endpointErr) {
+            publicMenuPausedUntil = Date.now() + PUBLIC_ENDPOINT_COOLDOWN_MS;
             if (canUseDirectMenuCollection) return loadMenuCollection(endpointErr);
             return loadFirebaseMenu(endpointErr).then(function(firebaseResult) {
                 if (firebaseResult && firebaseResult.ok) return firebaseResult;
-            publicMenuPausedUntil = Date.now() + PUBLIC_ENDPOINT_COOLDOWN_MS;
             var failed = {
                 ok: false,
                 backend: "pocketbase",
@@ -1803,7 +1811,9 @@ function updateMenuSortViaCollection(items, options) {
             matches.forEach(function(record) {
                 touched[record.id] = true;
                 var payload = {};
-                if (Object.prototype.hasOwnProperty.call(record, "sortOrder")) payload.sortOrder = sortOrder;
+                ["sortOrder", "sort_order", "order", "sortIndex", "__sortIndex"].forEach(function(field) {
+                    if (Object.prototype.hasOwnProperty.call(record, field)) payload[field] = sortOrder;
+                });
                 var nestedField = recordFieldName(record, ["item", "data", "json", "value"]);
                 if (nestedField) {
                     var nested = decodeJsonLike(record[nestedField]);
