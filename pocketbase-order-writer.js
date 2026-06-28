@@ -1471,6 +1471,7 @@ export function readSettingsFromPocketBase(options) {
             });
         });
     }
+    if (options.usePocketBasePublicEndpoint !== true) return loadFirebaseSettings(null);
     var canUseDirectSettingsCollection = options.allowDirectCollectionFallback === true && !!config.token;
     if (canUseDirectSettingsCollection && options.forceFresh === true && options.disableCacheFallback === true) {
         return loadSettingsCollection(null);
@@ -1600,6 +1601,7 @@ export function listMenuItemsFromPocketBase(options) {
             });
         });
     }
+    if (options.usePocketBasePublicEndpoint !== true) return loadFirebaseMenu(null);
     var canUseDirectMenuCollection = options.allowDirectCollectionFallback === true && !!config.token;
     if (canUseDirectMenuCollection && options.forceFresh === true && options.disableCacheFallback === true) {
         return loadMenuCollection(null);
