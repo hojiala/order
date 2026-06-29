@@ -1247,12 +1247,70 @@ function parsePublicSettingsResponse(data) {
     return { ok: true, backend: "pocketbase", settings: settings, data: data };
 }
 
+function hasSettingsCategories(settings) {
+    return !!(settings && Array.isArray(settings.categories) && settings.categories.length);
+}
+
+function hasSettingsSubcategories(settings) {
+    if (!settings || !settings.categorySubcategories || typeof settings.categorySubcategories !== "object") return false;
+    return Object.keys(settings.categorySubcategories).some(function(category) {
+        return Array.isArray(settings.categorySubcategories[category]) && settings.categorySubcategories[category].length;
+    });
+}
+
+function settingsFromMenuItems(items, baseSettings) {
+    var settings = normalizeSettingsObject(Object.assign({
+        isOpen: true,
+        dineinIsOpen: true,
+        openTime: "00:00",
+        closeTime: "23:59"
+    }, baseSettings || {}));
+    var categories = Array.isArray(settings.categories) ? settings.categories.slice() : [];
+    var subMap = settings.categorySubcategories && typeof settings.categorySubcategories === "object" ? Object.assign({}, settings.categorySubcategories) : {};
+    (Array.isArray(items) ? items : []).forEach(function(item) {
+        item = item || {};
+        var category = text(item.category).trim();
+        var subCategory = text(item.subCategory).trim();
+        if (!category || item.active === false) return;
+        if (categories.indexOf(category) === -1) categories.push(category);
+        if (!Array.isArray(subMap[category])) subMap[category] = [];
+        if (subCategory && subMap[category].indexOf(subCategory) === -1) subMap[category].push(subCategory);
+    });
+    settings.categories = categories;
+    settings.categorySubcategories = subMap;
+    return normalizeSettingsObject(settings);
+}
+
+function completeSettingsWithMenu(result, options) {
+    result = result || { ok: true, backend: "pocketbase", settings: {} };
+    result.settings = normalizeSettingsObject(result.settings || {});
+    if (hasSettingsCategories(result.settings) && hasSettingsSubcategories(result.settings)) return Promise.resolve(result);
+    // ponytail: settings route is flaky in production; derive public category shape from the known-good menu.
+    return listMenuItemsFromPocketBase(Object.assign({}, options || {}, {
+        settings: result.settings,
+        activeOnly: false,
+        forceFresh: true,
+        disableCacheFallback: true,
+        skipCacheWrite: true
+    })).then(function(menuResult) {
+        if (menuResult && Array.isArray(menuResult.items) && menuResult.items.length) {
+            result.settings = settingsFromMenuItems(menuResult.items, result.settings);
+            result.backend = result.backend ? result.backend + "+menu_derived" : "menu_derived_settings";
+        }
+        return result;
+    }).catch(function() {
+        return result;
+    });
+}
+
 function settingsLooksUsable(settings) {
     settings = settings || {};
-    if (settings.openTime || settings.closeTime || settings.pickupDays || settings.pickupInterval) return true;
     if (Array.isArray(settings.categories) && settings.categories.length) return true;
     if (Array.isArray(settings.weeklyDaysOff) && settings.weeklyDaysOff.length) return true;
-    return Object.keys(settings).length > 0;
+    if (settings.pickupDays || settings.pickupInterval) return true;
+    return Object.keys(settings).some(function(key) {
+        return ["isOpen", "dineinIsOpen", "openTime", "closeTime", "categorySubcategories"].indexOf(key) === -1;
+    });
 }
 
 function suspiciousValueCount(value) {
@@ -1446,8 +1504,10 @@ export function readSettingsFromPocketBase(options) {
                 return result;
             }
             var parsed = { ok: true, backend: "pocketbase", settings: normalizeSettingsObject(settingsFromRecords(result.records)), records: result.records };
-            if (options.skipCacheWrite !== true) writePublicCache(cacheKey, parsed);
-            return parsed;
+            return completeSettingsWithMenu(parsed, options).then(function(done) {
+                if (options.skipCacheWrite !== true) writePublicCache(cacheKey, done);
+                return done;
+            });
         });
     }
     function loadFirebaseSettings(endpointErr) {
@@ -1492,9 +1552,11 @@ export function readSettingsFromPocketBase(options) {
         .then(function(data) {
             publicSettingsPausedUntil = 0;
             var parsed = parsePublicSettingsResponse(data);
-            if (!settingsLooksUsable(parsed.settings)) throw new Error("PocketBase settings incomplete");
-            if (options.skipCacheWrite !== true) writePublicCache(cacheKey, parsed);
-            return parsed;
+            return completeSettingsWithMenu(parsed, options).then(function(done) {
+                if (!settingsLooksUsable(done.settings)) throw new Error("PocketBase settings incomplete");
+                if (options.skipCacheWrite !== true) writePublicCache(cacheKey, done);
+                return done;
+            });
         })
         .catch(function(endpointErr) {
             publicSettingsPausedUntil = Date.now() + PUBLIC_ENDPOINT_COOLDOWN_MS;
@@ -1520,9 +1582,15 @@ export function readSettingsFromPocketBase(options) {
                 message: endpointErr && endpointErr.message ? endpointErr.message : String(endpointErr),
                 settings: {}
             };
-            if (options.disableCacheFallback === true) return failed;
-            return cachedPublicResult("settings", cacheKey, { endpointError: endpointErr }).then(function(cached) {
-                return cached || failed;
+            return completeSettingsWithMenu({ ok: true, backend: "menu_derived_settings", endpointError: endpointErr, settings: {} }, options).then(function(derived) {
+                if (settingsLooksUsable(derived.settings)) {
+                    if (options.skipCacheWrite !== true) writePublicCache(cacheKey, derived);
+                    return derived;
+                }
+                if (options.disableCacheFallback === true) return failed;
+                return cachedPublicResult("settings", cacheKey, { endpointError: endpointErr }).then(function(cached) {
+                    return cached || failed;
+                });
             });
         });
 }
