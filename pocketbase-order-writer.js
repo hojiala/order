@@ -1248,7 +1248,7 @@ function parsePublicSettingsResponse(data) {
 }
 
 function hasSettingsCategories(settings) {
-    return !!(settings && Array.isArray(settings.categories) && settings.categories.length);
+    return !!(settings && categoryListLooksUsable(settings.categories));
 }
 
 function hasSettingsSubcategories(settings) {
@@ -1265,8 +1265,8 @@ function settingsFromMenuItems(items, baseSettings) {
         openTime: "00:00",
         closeTime: "23:59"
     }, baseSettings || {}));
-    var categories = Array.isArray(settings.categories) ? settings.categories.slice() : [];
-    var subMap = settings.categorySubcategories && typeof settings.categorySubcategories === "object" ? Object.assign({}, settings.categorySubcategories) : {};
+    var categories = categoryListLooksUsable(settings.categories) ? settings.categories.slice() : [];
+    var subMap = categories.length && settings.categorySubcategories && typeof settings.categorySubcategories === "object" ? Object.assign({}, settings.categorySubcategories) : {};
     (Array.isArray(items) ? items : []).forEach(function(item) {
         item = item || {};
         var category = text(item.category).trim();
@@ -1305,11 +1305,18 @@ function completeSettingsWithMenu(result, options) {
 
 function settingsLooksUsable(settings) {
     settings = settings || {};
-    if (Array.isArray(settings.categories) && settings.categories.length) return true;
+    if (categoryListLooksUsable(settings.categories)) return true;
     if (Array.isArray(settings.weeklyDaysOff) && settings.weeklyDaysOff.length) return true;
     if (settings.pickupDays || settings.pickupInterval) return true;
     return Object.keys(settings).some(function(key) {
         return ["isOpen", "dineinIsOpen", "openTime", "closeTime", "categorySubcategories"].indexOf(key) === -1;
+    });
+}
+
+function categoryListLooksUsable(categories) {
+    if (!Array.isArray(categories) || !categories.length) return false;
+    return categories.some(function(category) {
+        return /[^\d\s]/.test(text(category).trim());
     });
 }
 
@@ -1338,7 +1345,7 @@ function countCategorySubcategories(map) {
 function settingsRichnessScore(settings) {
     settings = settings || {};
     var score = 0;
-    score += (Array.isArray(settings.categories) ? settings.categories.length : 0) * 10;
+    score += (categoryListLooksUsable(settings.categories) ? settings.categories.length : 0) * 10;
     score += (Array.isArray(settings.weeklyDaysOff) ? settings.weeklyDaysOff.length : 0) * 4;
     score += (Array.isArray(settings.holidays) ? settings.holidays.length : 0) * 2;
     score += countCategorySubcategories(settings.categorySubcategories) * 2;
