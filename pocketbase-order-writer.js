@@ -1538,11 +1538,14 @@ export function readSettingsFromPocketBase(options) {
         return loadSettingsCollection(null);
     }
     var settingsEndpoints = options.tryAllPublicEndpoints === true ? [
-        "/api/order-public/settings-snapshot",
         "/api/order-public/settings-inline",
         "/api/order-public/settings",
+        "/api/order-public/settings-snapshot",
         "/api/order-public/settings-safe"
-    ] : ["/api/order-public/settings-snapshot"];
+    ] : [
+        "/api/order-public/settings-inline",
+        "/api/order-public/settings-snapshot"
+    ];
     function trySettingsEndpoint(index, lastErr) {
         if (index >= settingsEndpoints.length) return Promise.reject(lastErr || new Error("PocketBase settings endpoint failed"));
         return requestJson(config.baseUrl + settingsEndpoints[index], { method: "GET" }, timeoutMs)
