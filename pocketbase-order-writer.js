@@ -1545,12 +1545,14 @@ export function readSettingsFromPocketBase(options) {
         });
     }
     var settingsEndpoints = options.tryAllPublicEndpoints === true ? [
+        "/settings-canary-20260629",
         "/api/order-public/settings-menu-20260629",
         "/api/order-public/settings-inline",
         "/api/order-public/settings",
         "/api/order-public/settings-snapshot",
         "/api/order-public/settings-safe"
     ] : [
+        "/settings-canary-20260629",
         "/api/order-public/settings-menu-20260629",
         "/api/order-public/settings-inline",
         "/api/order-public/settings-snapshot"
