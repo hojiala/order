@@ -1538,11 +1538,13 @@ export function readSettingsFromPocketBase(options) {
         return loadSettingsCollection(null);
     }
     var settingsEndpoints = options.tryAllPublicEndpoints === true ? [
+        "/api/order-public/settings-menu-20260629",
         "/api/order-public/settings-inline",
         "/api/order-public/settings",
         "/api/order-public/settings-snapshot",
         "/api/order-public/settings-safe"
     ] : [
+        "/api/order-public/settings-menu-20260629",
         "/api/order-public/settings-inline",
         "/api/order-public/settings-snapshot"
     ];
