@@ -1537,6 +1537,13 @@ export function readSettingsFromPocketBase(options) {
         // ponytail: admin-capable pages should not accept public safe defaults over real settings.
         return loadSettingsCollection(null);
     }
+    if (!config.token && options.preferPublicSettingsEndpoint !== true) {
+        // ponytail: public settings hooks are unstable; public pages can recover tabs from menu.
+        return completeSettingsWithMenu({ ok: true, backend: "menu_derived_settings_first", settings: {} }, options).then(function(derived) {
+            if (options.skipCacheWrite !== true && settingsLooksUsable(derived.settings)) writePublicCache(cacheKey, derived);
+            return derived;
+        });
+    }
     var settingsEndpoints = options.tryAllPublicEndpoints === true ? [
         "/api/order-public/settings-menu-20260629",
         "/api/order-public/settings-inline",
