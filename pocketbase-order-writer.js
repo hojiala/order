@@ -1278,7 +1278,22 @@ function settingsFromMenuItems(items, baseSettings) {
     });
     settings.categories = categories;
     settings.categorySubcategories = subMap;
-    return normalizeSettingsObject(settings);
+    return completeCategorySubcategoriesFromNames(normalizeSettingsObject(settings));
+}
+
+function completeCategorySubcategoriesFromNames(settings) {
+    settings = settings || {};
+    var categories = Array.isArray(settings.categories) ? settings.categories : [];
+    var map = settings.categorySubcategories && typeof settings.categorySubcategories === "object" ? Object.assign({}, settings.categorySubcategories) : {};
+    categories.forEach(function(category) {
+        if (Array.isArray(map[category]) && map[category].length) return;
+        if (text(category).indexOf("、") === -1) return;
+        map[category] = text(category).split("、").map(function(part) {
+            return text(part).trim();
+        }).filter(Boolean);
+    });
+    settings.categorySubcategories = map;
+    return settings;
 }
 
 function completeSettingsWithMenu(result, options) {

@@ -128,7 +128,7 @@
                 <div class="overflow-x-auto no-scrollbar border-t border-gray-100">
                     <div class="flex whitespace-nowrap px-2">
                         <button v-for="cat in categories" :key="cat"
-                            @click="currentCategory = cat"
+                            @click="setCurrentCategory(cat)"
                             :class="currentCategory === cat ? 'cat-btn active-cat px-4 py-3 text-sm inline-block' : 'cat-btn px-4 py-3 text-sm inline-block text-gray-400'">
                             {{ cat }}
                         </button>
@@ -597,7 +597,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getDatabase, ref, push, set, get, update, onValue, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, signInAnonymously, setPersistence, inMemoryPersistence } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-    import { allocateOrderNoFromPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings } from "./pocketbase-order-writer.js?v=20260629_1705";
+    import { allocateOrderNoFromPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings } from "./pocketbase-order-writer.js?v=20260629_1715";
 
     const firebaseConfig = {
         apiKey: "AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -680,6 +680,7 @@
                 currentView: 'menu',
                 categories: [],
                 currentCategory: '',
+                categoryTouched: false,
                 menu: [], categorySubcategories: {},
                 orderType: 'takeout',
                 pickupDate: '',
@@ -915,6 +916,7 @@
                     var list = source[cat];
                     if (!Array.isArray(list) && list && typeof list === 'object') list = Object.values(list);
                     if (!Array.isArray(list)) list = [];
+                    if (!list.length && String(cat || '').indexOf('、') !== -1) list = String(cat || '').split('、');
                     var seen = {};
                     result[cat] = list.map(function(v) { return String(v || '').trim(); })
                         .filter(function(v) {
@@ -924,6 +926,10 @@
                         });
                 });
                 return result;
+            },
+            setCurrentCategory: function(cat) {
+                this.categoryTouched = true;
+                this.currentCategory = cat;
             },
             getDefaultStationName: function() {
                 var sts = this.settings.stations || [];
@@ -984,7 +990,7 @@
                 var cats = ORDER.filter(function(c) { return found.indexOf(c) !== -1 && posOnly.indexOf(c) === -1; });
                 found.forEach(function(c) { if (cats.indexOf(c) === -1 && posOnly.indexOf(c) === -1) cats.push(c); });
                 self.categories = cats;
-                if (cats.indexOf(self.currentCategory) === -1) self.currentCategory = cats.length ? cats[0] : '';
+                if (!self.categoryTouched || cats.indexOf(self.currentCategory) === -1) self.currentCategory = cats.length ? cats[0] : '';
             },
             loadSettings: function(options) {
                 options = options || {};
@@ -1122,7 +1128,8 @@
                     found.forEach(function(c) { if (cats.indexOf(c) === -1 && posOnly.indexOf(c) === -1) cats.push(c); });
                     self.menu = posOnly.length ? items.filter(function(i) { return posOnly.indexOf(i.category) === -1; }) : items;
                     self.categories = cats;
-                    if (initialLoad || cats.indexOf(self.currentCategory) === -1) self.currentCategory = cats.length ? cats[0] : '';
+                    if (!self.categoryTouched && cats.length) self.currentCategory = cats[0];
+                    else if (cats.indexOf(self.currentCategory) === -1) self.currentCategory = cats.length ? cats[0] : '';
                     self.$nextTick(function() { self._menuLoaded = true; });
                 };
                 return listMenuItemsFromPocketBase({ settings: this.settings || {}, activeOnly: true, timeoutMs: options.timeoutMs || 3500, forceFresh: !!options.forceFresh, ignoreCooldown: !!options.ignoreCooldown, allowDirectCollectionFallback: options.allowDirectCollectionFallback === true }).then(function(result) {

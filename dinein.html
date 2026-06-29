@@ -165,7 +165,7 @@
                 </div>
                 <div class="overflow-x-auto no-scrollbar border-t border-gray-100">
                     <div class="flex whitespace-nowrap px-2">
-                        <button v-for="cat in categories" :key="cat" @click="currentCategory=cat"
+                        <button v-for="cat in categories" :key="cat" @click="setCurrentCategory(cat)"
                             :class="currentCategory===cat ? 'cat-btn active-cat px-4 py-3 text-sm' : 'cat-btn px-4 py-3 text-sm text-gray-400'">
                             {{ cat }}
                         </button>
@@ -540,7 +540,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getAuth, signInAnonymously, setPersistence, inMemoryPersistence } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
     import { getDatabase, ref, push, set, get, update, remove, onValue, query, orderByChild, equalTo, limitToLast, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
-    import { allocateOrderNoFromPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings } from "./pocketbase-order-writer.js?v=20260629_1705";
+    import { allocateOrderNoFromPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings } from "./pocketbase-order-writer.js?v=20260629_1715";
 
     const firebaseConfig = {
         apiKey:"AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -613,7 +613,7 @@
             isLoading:true, menuReady:false,
             settings:{isOpen:true,dineinIsOpen:true,openTime:'06:00',closeTime:'13:15',weeklyDaysOff:[],holidays:[],dailyHours:{},pickupInterval:15,linePayServerUrl:'',linePayConfirmUrl:'',pocketBaseUrl:'',pocketBaseOrdersCollection:'orders',counterResetTime:'',counterMaxNo:999,announcements:[]},settingsStationsLoaded:false,settingsReadBackend:'checking',menuReadBackend:'checking',
             // 菜單
-            categories:[], currentCategory:'', menu:[], categorySubcategories:{},
+            categories:[], currentCategory:'', categoryTouched:false, menu:[], categorySubcategories:{},
             // 點餐
             currentView:'menu', activeItem:null,
             showAnnModal:false, annModalText:'', shownAnnCats:{},
@@ -856,6 +856,7 @@
                     var list=source[cat];
                     if(!Array.isArray(list)&&list&&typeof list==='object')list=Object.values(list);
                     if(!Array.isArray(list))list=[];
+                    if(!list.length&&String(cat||'').indexOf('、')!==-1)list=String(cat||'').split('、');
                     var seen={};
                     result[cat]=list.map(function(v){return String(v||'').trim()}).filter(function(v){
                         if(!v||seen[v])return false;
@@ -865,6 +866,7 @@
                 });
                 return result;
             },
+            setCurrentCategory:function(cat){this.categoryTouched=true;this.currentCategory=cat;},
             getDefaultStationName:function(){
                 var sts=this.settings.stations||[];
                 for(var i=0;i<sts.length;i++){
@@ -951,7 +953,7 @@
                 var cats=ORDER.filter(function(c){return found.indexOf(c)!==-1&&posOnly.indexOf(c)===-1});
                 found.forEach(function(c){if(cats.indexOf(c)===-1&&posOnly.indexOf(c)===-1)cats.push(c)});
                 s.categories=cats;
-                if(cats.indexOf(s.currentCategory)===-1)s.currentCategory=cats.length?cats[0]:'';
+                if(!s.categoryTouched||cats.indexOf(s.currentCategory)===-1)s.currentCategory=cats.length?cats[0]:'';
             },
             loadSettings:function(options){
                 options=options||{};
@@ -1035,7 +1037,8 @@
                     found.forEach(function(c){if(cats.indexOf(c)===-1&&posOnly.indexOf(c)===-1)cats.push(c)});
                     s.menu=posOnly.length?items.filter(function(i){return posOnly.indexOf(i.category)===-1}):items;
                     s.categories=cats;
-                    if(initialLoad||cats.indexOf(s.currentCategory)===-1)s.currentCategory=cats.length?cats[0]:'';
+                    if(!s.categoryTouched&&cats.length)s.currentCategory=cats[0];
+                    else if(cats.indexOf(s.currentCategory)===-1)s.currentCategory=cats.length?cats[0]:'';
                     s.$nextTick(function(){s._menuLoaded=true;});
                 };
                 return listMenuItemsFromPocketBase({settings:this.settings||{},activeOnly:true,timeoutMs:options.timeoutMs||3500,forceFresh:!!options.forceFresh,ignoreCooldown:!!options.ignoreCooldown,allowDirectCollectionFallback:options.allowDirectCollectionFallback===true}).then(function(result){
