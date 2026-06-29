@@ -1473,7 +1473,8 @@ export function readSettingsFromPocketBase(options) {
     }
     if (options.usePocketBasePublicEndpoint === false) return loadFirebaseSettings(null);
     var canUseDirectSettingsCollection = options.allowDirectCollectionFallback === true && !!config.token;
-    if (canUseDirectSettingsCollection && options.forceFresh === true && options.disableCacheFallback === true) {
+    if (canUseDirectSettingsCollection) {
+        // ponytail: admin-capable pages should not accept public safe defaults over real settings.
         return loadSettingsCollection(null);
     }
     var settingsEndpoints = options.tryAllPublicEndpoints === true ? [
