@@ -1538,11 +1538,22 @@ export function readSettingsFromPocketBase(options) {
         return loadSettingsCollection(null);
     }
     if (!config.token && options.preferPublicSettingsEndpoint !== true) {
-        // ponytail: public settings hooks are unstable; public pages can recover tabs from menu.
-        return completeSettingsWithMenu({ ok: true, backend: "menu_derived_settings_first", settings: {} }, options).then(function(derived) {
-            if (options.skipCacheWrite !== true && settingsLooksUsable(derived.settings)) writePublicCache(cacheKey, derived);
-            return derived;
-        });
+        // ponytail: try the tiny self-contained settings route before deriving tabs from menu.
+        return requestJson(config.baseUrl + "/api/order-public/settings-snapshot", { method: "GET" }, timeoutMs)
+            .then(function(data) {
+                var parsed = parsePublicSettingsResponse(data);
+                return completeSettingsWithMenu(parsed, options).then(function(done) {
+                    if (!settingsLooksUsable(done.settings)) throw new Error("PocketBase settings snapshot incomplete");
+                    if (options.skipCacheWrite !== true) writePublicCache(cacheKey, done);
+                    return done;
+                });
+            })
+            .catch(function() {
+                return completeSettingsWithMenu({ ok: true, backend: "menu_derived_settings_first", settings: {} }, options).then(function(derived) {
+                    if (options.skipCacheWrite !== true && settingsLooksUsable(derived.settings)) writePublicCache(cacheKey, derived);
+                    return derived;
+                });
+            });
     }
     var settingsEndpoints = options.tryAllPublicEndpoints === true ? [
         "/settings-canary-20260629",
