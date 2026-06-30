@@ -6,7 +6,7 @@ const DEFAULT_TELEGRAM_NOTIFY_ENDPOINT = "https://yuangi-secure-order.inovaxt.wo
 const DEFAULT_TIMEOUT_MS = 6000;
 const RESET_TIMEOUT_MS = 10000;
 const PUBLIC_ENDPOINT_COOLDOWN_MS = 60 * 1000;
-const PUBLIC_CACHE_DB_NAME = "pb_public_snapshots_v5";
+const PUBLIC_CACHE_DB_NAME = "pb_public_snapshots_v6";
 const PUBLIC_CACHE_STORE = "snapshots";
 const PUBLIC_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 let backfillPausedUntil = 0;
@@ -1485,7 +1485,7 @@ export function readSettingsFromPocketBase(options) {
             return cached || { ok: false, backend: "pocketbase_cache", skipped: true, reason: "public_settings_cache_miss", settings: {} };
         });
     }
-    if (options.forceFresh !== true) {
+    if (options.forceFresh !== true && options.preferCachedPublicCache === true) {
         return cachedPublicResult("settings", cacheKey).then(function(cached) {
             return readSettingsFromPocketBase(Object.assign({}, options, {
                 forceFresh: true,
@@ -1654,7 +1654,7 @@ export function listMenuItemsFromPocketBase(options) {
             return cached || { ok: false, backend: "pocketbase_cache", skipped: true, reason: "public_menu_cache_miss", items: [] };
         });
     }
-    if (options.forceFresh !== true) {
+    if (options.forceFresh !== true && options.preferCachedPublicCache === true) {
         return cachedPublicResult("menu", cacheKey).then(function(cached) {
             if (cached && options.activeOnly) cached = Object.assign({}, cached, {
                 items: (cached.items || []).filter(function(item) { return item && item.active !== false; })
