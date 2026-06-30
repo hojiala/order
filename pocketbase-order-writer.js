@@ -6,7 +6,7 @@ const DEFAULT_TELEGRAM_NOTIFY_ENDPOINT = "https://yuangi-secure-order.inovaxt.wo
 const DEFAULT_TIMEOUT_MS = 6000;
 const RESET_TIMEOUT_MS = 10000;
 const PUBLIC_ENDPOINT_COOLDOWN_MS = 60 * 1000;
-const PUBLIC_CACHE_DB_NAME = "pb_public_snapshots_v5";
+const PUBLIC_CACHE_DB_NAME = "pb_public_snapshots_v7";
 const PUBLIC_CACHE_STORE = "snapshots";
 const PUBLIC_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 let backfillPausedUntil = 0;
@@ -1299,7 +1299,7 @@ function completeCategorySubcategoriesFromNames(settings) {
 function completeSettingsWithMenu(result, options) {
     result = result || { ok: true, backend: "pocketbase", settings: {} };
     result.settings = normalizeSettingsObject(result.settings || {});
-    if (hasSettingsCategories(result.settings) && hasSettingsSubcategories(result.settings)) return Promise.resolve(result);
+    if (hasSettingsCategories(result.settings)) return Promise.resolve(result);
     // ponytail: settings route is flaky in production; derive public category shape from the known-good menu.
     return listMenuItemsFromPocketBase(Object.assign({}, options || {}, {
         settings: result.settings,
