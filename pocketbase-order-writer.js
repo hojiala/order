@@ -1457,6 +1457,13 @@ function requestFirebasePublicJson(path, timeoutMs) {
     return requestJson(url, { method: "GET" }, timeoutMs);
 }
 
+function requestFirebasePublicJsonShallow(path, timeoutMs) {
+    var url = firebasePublicUrl(path);
+    if (!url) return Promise.reject(new Error("missing_firebase_database_url"));
+    var separator = url.indexOf("?") === -1 ? "?" : "&";
+    return requestJson(url + separator + "shallow=true", { method: "GET" }, timeoutMs);
+}
+
 function parseFirebaseSettingsResponse(data) {
     var settings = normalizeSettingsObject(data && typeof data === "object" && !Array.isArray(data) ? data : {});
     return { ok: true, backend: "firebase", settings: settings, data: data };
@@ -1714,11 +1721,42 @@ export function listMenuItemsFromPocketBase(options) {
         });
     }
     function loadFirebaseMenu(endpointErr) {
-        return requestFirebasePublicJson("menu", timeoutMs).then(function(data) {
-            var parsed = parseFirebaseMenuResponse(data, options);
-            if (!menuLooksUsable(parsed.items)) throw new Error("Firebase menu incomplete");
-            if (options.skipCacheWrite !== true) writePublicCache(cacheKey, Object.assign({}, parsed, { items: parsed.items || [] }));
-            return parsed;
+        return cachedPublicResult("menu", cacheKey).then(function(cached) {
+            if (cached && Array.isArray(cached.items) && cached.items.length > 0) {
+                return requestFirebasePublicJsonShallow("menu", timeoutMs).then(function(shallowData) {
+                    var shallowKeys = shallowData && typeof shallowData === "object" && !Array.isArray(shallowData) ? Object.keys(shallowData) : [];
+                    var cacheIds = cached.items.map(function(item) { return item.id; });
+                    
+                    var match = false;
+                    if (shallowKeys.length === cacheIds.length) {
+                        var cacheIdMap = {};
+                        cacheIds.forEach(function(id) { cacheIdMap[id] = true; });
+                        match = true;
+                        for (var i = 0; i < shallowKeys.length; i++) {
+                            if (!cacheIdMap[shallowKeys[i]]) {
+                                match = false;
+                                break;
+                            }
+                        }
+                    }
+                    
+                    if (match) {
+                        console.info("Firebase menu shallow check matched; cache is up-to-date. Extending cache life.");
+                        if (options.skipCacheWrite !== true) {
+                            writePublicCache(cacheKey, Object.assign({}, cached, { backend: "firebase" }));
+                        }
+                        return Object.assign({}, cached, { backend: "firebase" });
+                    }
+                    
+                    console.info("Firebase menu shallow check mismatched; downloading full menu.");
+                    return downloadFullFirebaseMenu();
+                }).catch(function(shallowErr) {
+                    console.warn("Firebase shallow check failed, falling back to full download:", shallowErr);
+                    return downloadFullFirebaseMenu();
+                });
+            } else {
+                return downloadFullFirebaseMenu();
+            }
         }).catch(function(firebaseErr) {
             var failed = {
                 ok: false,
@@ -1734,6 +1772,15 @@ export function listMenuItemsFromPocketBase(options) {
                 return cached || failed;
             });
         });
+
+        function downloadFullFirebaseMenu() {
+            return requestFirebasePublicJson("menu", timeoutMs).then(function(data) {
+                var parsed = parseFirebaseMenuResponse(data, options);
+                if (!menuLooksUsable(parsed.items)) throw new Error("Firebase menu incomplete");
+                if (options.skipCacheWrite !== true) writePublicCache(cacheKey, Object.assign({}, parsed, { items: parsed.items || [] }));
+                return parsed;
+            });
+        }
     }
     if (options.usePocketBasePublicEndpoint === false) return loadFirebaseMenu(null);
     var canUseDirectMenuCollection = options.allowDirectCollectionFallback === true && !!config.token;
