@@ -1243,8 +1243,9 @@ function cachedPublicResult(kind, cacheKey, extra) {
 }
 
 function parsePublicSettingsResponse(data) {
+    var ok = !!(data && data.ok !== false);
     var settings = data && data.settings && typeof data.settings === "object" ? normalizeSettingsObject(data.settings) : {};
-    return { ok: true, backend: "pocketbase", settings: settings, data: data };
+    return { ok: ok, backend: "pocketbase", settings: settings, data: data };
 }
 
 function hasSettingsCategories(settings) {
@@ -1438,11 +1439,12 @@ function preferCachedMenuResult(fresh, cached) {
 }
 
 function parsePublicMenuResponse(data, options) {
+    var ok = !!(data && data.ok !== false);
     var items = Array.isArray(data && data.items) ? data.items.map(decodeJsonLike) : [];
     items = items.filter(menuItemLooksRenderable);
     items = dedupeMenuItems(items);
     if (options && options.activeOnly) items = items.filter(function(item) { return item && item.active !== false; });
-    return { ok: true, backend: "pocketbase", items: sortMenuItems(items), data: data };
+    return { ok: ok, backend: "pocketbase", items: sortMenuItems(items), data: data };
 }
 
 function firebasePublicUrl(path) {
@@ -1574,17 +1576,28 @@ export function readSettingsFromPocketBase(options) {
         return requestJson(config.baseUrl + "/api/order-public/settings-snapshot", { method: "GET" }, timeoutMs)
             .then(function(data) {
                 var parsed = parsePublicSettingsResponse(data);
+                if (parsed.ok === false) throw new Error("PocketBase settings snapshot returned ok=false");
                 return completeSettingsWithMenu(parsed, options).then(function(done) {
                     if (!settingsLooksUsable(done.settings)) throw new Error("PocketBase settings snapshot incomplete");
                     if (options.skipCacheWrite !== true) writePublicCache(cacheKey, done);
                     return done;
                 });
             })
-            .catch(function() {
-                return completeSettingsWithMenu({ ok: true, backend: "menu_derived_settings_first", settings: {} }, options).then(function(derived) {
-                    if (options.skipCacheWrite !== true && settingsLooksUsable(derived.settings)) writePublicCache(cacheKey, derived);
-                    return derived;
-                });
+            .catch(function(endpointErr) {
+                if (options.allowFirebasePublicFallback === true) {
+                    return loadFirebaseSettings(endpointErr).then(function(firebaseResult) {
+                        if (firebaseResult && firebaseResult.ok) return firebaseResult;
+                        return deriveFallback();
+                    });
+                }
+                return deriveFallback();
+
+                function deriveFallback() {
+                    return completeSettingsWithMenu({ ok: true, backend: "menu_derived_settings_first", settings: {} }, options).then(function(derived) {
+                        if (options.skipCacheWrite !== true && settingsLooksUsable(derived.settings)) writePublicCache(cacheKey, derived);
+                        return derived;
+                    });
+                }
             });
     }
     var settingsEndpoints = options.tryAllPublicEndpoints === true ? [
@@ -1609,6 +1622,7 @@ export function readSettingsFromPocketBase(options) {
         .then(function(data) {
             publicSettingsPausedUntil = 0;
             var parsed = parsePublicSettingsResponse(data);
+            if (parsed.ok === false) throw new Error("PocketBase settings returned ok=false");
             return completeSettingsWithMenu(parsed, options).then(function(done) {
                 if (!settingsLooksUsable(done.settings)) throw new Error("PocketBase settings incomplete");
                 if (options.skipCacheWrite !== true) writePublicCache(cacheKey, done);
@@ -1802,6 +1816,7 @@ export function listMenuItemsFromPocketBase(options) {
         .then(function(data) {
             publicMenuPausedUntil = 0;
             var parsed = parsePublicMenuResponse(data, options);
+            if (parsed.ok === false) throw new Error("PocketBase menu returned ok=false");
             if (!menuLooksUsable(parsed.items)) throw new Error("PocketBase menu incomplete");
             if (options.skipCacheWrite !== true) writePublicCache(cacheKey, Object.assign({}, parsed, { items: parsed.items || [] }));
             return parsed;
