@@ -1443,7 +1443,6 @@ function parsePublicMenuResponse(data, options) {
     var items = Array.isArray(data && data.items) ? data.items.map(decodeJsonLike) : [];
     items = items.filter(menuItemLooksRenderable);
     items = dedupeMenuItems(items);
-    if (options && options.activeOnly) items = items.filter(function(item) { return item && item.active !== false; });
     return { ok: ok, backend: "pocketbase", items: sortMenuItems(items), data: data };
 }
 
@@ -1479,7 +1478,6 @@ function parseFirebaseMenuResponse(data, options) {
         return decodeJsonLike(Object.assign({ id: id }, row));
     }).filter(Boolean).filter(menuItemLooksRenderable);
     items = dedupeMenuItems(items);
-    if (options && options.activeOnly) items = items.filter(function(item) { return item && item.active !== false; });
     return { ok: true, backend: "firebase", items: sortMenuItems(items), data: data };
 }
 
@@ -1728,9 +1726,13 @@ export function listMenuItemsFromPocketBase(options) {
                 return result;
             }
             var items = dedupeMenuItems(result.records.map(menuItemFromRecord).filter(menuItemLooksRenderable));
-            if (options.activeOnly) items = items.filter(function(item) { return item && item.active !== false; });
             var parsed = { ok: true, backend: "pocketbase", items: sortMenuItems(items), records: result.records };
             if (options.skipCacheWrite !== true) writePublicCache(cacheKey, Object.assign({}, parsed, { items: parsed.items || [] }));
+            if (options.activeOnly) {
+                parsed = Object.assign({}, parsed, {
+                    items: parsed.items.filter(function(item) { return item && item.active !== false; })
+                });
+            }
             return parsed;
         });
     }
@@ -1759,7 +1761,13 @@ export function listMenuItemsFromPocketBase(options) {
                         if (options.skipCacheWrite !== true) {
                             writePublicCache(cacheKey, Object.assign({}, cached, { backend: "firebase" }));
                         }
-                        return Object.assign({}, cached, { backend: "firebase" });
+                        var result = Object.assign({}, cached, { backend: "firebase" });
+                        if (options.activeOnly) {
+                            result = Object.assign({}, result, {
+                                items: (result.items || []).filter(function(item) { return item && item.active !== false; })
+                            });
+                        }
+                        return result;
                     }
                     
                     console.info("Firebase menu shallow check mismatched; downloading full menu.");
@@ -1789,9 +1797,14 @@ export function listMenuItemsFromPocketBase(options) {
 
         function downloadFullFirebaseMenu() {
             return requestFirebasePublicJson("menu", timeoutMs).then(function(data) {
-                var parsed = parseFirebaseMenuResponse(data, options);
+                var parsed = parseFirebaseMenuResponse(data);
                 if (!menuLooksUsable(parsed.items)) throw new Error("Firebase menu incomplete");
                 if (options.skipCacheWrite !== true) writePublicCache(cacheKey, Object.assign({}, parsed, { items: parsed.items || [] }));
+                if (options.activeOnly) {
+                    parsed = Object.assign({}, parsed, {
+                        items: parsed.items.filter(function(item) { return item && item.active !== false; })
+                    });
+                }
                 return parsed;
             });
         }
@@ -1815,10 +1828,15 @@ export function listMenuItemsFromPocketBase(options) {
     return tryMenuEndpoint(0)
         .then(function(data) {
             publicMenuPausedUntil = 0;
-            var parsed = parsePublicMenuResponse(data, options);
+            var parsed = parsePublicMenuResponse(data);
             if (parsed.ok === false) throw new Error("PocketBase menu returned ok=false");
             if (!menuLooksUsable(parsed.items)) throw new Error("PocketBase menu incomplete");
             if (options.skipCacheWrite !== true) writePublicCache(cacheKey, Object.assign({}, parsed, { items: parsed.items || [] }));
+            if (options.activeOnly) {
+                parsed = Object.assign({}, parsed, {
+                    items: parsed.items.filter(function(item) { return item && item.active !== false; })
+                });
+            }
             return parsed;
         })
         .catch(function(endpointErr) {
