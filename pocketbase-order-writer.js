@@ -1476,6 +1476,9 @@ function parseFirebaseMenuResponse(data, options) {
 
 export function readSettingsFromPocketBase(options) {
     options = options || {};
+    if (options.allowFirebasePublicFallback === undefined) {
+        options.allowFirebasePublicFallback = true;
+    }
     var config = resolvePocketBaseConfig(options);
     var timeoutMs = Number(options.timeoutMs || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
     if (!config.baseUrl) return Promise.resolve({ ok: false, skipped: true, reason: "missing_pocketbase_url", settings: {} });
@@ -1644,6 +1647,9 @@ export function readSettingsFromPocketBase(options) {
 
 export function listMenuItemsFromPocketBase(options) {
     options = options || {};
+    if (options.allowFirebasePublicFallback === undefined) {
+        options.allowFirebasePublicFallback = true;
+    }
     var config = resolvePocketBaseConfig(options);
     var timeoutMs = Number(options.timeoutMs || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
     if (!config.baseUrl) return Promise.resolve({ ok: false, skipped: true, reason: "missing_pocketbase_url", items: [] });
