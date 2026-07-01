@@ -1741,12 +1741,16 @@ export function listMenuItemsFromPocketBase(options) {
             if (cached && Array.isArray(cached.items) && cached.items.length > 0) {
                 return requestFirebasePublicJsonShallow("menu", timeoutMs).then(function(shallowData) {
                     var shallowKeys = shallowData && typeof shallowData === "object" && !Array.isArray(shallowData) ? Object.keys(shallowData) : [];
+                    // Filter out non-renderable templates like options or pos_extras
+                    shallowKeys = shallowKeys.filter(function(id) {
+                        return !(/_(pos_extras|options|choices)_/i.test(id));
+                    });
                     var cacheIds = cached.items.map(function(item) { return item.id; });
                     
                     var match = false;
+                    var cacheIdMap = {};
+                    cacheIds.forEach(function(id) { cacheIdMap[id] = true; });
                     if (shallowKeys.length === cacheIds.length) {
-                        var cacheIdMap = {};
-                        cacheIds.forEach(function(id) { cacheIdMap[id] = true; });
                         match = true;
                         for (var i = 0; i < shallowKeys.length; i++) {
                             if (!cacheIdMap[shallowKeys[i]]) {
@@ -1770,7 +1774,12 @@ export function listMenuItemsFromPocketBase(options) {
                         return result;
                     }
                     
-                    console.info("Firebase menu shallow check mismatched; downloading full menu.");
+                    var extraInFirebase = shallowKeys.filter(function(id) { return !cacheIdMap[id]; });
+                    var extraInCache = cacheIds.filter(function(id) { return shallowKeys.indexOf(id) === -1; });
+                    console.info("Firebase menu shallow check mismatched. Cache keys count: " + cacheIds.length + ", Firebase keys count: " + shallowKeys.length);
+                    if (extraInFirebase.length) console.info("Extra keys in Firebase (not in cache):", extraInFirebase);
+                    if (extraInCache.length) console.info("Extra keys in Cache (not in Firebase):", extraInCache);
+                    console.info("Downloading full menu.");
                     return downloadFullFirebaseMenu();
                 }).catch(function(shallowErr) {
                     console.warn("Firebase shallow check failed, falling back to full download:", shallowErr);
