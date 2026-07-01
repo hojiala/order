@@ -1745,15 +1745,16 @@ export function listMenuItemsFromPocketBase(options) {
                     shallowKeys = shallowKeys.filter(function(id) {
                         return !(/_(pos_extras|options|choices)_/i.test(id));
                     });
-                    var cacheIds = cached.items.map(function(item) { return item.id; });
                     
+                    var cachedRawKeys = cached._rawFirebaseKeys || [];
                     var match = false;
-                    var cacheIdMap = {};
-                    cacheIds.forEach(function(id) { cacheIdMap[id] = true; });
-                    if (shallowKeys.length === cacheIds.length) {
+                    var cachedRawKeyMap = {};
+                    cachedRawKeys.forEach(function(key) { cachedRawKeyMap[key] = true; });
+                    
+                    if (shallowKeys.length === cachedRawKeys.length) {
                         match = true;
                         for (var i = 0; i < shallowKeys.length; i++) {
-                            if (!cacheIdMap[shallowKeys[i]]) {
+                            if (!cachedRawKeyMap[shallowKeys[i]]) {
                                 match = false;
                                 break;
                             }
@@ -1774,11 +1775,11 @@ export function listMenuItemsFromPocketBase(options) {
                         return result;
                     }
                     
-                    var extraInFirebase = shallowKeys.filter(function(id) { return !cacheIdMap[id]; });
-                    var extraInCache = cacheIds.filter(function(id) { return shallowKeys.indexOf(id) === -1; });
-                    console.info("Firebase menu shallow check mismatched. Cache keys count: " + cacheIds.length + ", Firebase keys count: " + shallowKeys.length);
-                    if (extraInFirebase.length) console.info("Extra keys in Firebase (not in cache):", extraInFirebase);
-                    if (extraInCache.length) console.info("Extra keys in Cache (not in Firebase):", extraInCache);
+                    var extraInFirebase = shallowKeys.filter(function(id) { return !cachedRawKeyMap[id]; });
+                    var extraInCache = cachedRawKeys.filter(function(id) { return shallowKeys.indexOf(id) === -1; });
+                    console.info("Firebase menu shallow check mismatched. Cached raw keys count: " + cachedRawKeys.length + ", Firebase current keys count: " + shallowKeys.length);
+                    if (extraInFirebase.length) console.info("New keys in Firebase:", extraInFirebase);
+                    if (extraInCache.length) console.info("Deleted keys in Firebase:", extraInCache);
                     console.info("Downloading full menu.");
                     return downloadFullFirebaseMenu();
                 }).catch(function(shallowErr) {
@@ -1808,6 +1809,13 @@ export function listMenuItemsFromPocketBase(options) {
             return requestFirebasePublicJson("menu", timeoutMs).then(function(data) {
                 var parsed = parseFirebaseMenuResponse(data);
                 if (!menuLooksUsable(parsed.items)) throw new Error("Firebase menu incomplete");
+                
+                var rawKeys = data && typeof data === "object" && !Array.isArray(data) ? Object.keys(data) : [];
+                rawKeys = rawKeys.filter(function(id) {
+                    return !(/_(pos_extras|options|choices)_/i.test(id));
+                });
+                parsed._rawFirebaseKeys = rawKeys;
+                
                 if (options.skipCacheWrite !== true) writePublicCache(cacheKey, Object.assign({}, parsed, { items: parsed.items || [] }));
                 if (options.activeOnly) {
                     parsed = Object.assign({}, parsed, {
