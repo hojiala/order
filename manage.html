@@ -3849,6 +3849,9 @@ window._doCountUp = function() {
                         if (result && result.ok && result.items && result.items.length) {
                             apply(result.items || []);
                             self.menuReadBackend = result.backend || 'pocketbase';
+                            if (self.allowFirebaseManageFallback === true && self.isLoggedIn) {
+                                self.cleanupFirebaseOrphans(result.items || []);
+                            }
                             return;
                         }
                         console.warn('PocketBase menu empty; keeping current menu');
@@ -3869,6 +3872,43 @@ window._doCountUp = function() {
                     });
                 };
                 return loadFromPrimary();
+            },
+            cleanupFirebaseOrphans: function(pbItems) {
+                var self = this;
+                var pbIds = {};
+                (pbItems || []).forEach(function(item) {
+                    if (item && item.id) pbIds[item.id] = true;
+                });
+                get(ref(db, 'menu')).then(function(snap) {
+                    if (!snap.exists()) return;
+                    var fbMenu = snap.val() || {};
+                    var toDelete = [];
+                    var orphanedBaseKeys = [];
+                    Object.keys(fbMenu).forEach(function(key) {
+                        if (/_(pos_extras|options|choices)_/i.test(key)) return;
+                        if (!pbIds[key]) {
+                            toDelete.push(key);
+                            orphanedBaseKeys.push(key);
+                        }
+                    });
+                    Object.keys(fbMenu).forEach(function(key) {
+                        orphanedBaseKeys.forEach(function(baseKey) {
+                            if (key.indexOf(baseKey + '_') === 0) {
+                                toDelete.push(key);
+                            }
+                        });
+                    });
+                    if (toDelete.length > 0) {
+                        console.info('Cleaning up orphaned menu keys in Firebase:', toDelete);
+                        toDelete.forEach(function(key) {
+                            remove(ref(db, 'menu/' + key)).catch(function(e) {
+                                console.warn('Failed to delete orphaned Firebase key:', key, e);
+                            });
+                        });
+                    }
+                }).catch(function(err) {
+                    console.warn('Firebase orphan cleanup check failed:', err);
+                });
             },
             openAddModal: function() {
                 var defaultStation = this.getDefaultStationName();
@@ -3974,10 +4014,15 @@ window._doCountUp = function() {
                 return writeMenuItemToPocketBase(itemId, itemData, this.pocketBaseManageOptions({ currentMenuItems: this.menuItems || [] }))
                     .then(function(result) {
                         if (result && result.ok) {
-                            if (self.allowFirebaseManageFallback === true && typeof firebaseFallback === 'function') {
-                                return Promise.resolve(firebaseFallback()).catch(function(e) {
-                                    console.warn('Firebase menu mirror failed:', e && e.message ? e.message : e);
-                                }).then(function() { return result; });
+                            if (self.allowFirebaseManageFallback === true) {
+                                var targetId = itemId || result.id;
+                                if (targetId) {
+                                    var fbRef = ref(db, 'menu/' + targetId);
+                                    var fbPromise = itemId ? update(fbRef, itemData) : set(fbRef, itemData);
+                                    return fbPromise.catch(function(e) {
+                                        console.warn('Firebase menu mirror failed:', e && e.message ? e.message : e);
+                                    }).then(function() { return result; });
+                                }
                             }
                             return result;
                         }
@@ -3998,10 +4043,12 @@ window._doCountUp = function() {
                 return deleteMenuItemFromPocketBase(itemId, this.pocketBaseManageOptions())
                     .then(function(result) {
                         if (result && result.ok) {
-                            if (self.allowFirebaseManageFallback === true && typeof firebaseFallback === 'function') {
-                                return Promise.resolve(firebaseFallback()).catch(function(e) {
-                                    console.warn('Firebase menu delete mirror failed:', e && e.message ? e.message : e);
-                                }).then(function() { return result; });
+                            if (self.allowFirebaseManageFallback === true) {
+                                if (itemId) {
+                                    return remove(ref(db, 'menu/' + itemId)).catch(function(e) {
+                                        console.warn('Firebase menu delete mirror failed:', e && e.message ? e.message : e);
+                                    }).then(function() { return result; });
+                                }
                             }
                             return result;
                         }
