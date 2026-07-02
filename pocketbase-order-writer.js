@@ -1912,6 +1912,12 @@ export function rememberPublicSettings(options, settings) {
 
 function secureManageEndpoint(config, kind, options) {
     options = options || {};
+    var writeToken = options.pocketBaseWriteToken || options.pocketbaseWriteToken || 
+                     storageValue(["pocketbase_write_token", "pocketbase_token"]);
+    if (writeToken && config.baseUrl) {
+        return config.baseUrl.replace(/\/+$/, "") + "/api/secure/manage/" + kind;
+    }
+
     function defaultWorkerManageEndpoint() {
         var fallback = cleanBaseUrl(configuredDefaultOrderEndpoint() || "");
         if (/\/api\/orders$/i.test(fallback)) return fallback.replace(/\/api\/orders$/i, "/api/manage/" + kind);
