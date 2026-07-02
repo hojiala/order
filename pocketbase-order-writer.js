@@ -1,8 +1,8 @@
 const DEFAULT_COLLECTION = "orders";
 const DEFAULT_POCKETBASE_URL = "https://pb.yuangi168.com";
 const DEFAULT_FIREBASE_DATABASE_URL = "https://breakfast-ai-system-default-rtdb.asia-southeast1.firebasedatabase.app";
-const DEFAULT_POCKETBASE_ORDER_ENDPOINT = "https://yuangi-secure-order.inovaxt.workers.dev/api/orders";
-const DEFAULT_TELEGRAM_NOTIFY_ENDPOINT = "https://yuangi-secure-order.inovaxt.workers.dev/api/notify/fallback";
+const DEFAULT_POCKETBASE_ORDER_ENDPOINT = "https://secure-order.yuangi168.com/api/orders";
+const DEFAULT_TELEGRAM_NOTIFY_ENDPOINT = "https://secure-order.yuangi168.com/api/notify/fallback";
 const DEFAULT_TIMEOUT_MS = 6000;
 const RESET_TIMEOUT_MS = 10000;
 const PUBLIC_ENDPOINT_COOLDOWN_MS = 60 * 1000;
