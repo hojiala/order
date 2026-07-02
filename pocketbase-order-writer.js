@@ -2346,7 +2346,7 @@ export function backfillOrdersToPocketBase(orders, options) {
                 }
                 if (!existing || existing.ok !== true) {
                     skipped++;
-                    backfillPausedUntil = Date.now() + 10000;
+                    backfillPausedUntil = Date.now() + 300000;
                     return { ok: false, skipped: true, reason: "pocketbase_backfill_lookup_failed", lookup: existing };
                 }
                 return writeOrderToPocketBase(orderId, order, Object.assign({}, options, {
@@ -2359,10 +2359,10 @@ export function backfillOrdersToPocketBase(orders, options) {
                         return;
                     }
                     failed++;
-                    backfillPausedUntil = Date.now() + 10000;
+                    backfillPausedUntil = Date.now() + 300000;
                 }).catch(function() {
                     failed++;
-                    backfillPausedUntil = Date.now() + 10000;
+                    backfillPausedUntil = Date.now() + 300000;
                 });
             });
         });
