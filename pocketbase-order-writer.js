@@ -460,7 +460,7 @@ export function resolvePocketBaseConfig(options) {
         options.pocketBaseToken ||
         options.pocketbaseToken ||
         (typeof window !== "undefined" && (window.POCKETBASE_TOKEN || "")) ||
-        storageValue(["pocketbase_token"])
+        storageValue(["pocketbase_token", "pocketbase_write_token"])
     );
     var turnstileSiteKey = text(
         optionValue(options, ["turnstileSiteKey", "cloudflareTurnstileSiteKey", "pocketBaseTurnstileSiteKey"]) ||
@@ -2178,9 +2178,17 @@ function writeManageRequest(kind, payload, options) {
     var config = resolvePocketBaseConfig(options);
     var endpoint = secureManageEndpoint(config, kind, options);
     if (!endpoint) return Promise.resolve({ ok: false, skipped: true, reason: "missing_manage_endpoint" });
+    
+    var headers = { "Content-Type": "application/json" };
+    var writeToken = options.pocketBaseWriteToken || options.pocketbaseWriteToken || 
+                     storageValue(["pocketbase_write_token", "pocketbase_token"]);
+    if (writeToken) {
+        headers["X-Order-Write-Token"] = writeToken;
+    }
+
     return requestJson(endpoint, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: headers,
         body: JSON.stringify(payload || {})
     }, Number(options.secureTimeoutMs || options.timeoutMs || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS);
 }
