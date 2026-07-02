@@ -460,7 +460,13 @@ export function resolvePocketBaseConfig(options) {
         options.pocketBaseToken ||
         options.pocketbaseToken ||
         (typeof window !== "undefined" && (window.POCKETBASE_TOKEN || "")) ||
-        storageValue(["pocketbase_token", "pocketbase_write_token"])
+        storageValue(["pocketbase_token"])
+    );
+    var writeToken = text(
+        options.pocketBaseWriteToken ||
+        options.pocketbaseWriteToken ||
+        (typeof window !== "undefined" && (window.POCKETBASE_WRITE_TOKEN || "")) ||
+        storageValue(["pocketbase_write_token"])
     );
     var turnstileSiteKey = text(
         optionValue(options, ["turnstileSiteKey", "cloudflareTurnstileSiteKey", "pocketBaseTurnstileSiteKey"]) ||
@@ -468,7 +474,7 @@ export function resolvePocketBaseConfig(options) {
         (typeof window !== "undefined" && (window.TURNSTILE_SITE_KEY || "")) ||
         storageValue(["turnstile_site_key", "TURNSTILE_SITE_KEY"])
     );
-    return { baseUrl: baseUrl, orderEndpoint: orderEndpoint, manageEndpoint: manageEndpoint, collection: collection, token: token, turnstileSiteKey: turnstileSiteKey };
+    return { baseUrl: baseUrl, orderEndpoint: orderEndpoint, manageEndpoint: manageEndpoint, collection: collection, token: token, writeToken: writeToken, turnstileSiteKey: turnstileSiteKey };
 }
 
 export function pocketBaseRecordToOrder(record) {
@@ -1912,8 +1918,7 @@ export function rememberPublicSettings(options, settings) {
 
 function secureManageEndpoint(config, kind, options) {
     options = options || {};
-    var writeToken = options.pocketBaseWriteToken || options.pocketbaseWriteToken || 
-                     storageValue(["pocketbase_write_token", "pocketbase_token"]);
+    var writeToken = config && config.writeToken;
     if (writeToken && config.baseUrl) {
         return config.baseUrl.replace(/\/+$/, "") + "/api/secure/manage/" + kind;
     }
@@ -2186,8 +2191,7 @@ function writeManageRequest(kind, payload, options) {
     if (!endpoint) return Promise.resolve({ ok: false, skipped: true, reason: "missing_manage_endpoint" });
     
     var headers = { "Content-Type": "application/json" };
-    var writeToken = options.pocketBaseWriteToken || options.pocketbaseWriteToken || 
-                     storageValue(["pocketbase_write_token", "pocketbase_token"]);
+    var writeToken = config && config.writeToken;
     if (writeToken) {
         headers["X-Order-Write-Token"] = writeToken;
     }
