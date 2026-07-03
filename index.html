@@ -973,6 +973,7 @@
                     if (self.settings.isOpen) self.initDateTime();
                     // 即時監聽設定
                     self.startSettingsPrimaryRefresh();
+                    self.startMenuVersionPolling();
                 }).catch(function(e) {
                     console.error('init error:', e);
                     self.menuReady = true;
@@ -1092,6 +1093,32 @@
                     self.loadSettings().then(function() { return self.loadMenu(); })
                         .catch(function(e) { console.warn('settings refresh failed:', e && e.message ? e.message : e); });
                 }, 300000);
+            },
+            startMenuVersionPolling: function() {
+                // 每 60 秒向 PocketBase 要一次快照版本號(回應僅數十 bytes),
+                // 版本變了才重抓完整菜單並無感更新畫面(購物車不受影響)。
+                var self = this;
+                if (self.menuVersionTimer) return;
+                self._lastMenuVersion = '';
+                var poll = function() {
+                    var base = String(self.settings && self.settings.pocketBaseUrl || '').replace(/\/+$/, '');
+                    if (!base) return;
+                    fetch(base + '/api/public/menu-version', { cache: 'no-store' }).then(function(r) {
+                        return r.ok ? r.json() : null;
+                    }).then(function(data) {
+                        var v = data && data.version ? String(data.version) : '';
+                        if (!v) return;
+                        if (self._lastMenuVersion && v !== self._lastMenuVersion) {
+                            console.log('menu version changed (' + self._lastMenuVersion + ' -> ' + v + '), auto refreshing menu');
+                            self.loadSettings({ forceFresh: true, ignoreCooldown: true }).then(function() {
+                                return self.loadMenu({ forceFresh: true, ignoreCooldown: true });
+                            }).catch(function(e) { console.warn('menu auto refresh failed:', e && e.message ? e.message : e); });
+                        }
+                        self._lastMenuVersion = v;
+                    }).catch(function() { /* 版本查詢失敗就等下一輪,不打擾使用者 */ });
+                };
+                self.menuVersionTimer = setInterval(poll, 60000);
+                setTimeout(poll, 5000);
             },
             loadMenu: function(options) {
                 options = options || {};
