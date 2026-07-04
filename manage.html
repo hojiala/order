@@ -311,7 +311,7 @@
             <div v-if="menuSubTab==='categories'" class="max-w-4xl">
                 <div class="bg-slate-800 rounded-xl border border-slate-700 p-5">
                     <div class="flex items-center gap-2 mb-1"><span class="text-blue-400 text-lg">🏷️</span><p class="font-bold text-white">菜單分類管理</p></div>
-                    <p class="text-slate-400 text-sm mb-4">新增或刪除大分類，也可在大分類下建立子分類。</p>
+                    <p class="text-slate-400 text-sm mb-4">新增、改名（✏️）或刪除大分類，也可在大分類下建立子分類。改名時會自動更新所有相關餐點。</p>
                     <div class="flex gap-2 mb-4">
                         <input v-model="newCategoryName" type="text" placeholder="輸入新分類名稱（例：燒肉飯）"
                             @keyup.enter="addCategory"
@@ -335,6 +335,7 @@
                                         <button @click="moveCatDown(idx)" :disabled="idx===allCategories.length-1" class="text-slate-500 hover:text-white disabled:opacity-20 text-xs leading-none transition">▼</button>
                                     </div>
                                     <span class="text-white text-sm font-medium truncate">{{ cat }}</span>
+                                    <button @click="renameCategory(cat, idx)" title="修改大分類名稱" class="text-slate-500 hover:text-blue-400 transition text-xs flex-shrink-0">✏️</button>
                                     <span class="text-slate-500 text-xs flex-shrink-0">（{{ menuItems.filter(function(i){return i.category===cat;}).length }} 項）</span>
                                     <button @click="togglePosOnly(cat)" :class="(settings.posOnlyCategories||[]).indexOf(cat)!==-1?'bg-purple-600 text-white':'bg-slate-600 text-slate-400'" class="text-xs px-2 py-0.5 rounded-full font-bold transition ml-1 flex-shrink-0">{{ (settings.posOnlyCategories||[]).indexOf(cat)!==-1?'🔒POS專用':'👁️公開' }}</button>
                                 </div>
@@ -348,6 +349,7 @@
                                         <button @click="moveSubCategory(cat, si, 1)" :disabled="si===subCategoriesFor(cat).length-1" class="text-slate-500 hover:text-white disabled:opacity-20">▼</button>
                                         <span>{{ sub }}</span>
                                         <span class="text-slate-500">({{ menuItems.filter(function(i){return i.category===cat && i.subCategory===sub;}).length }})</span>
+                                        <button @click="renameSubCategory(cat, sub)" title="修改子分類名稱" class="text-slate-500 hover:text-blue-400 ml-1">✏️</button>
                                         <button @click="removeSubCategory(cat, sub)" class="text-slate-500 hover:text-red-400 ml-1">×</button>
                                     </span>
                                 </div>
@@ -6872,6 +6874,64 @@ window._doCountUp = function() {
                 var to = idx + dir;
                 if (to < 0 || to >= arr.length) return;
                 var tmp = arr[to]; arr[to] = arr[idx]; arr[idx] = tmp;
+            },
+            renameCategory: function(cat, idx) {
+                var name = prompt('修改大分類名稱：', cat);
+                if (name === null) return;
+                name = String(name).trim();
+                if (!name || name === cat) return;
+                if (this.settings.categories.indexOf(name) !== -1) { alert('此分類已存在'); return; }
+                var affected = this.menuItems.filter(function(i) { return i.category === cat; });
+                if (!confirm('將大分類「' + cat + '」改名為「' + name + '」？\n共 ' + affected.length + ' 項餐點會一併更新，並立即儲存到資料庫。')) return;
+                this.settings.categories.splice(idx, 1, name);
+                if (!this.settings.categorySubcategories) this.settings.categorySubcategories = {};
+                this.settings.categorySubcategories[name] = (this.settings.categorySubcategories[cat] || []).slice();
+                delete this.settings.categorySubcategories[cat];
+                if (Array.isArray(this.settings.posOnlyCategories)) {
+                    var p = this.settings.posOnlyCategories.indexOf(cat);
+                    if (p !== -1) this.settings.posOnlyCategories.splice(p, 1, name);
+                }
+                (this.settings.announcements || []).forEach(function(ann) {
+                    if (ann && ann.category === cat) ann.category = name;
+                });
+                if (this.newSubCategoryNames && this.newSubCategoryNames[cat] !== undefined) {
+                    this.newSubCategoryNames[name] = this.newSubCategoryNames[cat];
+                    delete this.newSubCategoryNames[cat];
+                }
+                if (this.filterCat === cat) this.filterCat = name;
+                if (this.form && this.form.category === cat) this.form.category = name;
+                this.applyCategoryRename(affected, { category: name }, function(item) { item.category = name; });
+            },
+            renameSubCategory: function(cat, sub) {
+                var name = prompt('修改子分類名稱：', sub);
+                if (name === null) return;
+                name = String(name).trim();
+                if (!name || name === sub) return;
+                var list = (this.settings.categorySubcategories || {})[cat];
+                if (!Array.isArray(list)) return;
+                if (list.indexOf(name) !== -1) { alert('此子分類已存在'); return; }
+                var affected = this.menuItems.filter(function(i) { return i.category === cat && i.subCategory === sub; });
+                if (!confirm('將子分類「' + cat + ' / ' + sub + '」改名為「' + name + '」？\n共 ' + affected.length + ' 項餐點會一併更新，並立即儲存到資料庫。')) return;
+                var si = list.indexOf(sub);
+                if (si !== -1) list.splice(si, 1, name);
+                if (this.form && this.form.category === cat && this.form.subCategory === sub) this.form.subCategory = name;
+                this.applyCategoryRename(affected, { subCategory: name }, function(item) { item.subCategory = name; });
+            },
+            applyCategoryRename: function(affectedItems, patch, applyLocal) {
+                var self = this;
+                affectedItems.forEach(function(item) { applyLocal(item); });
+                rememberPublicMenuItems({ settings: self.settings || {} }, self.menuItems);
+                var writes = affectedItems.map(function(item) {
+                    return self.writeMenuItemPrimary(item.id, patch, function() {
+                        return update(ref(db, 'menu/' + item.id), patch);
+                    });
+                });
+                Promise.all(writes).then(function() {
+                    self.saveSettings();
+                    if (affectedItems.length) alert('✅ 已更新 ' + affectedItems.length + ' 項餐點，分類設定儲存中。');
+                }).catch(function(e) {
+                    alert('部分餐點更新失敗：' + (e && e.message ? e.message : e) + '\n請重新整理頁面確認後再試一次。');
+                });
             },
             removeCategory: function(cat) {
                 var count = this.menuItems.filter(function(i) { return i.category === cat; }).length;
