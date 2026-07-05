@@ -963,15 +963,16 @@
                 var startMin = h * 60 + m;
                 return nowMin >= startMin;
             },
-            checkHoliday: function() {
+            isTodayOff: function(holidays, weeklyDaysOff) {
                 var today = new Date();
-                var yyyy = today.getFullYear();
-                var mm   = ('0'+(today.getMonth()+1)).slice(-2);
-                var dd   = ('0'+today.getDate()).slice(-2);
-                var todayStr = yyyy+'-'+mm+'-'+dd;
-                var dow = today.getDay();
-                if ((this.settings.holidays||[]).indexOf(todayStr) !== -1 ||
-                    (this.settings.weeklyDaysOff||[]).indexOf(dow) !== -1) {
+                var todayStr = today.getFullYear()+'-'+('0'+(today.getMonth()+1)).slice(-2)+'-'+('0'+today.getDate()).slice(-2);
+                var hols = Array.isArray(holidays) ? holidays : (holidays && typeof holidays === 'object' ? Object.values(holidays) : []);
+                var wdo = Array.isArray(weeklyDaysOff) ? weeklyDaysOff : (weeklyDaysOff && typeof weeklyDaysOff === 'object' ? Object.values(weeklyDaysOff) : []);
+                if (hols.indexOf(todayStr) !== -1) return true;
+                return wdo.some(function(d) { return parseInt(d, 10) === today.getDay(); });
+            },
+            checkHoliday: function() {
+                if (this.isTodayOff(this.settings.holidays, this.settings.weeklyDaysOff)) {
                     this.showHolidayModal = true;
                 }
             },
@@ -1085,6 +1086,10 @@
                     var prevPickupShapeKey = JSON.stringify([prev.pickupDays, prev.pickupInterval, prev.openTime, prev.closeTime, prev.holidays, prev.weeklyDaysOff, prev.dailyHours]);
                     if (!wasOpen && self.settings.isOpen) self.initDateTime();
                     else if (self._settingsLoaded && self.settings.isOpen && pickupShapeKey !== prevPickupShapeKey) self.initDateTime();
+                    // ★ 公休設定變更時即時切換「今日公休」視窗（頁面開著也會在 1 分鐘內反應）
+                    var todayOffNow = self.isTodayOff(self.settings.holidays, self.settings.weeklyDaysOff);
+                    var todayOffPrev = self.isTodayOff(prev.holidays, prev.weeklyDaysOff);
+                    if (self._settingsLoaded && todayOffNow !== todayOffPrev) self.showHolidayModal = todayOffNow;
                     // ★ 每日主題顏色：以 PocketBase 設定為主套用（Firebase 監聽為輔）
                     if (v.dailyThemes && window.__applyDailyTheme) { try { window.__applyDailyTheme(v.dailyThemes); } catch(e) {} }
                     self.$nextTick(function() { self.checkAnnouncements(); });
