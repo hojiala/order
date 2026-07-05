@@ -837,6 +837,19 @@ function normalizeSettingsObject(value) {
         out.dineinPin = finalPin;
         out.qrPin = finalPin;
     }
+    // PocketBase 設定欄位以文字儲存，開關值會變成 "true"/"false" 字串；
+    // 前台用 `v.isOpen !== false` 判斷時字串 "false" 會被當成開啟，必須先轉回布林。
+    function boolLike(input) {
+        var v = decodeJsonLike(input);
+        if (typeof v === "boolean") return v;
+        var raw = text(v).trim().toLowerCase();
+        if (raw === "false" || raw === "0" || raw === "no" || raw === "off") return false;
+        if (raw === "true" || raw === "1" || raw === "yes" || raw === "on") return true;
+        return v !== false && v !== 0;
+    }
+    ["isOpen", "dineinIsOpen", "hideAllTab", "orderCooldownEnabled"].forEach(function(key) {
+        if (out[key] !== undefined) out[key] = boolLike(out[key]);
+    });
     return out;
 }
 
@@ -1384,9 +1397,21 @@ function settingsRichnessScore(settings) {
     return score;
 }
 
+function resultGeneratedAt(result) {
+    if (!result) return 0;
+    var raw = result.generatedAt || (result.data && result.data.generatedAt) || "";
+    var t = Date.parse(text(raw));
+    return Number.isFinite(t) ? t : 0;
+}
+
 function preferCachedSettingsResult(fresh, cached) {
     if (cached && cached.ok && settingsLooksUsable(cached.settings)) {
         if (!fresh || fresh.ok !== true || !settingsLooksUsable(fresh.settings)) return cached;
+        // 伺服器快照帶有 generatedAt：只要不比快取舊就以伺服器為準，
+        // 否則店家改設定（尤其是「清空／關閉」類的變更）會被舊快取的豐富度分數永遠壓住。
+        var freshAt = resultGeneratedAt(fresh);
+        var cachedAt = resultGeneratedAt(cached);
+        if (freshAt && freshAt >= cachedAt) return fresh;
         var freshScore = settingsRichnessScore(fresh.settings);
         var cachedScore = settingsRichnessScore(cached.settings);
         if (cachedScore > freshScore + 12) return cached;

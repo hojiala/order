@@ -128,7 +128,10 @@
                 <div class="w-full rounded-2xl md:rounded-3xl shadow-2xl overflow-hidden">
                     <img src="./images/Currently%20Closed.webp" alt="非營業時間" class="w-full h-auto block">
                 </div>
-                <div class="mt-4 md:mt-5 bg-white/95 backdrop-blur-sm border border-orange-100 rounded-full px-5 py-2.5 md:px-8 md:py-3 text-[13px] md:text-base text-orange-600 font-bold shadow-xl flex items-center gap-1.5 whitespace-nowrap transform hover:scale-105 transition">
+                <div v-if="todayIsDayOff" class="mt-4 md:mt-5 bg-white/95 backdrop-blur-sm border border-orange-100 rounded-full px-5 py-2.5 md:px-8 md:py-3 text-[13px] md:text-base text-orange-600 font-bold shadow-xl flex items-center gap-1.5 whitespace-nowrap">
+                    <span class="text-base md:text-xl">🌴</span> 今日公休
+                </div>
+                <div v-else class="mt-4 md:mt-5 bg-white/95 backdrop-blur-sm border border-orange-100 rounded-full px-5 py-2.5 md:px-8 md:py-3 text-[13px] md:text-base text-orange-600 font-bold shadow-xl flex items-center gap-1.5 whitespace-nowrap transform hover:scale-105 transition">
                     <span class="text-base md:text-xl">🕐</span> 營業時間 {{ settings.openTime || '06:00' }} ～ {{ settings.closeTime || '13:15' }}
                 </div>
                 <p class="mt-2 text-gray-500 font-bold text-xs md:text-sm">{{ deviceLabel }}</p>
@@ -540,7 +543,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getAuth, signInAnonymously, setPersistence, inMemoryPersistence } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
     import { getDatabase, ref, push, set, get, update, remove, onValue, query, orderByChild, equalTo, limitToLast, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
-    import { allocateOrderNoFromPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings } from "./pocketbase-order-writer.js?v=20260702_1100";
+    import { allocateOrderNoFromPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings } from "./pocketbase-order-writer.js?v=20260705_1500";
 
     const firebaseConfig = {
         apiKey:"AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -556,7 +559,7 @@
     // ★ 每日主題顏色：依星期套用 --day-theme / --day-theme-bg，並監聽 settings/dailyThemes 即時更新
     (function applyDailyTheme(){
         var defs = {
-            0:{start:'#64748B',end:'#334155',angle:'135deg'},
+            0:{start:'#d5c59a',end:'#606d31',angle:'135deg'},
             1:{start:'#3B82F6',end:'#06B6D4',angle:'135deg'},
             2:{start:'#10B981',end:'#84CC16',angle:'135deg'},
             3:{start:'#F59E0B',end:'#F97316',angle:'135deg'},
@@ -586,6 +589,11 @@
         }
         var today = new Date().getDay();
         setTheme(defs[today], today);
+        // ★ 讓 Vue 端能用 PocketBase 設定裡的 dailyThemes 直接套色（Firebase 監聽為輔）
+        window.__applyDailyTheme = function(themes){
+            var d = new Date().getDay();
+            setTheme((themes && themes[d]) || defs[d], d);
+        };
         try {
             onValue(ref(db, 'settings/dailyThemes'), function(snap){
                 var v = snap.val() || {};
@@ -637,19 +645,26 @@
             qrPollTimer:null, qrCountdownTimer:null, qrUnsubscribe:null
         }},
         computed:{
-            outsideBusinessHours:function(){
+            todayIsDayOff:function(){
+                // ★ 今天是否為公休（固定公休星期或特定公休日）
                 var s=this.settings,now=new Date(),day=now.getDay();
                 var dummy=this.nowMinute;
                 var wdo=s.weeklyDaysOff||[];if(!Array.isArray(wdo))wdo=Object.values(wdo);
-                var dayOff=false;for(var i=0;i<wdo.length;i++){if(parseInt(wdo[i],10)===day){dayOff=true;break;}}
-                if(dayOff)return true;
+                for(var i=0;i<wdo.length;i++){if(parseInt(wdo[i],10)===day)return true;}
                 var todayStr=now.getFullYear()+'-'+('0'+(now.getMonth()+1)).slice(-2)+'-'+('0'+now.getDate()).slice(-2);
                 var hols=s.holidays||[];if(!Array.isArray(hols))hols=Object.values(hols);
-                if(hols.indexOf(todayStr)!==-1)return true;
+                return hols.indexOf(todayStr)!==-1;
+            },
+            outsideBusinessHours:function(){
+                var s=this.settings,now=new Date(),day=now.getDay();
+                var dummy=this.nowMinute;
+                if(this.todayIsDayOff)return true;
                 var dh=s.dailyHours||{};
                 var dayKey=['sun','mon','tue','wed','thu','fri','sat'][day];
+                // manage 儲存的 dailyHours 以數字 0~6 為鍵；保留舊的英文鍵作為相容
+                var todayHours=dh[day]||dh[String(day)]||dh[dayKey]||null;
                 var open=s.openTime||'06:00',close=s.closeTime||'13:15';
-                if(dh[dayKey]){if(dh[dayKey].openTime)open=dh[dayKey].openTime;if(dh[dayKey].closeTime)close=dh[dayKey].closeTime;}
+                if(todayHours){if(todayHours.openTime)open=todayHours.openTime;if(todayHours.closeTime)close=todayHours.closeTime;}
                 var hhmm=('0'+now.getHours()).slice(-2)+':'+('0'+now.getMinutes()).slice(-2);
                 return hhmm<open||hhmm>=close;
             },
@@ -988,11 +1003,20 @@
                     s.settingsReadBackend=backend||'pocketbase';
                     s.devicePassword=v.dineinPassword||prev.dineinPassword||'0000';
                     if(s.menu&&s.menu.length)s.refreshMenuCategoriesFromSettings();
+                    // ★ 每日主題顏色：以 PocketBase 設定為主套用（Firebase 監聽為輔）
+                    if(v.dailyThemes&&window.__applyDailyTheme){try{window.__applyDailyTheme(v.dailyThemes);}catch(e){}}
                     s.$nextTick(function(){s.checkAnnouncements();});
                     s._settingsLoaded=true;
                 };
                 return readSettingsFromPocketBase({settings:this.settings||{},timeoutMs:options.timeoutMs||3500,forceFresh:!!options.forceFresh,ignoreCooldown:!!options.ignoreCooldown,allowDirectCollectionFallback:options.allowDirectCollectionFallback===true}).then(function(result){
-                    if(result&&result.ok&&result.settings&&Object.keys(result.settings).length){apply(result.settings,'pocketbase');return;}
+                    if(result&&result.ok&&result.settings&&Object.keys(result.settings).length){
+                        // ★ 防跳動：略過比已套用快照更舊的回應（例如逾時後撈到的舊快取）
+                        var gen=Date.parse(String(result.generatedAt||(result.data&&result.data.generatedAt)||''))||0;
+                        if(gen&&s._settingsGenAt&&gen<s._settingsGenAt)return;
+                        if(gen)s._settingsGenAt=gen;
+                        apply(result.settings,'pocketbase');
+                        return;
+                    }
                     console.warn('PocketBase settings empty; trying Firebase fallback');
                     return get(ref(db, 'settings')).then(function(snap) {
                         if (snap.exists()) apply(snap.val(), 'firebase_fallback');

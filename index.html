@@ -597,7 +597,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getDatabase, ref, push, set, get, update, onValue, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, signInAnonymously, setPersistence, inMemoryPersistence } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-    import { allocateOrderNoFromPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings } from "./pocketbase-order-writer.js?v=20260702_1100";
+    import { allocateOrderNoFromPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings } from "./pocketbase-order-writer.js?v=20260705_1500";
 
     const firebaseConfig = {
         apiKey: "AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -615,7 +615,7 @@
     // ★ 每日主題顏色：依星期套用 --day-theme / --day-theme-bg，並監聽 settings/dailyThemes 即時更新
     (function applyDailyTheme(){
         var defs = {
-            0:{start:'#64748B',end:'#334155',angle:'135deg'},
+            0:{start:'#d5c59a',end:'#606d31',angle:'135deg'},
             1:{start:'#3B82F6',end:'#06B6D4',angle:'135deg'},
             2:{start:'#10B981',end:'#84CC16',angle:'135deg'},
             3:{start:'#F59E0B',end:'#F97316',angle:'135deg'},
@@ -645,6 +645,11 @@
         }
         var today = new Date().getDay();
         setTheme(defs[today], today);
+        // ★ 讓 Vue 端能用 PocketBase 設定裡的 dailyThemes 直接套色（Firebase 監聽為輔）
+        window.__applyDailyTheme = function(themes){
+            var d = new Date().getDay();
+            setTheme((themes && themes[d]) || defs[d], d);
+        };
         try {
             onValue(ref(db, 'settings/dailyThemes'), function(snap){
                 var v = snap.val() || {};
@@ -1075,12 +1080,25 @@
                         var cl = (dh[idx] && dh[idx].closeTime) || closeTime;
                         return { day: '週' + n, time: o + ' ~ ' + cl, off: false };
                     });
+                    // ★ 取餐相關設定（可取餐天數、緩衝、營業時間、公休）變更時，重算可選日期與時段
+                    var pickupShapeKey = JSON.stringify([self.settings.pickupDays, self.settings.pickupInterval, self.settings.openTime, self.settings.closeTime, self.settings.holidays, self.settings.weeklyDaysOff, self.settings.dailyHours]);
+                    var prevPickupShapeKey = JSON.stringify([prev.pickupDays, prev.pickupInterval, prev.openTime, prev.closeTime, prev.holidays, prev.weeklyDaysOff, prev.dailyHours]);
                     if (!wasOpen && self.settings.isOpen) self.initDateTime();
+                    else if (self._settingsLoaded && self.settings.isOpen && pickupShapeKey !== prevPickupShapeKey) self.initDateTime();
+                    // ★ 每日主題顏色：以 PocketBase 設定為主套用（Firebase 監聽為輔）
+                    if (v.dailyThemes && window.__applyDailyTheme) { try { window.__applyDailyTheme(v.dailyThemes); } catch(e) {} }
                     self.$nextTick(function() { self.checkAnnouncements(); });
                     self._settingsLoaded = true;
                 };
                 return readSettingsFromPocketBase({ settings: this.settings || {}, timeoutMs: options.timeoutMs || 3500, forceFresh: !!options.forceFresh, ignoreCooldown: !!options.ignoreCooldown, allowDirectCollectionFallback: options.allowDirectCollectionFallback === true }).then(function(result) {
-                    if (result && result.ok && result.settings && Object.keys(result.settings).length) { apply(result.settings, 'pocketbase'); return; }
+                    if (result && result.ok && result.settings && Object.keys(result.settings).length) {
+                        // ★ 防跳動：略過比已套用快照更舊的回應（例如逾時後撈到的舊快取）
+                        var gen = Date.parse(String(result.generatedAt || (result.data && result.data.generatedAt) || '')) || 0;
+                        if (gen && self._settingsGenAt && gen < self._settingsGenAt) return;
+                        if (gen) self._settingsGenAt = gen;
+                        apply(result.settings, 'pocketbase');
+                        return;
+                    }
                     console.warn('PocketBase settings empty; trying Firebase fallback');
                     return get(ref(db, 'settings')).then(function(snap) {
                         if (snap.exists()) apply(snap.val(), 'firebase_fallback');

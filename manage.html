@@ -1719,7 +1719,7 @@ window._doCountUp = function() {
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getDatabase, ref, set, get, push, update, remove, onValue, onChildAdded, onChildChanged, onChildRemoved, query, orderByChild, equalTo, limitToLast } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-    import { listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, writeMenuItemToPocketBase, deleteMenuItemFromPocketBase, updateMenuSortInPocketBase, writeSettingsToPocketBase } from "./pocketbase-order-writer.js?v=20260702_1806";
+    import { listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, writeMenuItemToPocketBase, deleteMenuItemFromPocketBase, updateMenuSortInPocketBase, writeSettingsToPocketBase } from "./pocketbase-order-writer.js?v=20260705_1500";
 
     const firebaseConfig = {
         apiKey: "AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -1741,7 +1741,7 @@ window._doCountUp = function() {
     const THEME_COLOR_RE = /^#[0-9A-Fa-f]{6}$/;
     function cloneDefaultDailyThemes() {
         return {
-            0: { start:'#EF4444', end:'#F97316', angle:'135deg' },
+            0: { start:'#d5c59a', end:'#606d31', angle:'135deg' },
             1: { start:'#3B82F6', end:'#06B6D4', angle:'135deg' },
             2: { start:'#10B981', end:'#84CC16', angle:'135deg' },
             3: { start:'#F59E0B', end:'#F97316', angle:'135deg' },
@@ -1808,7 +1808,6 @@ window._doCountUp = function() {
                     channel_compare: { items: [] }
                 },
                 reportCharts: {},
-                reportChartTooltipHandlers: {},
                 reportRenderTimer: null,
                 reportChartResizeHandler: null,
 
@@ -4854,6 +4853,16 @@ window._doCountUp = function() {
                 if (!tf.groupName.trim()) { alert('請填寫群組名稱'); return; }
                 if (!tf.choices.length || !tf.choices[0].name.trim()) { alert('請至少新增一個選項'); return; }
                 var tplId = self.editingTemplateId;
+                var dupName = (self.optionTemplates || []).find(function(tpl) {
+                    return tpl && tpl.id !== tplId && String(tpl.templateName || '').trim() === tf.templateName.trim();
+                });
+                if (dupName) { alert('❌ 模板名稱「' + tf.templateName.trim() + '」已存在！\n模板名稱不可重複，請改用其他名稱。'); return; }
+                var dupGroup = (self.optionTemplates || []).find(function(tpl) {
+                    return tpl && tpl.id !== tplId
+                        && String(tpl.groupName || '').trim() === tf.groupName.trim()
+                        && tpl.type === tf.type && tpl.pricing === tf.pricing;
+                });
+                if (dupGroup && !confirm('⚠️ 已有模板「' + dupGroup.templateName + '」使用相同的群組名稱「' + tf.groupName.trim() + '」＋相同類型＋相同計價方式。\n兩個模板容易在餐點上混淆，建議改用不同的群組名稱。\n\n仍要繼續儲存嗎？')) return;
                 var mealUpgradeDisplayLabel = tf.pricing === 'mealUpgrade'
                     ? (String(tf.mealUpgradeDisplayLabel || '').trim() || self.getMealUpgradeDefaultLabel(tf))
                     : '';
@@ -4900,8 +4909,11 @@ window._doCountUp = function() {
                     var ogs = item.optionGroups || [];
                     var changed = false;
                     var newOGs = ogs.map(function(g){
-                        var match = (g.templateId && g.templateId === tplId);
-                        if (!match) {
+                        // 已綁定其他模板的群組絕不覆蓋；只有無 templateId 的舊資料才用名稱備援比對
+                        var match;
+                        if (g.templateId) {
+                            match = (g.templateId === tplId);
+                        } else {
                             match = (g.groupName === tplData.groupName && g.type === tplData.type && g.pricing === tplData.pricing);
                         }
                         if (match) {
@@ -5498,93 +5510,6 @@ window._doCountUp = function() {
                     }
                 }
             },
-            escapeReportTooltipHtml: function(value) {
-                return String(value === undefined || value === null ? '' : value)
-                    .replace(/&/g, '&amp;')
-                    .replace(/</g, '&lt;')
-                    .replace(/>/g, '&gt;')
-                    .replace(/"/g, '&quot;')
-                    .replace(/'/g, '&#39;');
-            },
-            formatReportCurrency: function(value) {
-                return '$' + Number(value || 0).toLocaleString();
-            },
-            buildReportTooltipHtml: function(title, rows) {
-                var self = this;
-                var html = '<div class="report-hover-tooltip-title">' + self.escapeReportTooltipHtml(title) + '</div>';
-                (rows || []).forEach(function(row) {
-                    html += '<div class="report-hover-tooltip-row"><span class="report-hover-tooltip-dot" style="background:' + self.escapeReportTooltipHtml(row.color || '#38bdf8') + '"></span><span>' + self.escapeReportTooltipHtml(row.label || '') + '：<b>' + self.escapeReportTooltipHtml(row.value || '') + '</b></span></div>';
-                });
-                return html;
-            },
-            bindReportAxisHoverTooltip: function(chart, id, getContent, itemSeriesIndex) {
-                if (!chart || typeof chart.getZr !== 'function') return;
-                var dom = chart.getDom && chart.getDom();
-                if (!dom) return;
-                var old = this.reportChartTooltipHandlers && this.reportChartTooltipHandlers[id];
-                if (old) {
-                    try {
-                        old.zr.off('mousemove', old.move);
-                        old.zr.off('mouseout', old.hide);
-                        old.zr.off('globalout', old.hide);
-                        if (old.chartMove && typeof chart.off === 'function') chart.off('mousemove', old.chartMove);
-                    } catch (e) {}
-                }
-                if (!this.reportChartTooltipHandlers) this.reportChartTooltipHandlers = {};
-                if (window.getComputedStyle(dom).position === 'static') dom.style.position = 'relative';
-                var tip = dom.querySelector('.report-hover-tooltip');
-                if (!tip) {
-                    tip = document.createElement('div');
-                    tip.className = 'report-hover-tooltip';
-                    dom.appendChild(tip);
-                }
-                var self = this;
-                var zr = chart.getZr();
-                var hide = function() {
-                    tip.style.display = 'none';
-                    try { chart.dispatchAction({ type: 'hideTip' }); } catch (e) {}
-                };
-                var show = function(offsetX, offsetY, idx) {
-                    var content = getContent(idx);
-                    if (!content) {
-                        hide();
-                        return;
-                    }
-                    tip.innerHTML = content.html;
-                    tip.style.display = 'block';
-                    var left = Number(offsetX || 0) + 14;
-                    var top = Number(offsetY || 0) + 14;
-                    var maxLeft = Math.max(8, dom.clientWidth - tip.offsetWidth - 8);
-                    var maxTop = Math.max(8, dom.clientHeight - tip.offsetHeight - 8);
-                    if (left > maxLeft) left = Number(offsetX || 0) - tip.offsetWidth - 14;
-                    if (top > maxTop) top = Number(offsetY || 0) - tip.offsetHeight - 14;
-                    tip.style.left = Math.max(8, left) + 'px';
-                    tip.style.top = Math.max(8, top) + 'px';
-                    try {
-                        chart.dispatchAction({ type: 'showTip', seriesIndex: Number(itemSeriesIndex || 0), dataIndex: content.dataIndex });
-                    } catch (e) {}
-                };
-                var chartMove = function(params) {
-                    if (!params || !Number.isFinite(Number(params.dataIndex))) return;
-                    var event = params.event || {};
-                    show(Number(event.offsetX || 0), Number(event.offsetY || 0), Number(params.dataIndex));
-                };
-                var move = function(evt) {
-                    var point = [evt.offsetX, evt.offsetY];
-                    if (!chart.containPixel || !chart.convertFromPixel || !chart.containPixel({ gridIndex: 0 }, point)) {
-                        hide();
-                        return;
-                    }
-                    var converted = chart.convertFromPixel({ xAxisIndex: 0 }, point);
-                    var idx = Math.round(Number(Array.isArray(converted) ? converted[0] : converted));
-                    show(evt.offsetX, evt.offsetY, idx);
-                };
-                if (typeof chart.on === 'function') chart.on('mousemove', chartMove);
-                zr.on('mousemove', move);
-                zr.on('mouseout', hide);
-                zr.on('globalout', hide);
-                this.reportChartTooltipHandlers[id] = { zr: zr, move: move, chartMove: chartMove, hide: hide };
-            },
             renderDashboardCharts: function() {
                 if (this.activeTab !== 'stats') return;
                 var self = this;
@@ -5611,9 +5536,14 @@ window._doCountUp = function() {
                         }
                         self.reportCharts[key] = null;
                     });
-                    self.reportChartTooltipHandlers = {};
                     if (!self.reportChartResizeHandler) {
                         self.reportChartResizeHandler = function() {
+                            // 跨越窄/寬斷點（例如手機轉向）時用新的留白設定整批重畫
+                            var narrowNow = (window.innerWidth || document.documentElement.clientWidth || 1024) < 768;
+                            if (self._reportChartsNarrow !== undefined && narrowNow !== self._reportChartsNarrow) {
+                                self.scheduleReportChartRender();
+                                return;
+                            }
                             Object.keys(self.reportCharts || {}).forEach(function(key) {
                                 var chart = self.reportCharts[key];
                                 if (!chart || typeof chart.resize !== 'function') return;
@@ -5624,6 +5554,9 @@ window._doCountUp = function() {
                     }
                     var palette = ['#34d399', '#60a5fa', '#f59e0b', '#f87171', '#a78bfa', '#22c55e', '#38bdf8', '#fb7185', '#f472b6', '#c084fc'];
                     var axisStyle = { axisLine: { lineStyle: { color: '#475569' } }, axisLabel: { color: '#cbd5e1' }, splitLine: { lineStyle: { color: 'rgba(71,85,105,0.35)' } } };
+                    // ★ 手機窄螢幕：縮小圖表留白與文字，避免擠壓或超出邊界
+                    var isNarrow = (window.innerWidth || document.documentElement.clientWidth || 1024) < 768;
+                    self._reportChartsNarrow = isNarrow;
                     var wrapAxisLabel = function(text, limit) {
                         var raw = String(text || '');
                         var size = Number(limit || 8) || 8;
@@ -5638,15 +5571,12 @@ window._doCountUp = function() {
                     var revenueChart = self.getOrCreateReportChart('report-revenue-chart');
                     if (!revenueRows.length) {
                         self.setEmptyReportChart(revenueChart, '營業額折線圖');
-                        self.bindReportAxisHoverTooltip(revenueChart, 'report-revenue-chart', function() { return null; }, 0);
                     } else self.setReportChartOption(revenueChart, '營業額折線圖', {
                         backgroundColor: 'transparent',
                         tooltip: {
-                            show: false,
                             trigger: 'axis',
                             triggerOn: 'mousemove|click',
                             confine: true,
-                            appendToBody: true,
                             formatter: function(params) {
                                 var row = Array.isArray(params) ? params[0] : params;
                                 var label = row && (row.axisValueLabel || row.name || row.axisValue) ? (row.axisValueLabel || row.name || row.axisValue) : '';
@@ -5654,23 +5584,11 @@ window._doCountUp = function() {
                                 return label + '<br/>營業額：$' + value.toLocaleString();
                             }
                         },
-                        grid: { left: 50, right: 20, top: 24, bottom: 42 },
-                        xAxis: Object.assign({ type: 'category', data: revenueRows.map(function(r) { return r.label; }), axisLabel: { color: '#cbd5e1', interval: 0 } }, axisStyle),
+                        grid: { left: 50, right: 20, top: 24, bottom: isNarrow ? 56 : 42 },
+                        xAxis: Object.assign({}, axisStyle, { type: 'category', data: revenueRows.map(function(r) { return r.label; }), axisLabel: { color: '#cbd5e1', interval: isNarrow ? 'auto' : 0, rotate: isNarrow ? 40 : 0, hideOverlap: true } }),
                         yAxis: Object.assign({ type: 'value' }, axisStyle),
                         series: [{ name: '營業額', type: 'line', smooth: true, data: revenueRows.map(function(r) { return Number(r.amount || 0); }), showSymbol: true, symbolSize: 7, lineStyle: { width: 3, color: '#34d399' }, itemStyle: { color: '#34d399' }, areaStyle: { color: 'rgba(52, 211, 153, 0.16)' } }]
                     });
-                    if (revenueRows.length) {
-                        self.bindReportAxisHoverTooltip(revenueChart, 'report-revenue-chart', function(idx) {
-                            if (idx < 0 || idx >= revenueRows.length) return null;
-                            var row = revenueRows[idx] || {};
-                            return {
-                                dataIndex: idx,
-                                html: self.buildReportTooltipHtml(row.label || '', [
-                                    { color: '#34d399', label: '營業額', value: self.formatReportCurrency(row.amount) }
-                                ])
-                            };
-                        }, 0);
-                    }
 
                     var hour = (self.reportDashboard || {}).orders_by_hour || { labels: [], revenueValues: [], orderCounts: [], values: [] };
                     var hourLabels = Array.isArray(hour.labels) ? hour.labels : [];
@@ -5679,16 +5597,13 @@ window._doCountUp = function() {
                     var hourChart = self.getOrCreateReportChart('report-orders-hour-chart');
                     if (!hourLabels.length) {
                         self.setEmptyReportChart(hourChart, '時段分析');
-                        self.bindReportAxisHoverTooltip(hourChart, 'report-orders-hour-chart', function() { return null; }, 0);
                     } else self.setReportChartOption(hourChart, '時段分析', {
                         backgroundColor: 'transparent',
                         tooltip: {
-                            show: false,
                             trigger: 'axis',
                             triggerOn: 'mousemove|click',
                             confine: true,
-                            appendToBody: true,
-                            axisPointer: { type: 'cross' },
+                            axisPointer: { type: 'shadow' },
                             formatter: function(params) {
                                 var title = (params && params[0] && params[0].axisValueLabel) ? params[0].axisValueLabel : '';
                                 var revenueVal = 0;
@@ -5701,38 +5616,26 @@ window._doCountUp = function() {
                             }
                         },
                         legend: { bottom: 0, textStyle: { color: '#cbd5e1' } },
-                        grid: { left: 60, right: 60, top: 20, bottom: 52 },
-                        xAxis: Object.assign({ type: 'category', data: hourLabels, axisLabel: { color: '#cbd5e1', interval: 0 } }, axisStyle),
+                        grid: { left: isNarrow ? 48 : 60, right: isNarrow ? 40 : 60, top: 26, bottom: 52 },
+                        xAxis: Object.assign({}, axisStyle, { type: 'category', data: hourLabels, axisLabel: { color: '#cbd5e1', interval: isNarrow ? 'auto' : 0, hideOverlap: true } }),
                         yAxis: [
-                            Object.assign({ type: 'value', name: '營業額', axisLabel: { color: '#cbd5e1', formatter: function(value) { return '$' + Number(value || 0).toLocaleString(); } } }, axisStyle),
-                            Object.assign({ type: 'value', name: '訂單量', minInterval: 1, splitLine: { show: false }, axisLabel: { color: '#cbd5e1', formatter: function(value) { return Number(value || 0); } } }, axisStyle)
+                            Object.assign({}, axisStyle, { type: 'value', name: isNarrow ? '' : '營業額', axisLabel: { color: '#cbd5e1', fontSize: isNarrow ? 10 : 12, formatter: function(value) { return '$' + Number(value || 0).toLocaleString(); } } }),
+                            Object.assign({}, axisStyle, { type: 'value', name: isNarrow ? '' : '訂單量', minInterval: 1, splitLine: { show: false }, axisLabel: { color: '#cbd5e1', fontSize: isNarrow ? 10 : 12, formatter: function(value) { return Number(value || 0); } } })
                         ],
                         series: [
                             { name: '營業額', type: 'bar', data: hourRevenueValues, itemStyle: { color: '#38bdf8', borderRadius: [6, 6, 0, 0] }, barMaxWidth: 28 },
                             { name: '訂單量', type: 'line', yAxisIndex: 1, data: hourOrderCounts, smooth: false, symbol: 'circle', symbolSize: 8, lineStyle: { width: 3, color: '#f59e0b' }, itemStyle: { color: '#f59e0b' } }
                         ]
                     });
-                    if (hourLabels.length) {
-                        self.bindReportAxisHoverTooltip(hourChart, 'report-orders-hour-chart', function(idx) {
-                            if (idx < 0 || idx >= hourLabels.length) return null;
-                            return {
-                                dataIndex: idx,
-                                html: self.buildReportTooltipHtml(hourLabels[idx], [
-                                    { color: '#38bdf8', label: '營業額', value: self.formatReportCurrency(hourRevenueValues[idx]) },
-                                    { color: '#f59e0b', label: '訂單量', value: Number(hourOrderCounts[idx] || 0).toLocaleString() + ' 筆' }
-                                ])
-                            };
-                        }, 0);
-                    }
 
                     var sourceItems = (((self.reportDashboard || {}).orders_by_source || {}).items || []);
                     var sourceChart = self.getOrCreateReportChart('report-source-chart');
                     if (!sourceItems.length) self.setEmptyReportChart(sourceChart, '訂單來源占比');
                     else self.setReportChartOption(sourceChart, '訂單來源占比', {
                         backgroundColor: 'transparent',
-                        tooltip: { trigger: 'item', triggerOn: 'mousemove|click', confine: true, appendToBody: true, formatter: function(p) { return p.marker + ' ' + p.name + '<br/>訂單量：' + Number(p.value || 0) + ' 筆<br/>占比：' + Number(p.percent || 0).toFixed(1) + '%'; } },
-                        legend: { bottom: 0, textStyle: { color: '#cbd5e1' } },
-                        series: [{ type: 'pie', radius: ['38%', '70%'], center: ['50%', '45%'], data: sourceItems.map(function(item, idx) { return { value: Number(item.value || 0), name: self.translateReportSourceName(item.name), itemStyle: { color: palette[idx % palette.length] } }; }), label: { color: '#e2e8f0', formatter: '{b}\n{d}%' } }]
+                        tooltip: { trigger: 'item', triggerOn: 'mousemove|click', confine: true, formatter: function(p) { return p.marker + ' ' + p.name + '<br/>訂單量：' + Number(p.value || 0) + ' 筆<br/>占比：' + Number(p.percent || 0).toFixed(1) + '%'; } },
+                        legend: { bottom: 0, type: isNarrow ? 'scroll' : 'plain', textStyle: { color: '#cbd5e1', fontSize: isNarrow ? 11 : 12 }, pageTextStyle: { color: '#cbd5e1' } },
+                        series: [{ type: 'pie', radius: isNarrow ? ['30%', '56%'] : ['38%', '70%'], center: isNarrow ? ['50%', '42%'] : ['50%', '45%'], data: sourceItems.map(function(item, idx) { return { value: Number(item.value || 0), name: self.translateReportSourceName(item.name), itemStyle: { color: palette[idx % palette.length] } }; }), label: isNarrow ? { show: true, position: 'inside', formatter: '{d}%', color: '#fff', fontSize: 10 } : { color: '#e2e8f0', formatter: '{b}\n{d}%' }, labelLine: { show: !isNarrow } }]
                     });
 
                     var paymentItems = (((self.reportDashboard || {}).payments || {}).items || []);
@@ -5740,9 +5643,9 @@ window._doCountUp = function() {
                     if (!paymentItems.length) self.setEmptyReportChart(paymentChart, '付款方式占比');
                     else self.setReportChartOption(paymentChart, '付款方式占比', {
                         backgroundColor: 'transparent',
-                        tooltip: { trigger: 'item', triggerOn: 'mousemove|click', confine: true, appendToBody: true, formatter: function(p) { return p.marker + ' ' + p.name + '<br/>訂單量：' + Number(p.value || 0) + ' 筆<br/>占比：' + Number(p.percent || 0).toFixed(1) + '%'; } },
-                        legend: { bottom: 0, textStyle: { color: '#cbd5e1' } },
-                        series: [{ type: 'pie', radius: ['38%', '70%'], center: ['50%', '45%'], data: paymentItems.map(function(item, idx) { return { value: Number(item.value || 0), name: self.translateReportPaymentName(item.name), itemStyle: { color: palette[(idx + 2) % palette.length] } }; }), label: { color: '#e2e8f0', formatter: '{b}\n{d}%' } }]
+                        tooltip: { trigger: 'item', triggerOn: 'mousemove|click', confine: true, formatter: function(p) { return p.marker + ' ' + p.name + '<br/>訂單量：' + Number(p.value || 0) + ' 筆<br/>占比：' + Number(p.percent || 0).toFixed(1) + '%'; } },
+                        legend: { bottom: 0, type: isNarrow ? 'scroll' : 'plain', textStyle: { color: '#cbd5e1', fontSize: isNarrow ? 11 : 12 }, pageTextStyle: { color: '#cbd5e1' } },
+                        series: [{ type: 'pie', radius: isNarrow ? ['30%', '56%'] : ['38%', '70%'], center: isNarrow ? ['50%', '42%'] : ['50%', '45%'], data: paymentItems.map(function(item, idx) { return { value: Number(item.value || 0), name: self.translateReportPaymentName(item.name), itemStyle: { color: palette[(idx + 2) % palette.length] } }; }), label: isNarrow ? { show: true, position: 'inside', formatter: '{d}%', color: '#fff', fontSize: 10 } : { color: '#e2e8f0', formatter: '{b}\n{d}%' }, labelLine: { show: !isNarrow } }]
                     });
 
                     var topItems = (((self.reportDashboard || {}).top_items || {}).items || []).slice(0, 10);
@@ -5760,18 +5663,20 @@ window._doCountUp = function() {
                                 return String(item.name || '') + '<br/>數量：' + Number(item.value !== undefined ? item.value : (item.qty || 0)) + '<br/>金額：$' + Number(item.amount || 0).toLocaleString();
                             }
                         },
-                        grid: { left: 210, right: 52, top: 18, bottom: 18 },
-                        xAxis: Object.assign({ type: 'value', minInterval: 1, axisLabel: { color: '#cbd5e1', formatter: function(value) { return value; } } }, axisStyle),
-                        yAxis: Object.assign({
+                        grid: { left: isNarrow ? 118 : 210, right: isNarrow ? 34 : 52, top: 18, bottom: 18 },
+                        xAxis: Object.assign({}, axisStyle, { type: 'value', minInterval: 1, splitNumber: isNarrow ? 3 : 5, axisLabel: { color: '#cbd5e1', hideOverlap: true, formatter: function(value) { return value; } } }),
+                        yAxis: Object.assign({}, axisStyle, {
                             type: 'category',
                             data: topItems.map(function(item) { return item.name; }).reverse(),
                             axisLabel: {
                                 color: '#cbd5e1',
-                                width: 180,
-                                margin: 12,
-                                formatter: function(value) { return wrapAxisLabel(value, 8); }
+                                width: isNarrow ? 104 : 180,
+                                margin: isNarrow ? 8 : 12,
+                                fontSize: isNarrow ? 10 : 12,
+                                overflow: 'break',
+                                formatter: function(value) { return wrapAxisLabel(value, isNarrow ? 7 : 8); }
                             }
-                        }, axisStyle),
+                        }),
                         series: [{ type: 'bar', data: topItems.map(function(item, idx) { return { value: Number(item.value !== undefined ? item.value : (item.qty || 0)), itemStyle: { color: palette[(idx + 2) % palette.length], borderRadius: [0, 6, 6, 0] } }; }).reverse(), label: { show: true, position: 'right', color: '#f8fafc' } }]
                     });
 
@@ -5781,13 +5686,13 @@ window._doCountUp = function() {
                     else self.setReportChartOption(channelChart, '來源比較圖', {
                         backgroundColor: 'transparent',
                         tooltip: { trigger: 'axis', triggerOn: 'mousemove|click', confine: true },
-                        grid: { left: 180, right: 20, top: 18, bottom: 18 },
-                        xAxis: Object.assign({ type: 'value', minInterval: 1 }, axisStyle),
-                        yAxis: Object.assign({
+                        grid: { left: isNarrow ? 106 : 180, right: 20, top: 18, bottom: 18 },
+                        xAxis: Object.assign({}, axisStyle, { type: 'value', minInterval: 1, splitNumber: isNarrow ? 3 : 5, axisLabel: { color: '#cbd5e1', hideOverlap: true } }),
+                        yAxis: Object.assign({}, axisStyle, {
                             type: 'category',
                             data: channelItems.map(function(item) { return item.name; }).reverse(),
-                            axisLabel: { color: '#cbd5e1', width: 150, formatter: function(value) { return wrapAxisLabel(value, 6); } }
-                        }, axisStyle),
+                            axisLabel: { color: '#cbd5e1', width: isNarrow ? 92 : 150, fontSize: isNarrow ? 10 : 12, formatter: function(value) { return wrapAxisLabel(value, 6); } }
+                        }),
                         series: [{ type: 'bar', data: channelItems.map(function(item, idx) { return { value: Number(item.value || 0), itemStyle: { color: palette[idx % palette.length], borderRadius: [0, 6, 6, 0] } }; }).reverse() }]
                     });
 
