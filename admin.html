@@ -420,6 +420,10 @@
                             ? 'phone_ai'
                             : ((src === 'pos') ? 'pos' : ((src === 'qrcode' || src === 'qr_takeout' || src === 'dinein' || src === 'line' || src === 'web_liff') ? src : 'web'));
                         if (family === 'phone_ai') {
+                            // 電話單以 sourceOrderId 為唯一鍵（不含日期）：同一張單的
+                            // phone_ai 紀錄、integration view、PB、orders 桶鏡射才會合併成一筆
+                            const phoneOid = String(order.sourceOrderId || order.orderId || '').trim();
+                            if (phoneOid) return ['oid', family, phoneOid].join('|');
                             if (sourcePath) return ['path', sourcePath].join('|');
                             if (order.id) return ['id', family, String(order.id)].join('|');
                         }
@@ -450,18 +454,35 @@
                         }, 0);
                     };
                     const bySig = {};
+                    // 同一張單多來源合併：兩邊都有 updatedAt 時以「較新」為準，
+                    // 避免舊的鏡射/快照資料（例如缺品項的過期 total）把新資料蓋回去；
+                    // 沒有時間戳可比時退回原本的內容豐富度（score）比較
+                    const freshnessOf = (o) => {
+                        const iso = Date.parse(String((o && (o.updatedAt || o.updated)) || ''));
+                        return Number.isFinite(iso) && iso > 0 ? iso : 0;
+                    };
                     (Array.isArray(this.orders) ? this.orders : []).forEach((order) => {
                         const sig = signatureOf(order);
                         if (!sig) {
                             bySig['id:' + String(order && order.id || Math.random())] = order;
                             return;
                         }
-                        if (!bySig[sig] || score(order) > score(bySig[sig])) {
-                            const merged = bySig[sig] ? Object.assign({}, bySig[sig], order) : Object.assign({}, order);
-                            const bestItems = score(order) >= score(bySig[sig]) ? order.items : bySig[sig].items;
-                            if (Array.isArray(bestItems)) merged.items = bestItems.map((item) => Object.assign({}, item));
-                            bySig[sig] = this.normalizeIncomingOrder(merged);
+                        const existing = bySig[sig];
+                        if (!existing) {
+                            bySig[sig] = this.normalizeIncomingOrder(Object.assign({}, order));
+                            return;
                         }
+                        const fNew = freshnessOf(order);
+                        const fOld = freshnessOf(existing);
+                        const hasFreshness = fNew > 0 && fOld > 0 && fNew !== fOld;
+                        const preferOrder = hasFreshness ? fNew > fOld : score(order) > score(existing);
+                        if (!preferOrder) return;
+                        const merged = Object.assign({}, existing, order);
+                        const orderHasItems = Array.isArray(order.items) && order.items.length > 0;
+                        const useOrderItems = hasFreshness ? orderHasItems : score(order) >= score(existing);
+                        const bestItems = useOrderItems ? order.items : existing.items;
+                        if (Array.isArray(bestItems)) merged.items = bestItems.map((item) => Object.assign({}, item));
+                        bySig[sig] = this.normalizeIncomingOrder(merged);
                     });
                     const sorted = Object.keys(bySig).map((key) => bySig[key])
                         .filter(o => this.getDisplayStatus(o) !== 'archived')
@@ -2859,6 +2880,8 @@
                         const phone = String((order.customer && order.customer.phone) || order.phone || '').trim();
                         const pickup = String(order.pickupTime || order.pickupTimeLabel || '').trim();
                         const cycle = String(order.counterCycleKey || '').trim();
+                        // 電話單以 sourceOrderId 為唯一鍵（不含日期），對齊 sortedOrders 的簽章規則
+                        if (family === 'phone_ai' && sourceOrderId) return ['oid', family, sourceOrderId].join('|');
                         if (sourceOrderId && day && family) return ['oid', family, day, sourceOrderId].join('|');
                         if (family === 'phone_ai') {
                             if (sourcePath) return ['path', sourcePath].join('|');
