@@ -720,7 +720,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getDatabase, ref, onValue, onChildAdded, onChildChanged, onChildRemoved, update, push, set, get, remove, query, orderByChild, limitToLast, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-    import { allocateOrderNoFromPocketBase, resetOrderNoInPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, listMenuItemsFromPocketBase, writeMenuItemToPocketBase, writeSettingsToPocketBase, rememberPublicMenuItems, rememberPublicSettings, normalizePublicSettings } from "./pocketbase-order-writer.js?v=20260705_1500";
+    import { allocateOrderNoFromPocketBase, resetOrderNoInPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, listMenuItemsFromPocketBase, writeMenuItemToPocketBase, writeSettingsToPocketBase, rememberPublicMenuItems, rememberPublicSettings, normalizePublicSettings, subscribeOrdersRealtime } from "./pocketbase-order-writer.js?v=20260707_1800";
     const firebaseConfig = {
         apiKey:"AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
         authDomain:"breakfast-ai-system.firebaseapp.com",
@@ -792,6 +792,7 @@
                 cart:[],custName:"",custPhone:"",isSubmitting:false,
                 posMetaExpanded:false,showStorePayChoiceModal:false,showLinePayChoiceModal:false,showCounterSettingsModal:false,showCashCalculator:false,showBackendStatus:false,posOrderNote:"",
                 counterResetTime:"00:00",counterMaxNo:999,counterLegacyValue:0,counterSaving:false,cashCalcInput:"",
+                ordersRealtimeUnsub:null,ordersRealtimeRefreshTimer:null,
                 editPickupDate:"",editPickupTime:"",editOrderNote:"",editingCartIdx:-1,
                 editShowCustomer:false,editShowPayment:false,editOrderType:'takeout',editTableLabel:'',editingLinePayPaid:false,
                 posOrderType:'takeout',posTableLabel:'',posTables:[],cartDragIdx:null,
@@ -5266,7 +5267,32 @@
 
                 s.ordersLoading=true;
                 s.startOrdersPrimaryRead();
+                s.startOrdersRealtimeWatch();
                 s.listenRemoteStatusOverrides();
+            },
+            // ★ PB 原生 realtime（SSE），不經過 Firebase：訂單一有異動就立刻觸發重新讀取，
+            //   讓畫面即時更新，同時完全不增加 Firebase 下載量。這只是「觸發器」，實際
+            //   資料讀取/合併仍沿用既有的 readPocketBaseOrdersPrimary（PB 不可用時原有的
+            //   輪詢與 Firebase 備援機制照常運作，不受影響）。
+            startOrdersRealtimeWatch:function(){
+                var s=this;
+                if(s.ordersRealtimeUnsub){try{s.ordersRealtimeUnsub();}catch(e){}s.ordersRealtimeUnsub=null;}
+                s.ordersRealtimeUnsub=subscribeOrdersRealtime({
+                    settings:s.settings||{},
+                    pocketBaseUrl:s.pocketBaseUrl,
+                    pocketBaseOrdersCollection:s.pocketBaseOrdersCollection
+                },function(){
+                    s.scheduleOrdersRealtimeRefresh();
+                });
+            },
+            scheduleOrdersRealtimeRefresh:function(){
+                var s=this;
+                clearTimeout(s.ordersRealtimeRefreshTimer);
+                s.ordersRealtimeRefreshTimer=setTimeout(function(){
+                    s.readPocketBaseOrdersPrimary().catch(function(e){
+                        console.warn('PB realtime-triggered refresh failed:',e&&e.message?e.message:e);
+                    });
+                },350);
             },
             getLinePayState:function(order){
                 if(!order)return'pending';

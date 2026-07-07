@@ -691,6 +691,83 @@ export function listOrdersFromPocketBase(options) {
     });
 }
 
+// PB 原生 realtime（SSE，/api/realtime）：完全不經過 Firebase，符合「PB Primary、
+// Firebase 只做斷網備援」的架構。用途是「訂單一有異動就立刻通知」，不在這裡做增量
+// 合併——呼叫端收到通知後應自行重新讀取/合併（沿用既有、已驗證正確的邏輯），
+// 這裡只負責「連線、訂閱、斷線自動重連後重新訂閱」。
+// 回傳一個 unsubscribe 函式；PB 不可用或瀏覽器不支援 EventSource 時安全地什麼都不做，
+// 呼叫端原本的輪詢機制會繼續運作，不受影響。
+export function subscribeOrdersRealtime(options, onEvent) {
+    options = options || {};
+    var config = resolvePocketBaseConfig(options);
+    var noop = function() {};
+    if (!config.baseUrl) return noop;
+    if (typeof window === "undefined" || typeof window.EventSource === "undefined") return noop;
+    if (typeof onEvent !== "function") onEvent = noop;
+
+    var collection = config.collection || "orders";
+    var url = config.baseUrl + "/api/realtime";
+    var es = null;
+    var closed = false;
+    var reconnectTimer = null;
+
+    function subscribe(clientId) {
+        if (!clientId) return;
+        var headers = { "Content-Type": "application/json" };
+        if (config.token) headers.Authorization = config.token;
+        fetch(url, {
+            method: "POST",
+            headers: headers,
+            body: JSON.stringify({ clientId: clientId, subscriptions: [collection] })
+        }).catch(function(e) {
+            console.warn("PB realtime subscribe failed:", e && e.message ? e.message : e);
+        });
+    }
+
+    function scheduleReconnect() {
+        if (closed) return;
+        clearTimeout(reconnectTimer);
+        reconnectTimer = setTimeout(connect, 3000);
+    }
+
+    function connect() {
+        if (closed) return;
+        try { if (es) es.close(); } catch (e) {}
+        try {
+            es = new EventSource(url);
+        } catch (e) {
+            console.warn("PB realtime EventSource init failed:", e && e.message ? e.message : e);
+            scheduleReconnect();
+            return;
+        }
+        es.addEventListener("PB_CONNECT", function(evt) {
+            try {
+                var data = JSON.parse(evt.data || "{}");
+                subscribe(data && data.clientId);
+            } catch (e) {}
+        });
+        es.addEventListener(collection, function(evt) {
+            try {
+                var data = JSON.parse(evt.data || "{}");
+                onEvent(data && data.action, data && data.record);
+            } catch (e) {}
+        });
+        es.onerror = function() {
+            // 瀏覽器 EventSource 本身會自動重連；連線真的關閉（readyState===2）時我們
+            // 自己再補一次 connect()，重連後會拿到新 clientId、重新走一次訂閱流程。
+            if (es && es.readyState === 2) scheduleReconnect();
+        };
+    }
+
+    connect();
+
+    return function unsubscribe() {
+        closed = true;
+        clearTimeout(reconnectTimer);
+        try { if (es) es.close(); } catch (e) {}
+    };
+}
+
 function stripPocketBaseSystemFields(record) {
     var source = record && typeof record === "object" ? record : {};
     var out = {};
