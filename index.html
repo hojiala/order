@@ -1878,6 +1878,19 @@
                 update(ref(db, orderBase), { status:'cancelled', cancelledAt:cancelTs, cancelSource:'customer', print_task:cancelTask }).then(function() {
                     var queueData=Object.assign({},order,{status:'cancelled',cancelledAt:cancelTs,cancelSource:'customer',print_task:cancelTask});
                     delete queueData.id;
+                    var directUrl=self.settings&&self.settings.nodeRedPrintUrl;
+                    if(directUrl){
+                        var directBody=Object.assign({orderId:order.id},queueData);
+                        return fetch(directUrl,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(directBody)})
+                            .then(function(r){if(!r.ok)throw new Error(r.status);})
+                            .catch(function(e){
+                                console.warn('cancel 直接列印失敗，走 Firebase:',e.message||e);
+                                return set(ref(db,'print_queue/'+order.id),null).catch(function(){})
+                                    .then(function(){return new Promise(function(resolve){setTimeout(resolve,120);});})
+                                    .then(function(){return set(ref(db,'print_queue/'+order.id),queueData);})
+                                    .catch(function(e2){console.warn('cancel print_queue 寫入失敗:',e2&&e2.message?e2.message:e2);});
+                            });
+                    }
                     return set(ref(db,'print_queue/'+order.id),null).catch(function(){})
                         .then(function(){return new Promise(function(resolve){setTimeout(resolve,120);});})
                         .then(function(){return set(ref(db,'print_queue/'+order.id),queueData);})
@@ -2014,7 +2027,18 @@
                     if (assignedNo && payMethod !== 'linepay' && orderData.print_task) {
                         try {
                             var queueData = Object.assign({}, orderData);
-                            set(ref(db, 'print_queue/' + orderId), queueData).catch(function(e) { console.warn('print_queue 寫入失敗:', e.message); });
+                            var directUrl = self.settings && self.settings.nodeRedPrintUrl;
+                            if (directUrl) {
+                                var directBody = Object.assign({orderId: orderId}, queueData);
+                                fetch(directUrl, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(directBody)})
+                                    .then(function(r) { if (!r.ok) throw new Error(r.status); })
+                                    .catch(function(e) {
+                                        console.warn('直接列印失敗，走 Firebase:', e.message || e);
+                                        set(ref(db, 'print_queue/' + orderId), queueData).catch(function(e2) { console.warn('print_queue 寫入失敗:', e2.message); });
+                                    });
+                            } else {
+                                set(ref(db, 'print_queue/' + orderId), queueData).catch(function(e) { console.warn('print_queue 寫入失敗:', e.message); });
+                            }
                         } catch(e) {}
                     }
                     self.saveMyOrder(orderId, orderData);
