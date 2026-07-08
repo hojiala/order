@@ -2373,9 +2373,10 @@
             applyStatusOverrideToOrder:function(order){
                 if(!order||typeof order!=='object')return order;
                 var currentStatus=String(order.status||'').toLowerCase();
-                if(currentStatus==='archived'||currentStatus==='cancelled')return order;
+                if(currentStatus==='archived')return order;
                 var status=this.getRemoteStatusOverride(order);
                 if(!status)return order;
+                if(currentStatus==='cancelled'&&status!=='archived')return order;
                 return Object.assign({},order,{status:status,_remoteStatusOverride:status});
             },
             writeRemoteStatusOverride:function(order,status){
@@ -6335,11 +6336,26 @@
                         }
                     }
                     queueData.print_task=task;
-                    var qRef=ref(db,'print_queue/'+orderId);
-                    remove(qRef).catch(function(){})
-                        .then(function(){ return new Promise(function(resolve){ setTimeout(resolve,120); }); })
-                        .then(function(){ return set(qRef,queueData); })
-                        .catch(function(e){console.warn('print_queue寫入失敗:',e.message);});
+                    var directUrl=this.settings&&this.settings.nodeRedPrintUrl;
+                    if(directUrl){
+                        var directBody=Object.assign({orderId:orderId},queueData);
+                        fetch(directUrl,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(directBody)})
+                            .then(function(r){if(r.ok)console.log('🖨️ 直接列印成功');else throw new Error(r.status);})
+                            .catch(function(e){
+                                console.warn('🖨️ 直接列印失敗，走 Firebase 備援:',e.message||e);
+                                var qRef=ref(db,'print_queue/'+orderId);
+                                remove(qRef).catch(function(){})
+                                    .then(function(){return new Promise(function(resolve){setTimeout(resolve,120);});})
+                                    .then(function(){return set(qRef,queueData);})
+                                    .catch(function(e2){console.warn('print_queue寫入失敗:',e2.message);});
+                            });
+                    }else{
+                        var qRef=ref(db,'print_queue/'+orderId);
+                        remove(qRef).catch(function(){})
+                            .then(function(){ return new Promise(function(resolve){ setTimeout(resolve,120); }); })
+                            .then(function(){ return set(qRef,queueData); })
+                            .catch(function(e){console.warn('print_queue寫入失敗:',e.message);});
+                    }
                 }catch(e){console.warn('print_queue error:',e);}
             },
             saveOrderEdit:async function(){
