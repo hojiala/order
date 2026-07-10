@@ -1269,6 +1269,18 @@
                 var pad=function(n){return('0'+n).slice(-2);};
                 return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+' '+pad(d.getHours())+':'+pad(d.getMinutes());
             },
+            resolveOrderPickupMode:function(order){
+                var o=order||{};
+                var mode=String(o.type||o.pickupMode||o.pickup_mode||o.orderType||'').trim().toLowerCase();
+                if(mode==='dinein'||mode==='內用')return 'dinein';
+                if(mode==='takeout'||mode==='外帶')return 'takeout';
+                var source=String(o.source||'').trim().toLowerCase();
+                if(source==='qrcode')return 'dinein';
+                if(source==='qr_takeout')return 'takeout';
+                var tableType=String(o.tableType||o.table_type||(o.customer&&o.customer.tableType)||'').trim().toLowerCase();
+                var deviceId=String(o.tableDevice||o.table_device||o.deviceId||o.device_id||(o.customer&&o.customer.deviceId)||'').trim();
+                return source==='dinein'&&tableType!=='kiosk'&&tableType!=='takeout'&&!/^(?:kiosk|takeout)[_-]/i.test(deviceId)?'dinein':'takeout';
+            },
             deriveDineInTableLabel:function(order){
                 if(!order||typeof order!=='object')return '';
                 var c=(order.customer&&typeof order.customer==='object')?order.customer:{};
@@ -1836,7 +1848,10 @@
                 if(!customerName&&typeof out.name==='string'&&out.name.trim()&&out.name.trim()!=='[object Object]')customerName=out.name.trim();
                 if(!customerName&&typeof out.tableLabel==='string'&&out.tableLabel.trim()&&out.tableLabel.trim()!=='[object Object]')customerName=out.tableLabel.trim();
                 var derivedTableLabel=this.deriveDineInTableLabel(out);
-                var dineinLike=(out.source==='dinein'||out.source==='qrcode'||String(out.type||out.pickupMode||'').toLowerCase()==='dinein');
+                var pickupMode=this.resolveOrderPickupMode(out);
+                var dineinLike=pickupMode==='dinein';
+                out.type=pickupMode;
+                out.pickupMode=pickupMode;
                 if(derivedTableLabel){
                     out.tableLabel=derivedTableLabel;
                     if(dineinLike)customerName=derivedTableLabel;
@@ -6264,7 +6279,7 @@
                 this.editOrderNote=this.editOrderNote||(latest&&latest.orderNote)||normalized.orderNote||normalized.note||'';
                 if(String(this.editOrderNote||'').trim()==='現場單')this.editOrderNote='';
                 this.editPayMethod=(latest&&latest.paymentMethod)||normalized.paymentMethod||'store';
-                this.editOrderType=(((latest&&latest.type)||normalized.type)==='dinein'||((latest&&latest.pickupMode)||normalized.pickupMode)==='dinein')?'dinein':'takeout';
+                this.editOrderType=this.resolveOrderPickupMode(latest||normalized);
                 this.editTableLabel=(latest&&latest.tableLabel)||normalized.tableLabel||'';
                 this.editShowCustomer=false;this.editShowPayment=false;
                 // ★ 偵測 LINE Pay 已付清，禁止修改餐點與金額
@@ -6435,6 +6450,7 @@
                         items:serializedItems,
                         total:s.cartTotal,
                         type:s.editOrderType||'takeout',
+                        pickupMode:s.editOrderType||'takeout',
                         customer:{name:String(s.editCustomerName||'').trim()||'顧客',phone:String(s.editCustomerPhone||'').trim()},
                         customerName:String(s.editCustomerName||'').trim(),
                         phone:String(s.editCustomerPhone||'').trim()
