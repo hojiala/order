@@ -417,8 +417,10 @@
         <button @click="editShowCustomer=!editShowCustomer" class="w-full flex items-center justify-between bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg px-3 py-1.5 transition">
           <span class="text-xs font-bold text-blue-700">📋 客戶 / 時間 / 備註</span><span class="text-blue-400 text-xs">{{ editShowCustomer?'▲':'▼' }}</span></button>
         <div v-if="editShowCustomer" class="bg-blue-50 border border-blue-200 rounded-lg p-2.5 text-xs text-blue-700 space-y-1.5">
-          <p class="font-bold text-sm">{{ getDisplayCustomerName(editingOrder) }}</p>
-          <p>&#128222; {{ editingOrder.phone||(editingOrder.customer&&editingOrder.customer.phone)||"未提供" }}</p>
+          <div class="flex gap-2">
+            <input v-model="editCustomerName" type="text" placeholder="顧客姓名（選填）" class="min-w-0 flex-1 bg-white border border-blue-300 rounded px-2 py-1 text-sm text-gray-800 placeholder-gray-400">
+            <input v-model="editCustomerPhone" type="tel" placeholder="電話" class="w-32 bg-white border border-blue-300 rounded px-2 py-1 text-sm text-gray-800 placeholder-gray-400">
+          </div>
           <div class="flex items-center gap-2"><span>&#128197;</span><input v-model="editPickupDate" type="date" class="bg-white border border-blue-300 rounded px-2 py-0.5 text-sm text-gray-800" style="width:8.5rem"></div>
           <div class="flex items-center gap-2"><span>&#128336;</span><input v-model="editPickupTime" type="time" class="bg-white border border-blue-300 rounded px-2 py-0.5 text-sm text-gray-800" style="width:7rem"></div>
           <div><span>&#128221;</span><input v-model="editOrderNote" type="text" placeholder="訂單備註…" class="w-full mt-1 bg-white border border-blue-300 rounded px-2 py-1 text-sm text-gray-800 placeholder-gray-400"></div>
@@ -793,7 +795,7 @@
                 posMetaExpanded:false,showStorePayChoiceModal:false,showLinePayChoiceModal:false,showCounterSettingsModal:false,showCashCalculator:false,showBackendStatus:false,posOrderNote:"",
                 counterResetTime:"00:00",counterMaxNo:999,counterLegacyValue:0,counterSaving:false,cashCalcInput:"",
                 ordersRealtimeUnsub:null,ordersRealtimeRefreshTimer:null,
-                editPickupDate:"",editPickupTime:"",editOrderNote:"",editingCartIdx:-1,
+                editPickupDate:"",editPickupTime:"",editOrderNote:"",editCustomerName:"",editCustomerPhone:"",editingCartIdx:-1,
                 editShowCustomer:false,editShowPayment:false,editOrderType:'takeout',editTableLabel:'',editingLinePayPaid:false,
                 posOrderType:'takeout',posTableLabel:'',posTables:[],cartDragIdx:null,
                 posPickupDate:"",posPickupTime:"",
@@ -2249,7 +2251,9 @@
                             if(!isDrink(item)){filtered.push(item);return;}
                             var gid=text(item.comboGroupId);
                             var sig=sigOfDrink(item);
-                            var main=(gid&&mainByGroup[gid])||(!gid&&sig&&mainBySig[sig])||(sig&&mainBySig[sig])||null;
+                            var meta=[item.note,item['備註'],item.comboDrinkLabel,item.comboDrinkChargeText,item.comboDrinkText,item.mealDrink].map(text).join(' ');
+                            var explicitComboDrink=!!item.isComboDrink||/(?:套餐飲料|搭配飲料折\s*5\s*元|飲料加購|補差價)/.test(meta);
+                            var main=(gid&&mainByGroup[gid])||(!gid&&explicitComboDrink&&sig&&mainBySig[sig])||null;
                             if(main){
                                 ensureMainFromDrink(main,item);
                                 return;
@@ -2954,6 +2958,10 @@
                     var hasSizeTemp=!!text(it.size||it['\u5bb9\u91cf'])||!!text(it.temp||it['\u6eab\u5ea6']);
                     return comboDrinkRe.test(meta)||(hasSizeTemp&&looksLikeDrinkName(it.name||it['\u54c1\u9805']));
                 }
+                function isComboSibling(it){
+                    var meta=[it&&it.note,it&&it['\u5099\u8a3b'],it&&it.comboDrinkLabel,it&&it.comboDrinkChargeText,it&&it.comboDrinkText,it&&it.mealDrink].map(text).join(' ');
+                    return !!(it&&it.isComboDrink)||comboDrinkRe.test(meta);
+                }
                 function stripCup(name){
                     return text(name).replace(/[（(]\s*(?:\u5927\u676f|\u4e2d\u676f|\u5c0f\u676f)\s*[)）]/g,'').trim();
                 }
@@ -2972,12 +2980,12 @@
                     for(var f=mainIdx+1;f<cart.length;f++){
                         if(used[f])continue;
                         if(isMain(cart[f]))break;
-                        if(isDrink(cart[f]))return f;
+                        if(isDrink(cart[f])&&isComboSibling(cart[f]))return f;
                     }
                     for(var b=mainIdx-1;b>=0;b--){
                         if(used[b])continue;
                         if(isMain(cart[b]))break;
-                        if(isDrink(cart[b]))return b;
+                        if(isDrink(cart[b])&&isComboSibling(cart[b]))return b;
                     }
                     return -1;
                 }
@@ -3230,6 +3238,11 @@
                     }));
                     return hasSizeTemp&&/(?:\u5496\u5561|\u5976\u8336|\u7d05\u8336|\u7da0\u8336|\u8c46\u6f3f|\u98f2\u6599|\u8336)/.test(name);
                 }
+                function isComboSibling(it){
+                    var meta=[it&&it.note,it&&it['\u5099\u8a3b'],it&&it.comboDrinkLabel,it&&it.comboDrinkChargeText,it&&it.comboDrinkText,it&&it.mealDrink].map(text).join(' ');
+                    return !!(it&&it.isComboDrink)||/(?:\u5957\u9910\u98f2\u6599|\u642d\u914d\u98f2\u6599\u6298\s*5\s*\u5143|\u98f2\u6599\u52a0\u8cfc|\u88dc\u5dee\u50f9)/.test(meta);
+                }
+                if(!isMain(item))return null;
                 var gid=text(item.comboGroupId);
                 var fallback=null;
                 for(var i=0;i<list.length;i++){
@@ -3238,17 +3251,17 @@
                     if(!isDrink(cand))continue;
                     var cgid=text(cand.comboGroupId);
                     if(gid&&cgid&&gid===cgid)return cand;
-                    if(!gid&&!fallback)fallback=cand;
+                    if(!gid&&isComboSibling(cand)&&!fallback)fallback=cand;
                 }
                 if(gid)return null;
                 if(fallback)return fallback;
                 for(var f=Number(idx)+1;f<list.length;f++){
                     if(isMain(list[f]))break;
-                    if(isDrink(list[f]))return list[f];
+                    if(isDrink(list[f])&&isComboSibling(list[f]))return list[f];
                 }
                 for(var b=Number(idx)-1;b>=0;b--){
                     if(isMain(list[b]))break;
-                    if(isDrink(list[b]))return list[b];
+                    if(isDrink(list[b])&&isComboSibling(list[b]))return list[b];
                 }
                 return null;
             },
@@ -3860,6 +3873,10 @@
                 }
                 var used={};
                 var lines=[];
+                function isComboSibling(it){
+                    var meta=[it&&it.note,it&&it['\u5099\u8a3b'],it&&it.comboDrinkLabel,it&&it.comboDrinkChargeText,it&&it.comboDrinkText,it&&it.mealDrink].map(text).join(' ');
+                    return !!(it&&it.isComboDrink)||/(?:\u5957\u9910\u98f2\u6599|\u642d\u914d\u98f2\u6599\u6298\s*5\s*\u5143|\u98f2\u6599\u52a0\u8cfc|\u88dc\u5dee\u50f9)/.test(meta);
+                }
                 function findSibling(mainIdx){
                     var main=items[mainIdx];
                     var gid=text(main&&main.comboGroupId);
@@ -3873,7 +3890,7 @@
                     for(var f=mainIdx+1;f<items.length;f++){
                         if(used[f])continue;
                         if(isMain(items[f]))break;
-                        if(isDrink(items[f]))return f;
+                        if(isDrink(items[f])&&isComboSibling(items[f]))return f;
                     }
                     return -1;
                 }
@@ -4021,7 +4038,7 @@
                     });
                     [main&&main.note,main&&main['\u5099\u8a3b'],sib&&sib.note,sib&&sib['\u5099\u8a3b']].forEach(function(raw){
                         notePartsOf(raw).forEach(function(part){
-                            if(!isHiddenNotePart(part)&&isDrinkNotePart(part))parts.push(part);
+                            if(!isHiddenNotePart(part)&&(!main||isDrinkNotePart(part)))parts.push(part);
                         });
                     });
                     return uniqueJoin(parts);
@@ -4189,6 +4206,10 @@
                     var hasSizeTemp=!!text(it.size||it['\u5bb9\u91cf'])||!!text(it.temp||it['\u6eab\u5ea6']);
                     return hasSizeTemp&&nameLooksDrink;
                 }
+                function isComboSibling(it){
+                    var meta=[it&&it.note,it&&it['\u5099\u8a3b'],it&&it.comboDrinkLabel,it&&it.comboDrinkChargeText,it&&it.comboDrinkText,it&&it.mealDrink].map(text).join(' ');
+                    return !!(it&&it.isComboDrink)||/(?:\u5957\u9910\u98f2\u6599|\u642d\u914d\u98f2\u6599\u6298\s*5\s*\u5143|\u98f2\u6599\u52a0\u8cfc|\u88dc\u5dee\u50f9)/.test(meta);
+                }
                 function parseAmount(raw){
                     var m=text(raw).match(/(?:\u98f2\u6599\u52a0\u8cfc|\u88dc\u5dee\u50f9|\+)\s*\$?\s*(\d+)/);
                     return m&&m[1]?Math.round(num(m[1])):0;
@@ -4223,18 +4244,18 @@
                         if(!isDrink(cand))continue;
                         var cgid=text(cand&&cand.comboGroupId);
                         if(gid&&cgid&&gid===cgid)return {it:cand,idx:i};
-                        if(!gid&&!fallback)fallback={it:cand,idx:i};
+                        if(!gid&&isComboSibling(cand)&&!fallback)fallback={it:cand,idx:i};
                     }
                     if(gid)return null;
                     for(var f=mainIdx+1;f<items.length;f++){
                         if(used[f])continue;
                         if(isMain(items[f]))break;
-                        if(isDrink(items[f]))return {it:items[f],idx:f};
+                        if(isDrink(items[f])&&isComboSibling(items[f]))return {it:items[f],idx:f};
                     }
                     for(var b=mainIdx-1;b>=0;b--){
                         if(used[b])continue;
                         if(isMain(items[b]))break;
-                        if(isDrink(items[b]))return {it:items[b],idx:b};
+                        if(isDrink(items[b])&&isComboSibling(items[b]))return {it:items[b],idx:b};
                     }
                     return fallback;
                 }
@@ -5543,8 +5564,14 @@
                 this.activeItem=menuItem;
                 this.tempQty=cartItem.qty;
                 this.tempNote=cartItem.note||"";
-                this.tempSels=(cartItem.options||[]).slice();
-                this.tempPosExtras=(cartItem.posExtras||[]).slice();
+                var restoreByName=function(saved,available){
+                    return (saved||[]).map(function(sel){
+                        var name=String(sel&&sel.name||'').trim();
+                        return (available||[]).find(function(opt){return String(opt&&opt.name||'').trim()===name;})||sel;
+                    });
+                };
+                this.tempSels=restoreByName(cartItem.options,menuItem.options);
+                this.tempPosExtras=restoreByName(cartItem.posExtras,menuItem.posExtras);
                 this.tempDrinkAddons=(cartItem.comboDrinkAddons||[]).slice();
                 this.tempDrinkNote=String(cartItem.drinkNote||"");
                 this.editingCartIdx=idx;
@@ -6218,6 +6245,10 @@
                 ]);
                 if(bestItems.length)latest=Object.assign({},latest,{items:bestItems.map(function(it){return Object.assign({},it);})});
                 this.editingOrder=Object.assign({},order||{},normalized||{},latest||{});
+                var editCustomer=(this.editingOrder.customer&&typeof this.editingOrder.customer==='object')?this.editingOrder.customer:{};
+                this.editCustomerName=String(editCustomer.name||this.editingOrder.customerName||'').trim();
+                if(this.editCustomerName==='顧客'||this.editCustomerName==='現場')this.editCustomerName='';
+                this.editCustomerPhone=String(this.editingOrder.phone||editCustomer.phone||'').trim();
                 this.cart=JSON.parse(JSON.stringify((latest&&latest.items)||normalized.items||[])).map(function(item){
                     var mapped=Object.assign({},item||{});
                     if(!mapped.station)mapped.station=this.getDefaultStationName();
@@ -6241,7 +6272,7 @@
                 this.orderMode="online";
                 this.activeMenu=null;
             },
-            exitOnline:function(){this.orderMode="pos";this.editingOrder=null;this.cart=[];this.editPickupDate="";this.editPickupTime="";this.editOrderNote="";this.editShowCustomer=false;this.editShowPayment=false;this.editOrderType="takeout";this.editTableLabel="";this.editingLinePayPaid=false;},
+            exitOnline:function(){this.orderMode="pos";this.editingOrder=null;this.cart=[];this.editPickupDate="";this.editPickupTime="";this.editOrderNote="";this.editCustomerName="";this.editCustomerPhone="";this.editShowCustomer=false;this.editShowPayment=false;this.editOrderType="takeout";this.editTableLabel="";this.editingLinePayPaid=false;},
             resolveOrderDateKey:function(order){
                 var d=new Date((order&&order.timestamp)||Date.now());
                 return (order&&order._sourceDateKey)|| (order&&order.orderDateKey)|| (order&&order.pickupDate) || (d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2));
@@ -6403,7 +6434,10 @@
                     var upd={
                         items:serializedItems,
                         total:s.cartTotal,
-                        type:s.editOrderType||'takeout'
+                        type:s.editOrderType||'takeout',
+                        customer:{name:String(s.editCustomerName||'').trim()||'顧客',phone:String(s.editCustomerPhone||'').trim()},
+                        customerName:String(s.editCustomerName||'').trim(),
+                        phone:String(s.editCustomerPhone||'').trim()
                     };
                     if(isEditingPosOrder){
                         upd.source='pos';
@@ -6768,4 +6802,3 @@
 </script>
 </body>
 </html>
-
