@@ -151,6 +151,7 @@ function customerPayload(orderData, options) {
     payload.tableType = payload.tableType || text(orderData && orderData.tableType);
     payload.orderNote = payload.orderNote || text(orderData && orderData.orderNote);
     payload.printTask = payload.printTask || text(orderData && orderData.print_task);
+    if (orderData && orderData.wasCancelled !== undefined) payload.wasCancelled = orderData.wasCancelled === true;
     payload.timestamp = payload.timestamp || numericOrUndefined(orderData && orderData.timestamp);
     payload.counterCycleKey = payload.counterCycleKey || text(orderData && orderData.counterCycleKey);
     payload.counterResetTime = payload.counterResetTime || text(
@@ -526,6 +527,7 @@ export function pocketBaseRecordToOrder(record) {
         _pocketBaseRecordId: text(record.id),
         _readBackend: "pocketbase"
     };
+    if (customer.wasCancelled !== undefined) order.wasCancelled = customer.wasCancelled === true;
     if (customer.deviceId) order.deviceId = text(customer.deviceId);
     if (Array.isArray(customer.stationMap)) order.stationMap = customer.stationMap;
     if (Array.isArray(customer.stationSettings)) order.stationSettings = customer.stationSettings;

@@ -411,8 +411,8 @@
                     <div class="flex items-center justify-between mb-2">
                         <span class="text-orange-600 font-black text-sm bg-orange-50 px-2 py-0.5 rounded">No.{{ fmtNo(order.orderNo) }}</span>
                         <span class="text-xs px-2 py-0.5 rounded-full font-bold"
-                              :class="{'bg-red-100 text-red-600':order.status==='new','bg-yellow-100 text-yellow-700':order.status==='making','bg-green-100 text-green-700':order.status==='done','bg-gray-100 text-gray-500':order.status==='cancelled'}">
-                            {{ {new:'🔴 等待接單',making:'🟡 製作中',done:'🟢 已完成',cancelled:'⚫ 已取消'}[order.status]||order.status }}
+                              :class="{'bg-red-100 text-red-600':order.status==='new','bg-yellow-100 text-yellow-700':order.status==='making','bg-green-100 text-green-700':order.status==='done'||(order.status==='archived'&&!order.wasCancelled),'bg-gray-100 text-gray-500':order.status==='cancelled'||(order.status==='archived'&&order.wasCancelled)}">
+                            {{ order.status==='archived'?(order.wasCancelled?'⚫ 已取消':'🟢 已完成'):({new:'🔴 等待接單',making:'🟡 製作中',done:'🟢 已完成',cancelled:'⚫ 已取消'}[order.status]||order.status) }}
                         </span>
                     </div>
                     <div v-for="(item,i) in (order.items||[])" :key="i" class="text-sm text-gray-600 mb-1">
@@ -541,9 +541,9 @@
 
 <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
-    import { getAuth, signInAnonymously, setPersistence, inMemoryPersistence } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
+    import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
     import { getDatabase, ref, push, set, get, update, remove, onValue, query, orderByChild, equalTo, limitToLast, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
-    import { allocateOrderNoFromPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings } from "./pocketbase-order-writer.js?v=20260711_0900";
+    import { allocateOrderNoFromPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings } from "./pocketbase-order-writer.js?v=20260711_1600";
 
     const firebaseConfig = {
         apiKey:"AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -603,12 +603,13 @@
         } catch(e){ console.warn('daily theme listener failed:', e); }
     })();
 
-    // ★ 桌邊/自助平板使用匿名登入，但採用本機持久化，避免頻繁建立新匿名帳號
-    const authReady=setPersistence(auth,inMemoryPersistence).catch(function(e){console.warn('auth persistence fallback:',e&&e.message?e.message:e);});
-    authReady.then(function(){
-        if(auth.currentUser) return null;
-        return signInAnonymously(auth);
-    }).catch(function(e){console.warn('匿名登入失敗:',e.message)});
+    // ★ 桌邊/自助平板匿名登入（預設本機持久化，匿名帳號重複使用）。
+    // 不可呼叫 setPersistence(inMemoryPersistence)：它會把同網域已持久化的 staff 登入
+    // （pos/manage/admin）從 indexedDB 移除，造成那些頁面莫名登出。
+    const offAuthInit=onAuthStateChanged(auth,function(user){
+        offAuthInit();
+        if(!user) signInAnonymously(auth).catch(function(e){console.warn('匿名登入失敗:',e.message)});
+    });
     const{createApp}=Vue;
 
     createApp({
@@ -641,6 +642,7 @@
             devicePassword:'0000',
             // ★ 情境2 QR Code 付款
             showQRModal:false, qrAmount:0, qrOrderId:'', qrOrderDateKey:'',
+            qrReuseCandidate:null, pendingQRReuse:null,
             qrPolling:false, qrCountdown:120, qrPaidMsg:'', qrErrorMsg:'',
             qrPollTimer:null, qrCountdownTimer:null, qrUnsubscribe:null
         }},
@@ -1177,12 +1179,13 @@
                             if(d.orderNo&&d.orderNo!==order.orderNo){order.orderNo=d.orderNo;changed=true;}
                             if(d.paymentStatus!==undefined&&d.paymentStatus!==order.paymentStatus){order.paymentStatus=d.paymentStatus;changed=true;}
                             if(d.paymentMethod&&d.paymentMethod!==order.paymentMethod){order.paymentMethod=d.paymentMethod;changed=true;}
+                            if(d.wasCancelled!==undefined&&d.wasCancelled!==order.wasCancelled){order.wasCancelled=d.wasCancelled;changed=true;}
                             if(changed){
                                 try{
                                     var key='dinein_orders_'+s.deviceId;
                                     var saved=JSON.parse(localStorage.getItem(key)||'[]');
                                     saved.forEach(function(o){
-                                        if(o.id===order.id){o.status=order.status;o.orderNo=order.orderNo;o.paymentStatus=order.paymentStatus;o.paymentMethod=order.paymentMethod;}
+                                        if(o.id===order.id){o.status=order.status;o.orderNo=order.orderNo;o.paymentStatus=order.paymentStatus;o.paymentMethod=order.paymentMethod;o.wasCancelled=order.wasCancelled;}
                                     });
                                     localStorage.setItem(key,JSON.stringify(saved));
                                 }catch(e){}
@@ -1534,6 +1537,7 @@
                 if(paid){
                     // 付款成功：清空購物車，顯示成功畫面
                     s.lastPayment='linepay_qr';
+                    s.pendingQRReuse=null;s.qrReuseCandidate=null;
                     s.cart=[];s.orderNote='';
                     s.saveCart();
                     s.currentView='menu';
@@ -1547,17 +1551,119 @@
             cancelQRPay:function(){
                 var s=this;
                 s.stopQRPolling();
-                // 更新 Firebase 訂單付款狀態為取消
+                // ★ 不作廢訂單也不新建：記住這筆未付款訂單，同一購物車再送單時重用，
+                //   避免每按一次 LINE Pay QR 就多一筆重複訂單
                 if(s.qrOrderId){
-                    var dk=s.qrOrderDateKey||(function(){var d=new Date();return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);})();
-                    update(ref(db,'orders/'+dk+'/'+s.qrOrderId),{paymentStatus:'cancelled'}).catch(function(){});
+                    remove(ref(db,'linepay_requests/'+s.qrOrderId)).catch(function(){});
+                    s.pendingQRReuse=s.qrReuseCandidate&&s.qrReuseCandidate.orderId===s.qrOrderId?s.qrReuseCandidate:null;
                 }
                 s.showQRModal=false;
+                s.toast('已取消掃碼，訂單保留：可重新掃碼或改店內付款');
+            },
+            // ── LINE Pay 請求（送單與「取消後重試」共用；重試重用同一筆訂單，避免重複送單）──
+            startLinePayFlow:function(orderId,orderData,orderDateKey,payMethod){
+                var s=this;
+                s.toast('⏳ 正在連接 LINE Pay...');
+                // 先清掉舊請求（規則允許刪除既有節點），再寫入新的 pending
+                remove(ref(db,'linepay_requests/'+orderId)).catch(function(){}).then(function(){
+                    return set(ref(db,'linepay_requests/'+orderId),{
+                        amount:orderData.total,
+                        items:orderData.items,
+                        orderDateKey:orderDateKey,
+                        confirmBaseUrl:s.settings.linePayConfirmUrl||'',
+                        returnPage:'dinein',
+                        returnDeviceId:s.deviceId||'',
+                        status:'pending',
+                        createdAt:Date.now()
+                    });
+                }).then(function(){
+                    s.toast('⏳ 正在建立付款連結...');
+                    var tries=0;
+                    var poll=setInterval(function(){
+                        tries++;
+                        get(ref(db,'linepay_requests/'+orderId)).then(function(snap){
+                            if(!snap.exists()) return; // 節點暫時不存在，繼續等待
+                            var r=snap.val();
+                            if(!r || !r.status) return; // status 欄位尚未寫入，繼續等待
+                            if(r.status==='ready' && r.paymentUrl){
+                                clearInterval(poll);
+                                if(payMethod==='linepay_qr'){
+                                    s.isSubmitting=false;
+                                    s.qrReuseCandidate={orderId:orderId,dateKey:orderDateKey,orderData:orderData,cartSnapshot:JSON.stringify(s.cart)};
+                                    s.openQRModal(orderId, orderData.total, r.qrCodeUrl||r.paymentUrl, orderDateKey);
+                                }else{
+                                    try{localStorage.setItem('linepay_return_url',window.location.href)}catch(e){}
+                                    // ★ 清空購物車（付款後返回時不顯示舊購物車）
+                                    try{localStorage.removeItem('dinein_cart_'+s.deviceId);}catch(e){}
+                                    window.location.href=r.paymentUrl;
+                                }
+                            }else if(r.status==='error'){
+                                clearInterval(poll);
+                                s.toast('⚠️ LINE Pay 失敗：'+(r.error||'未知錯誤'));
+                                s.isSubmitting=false;
+                            }else if(tries>=30){
+                                clearInterval(poll);
+                                s.toast('⚠️ LINE Pay 逾時，請重試');
+                                s.isSubmitting=false;
+                            }
+                        }).catch(function(){});
+                    },1000);
+                }).catch(function(e){
+                    s.toast('⚠️ 寫入 Firebase 失敗：'+e.message);
+                    s.isSubmitting=false;
+                });
+            },
+            writePrintQueueDirect:function(orderId,queueData){
+                var s=this;
+                try{
+                    var directUrl=s.settings&&s.settings.nodeRedPrintUrl;
+                    if(directUrl){
+                        var directBody=Object.assign({orderId:orderId},queueData);
+                        fetch(directUrl,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(directBody)})
+                            .then(function(r){if(!r.ok)throw new Error(r.status);})
+                            .catch(function(e){
+                                console.warn('直接列印失敗，走 Firebase:',e.message||e);
+                                set(ref(db,'print_queue/'+orderId),queueData).catch(function(e2){console.warn('print_queue寫入失敗:',e2.message);});
+                            });
+                    }else{
+                        set(ref(db,'print_queue/'+orderId),queueData).catch(function(e){console.warn('print_queue寫入失敗:',e.message);});
+                    }
+                }catch(e){}
             },
             // ── 送出訂單 ──
             submitOrder:function(payMethod){
                 if(!this.cart.length||this.isSubmitting)return;
-                var s=this;s.isSubmitting=true;
+                var s=this;
+                // ★ 先前 LINE Pay QR 取消後留下的未付款訂單：同一購物車重送時「重用」，不再新建訂單
+                var reuse=s.pendingQRReuse;
+                if(reuse&&reuse.orderId){
+                    if(reuse.cartSnapshot===JSON.stringify(s.cart)){
+                        if(payMethod==='linepay'||payMethod==='linepay_qr'){
+                            s.isSubmitting=true;
+                            s.startLinePayFlow(reuse.orderId,reuse.orderData,reuse.dateKey,payMethod);
+                            return;
+                        }
+                        // 改店內付款：訂單已存在，補寫 print_task 觸發列印後直接完成
+                        s.pendingQRReuse=null;s.qrReuseCandidate=null;
+                        var storeTask='kitchen_'+Date.now();
+                        var od=Object.assign({},reuse.orderData,{print_task:storeTask});
+                        update(ref(db,'orders/'+reuse.dateKey+'/'+reuse.orderId),{print_task:storeTask}).catch(function(){});
+                        s.writePrintQueueDirect(reuse.orderId,od);
+                        s.lastPayment=payMethod;
+                        s.showSuccess=true;
+                        s.cart=[];s.orderNote='';s.currentView='menu';
+                        s.saveCart();
+                        s.toast('✅ 訂單已送出，請店內付款');
+                        return;
+                    }
+                    // 購物車已變更：把舊的未付款訂單作廢，避免殘留混淆現場人員
+                    try{
+                        update(ref(db,'orders/'+reuse.dateKey+'/'+reuse.orderId),{status:'cancelled',paymentStatus:'cancelled'}).catch(function(){});
+                        remove(ref(db,'linepay_requests/'+reuse.orderId)).catch(function(){});
+                    }catch(e){}
+                    s.pendingQRReuse=null;s.qrReuseCandidate=null;
+                }
+                s.isSubmitting=true;
                 var now=new Date();
                 var todayStr=now.getFullYear()+'-'+('0'+(now.getMonth()+1)).slice(-2)+'-'+('0'+now.getDate()).slice(-2);
                 var isTakeout=s.qrOrderType==='takeout'||s.deviceType==='takeout'||s.deviceType==='kiosk';
@@ -1617,21 +1723,7 @@
                 .then(function(assignedNo){
                     // ★ 非 LINE Pay 且有 print_task：寫入 print_queue 觸發 Node-RED 列印
                     if(assignedNo&&orderData.print_task){
-                        try{
-                            var queueData=Object.assign({},orderData);
-                            var directUrl=s.settings&&s.settings.nodeRedPrintUrl;
-                            if(directUrl){
-                                var directBody=Object.assign({orderId:orderId},queueData);
-                                fetch(directUrl,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(directBody)})
-                                    .then(function(r){if(!r.ok)throw new Error(r.status);})
-                                    .catch(function(e){
-                                        console.warn('直接列印失敗，走 Firebase:',e.message||e);
-                                        set(ref(db,'print_queue/'+orderId),queueData).catch(function(e2){console.warn('print_queue寫入失敗:',e2.message);});
-                                    });
-                            }else{
-                                set(ref(db,'print_queue/'+orderId),queueData).catch(function(e){console.warn('print_queue寫入失敗:',e.message);});
-                            }
-                        }catch(e){}
+                        s.writePrintQueueDirect(orderId,Object.assign({},orderData));
                     }
                     s.lastOrderIdRef=orderId;
                     s.saveLocalOrder(orderId,orderData);
@@ -1640,52 +1732,7 @@
 
                     // ★ LINE Pay 付款流程（情境1 手機跳轉 / 情境2 QR Code）
                     if((payMethod==='linepay'||payMethod==='linepay_qr') && s.settings.linePayConfirmUrl){
-                        s.toast('⏳ 正在連接 LINE Pay...');
-                        // Firebase 中介：把請求寫入 Firebase，樹莓派背景工作處理後回寫 paymentUrl
-                        set(ref(db,'linepay_requests/'+orderId),{
-                            amount:orderData.total,
-                            items:orderData.items,
-                            orderDateKey:orderDateKey,
-                            confirmBaseUrl:s.settings.linePayConfirmUrl||'',
-                            returnPage:'dinein',
-                            returnDeviceId:s.deviceId||'',
-                            status:'pending',
-                            createdAt:Date.now()
-                        }).then(function(){
-                            s.toast('⏳ 正在建立付款連結...');
-                            var tries=0;
-                            var poll=setInterval(function(){
-                                tries++;
-                                get(ref(db,'linepay_requests/'+orderId)).then(function(snap){
-                                    if(!snap.exists()) return; // 節點暫時不存在，繼續等待
-                                    var r=snap.val();
-                                    if(!r || !r.status) return; // status 欄位尚未寫入，繼續等待
-                                    if(r.status==='ready' && r.paymentUrl){
-                                        clearInterval(poll);
-                                        if(payMethod==='linepay_qr'){
-                                            s.isSubmitting=false;
-                                            s.openQRModal(orderId, orderData.total, r.qrCodeUrl||r.paymentUrl, orderDateKey);
-                                        }else{
-                                            try{localStorage.setItem('linepay_return_url',window.location.href)}catch(e){}
-                                            // ★ 清空購物車（付款後返回時不顯示舊購物車）
-                                            try{localStorage.removeItem('dinein_cart_'+s.deviceId);}catch(e){}
-                                            window.location.href=r.paymentUrl;
-                                        }
-                                    }else if(r.status==='error'){
-                                        clearInterval(poll);
-                                        s.toast('⚠️ LINE Pay 失敗：'+(r.error||'未知錯誤'));
-                                        s.isSubmitting=false;
-                                    }else if(tries>=30){
-                                        clearInterval(poll);
-                                        s.toast('⚠️ LINE Pay 逾時，請重試');
-                                        s.isSubmitting=false;
-                                    }
-                                }).catch(function(){});
-                            },1000);
-                        }).catch(function(e){
-                            s.toast('⚠️ 寫入 Firebase 失敗：'+e.message);
-                            s.isSubmitting=false;
-                        });
+                        s.startLinePayFlow(orderId,orderData,orderDateKey,payMethod);
                         return;
                     }
 

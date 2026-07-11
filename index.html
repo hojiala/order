@@ -459,7 +459,7 @@
                         <div class="bg-gray-50 px-3 py-2 flex items-center justify-between border-b border-gray-200">
                             <div class="flex items-center gap-2">
                                 <span class="text-xs font-black text-orange-600 bg-orange-50 px-2 py-0.5 rounded">#{{ order.id ? String(order.id).slice(-4).toUpperCase() : '----' }}</span>
-                                <span :class="{'text-red-500': order.status==='new','text-yellow-600': order.status==='making','text-green-600': order.status==='done','text-gray-400': order.status==='cancelled'}" class="text-xs font-bold">{{ {new:'🔴 等待接單',making:'🟡 製作中',done:'🟢 已完成',cancelled:'⚫ 已取消'}[order.status] || order.status }}</span>
+                                <span :class="{'text-red-500': order.status==='new','text-yellow-600': order.status==='making','text-green-600': order.status==='done'||(order.status==='archived'&&!order.wasCancelled),'text-gray-400': order.status==='cancelled'||(order.status==='archived'&&order.wasCancelled)}" class="text-xs font-bold">{{ order.status==='archived'?(order.wasCancelled?'⚫ 已取消':'🟢 已完成'):({new:'🔴 等待接單',making:'🟡 製作中',done:'🟢 已完成',cancelled:'⚫ 已取消'}[order.status] || order.status) }}</span>
                             </div>
                         </div>
                         <div class="px-3 py-2">
@@ -596,8 +596,8 @@
 <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getDatabase, ref, push, set, get, update, onValue, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
-    import { getAuth, signInAnonymously, setPersistence, inMemoryPersistence } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-    import { allocateOrderNoFromPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings } from "./pocketbase-order-writer.js?v=20260711_0900";
+    import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
+    import { allocateOrderNoFromPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings } from "./pocketbase-order-writer.js?v=20260711_1600";
 
     const firebaseConfig = {
         apiKey: "AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -660,10 +660,14 @@
     })();
 
     // ★ 匿名登入：Firebase fallback 與顧客訂單查詢需要 auth；流水號改由 PocketBase 發號
+    // 不可呼叫 setPersistence(inMemoryPersistence)：它會把同網域已持久化的 staff 登入
+    // （pos/manage/admin）從 indexedDB 移除，造成那些頁面莫名登出。
+    // 等 auth 還原完成後，沒有使用者才匿名登入（匿名帳號會在本機重複使用）。
     const auth = getAuth(app);
-    setPersistence(auth, inMemoryPersistence).then(function() {
-        if (!auth.currentUser) return signInAnonymously(auth);
-    }).catch(function(e) { console.warn('匿名登入失敗:', e.message); });
+    const offAuthInit = onAuthStateChanged(auth, function(user) {
+        offAuthInit();
+        if (!user) signInAnonymously(auth).catch(function(e) { console.warn('匿名登入失敗:', e.message); });
+    });
     const { createApp } = Vue;
 
     createApp({
@@ -1783,6 +1787,7 @@
                         if (data.orderNo && data.orderNo !== order.orderNo) { order.orderNo = data.orderNo; changed = true; }
                         if (data.paymentStatus !== undefined && data.paymentStatus !== order.paymentStatus) { order.paymentStatus = data.paymentStatus; changed = true; }
                         if (data.paymentMethod && data.paymentMethod !== order.paymentMethod) { order.paymentMethod = data.paymentMethod; changed = true; }
+                        if (data.wasCancelled !== undefined && data.wasCancelled !== order.wasCancelled) { order.wasCancelled = data.wasCancelled; changed = true; }
                         var pm = data.paymentMethod || order.paymentMethod || '';
                         var needsLinePayCheck = (pm === 'linepay' || pm === 'linepay_offline' || pm === 'linepay_refund')
                             && data.paymentStatus !== 'paid' && data.paymentStatus !== 'refunded';
@@ -1809,7 +1814,7 @@
                         try {
                             var saved = JSON.parse(localStorage.getItem('my_orders') || '[]');
                             self.myOrders.forEach(function(o) {
-                                saved.forEach(function(s) { if (s.id === o.id) { s.status = o.status; s.orderNo = o.orderNo; s.paymentStatus = o.paymentStatus; s.paymentMethod = o.paymentMethod; } });
+                                saved.forEach(function(s) { if (s.id === o.id) { s.status = o.status; s.orderNo = o.orderNo; s.paymentStatus = o.paymentStatus; s.paymentMethod = o.paymentMethod; s.wasCancelled = o.wasCancelled; } });
                             });
                             localStorage.setItem('my_orders', JSON.stringify(saved));
                         } catch(e) {}

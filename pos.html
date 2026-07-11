@@ -722,7 +722,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getDatabase, ref, onValue, onChildAdded, onChildChanged, onChildRemoved, update, push, set, get, remove, query, orderByChild, limitToLast, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-    import { allocateOrderNoFromPocketBase, resetOrderNoInPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, listMenuItemsFromPocketBase, writeMenuItemToPocketBase, writeSettingsToPocketBase, rememberPublicMenuItems, rememberPublicSettings, normalizePublicSettings, subscribeOrdersRealtime } from "./pocketbase-order-writer.js?v=20260711_0900";
+    import { allocateOrderNoFromPocketBase, resetOrderNoInPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, listMenuItemsFromPocketBase, writeMenuItemToPocketBase, writeSettingsToPocketBase, rememberPublicMenuItems, rememberPublicSettings, normalizePublicSettings, subscribeOrdersRealtime } from "./pocketbase-order-writer.js?v=20260711_1600";
     const firebaseConfig = {
         apiKey:"AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
         authDomain:"breakfast-ai-system.firebaseapp.com",
@@ -4481,9 +4481,11 @@
                     var fallbackDate = d.getFullYear() + '-' + ('0'+(d.getMonth()+1)).slice(-2) + '-' + ('0'+d.getDate()).slice(-2);
                     var dateCandidates=[sourceMatch&&sourceMatch[1],o.orderDateKey,o.pickupDate,fallbackDate].filter(function(v,i,arr){v=String(v||'').trim();return validDate(v)&&arr.indexOf(v)===i;});
                     var dateKey=dateCandidates[0]||fallbackDate;
-                    var wasCancelled=o.status==="cancelled";
+                    var wasCancelled=o.status==="cancelled"||o.wasCancelled===true;
+                    // ★ 已取消訂單結單後 status 也要進 archived（wasCancelled 保留取消記號）：
+                    //   PB 沒有 archive 桶，status 留在 cancelled 會永遠卡在「進行中」列表
                     var archivedOrder=Object.assign({},o,{
-                        status:wasCancelled?"cancelled":"archived",
+                        status:"archived",
                         wasCancelled:wasCancelled,
                         orderDateKey:dateKey
                     });
@@ -6315,7 +6317,26 @@
                 return updates;
             },
             updateOrderMirror:function(id,fields,order){
-                return update(ref(db),this.buildOrderMirrorUpdates(id,fields,order));
+                var s=this;
+                var p=update(ref(db),this.buildOrderMirrorUpdates(id,fields,order));
+                // ★ 付款/狀態變更必須同步回 PocketBase：POS 列表與 manage 都讀 PB，
+                //   只寫 Firebase 會造成「現金已付款後仍顯示 LINE Pay 處理中/未付款」
+                var keys=Object.keys(fields||{});
+                if(keys.indexOf('paymentMethod')>=0||keys.indexOf('paymentStatus')>=0||keys.indexOf('status')>=0){
+                    try{
+                        var baseOrder=order||s.findOrderById(id)||{};
+                        var merged=Object.assign({},baseOrder,fields,{id:id});
+                        var src=String(merged.source||'').toLowerCase();
+                        var srcPath=String((merged.integration&&merged.integration.sourceRecordPath)||merged.sourceRecordPath||'');
+                        var isPhone=src==='phone_ai'||src==='pos_local'||srcPath.indexOf('phone_ai/')===0;
+                        // items 空時不推 PB，避免把 PB 記錄的 items 洗成空陣列
+                        if(!isPhone&&Array.isArray(merged.items)&&merged.items.length){
+                            writeOrderToPocketBase(id,merged,{settings:s.settings,sourcePage:'pos',allowPocketBaseUpdate:true})
+                                .catch(function(e){console.warn('PB 狀態同步失敗:',id,e&&e.message?e.message:e);});
+                        }
+                    }catch(e){console.warn('PB 狀態同步略過:',e&&e.message?e.message:e);}
+                }
+                return p;
             },
             clearPrintTaskMirror:function(id,order){
                 return update(ref(db),this.buildOrderMirrorUpdates(id,{print_task:null},order));
