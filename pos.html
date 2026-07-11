@@ -776,7 +776,10 @@
         } catch(e){ console.warn('daily theme listener failed:', e); }
     })();
 
-    const authReady=setPersistence(auth,browserLocalPersistence).catch(function(e){console.warn("auth persistence fallback:",e&&e.message?e.message:e);});
+    // ★ 不可呼叫 setPersistence(browserLocalPersistence)：它把登入搬到 localStorage 層，
+    //   與 index/dinein 的預設 indexedDB 層不一致，另一頁初始化時的持久層整併會清掉這層
+    //   → pos/manage/admin 立即被登出。統一使用 getAuth 預設層（一樣是永久保存）。
+    const authReady=Promise.resolve();
     const{createApp}=Vue;
     createApp({
         data:function(){
@@ -954,7 +957,8 @@
         created:function(){
             var s=this;
             var d=new Date();s.posPickupDate=d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);
-            authReady.finally(function(){onAuthStateChanged(auth,function(u){if(u){s.isLoggedIn=true;s.startAll();}else{s.isLoggedIn=false;}});});
+            // 匿名使用者（index/dinein 顧客頁產生）不算 staff 登入
+            authReady.finally(function(){onAuthStateChanged(auth,function(u){if(u&&!u.isAnonymous){s.isLoggedIn=true;s.startAll();}else{s.isLoggedIn=false;}});});
         },
         methods:{
 
@@ -5354,15 +5358,26 @@
                         body:JSON.stringify({orderId:order.id,amount:Number(order.total||0),reason:reason,status:'pending',createdAt:Date.now(),source:'pos',orderDateKey:this.resolveOrderDateKey(order)||order.pickupDate||''})
                     });
                     if(!wRes.ok)throw new Error('HTTP '+wRes.status);
+                    var refundDk=this.resolveOrderDateKey(order)||order.pickupDate||'';
                     for(var i=0;i<40;i++){
                         await new Promise(function(r){setTimeout(r,750);});
                         try{
                             var res=await fetch(dbRestUrl+'/linepay_refund_requests/'+order.id+'.json?auth='+encodeURIComponent(token));
                             var rv=await res.json();
-                            if(!rv)continue;
-                            if(rv.status==='done'||rv.returnCode==='ALREADY_REFUNDED')return{success:true,returnCode:rv.returnCode||'0000'};
-                            if(rv.status==='error')return{success:false,error:rv.error||'退款失敗',returnCode:rv.returnCode||''};
-                        }catch(_){continue;}
+                            if(rv){
+                                if(rv.status==='done'||rv.returnCode==='ALREADY_REFUNDED')return{success:true,returnCode:rv.returnCode||'0000'};
+                                if(rv.status==='error')return{success:false,error:rv.error||'退款失敗',returnCode:rv.returnCode||''};
+                            }
+                        }catch(_){}
+                        // 保險：refund_requests 狀態通道異常時，直接看訂單 paymentStatus（公開可讀），
+                        // Pi 一寫入 refunded 就立刻結束，不用耗滿 30 秒
+                        if(i%4===3&&refundDk){
+                            try{
+                                var psRes=await fetch(dbRestUrl+'/orders/'+refundDk+'/'+order.id+'/paymentStatus.json');
+                                var psv=await psRes.json();
+                                if(psv==='refunded')return{success:true,returnCode:'ORDER_REFUNDED'};
+                            }catch(_){}
+                        }
                     }
                 }catch(_){ }
 
@@ -5460,16 +5475,19 @@
                     updates.paymentStatus='pending';
                     updates.unpaidCancelledAt=Date.now();
                 }
-                await update(ref(db,orderBase),updates);
+                // ★ 走 updateOrderMirror：同時寫 Firebase 與 PocketBase，POS 列表（讀 PB）才會即時更新
+                await s.updateOrderMirror(order.id,updates,latestOrder);
 
                 if(shouldRefund){
                     var refund=await s.requestLinePayRefund(latestOrder);
                     if(refund.success){
                         var rts=Date.now();
+                        await s.updateOrderMirror(order.id,{
+                            paymentStatus:'refunded',
+                            paymentMethod:'linepay_refund',
+                            refundedAt:rts
+                        },Object.assign({},latestOrder,updates));
                         await update(ref(db),{
-                            [orderBase+'/paymentStatus']:'refunded',
-                            [orderBase+'/paymentMethod']:'linepay_refund',
-                            [orderBase+'/refundedAt']:rts,
                             ['linepay_transactions/'+order.id+'/status']:'refunded',
                             ['linepay_transactions/'+order.id+'/refundedAt']:rts
                         });
