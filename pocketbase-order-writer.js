@@ -2815,6 +2815,16 @@ export function writeOrderWithFirebaseFallback(orderId, orderData, options) {
     return writeOrderToPocketBase(orderId, orderData, options)
         .then(function(pbResult) {
             if (pbResult && pbResult.ok) {
+                // ★ LINE Pay 訂單必須同時存在於 Firebase orders/<date>/<orderId>：
+                // linepay_server.py 付款確認後要從該路徑讀回完整訂單才能寫 print_queue 觸發列印，
+                // 只寫 PocketBase 會導致付款成功但工單不印
+                if (writeToFirebase && /^linepay/.test(String((orderData && orderData.paymentMethod) || ""))) {
+                    try {
+                        Promise.resolve(writeToFirebase(null)).catch(function(e) {
+                            console.warn("LINE Pay order Firebase dual-write failed:", e && e.message || e);
+                        });
+                    } catch(e) {}
+                }
                 return { ok: true, backend: "pocketbase", fallback: false, pocketBase: pbResult };
             }
             return fallback(pbResult || { ok: false, reason: "pocketbase_not_available" });
