@@ -5450,7 +5450,8 @@
                 var latestOrder=Object.assign({},order);
                 try{
                     var fullSnap=await get(ref(db,'orders/'+s.resolveOrderDateKey(order)+'/'+order.id));
-                    if(fullSnap.exists())latestOrder=Object.assign({},latestOrder,fullSnap.val()||{}, {id:order.id});
+                    // PB/POS 是目前畫面的來源；Firebase 只補缺欄，不能用舊 store/unpaid 洗掉 cash/paid
+                    if(fullSnap.exists())latestOrder=Object.assign({},fullSnap.val()||{},latestOrder,{id:order.id});
                 }catch(_){ }
 
                 var isLinePay=(latestOrder.paymentMethod==='linepay'||latestOrder.paymentMethod==='linepay_offline');
@@ -5497,9 +5498,15 @@
                 }else if(isLinePay&&linePayState!=='paid'&&linePayState!=='refunded'){
                     updates.paymentStatus='pending';
                     updates.unpaidCancelledAt=Date.now();
-                }else if(!isLinePay&&(latestOrder.paymentStatus||'')==='paid'){
+                }else if(!isLinePay&&(
+                    (latestOrder.paymentStatus||'')==='paid'||
+                    (latestOrder.paymentMethod||'')==='cash'||
+                    (order.paymentStatus||'')==='paid'||
+                    (order.paymentMethod||'')==='cash'
+                )){
                     // ★ 已收款（現金等）的訂單取消 = 退還款項，標示已退款，列表與工單同步顯示
                     updates.paymentStatus='refunded';
+                    if((latestOrder.paymentMethod||'')==='cash'||(order.paymentMethod||'')==='cash')updates.paymentMethod='cash';
                     updates.refundedAt=Date.now();
                 }
                 // ★ 走 updateOrderMirror：同時寫 Firebase 與 PocketBase，POS 列表（讀 PB）才會即時更新
