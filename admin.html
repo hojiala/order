@@ -532,8 +532,12 @@
             created() {
                 authReady.finally(() => {
                     onAuthStateChanged(auth, (user) => {
-                        // 匿名使用者（index/dinein 顧客頁產生）不算 staff 登入
+                        // 匿名使用者（index/dinein 顧客頁產生）不算 staff 登入。
+                        // 登出事件加 1.5 秒防抖：顧客頁初始化時的跨分頁同步會短暫發出 null，
+                        // 立刻切登入畫面會「閃一下又自動回來」；確認真的沒有 staff 使用者才登出。
                         if (user && !user.isAnonymous) {
+                            if (this._authLogoutTimer) { clearTimeout(this._authLogoutTimer); this._authLogoutTimer = null; }
+                            if (this.isLoggedIn) return;
                             this.isLoggedIn = true;
                             this.autoArchiveOldOrders();
                             this.loadLocalStatusOverrides();
@@ -541,8 +545,15 @@
                             this.listenMenuForDisplay();
                             this.listenToOrders();
                         } else {
-                            this.isLoggedIn = false;
-                            this.orders = [];
+                            if (this._authLogoutTimer) clearTimeout(this._authLogoutTimer);
+                            this._authLogoutTimer = setTimeout(() => {
+                                this._authLogoutTimer = null;
+                                const cu = auth.currentUser;
+                                if (!cu || cu.isAnonymous) {
+                                    this.isLoggedIn = false;
+                                    this.orders = [];
+                                }
+                            }, 1500);
                         }
                     });
                 });

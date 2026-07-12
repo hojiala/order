@@ -1738,7 +1738,7 @@ window._doCountUp = function() {
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getDatabase, ref, set, get, push, update, remove, onValue, onChildAdded, onChildChanged, onChildRemoved, query, orderByChild, equalTo, limitToLast } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-    import { listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, writeMenuItemToPocketBase, deleteMenuItemFromPocketBase, updateMenuSortInPocketBase, writeSettingsToPocketBase } from "./pocketbase-order-writer.js?v=20260711_1600";
+    import { listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, writeMenuItemToPocketBase, deleteMenuItemFromPocketBase, updateMenuSortInPocketBase, writeSettingsToPocketBase } from "./pocketbase-order-writer.js?v=20260712_0900";
 
     const firebaseConfig = {
         apiKey: "AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -2022,8 +2022,12 @@ window._doCountUp = function() {
             authReady.finally(function() {
                 onAuthStateChanged(auth, function(user) {
                 self.authResolved = true;
-                // 匿名使用者（index/dinein 顧客頁產生）不算 staff 登入
+                // 匿名使用者（index/dinein 顧客頁產生）不算 staff 登入。
+                // 登出事件加 1.5 秒防抖：顧客頁初始化時的跨分頁同步會短暫發出 null，
+                // 立刻切登入畫面會「閃一下又自動回來」；確認真的沒有 staff 使用者才登出。
                 if (user && !user.isAnonymous) {
+                    if (self._authLogoutTimer) { clearTimeout(self._authLogoutTimer); self._authLogoutTimer = null; }
+                    if (self.isLoggedIn) return;
                     self.isLoggedIn = true;
                     var settingsPromise = self.loadSettings().catch(function(e) {
                         console.warn('manage settings primary read failed during startup:', e && e.message ? e.message : e);
@@ -2036,7 +2040,12 @@ window._doCountUp = function() {
                         self.loadStandardDrinks();
                     });
                 } else {
-                    self.isLoggedIn = false;
+                    if (self._authLogoutTimer) clearTimeout(self._authLogoutTimer);
+                    self._authLogoutTimer = setTimeout(function() {
+                        self._authLogoutTimer = null;
+                        var cu = auth.currentUser;
+                        if (!cu || cu.isAnonymous) self.isLoggedIn = false;
+                    }, 1500);
                 }
                 });
             });

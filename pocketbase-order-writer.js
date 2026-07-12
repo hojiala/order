@@ -147,6 +147,7 @@ function customerPayload(orderData, options) {
     }
     payload.phone = payload.phone || text(orderData && orderData.phone);
     payload.deviceId = payload.deviceId || text(orderData && (orderData.deviceId || orderData.tableDevice));
+    payload.tableDevice = payload.tableDevice || text(orderData && orderData.tableDevice);
     payload.tableLabel = payload.tableLabel || text(orderData && orderData.tableLabel);
     payload.tableType = payload.tableType || text(orderData && orderData.tableType);
     payload.orderNote = payload.orderNote || text(orderData && orderData.orderNote);
@@ -529,6 +530,9 @@ export function pocketBaseRecordToOrder(record) {
     };
     if (customer.wasCancelled !== undefined) order.wasCancelled = customer.wasCancelled === true;
     if (customer.deviceId) order.deviceId = text(customer.deviceId);
+    var recTableDevice = text(customer.tableDevice) ||
+        ((source === "dinein" || source === "qrcode" || source === "qr_takeout") ? text(customer.deviceId) : "");
+    if (recTableDevice) order.tableDevice = recTableDevice;
     if (Array.isArray(customer.stationMap)) order.stationMap = customer.stationMap;
     if (Array.isArray(customer.stationSettings)) order.stationSettings = customer.stationSettings;
     return order;

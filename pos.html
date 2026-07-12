@@ -274,6 +274,10 @@
                           ⚠️ 未付款
                       </span>
                   </template>
+                  <span v-else-if="order.paymentStatus==='refunded'"
+                      class="inline-block text-xs font-bold px-1.5 py-0.5 rounded-full mt-0.5 bg-purple-100 text-purple-600">
+                      💸 已退款
+                  </span>
                   <span v-else-if="order.paymentMethod==='cash' && order.paymentStatus==='paid'"
                       class="inline-block text-xs font-bold px-1.5 py-0.5 rounded-full mt-0.5 bg-green-100 text-green-700">
                       💵 現金已付款
@@ -722,7 +726,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getDatabase, ref, onValue, onChildAdded, onChildChanged, onChildRemoved, update, push, set, get, remove, query, orderByChild, limitToLast, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-    import { allocateOrderNoFromPocketBase, resetOrderNoInPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, listMenuItemsFromPocketBase, writeMenuItemToPocketBase, writeSettingsToPocketBase, rememberPublicMenuItems, rememberPublicSettings, normalizePublicSettings, subscribeOrdersRealtime } from "./pocketbase-order-writer.js?v=20260711_1600";
+    import { allocateOrderNoFromPocketBase, resetOrderNoInPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, listMenuItemsFromPocketBase, writeMenuItemToPocketBase, writeSettingsToPocketBase, rememberPublicMenuItems, rememberPublicSettings, normalizePublicSettings, subscribeOrdersRealtime } from "./pocketbase-order-writer.js?v=20260712_0900";
     const firebaseConfig = {
         apiKey:"AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
         authDomain:"breakfast-ai-system.firebaseapp.com",
@@ -831,7 +835,8 @@
                     if(!o)return false;
                     // ★ 同步過濾掉 `online_` 鏡像條目（即使前面 listener 漏網也擋住）
                     if(typeof o.id==='string' && o.id.indexOf('online_')===0)return false;
-                    return o.status==='new'||o.status==='making';
+                    // ★ 與「所有進行中訂單」列表同一條件（非 archived 全算，含已取消），數字才會一致
+                    return o.status!=='archived';
                 }).length;}
                 catch(e){console.warn('activeOrderCount failed:',e&&e.message?e.message:e);return 0;}
             },
@@ -957,8 +962,22 @@
         created:function(){
             var s=this;
             var d=new Date();s.posPickupDate=d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);
-            // 匿名使用者（index/dinein 顧客頁產生）不算 staff 登入
-            authReady.finally(function(){onAuthStateChanged(auth,function(u){if(u&&!u.isAnonymous){s.isLoggedIn=true;s.startAll();}else{s.isLoggedIn=false;}});});
+            // 匿名使用者（index/dinein 顧客頁產生）不算 staff 登入。
+            // 登出事件加 1.5 秒防抖：index/dinein 初始化時的跨分頁同步會短暫發出 null，
+            // 立刻切登入畫面會造成「閃一下又自動回來」；確認真的沒有 staff 使用者才登出。
+            authReady.finally(function(){onAuthStateChanged(auth,function(u){
+                if(u&&!u.isAnonymous){
+                    if(s._authLogoutTimer){clearTimeout(s._authLogoutTimer);s._authLogoutTimer=null;}
+                    if(!s.isLoggedIn){s.isLoggedIn=true;s.startAll();}
+                }else{
+                    if(s._authLogoutTimer)clearTimeout(s._authLogoutTimer);
+                    s._authLogoutTimer=setTimeout(function(){
+                        s._authLogoutTimer=null;
+                        var cu=auth.currentUser;
+                        if(!cu||cu.isAnonymous)s.isLoggedIn=false;
+                    },1500);
+                }
+            });});
         },
         methods:{
 
@@ -5474,6 +5493,10 @@
                 }else if(isLinePay&&linePayState!=='paid'&&linePayState!=='refunded'){
                     updates.paymentStatus='pending';
                     updates.unpaidCancelledAt=Date.now();
+                }else if(!isLinePay&&(latestOrder.paymentStatus||'')==='paid'){
+                    // ★ 已收款（現金等）的訂單取消 = 退還款項，標示已退款，列表與工單同步顯示
+                    updates.paymentStatus='refunded';
+                    updates.refundedAt=Date.now();
                 }
                 // ★ 走 updateOrderMirror：同時寫 Firebase 與 PocketBase，POS 列表（讀 PB）才會即時更新
                 await s.updateOrderMirror(order.id,updates,latestOrder);
