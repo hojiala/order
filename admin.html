@@ -281,7 +281,7 @@
         import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
         import { getDatabase, ref, onValue, onChildAdded, onChildChanged, onChildRemoved, update, set, get, remove, query, orderByChild, limitToLast } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
         import { getAuth, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-        import { allocateOrderNoFromPocketBase, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, listMenuItemsFromPocketBase } from "./pocketbase-order-writer.js";
+        import { allocateOrderNoFromPocketBase, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, listMenuItemsFromPocketBase, writeOrderToPocketBase } from "./pocketbase-order-writer.js";
 
         // ★★★ 請貼入您相同的 Firebase 配置 ★★★
         const firebaseConfig = {
@@ -3071,7 +3071,25 @@
                     return updates;
                 },
                 updateOrderMirror(orderId, fields, orderObj) {
-                    return update(ref(db), this.buildOrderMirrorUpdates(orderId, fields, orderObj));
+                    const firebaseWrite = update(ref(db), this.buildOrderMirrorUpdates(orderId, fields, orderObj));
+                    let pocketBaseWrite = Promise.resolve();
+                    const keys = Object.keys(fields || {});
+                    if (keys.includes('paymentMethod') || keys.includes('paymentStatus') || keys.includes('status')) {
+                        try {
+                            const baseOrder = orderObj || this.findOrderById(orderId) || {};
+                            const merged = Object.assign({}, baseOrder, fields, { id: orderId });
+                            const source = String(merged.source || '').toLowerCase();
+                            const sourcePath = String((merged.integration && merged.integration.sourceRecordPath) || merged.sourceRecordPath || '');
+                            const isPhone = source === 'phone_ai' || source === 'pos_local' || sourcePath.indexOf('phone_ai/') === 0;
+                            if (!isPhone && Array.isArray(merged.items) && merged.items.length) {
+                                pocketBaseWrite = writeOrderToPocketBase(orderId, merged, { settings: this.settings, sourcePage: 'admin', allowPocketBaseUpdate: true })
+                                    .catch(e => console.warn('PB 狀態同步失敗:', orderId, e && e.message ? e.message : e));
+                            }
+                        } catch (e) {
+                            console.warn('PB 狀態同步略過:', e && e.message ? e.message : e);
+                        }
+                    }
+                    return Promise.all([firebaseWrite, pocketBaseWrite]);
                 },
                 clearPrintTaskMirror(orderId, orderObj) {
                     return this.updateOrderMirror(orderId, { print_task: null }, orderObj);
@@ -3388,7 +3406,8 @@
                     try {
                         const fullSnap = await get(ref(db, this.orderBasePath(order.id, order)));
                         if (fullSnap.exists()) {
-                            latestOrder = { ...latestOrder, ...(fullSnap.val() || {}), id: order.id };
+                            // PB/admin 畫面是目前資料；Firebase 只補缺欄，不能用舊付款狀態覆蓋它
+                            latestOrder = { ...(fullSnap.val() || {}), ...latestOrder, id: order.id };
                         }
                     } catch (_) {}
 
@@ -3421,31 +3440,38 @@
                     const taskRef = ref(db, `${orderBase}/print_task`);
                     try {
                         await remove(taskRef);
-                        const updates = {
-                            [`${orderBase}/status`]: 'cancelled',
-                            [`${orderBase}/wasCancelled`]: true
-                        };
+                        const fields = { status: 'cancelled', wasCancelled: true };
                         if (Array.isArray(latestOrder.items) && latestOrder.items.length) {
-                            updates[`${orderBase}/items`] = latestOrder.items.map(i => ({ ...i }));
-                            if (latestOrder.total !== undefined) updates[`${orderBase}/total`] = latestOrder.total;
+                            fields.items = latestOrder.items.map(i => ({ ...i }));
+                            if (latestOrder.total !== undefined) fields.total = latestOrder.total;
                         }
                         if (shouldRefund) {
-                            if ((latestOrder.paymentStatus || '') !== 'paid') updates[`${orderBase}/paymentStatus`] = 'paid';
-                            updates[`${orderBase}/paymentMethod`] = (latestOrder.paymentMethod === 'linepay_offline') ? 'linepay_offline' : 'linepay';
+                            if ((latestOrder.paymentStatus || '') !== 'paid') fields.paymentStatus = 'paid';
+                            fields.paymentMethod = (latestOrder.paymentMethod === 'linepay_offline') ? 'linepay_offline' : 'linepay';
                         } else if (isLinePay && linePayState !== 'paid' && linePayState !== 'refunded') {
-                            updates[`${orderBase}/paymentStatus`] = 'pending';
-                            updates[`${orderBase}/unpaidCancelledAt`] = Date.now();
+                            fields.paymentStatus = 'pending';
+                            fields.unpaidCancelledAt = Date.now();
+                        } else if (!isLinePay && (
+                            latestOrder.paymentStatus === 'paid' || latestOrder.paymentMethod === 'cash' ||
+                            order.paymentStatus === 'paid' || order.paymentMethod === 'cash'
+                        )) {
+                            fields.paymentStatus = 'refunded';
+                            if (latestOrder.paymentMethod === 'cash' || order.paymentMethod === 'cash') fields.paymentMethod = 'cash';
+                            fields.refundedAt = Date.now();
                         }
-                        await update(ref(db), updates);
+                        await this.updateOrderMirror(order.id, fields, latestOrder);
+                        Object.assign(latestOrder, fields);
 
                         if (shouldRefund) {
                             const refund = await this.requestLinePayRefund(latestOrder);
                             if (refund.success) {
                                 const rts = Date.now();
+                                await this.updateOrderMirror(order.id, {
+                                    paymentStatus: 'refunded',
+                                    paymentMethod: 'linepay_refund',
+                                    refundedAt: rts
+                                }, latestOrder);
                                 await update(ref(db), {
-                                    [`${orderBase}/paymentStatus`]: 'refunded',
-                                    [`${orderBase}/paymentMethod`]: 'linepay_refund',
-                                    [`${orderBase}/refundedAt`]: rts,
                                     [`linepay_transactions/${order.id}/status`]: 'refunded',
                                     [`linepay_transactions/${order.id}/refundedAt`]: rts
                                 });
@@ -3599,7 +3625,8 @@
                             paymentMethod: realPm,
                             paymentStatus: newPayStatus
                         };
-                        await this.updateOrderMirror(id, upd, orderForMirror);
+                        const updatedOrder = Object.assign({}, orderForMirror, upd, { id });
+                        await this.updateOrderMirror(id, upd, updatedOrder);
                         if (isLinePay && newPayStatus === 'pending' && confirmBase) {
                             // ★ 重新發起 LINE Pay 付款請求
                             const { set: fbSet, ref: fbRef } = { set, ref };
@@ -3614,8 +3641,8 @@
                             });
                             this.toast('✅ 儲存完成，已重新發起 LINE Pay 付款請求');
                         } else {
-                            await this.clearPrintTaskMirror(id, orderForMirror);
-                            await this.setPrintTaskMirror(id, `kitchen_edit_${Date.now()}`, orderForMirror);
+                            await this.clearPrintTaskMirror(id, updatedOrder);
+                            await this.setPrintTaskMirror(id, `kitchen_edit_${Date.now()}`, updatedOrder);
                         }
                         this.editModal = null;
                     } catch (err) {
