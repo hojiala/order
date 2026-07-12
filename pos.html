@@ -5387,7 +5387,7 @@
                             var res=await fetch(dbRestUrl+'/linepay_refund_requests/'+order.id+'.json?auth='+encodeURIComponent(token));
                             var rv=await res.json();
                             if(rv){
-                                if(rv.status==='done'||rv.returnCode==='ALREADY_REFUNDED')return{success:true,returnCode:rv.returnCode||'0000'};
+                                if(rv.status==='done'||rv.returnCode==='ALREADY_REFUNDED')return{success:true,returnCode:rv.returnCode||'0000',printTask:rv.printTask||''};
                                 if(rv.status==='error')return{success:false,error:rv.error||'退款失敗',returnCode:rv.returnCode||''};
                             }
                         }catch(_){}
@@ -5431,7 +5431,7 @@
                         clearTimeout(timer);
                         if(!res.ok)continue;
                         var rd=await res.json();
-                        if(rd.success||rd.returnCode==='ALREADY_REFUNDED')return{success:true,returnCode:rd.returnCode||'0000'};
+                        if(rd.success||rd.returnCode==='ALREADY_REFUNDED')return{success:true,returnCode:rd.returnCode||'0000',printTask:rd.printTask||''};
                         if(rd.error)return{success:false,error:rd.error||'退款失敗',returnCode:rd.returnCode||''};
                     }catch(_){ }
                 }
@@ -5470,6 +5470,7 @@
                 }
                 var shouldRefund=isLinePay&&linePayState==='paid';
 
+                var refundPrintTask='';
                 if(shouldRefund){
                     if(!confirm(`此訂單已完成 LINE Pay 付款 $${latestOrder.total||order.total||0}。\n\n確定取消？\n（點「確定」同時申請 LINE Pay 退款，點「取消」放棄操作）`))return false;
                 }else{
@@ -5522,6 +5523,8 @@
                         latestOrder.paymentStatus='refunded';
                         latestOrder.paymentMethod='linepay_refund';
                         latestOrder.refundedAt=rts;
+                        refundPrintTask=refund.printTask||'';
+                        if(refundPrintTask)latestOrder.print_task=refundPrintTask;
                         s.lpStatus[order.id]='refunded';
                         delete s.lpConfirmed[order.id];
                         s.toast('✅ LINE Pay 已申請退款（等待狀態同步）');
@@ -5537,10 +5540,12 @@
 
                 if(shouldRefund){ await new Promise(function(r){setTimeout(r,500);}); }
                 latestOrder.status='cancelled';
-                var cancelTask='cancel_'+Date.now();
-                await set(taskRef,cancelTask);
-                // ★ 寫入 print_queue 供 Node-RED
-                s.writeToPrintQueue(order.id,cancelTask,latestOrder);
+                var cancelTask=refundPrintTask||('cancel_'+Date.now());
+                if(!refundPrintTask){
+                    await set(taskRef,cancelTask);
+                    // ★ LINE Pay 後端未直接送印時才由 POS 補送，避免取消單印兩次
+                    s.writeToPrintQueue(order.id,cancelTask,latestOrder);
+                }
                 s.toast('❌ 訂單已取消，列印取消單...');
                 if(s.editingOrder&&s.editingOrder.id===order.id)s.exitOnline();
                 return true;
