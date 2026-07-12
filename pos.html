@@ -5608,6 +5608,221 @@
                     s.toast('⚠️ 關閉付款視窗後更新失敗：'+e.message);
                 }
             },
+            voiceSend:function(event){
+                if(posVoiceRuntime.dc&&posVoiceRuntime.dc.readyState==='open')posVoiceRuntime.dc.send(JSON.stringify(event));
+            },
+            voicePrepareMap:function(data){
+                var s=this;
+                return Object.keys(data||{}).map(function(key){
+                    return {from:s.normalizeMenuNameForMatch(key),to:s.normalizeMenuNameForMatch(data[key])};
+                }).filter(function(row){return row.from&&row.to;}).sort(function(a,b){return b.from.length-a.from.length;});
+            },
+            voiceNormalizeTerm:function(value){
+                var text=this.normalizeMenuNameForMatch(value);
+                var apply=function(rows){
+                    for(var i=0;i<rows.length;i++){
+                        if(text===rows[i].from){text=rows[i].to;return;}
+                        if(text.indexOf(rows[i].from)!==-1)text=text.split(rows[i].from).join(rows[i].to);
+                    }
+                };
+                apply(posVoiceRuntime.typos);
+                apply(posVoiceRuntime.aliases);
+                return text;
+            },
+            voiceSearchMenu:function(query){
+                var s=this,target=this.voiceNormalizeTerm(query),rows=[];
+                (this.menu||[]).forEach(function(item){
+                    if(!item||item.active===false)return;
+                    var name=s.normalizeMenuNameForMatch(item.name);
+                    var shortName=s.normalizeMenuNameForMatch(item.shortName||item.printName);
+                    var score=0;
+                    if(target&&name===target)score=100;
+                    else if(target&&shortName===target)score=95;
+                    else if(target&&name.indexOf(target)!==-1)score=80;
+                    else if(target&&target.indexOf(name)!==-1)score=70;
+                    if(!score)return;
+                    rows.push({score:score,item:item});
+                });
+                rows.sort(function(a,b){return b.score-a.score;});
+                return rows.slice(0,6).map(function(row){
+                    var item=row.item;
+                    return {
+                        name:item.name,
+                        price:Number(item.price||0),
+                        category:item.category||'',
+                        optionGroups:(item.optionGroups||[]).map(function(group){return{
+                            groupName:group.groupName||'',pricing:group.pricing||'',
+                            choices:(group.choices||[]).map(function(choice){return choice.name;})
+                        };}),
+                        extras:[].concat(item.options||[],item.posExtras||[]).map(function(option){return option&&option.name;}).filter(Boolean)
+                    };
+                });
+            },
+            voiceFindMenuItem:function(name){
+                var s=this,target=this.voiceNormalizeTerm(name),found=null;
+                (this.menu||[]).some(function(item){
+                    if(!item||item.active===false)return false;
+                    var names=[item.name,item.shortName,item.printName].map(function(value){return s.normalizeMenuNameForMatch(value);});
+                    if(names.indexOf(target)!==-1){found=item;return true;}
+                    return false;
+                });
+                return found;
+            },
+            voiceAddMenuItem:function(args){
+                args=args||{};
+                var item=this.voiceFindMenuItem(args.name);
+                if(!item)return {success:false,error:'找不到完全相符且供應中的餐點',matches:this.voiceSearchMenu(args.name).map(function(row){return row.name;})};
+                this.openDetail(item);
+                this.tempQty=Math.max(1,Math.min(20,Math.round(Number(args.quantity)||1)));
+                this.tempNote=String(args.note||'').trim();
+                var requested=Array.isArray(args.selections)?args.selections.map(function(v){return String(v||'').trim();}).filter(Boolean):[];
+                var unmatched=[],s=this;
+                requested.forEach(function(value){
+                    var target=s.voiceNormalizeTerm(value),matched=false;
+                    (item.optionGroups||[]).some(function(group,gi){
+                        var choices=group.choices||[],choiceIdx=-1;
+                        for(var ci=0;ci<choices.length;ci++){
+                            var choiceName=s.voiceNormalizeTerm(choices[ci]&&choices[ci].name);
+                            if(choiceName===target||choiceName.indexOf(target)!==-1||target.indexOf(choiceName)!==-1){choiceIdx=ci;break;}
+                        }
+                        if(choiceIdx<0)return false;
+                        if(group.type==='checkbox'){
+                            var picked=Array.isArray(s.tempOG[gi])?s.tempOG[gi].slice():[];
+                            if(picked.indexOf(choiceIdx)<0)picked.push(choiceIdx);
+                            s.tempOG[gi]=picked;
+                        }else s.tempOG[gi]=choiceIdx;
+                        matched=true;return true;
+                    });
+                    if(matched)return;
+                    var matchExtra=function(options,targetList){
+                        for(var oi=0;oi<(options||[]).length;oi++){
+                            var option=options[oi];
+                            if(s.voiceNormalizeTerm(option&&option.name)===target){targetList.push(option);return true;}
+                        }
+                        return false;
+                    };
+                    if(matchExtra(item.options,s.tempSels)||matchExtra(item.posExtras,s.tempPosExtras))return;
+                    var drinkMatched=false;
+                    (item.optionGroups||[]).forEach(function(group,gi){
+                        if(drinkMatched||!s.isComboDrinkGroup(group))return;
+                        drinkMatched=matchExtra(s.currentDrinkAddonOptions(gi,group),s.tempDrinkAddons);
+                    });
+                    if(!drinkMatched)unmatched.push(value);
+                });
+                if(unmatched.length)this.tempNote=[this.tempNote,unmatched.join('、')].filter(Boolean).join('；');
+                this.confirmAdd();
+                return {success:true,name:item.name,quantity:this.tempQty,unmatchedSelections:unmatched,cartTotal:this.cartTotal};
+            },
+            voiceHandleToolCall:function(event){
+                if(!event.call_id||posVoiceRuntime.seenCalls.has(event.call_id))return;
+                posVoiceRuntime.seenCalls.add(event.call_id);
+                var args={},result;
+                try{args=JSON.parse(event.arguments||'{}');}
+                catch(_){result={success:false,error:'工具參數格式錯誤'};}
+                try{
+                    if(!result&&event.name==='search_pos_menu')result={success:true,matches:this.voiceSearchMenu(args.query)};
+                    else if(!result&&event.name==='add_pos_item')result=this.voiceAddMenuItem(args);
+                    else if(!result)result={success:false,error:'不支援的工具'};
+                }catch(error){result={success:false,error:error&&error.message?error.message:String(error)};}
+                if(result.success&&event.name==='add_pos_item')this.voiceStatus='已加入 '+result.quantity+'× '+result.name+'，請繼續說';
+                this.voiceSend({type:'conversation.item.create',item:{type:'function_call_output',call_id:event.call_id,output:JSON.stringify(result)}});
+                this.voiceSend({type:'response.create',response:{output_modalities:['text']}});
+            },
+            voiceHandleEvent:function(event){
+                if(!event||!event.type)return;
+                if(event.type==='response.function_call_arguments.done'){this.voiceHandleToolCall(event);return;}
+                if(event.type==='conversation.item.input_audio_transcription.delta'){
+                    this.voiceTranscript=(this.voiceTranscript+String(event.delta||'')).slice(-80);return;
+                }
+                if(event.type==='conversation.item.input_audio_transcription.completed'){
+                    this.voiceTranscript=String(event.transcript||'').trim().slice(-80);return;
+                }
+                if(event.type==='input_audio_buffer.speech_started'){this.voiceTranscript='';this.voiceStatus='聆聽中…';return;}
+                if(event.type==='input_audio_buffer.speech_stopped'){this.voiceStatus='解析餐點中…';return;}
+                if(event.type==='response.output_text.delta'&&event.delta)this.voiceStatus=String(event.delta).trim().slice(-60);
+                if(event.type==='error')this.voiceStatus='⚠️ '+String(event.error&&event.error.message||'語音服務錯誤');
+            },
+            voiceServerBases:function(){
+                var bases=[];
+                if(this.linePayServerUrl)bases.push(String(this.linePayServerUrl).replace(/\/+$/,''));
+                bases.push(window.location.origin);
+                if(window.location.protocol==='http:')bases.push('http://'+window.location.hostname+':5000');
+                return bases.filter(function(base,index,list){return base&&list.indexOf(base)===index;});
+            },
+            voiceFetchToken:async function(){
+                var bases=this.voiceServerBases(),lastError='找不到 Pi Realtime 服務';
+                for(var i=0;i<bases.length;i++){
+                    var controller=new AbortController(),timer=setTimeout(function(){controller.abort();},8000);
+                    try{
+                        var response=await fetch(bases[i]+'/api/pos/realtime/token',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}',signal:controller.signal});
+                        var data=await response.json();
+                        if(response.ok&&data&&data.value)return data;
+                        lastError=String(data&&data.error||('HTTP '+response.status));
+                    }catch(error){lastError=error&&error.name==='AbortError'?'Pi 語音服務逾時':String(error&&error.message||error);}
+                    finally{clearTimeout(timer);}
+                }
+                throw new Error(lastError);
+            },
+            voiceSessionUpdate:function(){
+                return {
+                    type:'session.update',
+                    session:{
+                        type:'realtime',
+                        output_modalities:['text'],
+                        instructions:'你是台灣早餐店 POS 語音點餐助手。全程使用繁體中文。每聽到一個餐點，必須先呼叫 search_pos_menu 查詢目前供應中的正式菜單、價格與選項，再以查到的完整正式名稱呼叫 add_pos_item；每個不同餐點分開呼叫一次。絕不可自行猜價格或建立菜單沒有的餐點。數量、客製選項與備註依店員原話傳入。工具已加入後只需簡短確認，絕不可送出訂單、付款或列印。',
+                        tools:[
+                            {type:'function',name:'search_pos_menu',description:'依店員說法搜尋目前供應中的本機 POS 菜單；加入任何餐點前必須先呼叫。',parameters:{type:'object',properties:{query:{type:'string',description:'餐點名稱或口語別名'}},required:['query'],additionalProperties:false}},
+                            {type:'function',name:'add_pos_item',description:'用搜尋結果中的完整正式名稱加入 POS 目前訂單。價格由 POS 菜單計算，不可傳入價格。',parameters:{type:'object',properties:{name:{type:'string',description:'search_pos_menu 回傳的完整正式名稱'},quantity:{type:'integer',minimum:1,maximum:20},note:{type:'string',description:'不要醬、切邊等備註，沒有則空字串'},selections:{type:'array',items:{type:'string'},description:'尺寸、冰熱、蛋、套餐飲料、加料等店員說出的選項'}},required:['name','quantity','note','selections'],additionalProperties:false}}
+                        ],
+                        tool_choice:'auto'
+                    }
+                };
+            },
+            startVoiceOrdering:async function(){
+                if(this.voiceActive||this.voiceConnecting)return;
+                this.voiceConnecting=true;this.voiceStatus='正在開啟麥克風…';this.voiceTranscript='';
+                try{
+                    if(!window.isSecureContext)throw new Error('iPad 麥克風需要以 HTTPS 開啟 POS');
+                    if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia)throw new Error('此瀏覽器不支援麥克風語音點餐');
+                    if(!this.menu||!this.menu.length)throw new Error('菜單尚未載入完成');
+                    var stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}});
+                    posVoiceRuntime.stream=stream;
+                    this.voiceStatus='正在連接 OpenAI Realtime…';
+                    var token=await this.voiceFetchToken();
+                    posVoiceRuntime.aliases=this.voicePrepareMap(token.aliases||{});
+                    posVoiceRuntime.typos=this.voicePrepareMap(token.typos||{});
+                    posVoiceRuntime.seenCalls=new Set();
+                    var pc=new RTCPeerConnection(),dc=pc.createDataChannel('oai-events'),s=this;
+                    posVoiceRuntime.pc=pc;posVoiceRuntime.dc=dc;
+                    stream.getTracks().forEach(function(track){pc.addTrack(track,stream);});
+                    dc.addEventListener('message',function(message){try{s.voiceHandleEvent(JSON.parse(message.data));}catch(error){console.warn('Realtime event error',error);}});
+                    var openPromise=new Promise(function(resolve,reject){
+                        var timer=setTimeout(function(){reject(new Error('Realtime 資料通道連線逾時'));},12000);
+                        dc.addEventListener('open',function(){clearTimeout(timer);s.voiceSend(s.voiceSessionUpdate());resolve();},{once:true});
+                    });
+                    pc.addEventListener('connectionstatechange',function(){
+                        if(pc.connectionState==='failed')s.stopVoiceOrdering('⚠️ Realtime 連線中斷');
+                    });
+                    var offer=await pc.createOffer();
+                    await pc.setLocalDescription(offer);
+                    var answerResponse=await fetch('https://api.openai.com/v1/realtime/calls',{method:'POST',body:offer.sdp,headers:{Authorization:'Bearer '+token.value,'Content-Type':'application/sdp'}});
+                    if(!answerResponse.ok)throw new Error('Realtime WebRTC 連線失敗 HTTP '+answerResponse.status);
+                    await pc.setRemoteDescription({type:'answer',sdp:await answerResponse.text()});
+                    await openPromise;
+                    this.voiceActive=true;this.voiceStatus='語音點餐中，請直接說餐點';
+                }catch(error){
+                    this.stopVoiceOrdering('');
+                    this.voiceStatus='⚠️ '+String(error&&error.message||error);
+                }finally{this.voiceConnecting=false;}
+            },
+            stopVoiceOrdering:function(message){
+                try{if(posVoiceRuntime.dc)posVoiceRuntime.dc.close();}catch(_){}
+                try{if(posVoiceRuntime.pc)posVoiceRuntime.pc.close();}catch(_){}
+                try{if(posVoiceRuntime.stream)posVoiceRuntime.stream.getTracks().forEach(function(track){track.stop();});}catch(_){}
+                posVoiceRuntime.pc=null;posVoiceRuntime.dc=null;posVoiceRuntime.stream=null;posVoiceRuntime.seenCalls=new Set();
+                this.voiceActive=false;this.voiceConnecting=false;this.voiceTranscript='';this.voiceStatus=message===undefined?'語音點餐已停止':message;
+            },
+            toggleVoiceOrdering:function(){if(this.voiceActive||this.voiceConnecting)this.stopVoiceOrdering();else this.startVoiceOrdering();},
             getQty:function(id){return this.cart.filter(function(i){return i.id===id;}).reduce(function(s,i){return s+i.qty;},0);},
             quickAdd:function(item){
                 // ★ 快速加入：永遠直接加入購物車，有選項的使用預設值
