@@ -748,7 +748,7 @@
         appId:"1:662477350736:web:7e3dd6128a6f66a52aae55"
     };
     const app=initializeApp(firebaseConfig),db=getDatabase(app),auth=getAuth(app);
-    const posVoiceRuntime={pc:null,dc:null,stream:null,seenCalls:new Set(),aliases:[],typos:[]};
+    const posVoiceRuntime={pc:null,dc:null,stream:null,seenCalls:new Set(),aliases:[],typos:[],pendingSearch:null};
 
     // ★ 每日主題顏色：依星期套用 --day-theme / --day-theme-bg，並監聽 settings/dailyThemes 即時更新
     (function applyDailyTheme(){
@@ -5630,26 +5630,38 @@
                 return text;
             },
             voiceSearchMenu:function(query){
-                var s=this,target=this.voiceNormalizeTerm(query),rows=[];
+                var s=this,rawTarget=this.normalizeMenuNameForMatch(query),target=this.voiceNormalizeTerm(query),rows=[];
+                var similarity=function(a,b){
+                    if(!a||!b)return 0;
+                    if(a===b)return 1;
+                    if(Math.min(a.length,b.length)>=3&&(a.indexOf(b)!==-1||b.indexOf(a)!==-1))return Math.min(.95,.88+Math.min(a.length,b.length)*.01);
+                    var prev=Array.from({length:b.length+1},function(_,i){return i;});
+                    for(var i=1;i<=a.length;i++){
+                        var next=[i];
+                        for(var j=1;j<=b.length;j++)next[j]=Math.min(next[j-1]+1,prev[j]+1,prev[j-1]+(a[i-1]===b[j-1]?0:1));
+                        prev=next;
+                    }
+                    return 1-prev[b.length]/Math.max(a.length,b.length);
+                };
                 (this.menu||[]).forEach(function(item){
                     if(!item||item.active===false)return;
-                    var name=s.normalizeMenuNameForMatch(item.name);
-                    var shortName=s.normalizeMenuNameForMatch(item.shortName||item.printName);
-                    var score=0;
-                    if(target&&name===target)score=100;
-                    else if(target&&shortName===target)score=95;
-                    else if(target&&name.indexOf(target)!==-1)score=80;
-                    else if(target&&target.indexOf(name)!==-1)score=70;
-                    if(!score)return;
-                    rows.push({score:score,item:item});
+                    var names=[item.name,item.shortName,item.printName].map(function(value){return s.normalizeMenuNameForMatch(value);}).filter(Boolean);
+                    var matchType='fuzzy',tier=1,confidence=0;
+                    if(rawTarget&&names.indexOf(rawTarget)!==-1){matchType='exact';tier=3;confidence=1;}
+                    else if(target&&target!==rawTarget&&names.indexOf(target)!==-1){matchType='dictionary';tier=2;confidence=1;}
+                    else names.forEach(function(name){confidence=Math.max(confidence,similarity(target,name));});
+                    if(!target||(tier===1&&confidence<.78))return;
+                    rows.push({tier:tier,confidence:confidence,item:item,matchType:matchType});
                 });
-                rows.sort(function(a,b){return b.score-a.score;});
+                rows.sort(function(a,b){return b.tier-a.tier||b.confidence-a.confidence;});
                 return rows.slice(0,6).map(function(row){
                     var item=row.item;
                     return {
                         name:item.name,
                         price:Number(item.price||0),
                         category:item.category||'',
+                        matchType:row.matchType,
+                        confidence:Number(row.confidence.toFixed(2)),
                         optionGroups:(item.optionGroups||[]).map(function(group){return{
                             groupName:group.groupName||'',pricing:group.pricing||'',
                             choices:(group.choices||[]).map(function(choice){return choice.name;})
@@ -5720,13 +5732,28 @@
                 try{args=JSON.parse(event.arguments||'{}');}
                 catch(_){result={success:false,error:'工具參數格式錯誤'};}
                 try{
-                    if(!result&&event.name==='search_pos_menu')result={success:true,matches:this.voiceSearchMenu(args.query)};
-                    else if(!result&&event.name==='add_pos_item')result=this.voiceAddMenuItem(args);
+                    if(!result&&event.name==='search_pos_menu'){
+                        var matches=this.voiceSearchMenu(args.query);
+                        var ambiguous=matches.length>1&&matches[0].matchType==='fuzzy'&&matches[1].matchType==='fuzzy'&&matches[0].confidence-matches[1].confidence<.08;
+                        posVoiceRuntime.pendingSearch={matches:matches,ambiguous:ambiguous};
+                        result={success:matches.length>0,matches:matches,requiresConfirmation:ambiguous,error:matches.length?'':'找不到高可信度的菜單餐點'};
+                    }
+                    else if(!result&&event.name==='add_pos_item'){
+                        var pending=posVoiceRuntime.pendingSearch,allowed=pending&&pending.matches.some(function(row){return row.name===args.name;});
+                        if(!pending)result={success:false,error:'加入前必須先搜尋目前菜單'};
+                        else if(pending.ambiguous)result={success:false,error:'候選餐點太接近，請店員確認正式名稱',matches:pending.matches.slice(0,2).map(function(row){return row.name;})};
+                        else if(!allowed)result={success:false,error:'只能加入剛才搜尋結果中的正式菜名',matches:pending.matches.map(function(row){return row.name;})};
+                        else result=this.voiceAddMenuItem(args);
+                        posVoiceRuntime.pendingSearch=null;
+                    }
                     else if(!result)result={success:false,error:'不支援的工具'};
                 }catch(error){result={success:false,error:error&&error.message?error.message:String(error)};}
                 if(result.success&&event.name==='add_pos_item')this.voiceStatus='已加入 '+result.quantity+'× '+result.name+'，請繼續說';
+                else if(event.name==='add_pos_item'&&result.matches&&result.matches.length)this.voiceStatus='候選：'+result.matches.join('／')+'，請店員說出正式名稱確認';
+                else if(!result.success)this.voiceStatus='⚠️ '+result.error;
                 this.voiceSend({type:'conversation.item.create',item:{type:'function_call_output',call_id:event.call_id,output:JSON.stringify(result)}});
-                this.voiceSend({type:'response.create',response:{output_modalities:['text']}});
+                if(event.name==='search_pos_menu'&&result.success)this.voiceSend({type:'response.create',response:{output_modalities:['text'],tool_choice:'required'}});
+                else if(event.name==='add_pos_item'&&result.success)this.voiceSend({type:'response.create',response:{output_modalities:['text'],tool_choice:'auto'}});
             },
             voiceHandleEvent:function(event){
                 if(!event||!event.type)return;
@@ -5735,11 +5762,12 @@
                     this.voiceTranscript=(this.voiceTranscript+String(event.delta||'')).slice(-80);return;
                 }
                 if(event.type==='conversation.item.input_audio_transcription.completed'){
-                    this.voiceTranscript=String(event.transcript||'').trim().slice(-80);return;
+                    this.voiceTranscript=String(event.transcript||'').trim().slice(-80);
+                    if(this.voiceTranscript)this.voiceSend({type:'response.create',response:{output_modalities:['text'],tool_choice:'required'}});
+                    return;
                 }
-                if(event.type==='input_audio_buffer.speech_started'){this.voiceTranscript='';this.voiceStatus='聆聽中…';return;}
+                if(event.type==='input_audio_buffer.speech_started'){posVoiceRuntime.pendingSearch=null;this.voiceTranscript='';this.voiceStatus='聆聽中…';return;}
                 if(event.type==='input_audio_buffer.speech_stopped'){this.voiceStatus='解析餐點中…';return;}
-                if(event.type==='response.output_text.delta'&&event.delta)this.voiceStatus=String(event.delta).trim().slice(-60);
                 if(event.type==='error')this.voiceStatus='⚠️ '+String(event.error&&event.error.message||'語音服務錯誤');
             },
             voiceServerBases:function(){
@@ -5772,7 +5800,7 @@
                     session:{
                         type:'realtime',
                         output_modalities:['text'],
-                        instructions:'你是台灣早餐店 POS 語音點餐助手。全程使用繁體中文。每聽到一個餐點，必須先呼叫 search_pos_menu 查詢目前供應中的正式菜單、價格與選項，再以查到的完整正式名稱呼叫 add_pos_item；每個不同餐點分開呼叫一次。絕不可自行猜價格或建立菜單沒有的餐點。數量、客製選項與備註依店員原話傳入。工具已加入後只需簡短確認，絕不可送出訂單、付款或列印。',
+                        instructions:'你是台灣早餐店 POS 語音點餐助手。全程使用繁體中文。點餐階段禁止只回覆文字；每聽到一個餐點，必須先呼叫 search_pos_menu 查詢目前供應中的正式菜單、價格與選項，再以查到的完整正式名稱呼叫 add_pos_item；每個不同餐點分開呼叫一次。若搜尋結果 requiresConfirmation 為 true，不可自行選擇或加入，等待店員說出正式名稱。絕不可自行猜價格或建立菜單沒有的餐點。數量、客製選項與備註依店員原話傳入。絕不可送出訂單、付款或列印。',
                         tools:[
                             {type:'function',name:'search_pos_menu',description:'依店員說法搜尋目前供應中的本機 POS 菜單；加入任何餐點前必須先呼叫。',parameters:{type:'object',properties:{query:{type:'string',description:'餐點名稱或口語別名'}},required:['query'],additionalProperties:false}},
                             {type:'function',name:'add_pos_item',description:'用搜尋結果中的完整正式名稱加入 POS 目前訂單。價格由 POS 菜單計算，不可傳入價格。',parameters:{type:'object',properties:{name:{type:'string',description:'search_pos_menu 回傳的完整正式名稱'},quantity:{type:'integer',minimum:1,maximum:20},note:{type:'string',description:'不要醬、切邊等備註，沒有則空字串'},selections:{type:'array',items:{type:'string'},description:'尺寸、冰熱、蛋、套餐飲料、加料等店員說出的選項'}},required:['name','quantity','note','selections'],additionalProperties:false}}
@@ -5822,7 +5850,7 @@
                 try{if(posVoiceRuntime.dc)posVoiceRuntime.dc.close();}catch(_){}
                 try{if(posVoiceRuntime.pc)posVoiceRuntime.pc.close();}catch(_){}
                 try{if(posVoiceRuntime.stream)posVoiceRuntime.stream.getTracks().forEach(function(track){track.stop();});}catch(_){}
-                posVoiceRuntime.pc=null;posVoiceRuntime.dc=null;posVoiceRuntime.stream=null;posVoiceRuntime.seenCalls=new Set();
+                posVoiceRuntime.pc=null;posVoiceRuntime.dc=null;posVoiceRuntime.stream=null;posVoiceRuntime.seenCalls=new Set();posVoiceRuntime.pendingSearch=null;
                 this.voiceActive=false;this.voiceConnecting=false;this.voiceTranscript='';this.voiceStatus=message===undefined?'語音點餐已停止':message;
             },
             toggleVoiceOrdering:function(){if(this.voiceActive||this.voiceConnecting)this.stopVoiceOrdering();else this.startVoiceOrdering();},
