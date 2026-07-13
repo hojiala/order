@@ -5227,7 +5227,7 @@
                 var defaultStations=[{name:'湯麵',ip:'192.168.0.6'},{name:'麵包台',ip:'192.168.0.7'},{name:'飲料台',ip:'192.168.0.8'}];
                 var hasStationSettings=!!(v.stations&&v.stations.length);
                 var categories=(Array.isArray(v.categories)&&v.categories.length)?v.categories:(prev.categories||[]);
-                s.settings={categories:categories,hideAllTab:!!v.hideAllTab,posOnlyCategories:v.posOnlyCategories||prev.posOnlyCategories||[],
+                s.settings={categories:categories,hideAllTab:!!v.hideAllTab,posOnlyCategories:v.posOnlyCategories||prev.posOnlyCategories||[],menu_alias:v.menu_alias||v.menuAlias||prev.menu_alias||[],
                     pocketBaseUrl:v.pocketBaseUrl||v.pocketbaseUrl||s.pocketBaseUrl||'https://pb.yuangi168.com',pocketBaseOrdersCollection:v.pocketBaseOrdersCollection||v.pocketbaseOrdersCollection||s.pocketBaseOrdersCollection||'orders',pocketBaseOrderEndpoint:v.pocketBaseOrderEndpoint||v.pocketbaseOrderEndpoint||v.pocketBaseSecureOrderEndpoint||v.secureOrderEndpoint||'',turnstileSiteKey:v.turnstileSiteKey||v.cloudflareTurnstileSiteKey||'',telegramFallbackNotifyEndpoint:v.telegramFallbackNotifyEndpoint||v.telegramNotifyEndpoint||prev.telegramFallbackNotifyEndpoint||'',telegramFallbackMessageTemplate:v.telegramFallbackMessageTemplate||prev.telegramFallbackMessageTemplate||'',
                     stations:hasStationSettings?v.stations:defaultStations};
                 s.settingsStationsLoaded=hasStationSettings;
@@ -5612,9 +5612,12 @@
                 if(posVoiceRuntime.dc&&posVoiceRuntime.dc.readyState==='open')posVoiceRuntime.dc.send(JSON.stringify(event));
             },
             voicePrepareMap:function(data){
-                var s=this;
-                return Object.keys(data||{}).map(function(key){
-                    return {from:s.normalizeMenuNameForMatch(key),to:s.normalizeMenuNameForMatch(data[key])};
+                var s=this,entries=Array.isArray(data)?data.map(function(row){return [row&&(row.alias||row.key||row.name),row&&(row.official||row.canonical||row.value)];}):Object.keys(data||{}).map(function(key){
+                    var value=data[key];
+                    return [key,value&&typeof value==='object'?(value.official||value.canonical||value.value):value];
+                });
+                return entries.map(function(entry){
+                    return {from:s.normalizeMenuNameForMatch(entry[0]),to:s.normalizeMenuNameForMatch(entry[1])};
                 }).filter(function(row){return row.from&&row.to;}).sort(function(a,b){return b.from.length-a.from.length;});
             },
             voiceNormalizeTerm:function(value){
@@ -5824,10 +5827,10 @@
                     posVoiceRuntime.stream=stream;
                     this.voiceStatus='正在連接 OpenAI Realtime…';
                     var token=await this.voiceFetchToken();
-                    posVoiceRuntime.aliases=this.voicePrepareMap(token.aliases||{});
                     posVoiceRuntime.typos=this.voicePrepareMap(token.typos||{});
-                    var promptTerms=[];
-                    [token.aliases||{},token.typos||{}].forEach(function(map){Object.keys(map).forEach(function(key){if(key&&map[key])promptTerms.push(key+'＝'+map[key]);});});
+                    var seenAliases={};
+                    posVoiceRuntime.aliases=this.voicePrepareMap(this.settings&&this.settings.menu_alias||[]).concat(this.voicePrepareMap(token.aliases||{})).filter(function(row){if(seenAliases[row.from])return false;seenAliases[row.from]=true;return true;}).sort(function(a,b){return b.from.length-a.from.length;});
+                    var promptTerms=posVoiceRuntime.typos.concat(posVoiceRuntime.aliases).map(function(row){return row.from+'＝'+row.to;});
                     posVoiceRuntime.transcriptionPrompt='台灣早餐店現場點餐，請使用繁體中文。'+(promptTerms.length?'常見菜名、別名與易錯字：'+Array.from(new Set(promptTerms)).join('；').slice(0,400):'');
                     posVoiceRuntime.seenCalls=new Set();
                     var pc=new RTCPeerConnection(),dc=pc.createDataChannel('oai-events'),s=this;
