@@ -748,7 +748,7 @@
         appId:"1:662477350736:web:7e3dd6128a6f66a52aae55"
     };
     const app=initializeApp(firebaseConfig),db=getDatabase(app),auth=getAuth(app);
-    const posVoiceRuntime={pc:null,dc:null,stream:null,seenCalls:new Set(),aliases:[],typos:[],pendingSearch:null,transcriptionPrompt:'台灣早餐店現場點餐，請使用繁體中文。'};
+    const posVoiceRuntime={pc:null,dc:null,stream:null,idleTimer:null,seenCalls:new Set(),aliases:[],typos:[],pendingSearch:null,transcriptionPrompt:'台灣早餐店現場點餐，請使用繁體中文。'};
 
     // ★ 每日主題顏色：依星期套用 --day-theme / --day-theme-bg，並監聽 settings/dailyThemes 即時更新
     (function applyDailyTheme(){
@@ -5762,6 +5762,12 @@
                 if(event.name==='search_pos_menu'&&result.success)this.voiceSend({type:'response.create',response:{output_modalities:['text'],tool_choice:'required'}});
                 else if(event.name==='add_pos_item'&&result.success)this.voiceSend({type:'response.create',response:{output_modalities:['text'],tool_choice:'auto'}});
             },
+            voiceArmIdleTimer:function(){
+                clearTimeout(posVoiceRuntime.idleTimer);
+                if(!this.voiceActive)return;
+                var s=this;
+                posVoiceRuntime.idleTimer=setTimeout(function(){s.stopVoiceOrdering('語音點餐已因 30 秒無人說話而自動停止');},30000);
+            },
             voiceHandleEvent:function(event){
                 if(!event||!event.type)return;
                 if(event.type==='response.function_call_arguments.done'){this.voiceHandleToolCall(event);return;}
@@ -5773,8 +5779,8 @@
                     if(this.voiceTranscript)this.voiceSend({type:'response.create',response:{output_modalities:['text'],tool_choice:'required'}});
                     return;
                 }
-                if(event.type==='input_audio_buffer.speech_started'){posVoiceRuntime.pendingSearch=null;this.voiceTranscript='';this.voiceStatus='聆聽中…';return;}
-                if(event.type==='input_audio_buffer.speech_stopped'){this.voiceStatus='解析餐點中…';return;}
+                if(event.type==='input_audio_buffer.speech_started'){clearTimeout(posVoiceRuntime.idleTimer);posVoiceRuntime.idleTimer=null;posVoiceRuntime.pendingSearch=null;this.voiceTranscript='';this.voiceStatus='聆聽中…';return;}
+                if(event.type==='input_audio_buffer.speech_stopped'){this.voiceStatus='解析餐點中…';this.voiceArmIdleTimer();return;}
                 if(event.type==='error')this.voiceStatus='⚠️ '+String(event.error&&event.error.message||'語音服務錯誤');
             },
             voiceServerBases:function(){
@@ -5830,7 +5836,8 @@
                     var stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}});
                     posVoiceRuntime.stream=stream;
                     this.voiceStatus='正在連接 OpenAI Realtime…';
-                    var token=await this.voiceFetchToken();
+                    var voiceInit=await Promise.all([this.voiceFetchToken(),this.loadSettingsPrimary({timeoutMs:3500,forceFresh:true,ignoreCooldown:true})]);
+                    var token=voiceInit[0];
                     posVoiceRuntime.typos=this.voicePrepareMap(token.typos||{});
                     var seenAliases={};
                     posVoiceRuntime.aliases=this.voicePrepareMap(this.settings&&this.settings.menu_alias||[]).concat(this.voicePrepareMap(token.aliases||{})).filter(function(row){if(seenAliases[row.from])return false;seenAliases[row.from]=true;return true;}).sort(function(a,b){return b.from.length-a.from.length;});
@@ -5854,13 +5861,14 @@
                     if(!answerResponse.ok)throw new Error('Realtime WebRTC 連線失敗 HTTP '+answerResponse.status);
                     await pc.setRemoteDescription({type:'answer',sdp:await answerResponse.text()});
                     await openPromise;
-                    this.voiceActive=true;this.voiceStatus='語音點餐中，請直接說餐點';
+                    this.voiceActive=true;this.voiceStatus='語音點餐中，請直接說餐點';this.voiceArmIdleTimer();
                 }catch(error){
                     this.stopVoiceOrdering('');
                     this.voiceStatus='⚠️ '+String(error&&error.message||error);
                 }finally{this.voiceConnecting=false;}
             },
             stopVoiceOrdering:function(message){
+                clearTimeout(posVoiceRuntime.idleTimer);posVoiceRuntime.idleTimer=null;
                 try{if(posVoiceRuntime.dc)posVoiceRuntime.dc.close();}catch(_){}
                 try{if(posVoiceRuntime.pc)posVoiceRuntime.pc.close();}catch(_){}
                 try{if(posVoiceRuntime.stream)posVoiceRuntime.stream.getTracks().forEach(function(track){track.stop();});}catch(_){}
