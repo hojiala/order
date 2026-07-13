@@ -748,7 +748,7 @@
         appId:"1:662477350736:web:7e3dd6128a6f66a52aae55"
     };
     const app=initializeApp(firebaseConfig),db=getDatabase(app),auth=getAuth(app);
-    const posVoiceRuntime={pc:null,dc:null,stream:null,seenCalls:new Set(),aliases:[],typos:[],pendingSearch:null};
+    const posVoiceRuntime={pc:null,dc:null,stream:null,seenCalls:new Set(),aliases:[],typos:[],pendingSearch:null,transcriptionPrompt:'台灣早餐店現場點餐，請使用繁體中文。'};
 
     // ★ 每日主題顏色：依星期套用 --day-theme / --day-theme-bg，並監聽 settings/dailyThemes 即時更新
     (function applyDailyTheme(){
@@ -5773,8 +5773,10 @@
             voiceServerBases:function(){
                 var bases=[];
                 if(this.linePayServerUrl)bases.push(String(this.linePayServerUrl).replace(/\/+$/,''));
-                bases.push(window.location.origin);
-                if(window.location.protocol==='http:')bases.push('http://'+window.location.hostname+':5000');
+                else{
+                    bases.push(window.location.origin);
+                    if(window.location.protocol==='http:')bases.push('http://'+window.location.hostname+':5000');
+                }
                 return bases.filter(function(base,index,list){return base&&list.indexOf(base)===index;});
             },
             voiceFetchToken:async function(){
@@ -5786,9 +5788,10 @@
                     var controller=new AbortController(),timer=setTimeout(function(){controller.abort();},8000);
                     try{
                         var response=await fetch(bases[i]+'/api/pos/realtime/token',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+firebaseIdToken},body:'{}',signal:controller.signal});
-                        var data=await response.json();
+                        var body=await response.text(),data={};
+                        try{data=body?JSON.parse(body):{};}catch(_){}
                         if(response.ok&&data&&data.value)return data;
-                        lastError=String(data&&data.error||('HTTP '+response.status));
+                        lastError=String(data&&data.error||('Pi Realtime 服務 HTTP '+response.status+(body?'':'（空白回應）')));
                     }catch(error){lastError=error&&error.name==='AbortError'?'Pi 語音服務逾時':String(error&&error.message||error);}
                     finally{clearTimeout(timer);}
                 }
@@ -5800,6 +5803,7 @@
                     session:{
                         type:'realtime',
                         output_modalities:['text'],
+                        audio:{input:{transcription:{model:'gpt-4o-transcribe',language:'zh',prompt:posVoiceRuntime.transcriptionPrompt},turn_detection:{type:'semantic_vad',eagerness:'medium',create_response:false,interrupt_response:true}}},
                         instructions:'你是台灣早餐店 POS 語音點餐助手。全程使用繁體中文。點餐階段禁止只回覆文字；每聽到一個餐點，必須先呼叫 search_pos_menu 查詢目前供應中的正式菜單、價格與選項，再以查到的完整正式名稱呼叫 add_pos_item；每個不同餐點分開呼叫一次。若搜尋結果 requiresConfirmation 為 true，不可自行選擇或加入，等待店員說出正式名稱。絕不可自行猜價格或建立菜單沒有的餐點。數量、客製選項與備註依店員原話傳入。絕不可送出訂單、付款或列印。',
                         tools:[
                             {type:'function',name:'search_pos_menu',description:'依店員說法搜尋目前供應中的本機 POS 菜單；加入任何餐點前必須先呼叫。',parameters:{type:'object',properties:{query:{type:'string',description:'餐點名稱或口語別名'}},required:['query'],additionalProperties:false}},
@@ -5822,6 +5826,9 @@
                     var token=await this.voiceFetchToken();
                     posVoiceRuntime.aliases=this.voicePrepareMap(token.aliases||{});
                     posVoiceRuntime.typos=this.voicePrepareMap(token.typos||{});
+                    var promptTerms=[];
+                    [token.aliases||{},token.typos||{}].forEach(function(map){Object.keys(map).forEach(function(key){if(key&&map[key])promptTerms.push(key+'＝'+map[key]);});});
+                    posVoiceRuntime.transcriptionPrompt='台灣早餐店現場點餐，請使用繁體中文。'+(promptTerms.length?'常見菜名、別名與易錯字：'+Array.from(new Set(promptTerms)).join('；').slice(0,400):'');
                     posVoiceRuntime.seenCalls=new Set();
                     var pc=new RTCPeerConnection(),dc=pc.createDataChannel('oai-events'),s=this;
                     posVoiceRuntime.pc=pc;posVoiceRuntime.dc=dc;
