@@ -5622,6 +5622,7 @@
             },
             voiceNormalizeTerm:function(value){
                 var text=this.normalizeMenuNameForMatch(value);
+                text=text.replace(/^(?:我要|要|來)?[一二兩三四五六七八九十\d]+(?:個|份|客|組|杯)/,'');
                 var apply=function(rows){
                     for(var i=0;i<rows.length;i++){
                         if(text===rows[i].from){text=rows[i].to;return;}
@@ -5742,11 +5743,14 @@
                         result={success:matches.length>0,matches:matches,requiresConfirmation:ambiguous,error:matches.length?'':'找不到高可信度的菜單餐點'};
                     }
                     else if(!result&&event.name==='add_pos_item'){
-                        var pending=posVoiceRuntime.pendingSearch,allowed=pending&&pending.matches.some(function(row){return row.name===args.name;});
-                        if(!pending)result={success:false,error:'加入前必須先搜尋目前菜單'};
+                        var pending=posVoiceRuntime.pendingSearch;
+                        if(!pending){
+                            var autoMatches=this.voiceSearchMenu(args.name);
+                            pending={matches:autoMatches,ambiguous:autoMatches.length>1&&autoMatches[0].matchType==='fuzzy'&&autoMatches[1].matchType==='fuzzy'&&autoMatches[0].confidence-autoMatches[1].confidence<.08};
+                        }
+                        if(!pending.matches.length)result={success:false,error:'找不到高可信度的菜單餐點'};
                         else if(pending.ambiguous)result={success:false,error:'候選餐點太接近，請店員確認正式名稱',matches:pending.matches.slice(0,2).map(function(row){return row.name;})};
-                        else if(!allowed)result={success:false,error:'只能加入剛才搜尋結果中的正式菜名',matches:pending.matches.map(function(row){return row.name;})};
-                        else result=this.voiceAddMenuItem(args);
+                        else{args.name=pending.matches[0].name;result=this.voiceAddMenuItem(args);}
                         posVoiceRuntime.pendingSearch=null;
                     }
                     else if(!result)result={success:false,error:'不支援的工具'};
@@ -5809,7 +5813,7 @@
                         audio:{input:{transcription:{model:'gpt-4o-transcribe',language:'zh',prompt:posVoiceRuntime.transcriptionPrompt},turn_detection:{type:'semantic_vad',eagerness:'medium',create_response:false,interrupt_response:true}}},
                         instructions:'你是台灣早餐店 POS 語音點餐助手。全程使用繁體中文。點餐階段禁止只回覆文字；每聽到一個餐點，必須先呼叫 search_pos_menu 查詢目前供應中的正式菜單、價格與選項，再以查到的完整正式名稱呼叫 add_pos_item；每個不同餐點分開呼叫一次。若搜尋結果 requiresConfirmation 為 true，不可自行選擇或加入，等待店員說出正式名稱。絕不可自行猜價格或建立菜單沒有的餐點。數量、客製選項與備註依店員原話傳入。絕不可送出訂單、付款或列印。',
                         tools:[
-                            {type:'function',name:'search_pos_menu',description:'依店員說法搜尋目前供應中的本機 POS 菜單；加入任何餐點前必須先呼叫。',parameters:{type:'object',properties:{query:{type:'string',description:'餐點名稱或口語別名'}},required:['query'],additionalProperties:false}},
+                            {type:'function',name:'search_pos_menu',description:'依店員說法搜尋目前供應中的本機 POS 菜單；加入任何餐點前必須先呼叫。',parameters:{type:'object',properties:{query:{type:'string',description:'只傳餐點名稱或口語別名，不含一個、一份等數量詞'}},required:['query'],additionalProperties:false}},
                             {type:'function',name:'add_pos_item',description:'用搜尋結果中的完整正式名稱加入 POS 目前訂單。價格由 POS 菜單計算，不可傳入價格。',parameters:{type:'object',properties:{name:{type:'string',description:'search_pos_menu 回傳的完整正式名稱'},quantity:{type:'integer',minimum:1,maximum:20},note:{type:'string',description:'不要醬、切邊等備註，沒有則空字串'},selections:{type:'array',items:{type:'string'},description:'尺寸、冰熱、蛋、套餐飲料、加料等店員說出的選項'}},required:['name','quantity','note','selections'],additionalProperties:false}}
                         ],
                         tool_choice:'auto'
