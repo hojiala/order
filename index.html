@@ -690,7 +690,7 @@
                     openTime: '06:00',
                     closeTime: '13:15',
                     pickupDays: 3,
-                    pickupInterval: 30, linePayServerUrl: '', linePayConfirmUrl: '', pocketBaseUrl: '', pocketBaseOrdersCollection: 'orders', counterResetTime: '', counterMaxNo: 999, announcements: [],
+                    pickupInterval: 30, linePayServerUrl: '', linePayConfirmUrl: '', pocketBaseUrl: '', pocketBaseOrdersCollection: 'orders', counterResetTime: '', counterMaxNo: 999, orderNoMode: 'fifo', announcements: [],
                     holidays: [],
                     weeklyDaysOff: []
                 },
@@ -897,6 +897,14 @@
             getCounterCycleKey: function(ts) {
                 return this.getCounterBusinessDateKey(ts) + '@' + this.normalizeCounterResetTime((this.settings && this.settings.counterResetTime) || '00:00');
             },
+            // ★ 「依取餐時間」流水號模式：取餐日還沒進入本營業日的預訂單（隔日單、或今天但
+            //   還沒過流水號重置時間）送單時不配號不列印，交給店內主機的開店批次依取餐時間統一編號
+            isPickupTimeNumberingDeferred: function(orderData) {
+                if (String((this.settings && this.settings.orderNoMode) || '').toLowerCase() !== 'pickup_time') return false;
+                var pd = String((orderData && orderData.pickupDate) || '').trim();
+                if (!/^\d{4}-\d{2}-\d{2}$/.test(pd)) return false;
+                return pd > this.getCounterBusinessDateKey(Date.now());
+            },
             allocateOrderNoFromFirebaseFallback: function(sourcePage, pbResult) {
                 var self = this;
                 var resetTime = self.normalizeCounterResetTime((self.settings && self.settings.counterResetTime) || '00:00');
@@ -1066,6 +1074,7 @@
                         turnstileSiteKey: v.turnstileSiteKey || v.cloudflareTurnstileSiteKey || prev.turnstileSiteKey || '',
                         counterResetTime: v.counterResetTime || prev.counterResetTime || '',
                         counterMaxNo: v.counterMaxNo || prev.counterMaxNo || 999,
+                        orderNoMode: v.orderNoMode || prev.orderNoMode || 'fifo',
                         announcements: v.announcements || prev.announcements || [],
                         holidays: arrayValue('holidays', prev.holidays),
                         weeklyDaysOff: weekDaysValue('weeklyDaysOff', prev.weeklyDaysOff),
@@ -2012,18 +2021,21 @@
                 orderData.orderDateKey = orderDateKey;
                 var orderId = push(ref(db, 'orders/' + orderDateKey)).key;
                 var bucketOrderRef = ref(db, 'orders/' + orderDateKey + '/' + orderId);
-                // ★ 先取得流水號
-                self.allocateOrderNoPrimary('index')
+                // ★ 「依取餐時間」模式的預訂單：不在送單當下配號/列印，由店內主機開店批次處理
+                var numberingDeferred = self.isPickupTimeNumberingDeferred(orderData);
+                if (numberingDeferred) orderData.numberingDeferred = true;
+                // ★ 先取得流水號（延後配號的單跳過）
+                (numberingDeferred ? Promise.resolve(null) : self.allocateOrderNoPrimary('index'))
                 .then(function(counter) {
                     var assignedNo = counter && counter.ok ? counter.orderNo : null;
                     if (assignedNo) {
                         orderData.orderNo = assignedNo;
                         orderData.counterCycleKey = counter.cycleKey || '';
-                    } else {
+                    } else if (!numberingDeferred) {
                         orderData.counterPending = true;
                     }
-                    // 非 LINE Pay 訂單：同時寫入 print_task 觸發列印
-                    if (payMethod !== 'linepay') {
+                    // 非 LINE Pay 訂單：同時寫入 print_task 觸發列印（延後配號的單由開店批次觸發）
+                    if (payMethod !== 'linepay' && !numberingDeferred) {
                         orderData.print_task = 'kitchen_' + Date.now();
                     }
                     return self.writeOrderPrimary(orderId, orderData, 'index', function() {
@@ -2032,7 +2044,7 @@
                         orderData._writeBackend = (result && result.backend) || 'firebase';
                         var pbRecord = result && result.pocketBase && result.pocketBase.record;
                         var pbNo = pbRecord && Number(pbRecord.order_no || pbRecord.orderNo || 0);
-                        if (!assignedNo && Number.isFinite(pbNo) && pbNo > 0) {
+                        if (!numberingDeferred && !assignedNo && Number.isFinite(pbNo) && pbNo > 0) {
                             assignedNo = pbNo;
                             orderData.orderNo = pbNo;
                             orderData.counterPending = false;
