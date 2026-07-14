@@ -803,7 +803,7 @@
                                 <td class="px-5 py-3 text-slate-300 font-mono text-xs">{{ formatTimestamp(order.timestamp) }}</td>
                                 <td class="px-4 py-3 text-white font-medium">{{ getDisplayCustomerName(order) }}</td>
                                 <td class="px-4 py-3">
-                                    <span class="text-xs px-2 py-0.5 rounded-full font-bold bg-slate-700 text-slate-300 whitespace-nowrap">{{ getOrderSourceLabel(order) }}</span>
+                                    <span class="text-xs px-2 py-0.5 rounded-full font-bold whitespace-nowrap" :class="statsSourceBadgeClass(order)">{{ getOrderSourceLabel(order) }}</span>
                                 </td>
                                 <td class="px-4 py-3 text-slate-400 font-mono text-xs">{{ order.phone || (order.customer && order.customer.phone) || '-' }}</td>
                                 <td class="px-4 py-3 text-slate-300">{{ order.pickupDate ? order.pickupDate + ' ' : '' }}{{ getDisplayPickupTime(order.pickupTime) }}</td>
@@ -2291,6 +2291,20 @@ window._doCountUp = function() {
                 if (src === 'web' || src === 'online' || src === 'line' || src === 'web_liff') return '線上點餐';
                 return label || this.translateReportSourceName(src);
             },
+            // ★ 來源 badge 顏色：對齊 pos.html 進行中訂單清單的色相（線上依需求改為半透明綠）
+            statsSourceBadgeClass: function(order) {
+                var map = {
+                    '線上點餐': 'bg-green-500/20 text-green-400',
+                    '桌邊點餐': 'bg-blue-900/60 text-blue-300',
+                    '自助點餐': 'bg-amber-900/60 text-amber-300',
+                    '掃碼內用': 'bg-purple-900/60 text-purple-300',
+                    '掃碼外帶': 'bg-violet-900/60 text-violet-300',
+                    '現場POS': 'bg-orange-900/60 text-orange-300',
+                    '電話點餐': 'bg-cyan-900/60 text-cyan-300',
+                    '電話現場POS': 'bg-cyan-900/60 text-cyan-300'
+                };
+                return map[this.getOrderSourceLabel(order)] || 'bg-slate-700 text-slate-300';
+            },
             getDisplayCustomerName: function(order) {
                 if (!order || typeof order !== 'object') return '\u9867\u5ba2';
                 var src0 = String(order.source || '').toLowerCase();
@@ -3263,9 +3277,21 @@ window._doCountUp = function() {
                 if (explicit && (isComboLike || paidEgg || /\u86cb/.test(noteText))) return explicit;
                 var selectedEgg = this.explicitDetailEggFromSelections(item, order, index, isComboLike);
                 if (selectedEgg) return selectedEgg;
-                var noteEgg = this.extractEggDonenessFromText(noteText);
+                // ★ 備註裡的蛋若只是付費加料的回聲（加半熟蛋$15 同時出現在加料列與備註），
+                //   不再推斷成蛋熟成度——加料列已顯示 +加半熟蛋，重複顯示是誤導
+                var addonNames = [];
+                [item && item.options, item && item.posExtras, item && item.addons, item && item['加料']].forEach(function(arr) {
+                    if (!Array.isArray(arr)) return;
+                    arr.forEach(function(a) {
+                        var n = String(typeof a === 'string' ? a : ((a && (a.name || a['名稱'] || a.label || a.value)) || '')).trim();
+                        if (n) addonNames.push(n);
+                    });
+                });
+                var strippedNote = noteText.split(/[，,、\/|]/).filter(function(t) { return addonNames.indexOf(t.trim()) === -1; }).join('，');
+                var noteEgg = this.extractEggDonenessFromText(strippedNote);
                 if (noteEgg) return noteEgg;
-                if (!isComboLike && !paidEgg) return '';
+                if (paidEgg) return '';
+                if (!isComboLike) return '';
                 return this.getDetailMenuDefaultEggDoneness(item);
             },
             getDetailComboDrinkAddons: function(item, order, index) {
