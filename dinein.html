@@ -549,7 +549,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
     import { getDatabase, ref, push, set, get, update, remove, onValue, query, orderByChild, equalTo, limitToLast, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
-    import { allocateOrderNoFromPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings } from "./pocketbase-order-writer.js?v=20260712_0900";
+    import { allocateOrderNoFromPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings } from "./pocketbase-order-writer.js?v=20260714_0900";
 
     const firebaseConfig = {
         apiKey:"AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -965,6 +965,8 @@
                     s.listenOrders();
                     s.startSettingsPrimaryRefresh();
                     s.startMenuVersionPolling();
+                    s.checkCartIdleClear();
+                    if(!s.cartIdleClearTimer)s.cartIdleClearTimer=setInterval(function(){s.checkCartIdleClear()},60000);
                 }).catch(function(e){console.error(e);s.menuReady=true;s.isLoading=false});
             },
             refreshMenuCategoriesFromSettings:function(){
@@ -1004,7 +1006,7 @@
                     var hasStationSettings=!!(v.stations&&v.stations.length);
                     var categories=(Array.isArray(v.categories)&&v.categories.length)?v.categories:(prev.categories||[]);
                     var categorySubcategories=(v.categorySubcategories&&typeof v.categorySubcategories==='object'&&Object.keys(v.categorySubcategories).length)?v.categorySubcategories:(prev.categorySubcategories||{});
-                    s.settings={isOpen:has('isOpen')?v.isOpen!==false:prev.isOpen!==false,dineinIsOpen:has('dineinIsOpen')?v.dineinIsOpen!==false:prev.dineinIsOpen!==false,useCustomLoadingImage:has('useCustomLoadingImage')?v.useCustomLoadingImage===true:prev.useCustomLoadingImage===true,categories:categories,categorySubcategories:categorySubcategories,hideAllTab:has('hideAllTab')?!!v.hideAllTab:!!prev.hideAllTab,openTime:v.openTime||prev.openTime||'06:00',closeTime:v.closeTime||prev.closeTime||'13:15',
+                    s.settings={isOpen:has('isOpen')?v.isOpen!==false:prev.isOpen!==false,dineinIsOpen:has('dineinIsOpen')?v.dineinIsOpen!==false:prev.dineinIsOpen!==false,dineinCartClearEnabled:has('dineinCartClearEnabled')?String(v.dineinCartClearEnabled)==='true':prev.dineinCartClearEnabled===true,dineinCartClearMinutes:Number(has('dineinCartClearMinutes')?v.dineinCartClearMinutes:prev.dineinCartClearMinutes)||30,useCustomLoadingImage:has('useCustomLoadingImage')?v.useCustomLoadingImage===true:prev.useCustomLoadingImage===true,categories:categories,categorySubcategories:categorySubcategories,hideAllTab:has('hideAllTab')?!!v.hideAllTab:!!prev.hideAllTab,openTime:v.openTime||prev.openTime||'06:00',closeTime:v.closeTime||prev.closeTime||'13:15',
                         weeklyDaysOff:weekDaysValue('weeklyDaysOff',prev.weeklyDaysOff),holidays:arrayValue('holidays',prev.holidays),dailyHours:v.dailyHours||prev.dailyHours||{},pickupInterval:Number.isFinite(Number(v.pickupInterval))?Number(v.pickupInterval):(Number.isFinite(Number(prev.pickupInterval))?Number(prev.pickupInterval):15),linePayServerUrl:v.linePayServerUrl||prev.linePayServerUrl||'',linePayConfirmUrl:v.linePayConfirmUrl||prev.linePayConfirmUrl||'',pocketBaseUrl:v.pocketBaseUrl||v.pocketbaseUrl||prev.pocketBaseUrl||'https://pb.yuangi168.com',pocketBaseOrdersCollection:v.pocketBaseOrdersCollection||v.pocketbaseOrdersCollection||prev.pocketBaseOrdersCollection||'orders',pocketBaseOrderEndpoint:v.pocketBaseOrderEndpoint||v.pocketbaseOrderEndpoint||v.pocketBaseSecureOrderEndpoint||v.secureOrderEndpoint||prev.pocketBaseOrderEndpoint||'',turnstileSiteKey:v.turnstileSiteKey||v.cloudflareTurnstileSiteKey||prev.turnstileSiteKey||'',telegramFallbackNotifyEndpoint:v.telegramFallbackNotifyEndpoint||v.telegramNotifyEndpoint||prev.telegramFallbackNotifyEndpoint||'',telegramFallbackMessageTemplate:v.telegramFallbackMessageTemplate||prev.telegramFallbackMessageTemplate||'',counterResetTime:v.counterResetTime||prev.counterResetTime||'',counterMaxNo:v.counterMaxNo||prev.counterMaxNo||999,announcements:v.announcements||prev.announcements||[],stations:hasStationSettings?v.stations:((prev.stations&&prev.stations.length)?prev.stations:defaultStations),posOnlyCategories:v.posOnlyCategories||prev.posOnlyCategories||[]};
                     s.categorySubcategories=s.normalizeCategorySubcategories(s.settings.categorySubcategories,s.settings.categories||s.categories);
                     s.settingsStationsLoaded=hasStationSettings||(prev.stations&&prev.stations.length)||false;
@@ -1415,7 +1417,23 @@
                 var u=Math.round(item.itemTotal/item.qty);item.qty=nq;item.itemTotal=u*nq;this.cart.splice(idx,1,item);this.saveCart();
             },
             removeItem:function(idx){this.cart.splice(idx,1);this.saveCart();if(!this.cart.length)this.currentView='menu'},
-            saveCart:function(){try{localStorage.setItem('dinein_cart_'+this.deviceId,JSON.stringify(this.cart))}catch(e){}},
+            saveCart:function(){try{localStorage.setItem('dinein_cart_'+this.deviceId,JSON.stringify(this.cart));localStorage.setItem('dinein_cart_ts_'+this.deviceId,String(Date.now()))}catch(e){}},
+            // ★ 定時清除閒置購物車（manage 店面設定「定時清除桌邊購物車」）：
+            //   平板購物車殘留上一組客人的餐點時，閒置超過設定分鐘自動清空
+            checkCartIdleClear:function(){
+                var s=this;
+                if(s.isPhoneMode)return; // 掃碼手機是顧客自己的裝置，不會殘留給下一組客人
+                if(String(s.settings.dineinCartClearEnabled)!=='true')return;
+                var mins=Number(s.settings.dineinCartClearMinutes)||0;
+                if(mins<=0||!s.cart.length)return;
+                var ts=0;
+                try{ts=Number(localStorage.getItem('dinein_cart_ts_'+s.deviceId))||0}catch(e){}
+                if(!ts){try{localStorage.setItem('dinein_cart_ts_'+s.deviceId,String(Date.now()))}catch(e){}return}
+                if(Date.now()-ts<mins*60000)return;
+                s.cart=[];s.orderNote='';s.saveCart();
+                if(s.currentView==='cart'||s.currentView==='detail'){s.currentView='menu';s.activeItem=null;s.editingIdx=-1}
+                s.toast('🧹 購物車閒置超過 '+mins+' 分鐘，已自動清空');
+            },
             loadCart:function(){
                 try{
                     var saved=localStorage.getItem('dinein_cart_'+this.deviceId);

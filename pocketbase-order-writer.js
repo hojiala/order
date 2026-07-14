@@ -930,7 +930,7 @@ function normalizeSettingsObject(value) {
         if (raw === "true" || raw === "1" || raw === "yes" || raw === "on") return true;
         return v !== false && v !== 0;
     }
-    ["isOpen", "dineinIsOpen", "hideAllTab", "orderCooldownEnabled", "useCustomLoadingImage"].forEach(function(key) {
+    ["isOpen", "dineinIsOpen", "dineinCartClearEnabled", "hideAllTab", "orderCooldownEnabled", "useCustomLoadingImage"].forEach(function(key) {
         if (out[key] !== undefined) out[key] = boolLike(out[key]);
     });
     return out;
