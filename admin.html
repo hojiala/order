@@ -2665,7 +2665,9 @@
                     const parsedOrders = this.normalizeIncomingOrders(Object.values(map));
                     parsedOrders.forEach((o) => {
                         if (o.status === 'new') currentNewCount++;
-                        if (o.status !== 'archived' && o.status !== 'cancelled' && !o.orderNo && !this.isPhoneSourceOrder(o) && !this.isIntegrationReadOnlyOrder(o)) this.autoAssignOrderNo(o.id);
+                        // ★ numberingDeferred＝「依取餐時間」模式的預訂單，刻意沒有流水號：
+                        //   由店內主機開店批次配號，這裡的補號安全網不可搶先配號＋列印
+                        if (o.status !== 'archived' && o.status !== 'cancelled' && !o.orderNo && !o.numberingDeferred && !this.isPhoneSourceOrder(o) && !this.isIntegrationReadOnlyOrder(o)) this.autoAssignOrderNo(o.id);
                         // ★ 有流水號但無 print_task 的訂單（如 dinein 直接送出），補寫 print_task 觸發列印
                         else {
                             const pm = o.paymentMethod || '';
@@ -3163,6 +3165,11 @@
                     for (let attempt = 0; attempt < maxRetries; attempt++) {
                         try {
                             const orderObj = this.findOrderById(orderId) || { id: orderId };
+                            // ★ 延後配號的預訂單交給開店批次，安全網跳過（雙重防護）
+                            if (orderObj.numberingDeferred) {
+                                delete this.assigningNos[orderId];
+                                return;
+                            }
                             if (this.isPhoneSourceOrder(orderObj) || this.isIntegrationReadOnlyOrder(orderObj)) {
                                 delete this.assigningNos[orderId];
                                 return;
