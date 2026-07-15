@@ -2442,41 +2442,25 @@ export function backfillOrdersToPocketBase(orders, options) {
     var success = 0;
     var failed = 0;
     var skipped = 0;
-    var config = resolvePocketBaseConfig(options);
-    var headers = {};
-    if (config.token) headers.Authorization = "Bearer " + config.token;
 
     return candidates.reduce(function(promise, order) {
         return promise.then(function() {
             var key = backfillThrottleKey(order);
             var orderId = text(order.id || order.sourceOrderId || order.orderId);
-            var lookupTimeoutMs = Number(options.lookupTimeoutMs || options.timeoutMs || 3500) || 3500;
-            return findExistingRecordIdChecked(config, orderId, headers, lookupTimeoutMs).then(function(existing) {
-                if (existing && existing.ok && existing.id) {
+            return writeOrderToPocketBase(orderId, order, Object.assign({}, options, {
+                sourcePage: text(order.source || options.sourcePage || "firebase_fallback"),
+                timeoutMs: Number(options.timeoutMs || 1200) || 1200
+            })).then(function(result) {
+                if (result && result.ok) {
                     success++;
                     markBackfilled(key);
-                    return { ok: true, action: "exists", id: existing.id };
+                    return;
                 }
-                if (!existing || existing.ok !== true) {
-                    skipped++;
-                    backfillPausedUntil = Date.now() + 300000;
-                    return { ok: false, skipped: true, reason: "pocketbase_backfill_lookup_failed", lookup: existing };
-                }
-                return writeOrderToPocketBase(orderId, order, Object.assign({}, options, {
-                    sourcePage: text(order.source || options.sourcePage || "firebase_fallback"),
-                    timeoutMs: Number(options.timeoutMs || 1200) || 1200
-                })).then(function(result) {
-                    if (result && result.ok) {
-                        success++;
-                        markBackfilled(key);
-                        return;
-                    }
-                    failed++;
-                    backfillPausedUntil = Date.now() + 300000;
-                }).catch(function() {
-                    failed++;
-                    backfillPausedUntil = Date.now() + 300000;
-                });
+                failed++;
+                backfillPausedUntil = Date.now() + 300000;
+            }).catch(function() {
+                failed++;
+                backfillPausedUntil = Date.now() + 300000;
             });
         });
     }, Promise.resolve()).then(function() {
@@ -2604,21 +2588,6 @@ function findExistingRecordId(config, orderId, headers, timeoutMs) {
             return data && data.items && data.items[0] && data.items[0].id ? data.items[0].id : "";
         })
         .catch(function() { return ""; });
-}
-
-function findExistingRecordIdChecked(config, orderId, headers, timeoutMs) {
-    if (!config || !config.baseUrl || !orderId) return Promise.resolve({ ok: true, id: "" });
-    var filter = 'order_id="' + encodeFilterValue(orderId) + '"';
-    var url = config.baseUrl + "/api/collections/" + encodeURIComponent(config.collection) + "/records?perPage=1&filter=" + encodeURIComponent(filter);
-    var lookupTimeout = Math.max(2000, Math.min(Number(timeoutMs || 3500) || 3500, 6000));
-    return requestJson(url, { method: "GET", headers: headers || {} }, lookupTimeout)
-        .then(function(data) {
-            var id = data && data.items && data.items[0] && data.items[0].id ? text(data.items[0].id) : "";
-            return { ok: true, id: id };
-        })
-        .catch(function(error) {
-            return { ok: false, id: "", error: error, message: error && error.message ? error.message : String(error) };
-        });
 }
 
 function writeOrderToSecureEndpoint(config, orderId, orderData, options, record, timeoutMs) {
