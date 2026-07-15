@@ -4264,6 +4264,7 @@ window._doCountUp = function() {
                 return writeSettingsToPocketBase(settingsPatch, this.pocketBaseManageOptions())
                     .then(function(result) {
                         if (result && result.ok) {
+                            Object.assign(self.settings, settingsPatch);
                             if (self.allowFirebaseManageFallback === true && typeof firebaseFallback === 'function') {
                                 return Promise.resolve(firebaseFallback()).catch(function(e) {
                                     console.warn('Firebase settings mirror failed:', e && e.message ? e.message : e);
@@ -5020,12 +5021,6 @@ window._doCountUp = function() {
                     return tpl && tpl.id !== tplId && String(tpl.templateName || '').trim() === tf.templateName.trim();
                 });
                 if (dupName) { alert('❌ 模板名稱「' + tf.templateName.trim() + '」已存在！\n模板名稱不可重複，請改用其他名稱。'); return; }
-                var dupGroup = (self.optionTemplates || []).find(function(tpl) {
-                    return tpl && tpl.id !== tplId
-                        && String(tpl.groupName || '').trim() === tf.groupName.trim()
-                        && tpl.type === tf.type && tpl.pricing === tf.pricing;
-                });
-                if (dupGroup && !confirm('⚠️ 已有模板「' + dupGroup.templateName + '」使用相同的群組名稱「' + tf.groupName.trim() + '」＋相同類型＋相同計價方式。\n兩個模板容易在餐點上混淆，建議改用不同的群組名稱。\n\n仍要繼續儲存嗎？')) return;
                 var mealUpgradeDisplayLabel = tf.pricing === 'mealUpgrade'
                     ? (String(tf.mealUpgradeDisplayLabel || '').trim() || self.getMealUpgradeDefaultLabel(tf))
                     : '';
@@ -5068,16 +5063,21 @@ window._doCountUp = function() {
                 if (!tplId || !tplData) return;
                 var updates = {};
                 var changedItems = [];
+                var legacySignatureMatches = 1 + (self.optionTemplates || []).filter(function(tpl) {
+                    return tpl && tpl.id !== tplId && tpl.groupName === tplData.groupName && tpl.type === tplData.type && tpl.pricing === tplData.pricing;
+                }).length;
                 (self.menuItems || []).forEach(function(item){
                     var ogs = item.optionGroups || [];
                     var changed = false;
                     var newOGs = ogs.map(function(g){
-                        // 已綁定其他模板的群組絕不覆蓋；只有無 templateId 的舊資料才用名稱備援比對
+                        // 已綁定其他模板的群組絕不覆蓋；匿名舊資料只有候選模板唯一時才備援比對
                         var match;
                         if (g.templateId) {
                             match = (g.templateId === tplId);
+                        } else if (g.templateName) {
+                            match = (g.templateName === tplData.templateName);
                         } else {
-                            match = (g.groupName === tplData.groupName && g.type === tplData.type && g.pricing === tplData.pricing);
+                            match = legacySignatureMatches === 1 && g.groupName === tplData.groupName && g.type === tplData.type && g.pricing === tplData.pricing;
                         }
                         if (match) {
                             changed = true;
