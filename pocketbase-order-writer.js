@@ -538,13 +538,6 @@ export function pocketBaseRecordToOrder(record) {
     return order;
 }
 
-function dateKeyFilter(dateKeys) {
-    var keys = Array.isArray(dateKeys) ? dateKeys.map(text).filter(Boolean) : [];
-    keys = keys.filter(function(v, i, arr) { return arr.indexOf(v) === i; });
-    if (!keys.length) return "";
-    return "(" + keys.map(function(key) { return "date_key = '" + encodeFilterValue(key) + "'"; }).join(" || ") + ")";
-}
-
 function recordDateKey(record) {
     if (!record) return "";
     var customer = jsonObject(record.customer);
@@ -652,43 +645,37 @@ export function listOrdersFromPocketBase(options) {
         /^http:\/\//i.test(config.baseUrl) && !/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(config.baseUrl)) {
         return Promise.resolve({ ok: false, skipped: true, reason: "mixed_content_http_pocketbase_url", orders: [] });
     }
-    var headers = {};
-    if (config.token) headers.Authorization = "Bearer " + config.token;
     var perPage = Math.max(1, Math.min(500, Math.floor(Number(options.perPage || 300) || 300)));
     var timeoutMs = Number(options.timeoutMs || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
-    var filter = dateKeyFilter(options.dateKeys);
-    var baseUrl = config.baseUrl + "/api/collections/" + encodeURIComponent(config.collection) + "/records";
     var maxPages = Math.max(1, Math.floor(Number(options.maxPages || 8) || 8));
+    var user = options.firebaseUser;
+    var tokenPromise = options.firebaseIdToken
+        ? Promise.resolve(text(options.firebaseIdToken))
+        : (user && !user.isAnonymous && typeof user.getIdToken === "function"
+            ? user.getIdToken()
+            : Promise.reject(new Error("staff_auth_required")));
 
-    function fetchRecords(queryFilter, querySort) {
-        var records = [];
-        function fetchPage(page) {
-            var url = baseUrl + "?page=" + page + "&perPage=" + perPage;
-            if (querySort) url += "&sort=" + encodeURIComponent(querySort);
-            if (queryFilter) url += "&filter=" + encodeURIComponent(queryFilter);
-            return requestJson(url, { method: "GET", headers: headers }, timeoutMs).then(function(data) {
-                var items = Array.isArray(data && data.items) ? data.items : [];
-                records = records.concat(items);
-                var totalPages = Number(data && data.totalPages) || page;
-                if (page < totalPages && page < maxPages) return fetchPage(page + 1);
-                return records;
-            });
-        }
-        return fetchPage(1);
-    }
-
-    function fallbackAfterBadQuery(err) {
-        if (!err || Number(err.status) !== 400) throw err;
-        return fetchRecords("", "").then(function(rows) {
-            return dedupeOrderRecords(sortOrderRecords(filterRecordsByDateKeys(rows, options.dateKeys)));
-        });
-    }
-
-    return fetchRecords(filter, "").catch(fallbackAfterBadQuery).then(function(rows) {
+    return tokenPromise.then(function(idToken) {
+        if (!idToken) throw new Error("staff_auth_required");
+        return requestJson(config.baseUrl + "/api/secure/orders/read", {
+            method: "POST",
+            headers: {
+                "Authorization": "Bearer " + idToken,
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                dateKeys: Array.isArray(options.dateKeys) ? options.dateKeys : [],
+                perPage: perPage,
+                maxPages: maxPages,
+                sourcePage: text(options.sourcePage)
+            })
+        }, timeoutMs);
+    }).then(function(data) {
+        var rows = Array.isArray(data && data.records) ? data.records : (Array.isArray(data && data.items) ? data.items : []);
         rows = dedupeOrderRecords(sortOrderRecords(filterRecordsByDateKeys(rows, options.dateKeys)));
         return {
             ok: true,
-            backend: "pocketbase",
+            backend: "pocketbase_secure",
             records: rows,
             orders: rows.map(pocketBaseRecordToOrder)
         };
