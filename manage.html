@@ -1847,9 +1847,9 @@ window._doCountUp = function() {
     }
 
     function normalizeTemplateChoiceName(value) {
-        return String(value || '').trim().replace(/^[+＋]\s*/, '加').replace(/[\s\u3000]+/g, '');
+        return String(value || '').trim().replace(/^(?:[+＋]|加)\s*/, '').replace(/[\s\u3000]+/g, '');
     }
-    function findTemplateChoiceIndexes(rows, choices) {
+    function findTemplateChoiceIndexes(rows, choices, allowOneNewChoice) {
         var used = {};
         var indexes = [];
         (choices || []).forEach(function(choice) {
@@ -1859,9 +1859,12 @@ window._doCountUp = function() {
             });
             if (idx !== -1) { used[idx] = true; indexes.push(idx); }
         });
-        return indexes.length === (choices || []).length ? indexes : [];
+        var choiceCount = (choices || []).length;
+        var exact = indexes.length === choiceCount;
+        var oneNewChoice = allowOneNewChoice && indexes.length === rows.length && choiceCount - indexes.length === 1;
+        return exact || oneNewChoice ? indexes : [];
     }
-    function replaceAppliedTemplateChoices(rows, tplId, tplData, oldTpl, allTemplates) {
+    function replaceAppliedTemplateChoices(rows, tplId, tplData, oldTpl, allTemplates, allowOneNewChoice) {
         rows = Array.isArray(rows) ? rows : [];
         oldTpl = oldTpl || tplData || {};
         var oldName = String(oldTpl.templateName || '');
@@ -1872,7 +1875,7 @@ window._doCountUp = function() {
         });
         if (!indexes.length) {
             var candidates = (allTemplates || []).map(function(tpl) {
-                var matched = findTemplateChoiceIndexes(rows, tpl && tpl.choices);
+                var matched = findTemplateChoiceIndexes(rows, tpl && tpl.choices, allowOneNewChoice);
                 return tpl && tpl.id && matched.length ? { id: tpl.id, indexes: matched } : null;
             }).filter(Boolean);
             var maxChoices = candidates.reduce(function(max, row) { return Math.max(max, row.indexes.length); }, 0);
@@ -5106,7 +5109,7 @@ window._doCountUp = function() {
                 p.then(function() {
                     templateSaved = true;
                     if (tplId) return self.syncTemplateToMenu(saveId, data, previousTpl);
-                    return { updated: 0, categories: [], optionItems: 0, groupItems: 0 };
+                    return { updated: 0, categories: [], optionItems: 0, groupItems: 0, posExtraItems: 0 };
                 }).then(function(summary) {
                     self.showTemplateForm = false;
                     self.editingTemplateId = null;
@@ -5116,18 +5119,19 @@ window._doCountUp = function() {
                     var cats = summary.categories || [];
                     alert('✅ 模板「' + data.templateName + '」已更新並完成套用。\n' +
                         '已套用在：' + (cats.length ? cats.join('、') + '（共 ' + cats.length + ' 個大類）' : '尚未找到已套用的餐點') + '\n' +
-                        '已更新共 ' + summary.updated + ' 項餐點（加料選項 ' + summary.optionItems + ' 項、選項群組 ' + summary.groupItems + ' 項）。');
+                        '已更新共 ' + summary.updated + ' 項餐點（加料選項 ' + summary.optionItems + ' 項、選項群組 ' + summary.groupItems + ' 項、POS 食材加點 ' + summary.posExtraItems + ' 項）。');
                 }).catch(function(e) {
                     alert((templateSaved ? '模板已儲存，但批次套用餐點失敗：' : '儲存失敗：') + e.message + '\n請重新整理後再試一次。');
                 }).finally(function() { self.templateSaving = false; });
             },
             syncTemplateToMenu: function(tplId, tplData, previousTpl) {
                 var self = this;
-                if (!tplId || !tplData) return Promise.resolve({ updated: 0, categories: [], optionItems: 0, groupItems: 0 });
+                if (!tplId || !tplData) return Promise.resolve({ updated: 0, categories: [], optionItems: 0, groupItems: 0, posExtraItems: 0 });
                 var changedItems = [];
                 var categories = {};
                 var optionItems = 0;
                 var groupItems = 0;
+                var posExtraItems = 0;
                 var oldTpl = previousTpl || tplData;
                 var legacySignatureMatches = (self.optionTemplates || []).filter(function(tpl) {
                     return tpl && tpl.groupName === oldTpl.groupName && tpl.type === oldTpl.type && tpl.pricing === oldTpl.pricing;
@@ -5163,19 +5167,25 @@ window._doCountUp = function() {
                         return g;
                     });
                     var optionSync = replaceAppliedTemplateChoices(item.options || [], tplId, tplData, oldTpl, self.optionTemplates || []);
-                    if (groupChanged || optionSync.changed) {
+                    var posExtraSync = replaceAppliedTemplateChoices(item.posExtras || [], tplId, tplData, oldTpl, self.optionTemplates || [], true);
+                    if (groupChanged || optionSync.changed || posExtraSync.changed) {
                         if (groupChanged) groupItems++;
                         if (optionSync.changed) optionItems++;
+                        if (posExtraSync.changed) posExtraItems++;
                         if (item.category) categories[item.category] = true;
-                        changedItems.push(Object.assign({}, item, { optionGroups: newOGs, options: optionSync.rows, updatedAt: Date.now() }));
+                        var patch = { name: item.name, category: item.category, price: item.price, updatedAt: Date.now() };
+                        if (groupChanged) patch.optionGroups = newOGs;
+                        if (optionSync.changed) patch.options = optionSync.rows;
+                        if (posExtraSync.changed) patch.posExtras = posExtraSync.rows;
+                        changedItems.push({ id: item.id, patch: patch, item: Object.assign({}, item, patch) });
                     }
                 });
-                var summary = { updated: changedItems.length, categories: Object.keys(categories), optionItems: optionItems, groupItems: groupItems };
-                return Promise.all(changedItems.map(function(nextItem) {
-                    return self.writeMenuItemPrimary(nextItem.id, nextItem, function() {
-                        return update(ref(db, 'menu/' + nextItem.id), { optionGroups: nextItem.optionGroups, options: nextItem.options, updatedAt: nextItem.updatedAt });
+                var summary = { updated: changedItems.length, categories: Object.keys(categories), optionItems: optionItems, groupItems: groupItems, posExtraItems: posExtraItems };
+                return Promise.all(changedItems.map(function(change) {
+                    return self.writeMenuItemPrimary(change.id, change.patch, function() {
+                        return update(ref(db, 'menu/' + change.id), change.patch);
                     }).then(function() {
-                        self.syncLocalMenuItem(nextItem.id, nextItem);
+                        self.syncLocalMenuItem(change.id, change.item);
                     }).catch(function(error) { return error; });
                 })).then(function(results) {
                     var errors = results.filter(Boolean);
@@ -7135,7 +7145,7 @@ window._doCountUp = function() {
             removePosExtra: function(i){(this.form.posExtras||[]).splice(i,1);},
             movePosExtra: function(i,d){var a=this.form.posExtras;if(!a)return;var n=i+d;if(n<0||n>=a.length)return;var t=a[i];a.splice(i,1);a.splice(n,0,t);},
             applyOptionsTemplate: function(tpl){var s=this;(tpl.choices||[]).forEach(function(c){if(c.name&&c.name.trim())s.form.options.push({name:c.name,price:c.price||0,templateId:tpl.id,templateName:tpl.templateName});});s.showOptionsTemplateDD=false;},
-            applyPosExtrasTemplate: function(tpl){var s=this;(tpl.choices||[]).forEach(function(c){if(c.name&&c.name.trim()){if(!s.form.posExtras)s.form.posExtras=[];s.form.posExtras.push({name:c.name,price:c.price||0});}});s.showPosExtrasTemplateDD=false;},
+            applyPosExtrasTemplate: function(tpl){var s=this;(tpl.choices||[]).forEach(function(c){if(c.name&&c.name.trim()){if(!s.form.posExtras)s.form.posExtras=[];s.form.posExtras.push({name:c.name,price:c.price||0,templateId:tpl.id,templateName:tpl.templateName});}});s.showPosExtrasTemplateDD=false;},
             moveCatDown: function(idx) {
                 var arr = this.settings.categories;
                 if (idx === arr.length-1) return;
