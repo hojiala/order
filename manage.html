@@ -553,7 +553,7 @@
                     </div>
                     <div class="flex gap-3 mt-5">
                         <button @click="showTemplateForm=false; editingTemplateId=null" class="flex-1 bg-slate-700 hover:bg-slate-600 text-white font-bold py-2.5 rounded-xl text-sm transition">取消</button>
-                        <button @click="saveTemplate" class="flex-2 bg-amber-600 hover:bg-amber-500 text-white font-bold py-2.5 px-8 rounded-xl text-sm transition">{{ editingTemplateId ? '更新模板' : '儲存模板' }}</button>
+                        <button @click="saveTemplate" :disabled="templateSaving" class="flex-2 bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white font-bold py-2.5 px-8 rounded-xl text-sm transition">{{ templateSaving ? '套用中...' : (editingTemplateId ? '更新模板' : '儲存模板') }}</button>
                     </div>
                 </div>
                 <!-- 模板清單 -->
@@ -1846,6 +1846,52 @@ window._doCountUp = function() {
         };
     }
 
+    function normalizeTemplateChoiceName(value) {
+        return String(value || '').trim().replace(/^[+＋]\s*/, '加').replace(/[\s\u3000]+/g, '');
+    }
+    function findTemplateChoiceIndexes(rows, choices) {
+        var used = {};
+        var indexes = [];
+        (choices || []).forEach(function(choice) {
+            var name = normalizeTemplateChoiceName(choice && choice.name);
+            var idx = (rows || []).findIndex(function(row, rowIdx) {
+                return !used[rowIdx] && name && normalizeTemplateChoiceName(row && row.name) === name;
+            });
+            if (idx !== -1) { used[idx] = true; indexes.push(idx); }
+        });
+        return indexes.length === (choices || []).length ? indexes : [];
+    }
+    function replaceAppliedTemplateChoices(rows, tplId, tplData, oldTpl, allTemplates) {
+        rows = Array.isArray(rows) ? rows : [];
+        oldTpl = oldTpl || tplData || {};
+        var oldName = String(oldTpl.templateName || '');
+        var newName = String((tplData && tplData.templateName) || '');
+        var indexes = [];
+        rows.forEach(function(row, idx) {
+            if (row && (row.templateId === tplId || (!row.templateId && row.templateName && (row.templateName === oldName || row.templateName === newName)))) indexes.push(idx);
+        });
+        if (!indexes.length) {
+            var candidates = (allTemplates || []).map(function(tpl) {
+                var matched = findTemplateChoiceIndexes(rows, tpl && tpl.choices);
+                return tpl && tpl.id && matched.length ? { id: tpl.id, indexes: matched } : null;
+            }).filter(Boolean);
+            var maxChoices = candidates.reduce(function(max, row) { return Math.max(max, row.indexes.length); }, 0);
+            var best = candidates.filter(function(row) { return row.indexes.length === maxChoices; });
+            if (best.length !== 1 || best[0].id !== tplId) return { rows: rows, changed: false };
+            indexes = best[0].indexes;
+        }
+        var first = Math.min.apply(Math, indexes);
+        var remove = {};
+        indexes.forEach(function(idx) { remove[idx] = true; });
+        var nextRows = rows.filter(function(row, idx) { return !remove[idx]; });
+        var insertAt = rows.slice(0, first).filter(function(row, idx) { return !remove[idx]; }).length;
+        var applied = ((tplData && tplData.choices) || []).map(function(choice) {
+            return Object.assign({}, choice, { templateId: tplId, templateName: newName });
+        });
+        nextRows.splice.apply(nextRows, [insertAt, 0].concat(applied));
+        return { rows: nextRows, changed: true };
+    }
+
     createApp({
         data: function() {
             return {
@@ -1872,6 +1918,7 @@ window._doCountUp = function() {
                 templateForm: { templateName:'', groupName:'', type:'radio', pricing:'setPrice', defaultIdx:0, baseValue:0, mealUpgradeDisplayLabel:'', mealUpgradeChargePrefix:'', choices:[{name:'',price:0}] },
                 editingTemplateId: null,
                 showTemplateForm: false,
+                templateSaving: false,
                 // Image compress
                 compressStatus: '', compressedSizeKB: 0,
                 // Stats
@@ -5024,6 +5071,7 @@ window._doCountUp = function() {
                     return tpl && tpl.id !== tplId && String(tpl.templateName || '').trim() === tf.templateName.trim();
                 });
                 if (dupName) { alert('❌ 模板名稱「' + tf.templateName.trim() + '」已存在！\n模板名稱不可重複，請改用其他名稱。'); return; }
+                var previousTpl = tplId ? (self.optionTemplates || []).find(function(tpl) { return tpl && tpl.id === tplId; }) : null;
                 var mealUpgradeDisplayLabel = tf.pricing === 'mealUpgrade'
                     ? (String(tf.mealUpgradeDisplayLabel || '').trim() || self.getMealUpgradeDefaultLabel(tf))
                     : '';
@@ -5050,40 +5098,55 @@ window._doCountUp = function() {
                     optionTemplates[tpl.id] = copy;
                 });
                 optionTemplates[saveId] = data;
+                self.templateSaving = true;
+                var templateSaved = false;
                 var p = self.writeSettingsPrimary({ optionTemplates: optionTemplates }, function() {
                     return set(ref(db, 'settings/optionTemplates'), optionTemplates);
                 });
                 p.then(function() {
-                    if (tplId) self.syncTemplateToMenu(saveId, data);
+                    templateSaved = true;
+                    if (tplId) return self.syncTemplateToMenu(saveId, data, previousTpl);
+                    return { updated: 0, categories: [], optionItems: 0, groupItems: 0 };
+                }).then(function(summary) {
                     self.showTemplateForm = false;
                     self.editingTemplateId = null;
-                    self.loadTemplates();
-                    self.loadStandardDrinks();
-                }).catch(function(e) { alert('儲存失敗：' + e.message); });
+                    return Promise.all([self.loadTemplates(), self.loadStandardDrinks()]).then(function() { return summary; });
+                }).then(function(summary) {
+                    if (!tplId) { alert('✅ 模板「' + data.templateName + '」已儲存。'); return; }
+                    var cats = summary.categories || [];
+                    alert('✅ 模板「' + data.templateName + '」已更新並完成套用。\n' +
+                        '已套用在：' + (cats.length ? cats.join('、') + '（共 ' + cats.length + ' 個大類）' : '尚未找到已套用的餐點') + '\n' +
+                        '已更新共 ' + summary.updated + ' 項餐點（加料選項 ' + summary.optionItems + ' 項、選項群組 ' + summary.groupItems + ' 項）。');
+                }).catch(function(e) {
+                    alert((templateSaved ? '模板已儲存，但批次套用餐點失敗：' : '儲存失敗：') + e.message + '\n請重新整理後再試一次。');
+                }).finally(function() { self.templateSaving = false; });
             },
-            syncTemplateToMenu: function(tplId, tplData) {
+            syncTemplateToMenu: function(tplId, tplData, previousTpl) {
                 var self = this;
-                if (!tplId || !tplData) return;
-                var updates = {};
+                if (!tplId || !tplData) return Promise.resolve({ updated: 0, categories: [], optionItems: 0, groupItems: 0 });
                 var changedItems = [];
-                var legacySignatureMatches = 1 + (self.optionTemplates || []).filter(function(tpl) {
-                    return tpl && tpl.id !== tplId && tpl.groupName === tplData.groupName && tpl.type === tplData.type && tpl.pricing === tplData.pricing;
+                var categories = {};
+                var optionItems = 0;
+                var groupItems = 0;
+                var oldTpl = previousTpl || tplData;
+                var legacySignatureMatches = (self.optionTemplates || []).filter(function(tpl) {
+                    return tpl && tpl.groupName === oldTpl.groupName && tpl.type === oldTpl.type && tpl.pricing === oldTpl.pricing;
                 }).length;
                 (self.menuItems || []).forEach(function(item){
                     var ogs = item.optionGroups || [];
-                    var changed = false;
+                    var groupChanged = false;
                     var newOGs = ogs.map(function(g){
                         // 已綁定其他模板的群組絕不覆蓋；匿名舊資料只有候選模板唯一時才備援比對
                         var match;
                         if (g.templateId) {
                             match = (g.templateId === tplId);
                         } else if (g.templateName) {
-                            match = (g.templateName === tplData.templateName);
+                            match = (g.templateName === tplData.templateName || g.templateName === oldTpl.templateName);
                         } else {
-                            match = legacySignatureMatches === 1 && g.groupName === tplData.groupName && g.type === tplData.type && g.pricing === tplData.pricing;
+                            match = legacySignatureMatches === 1 && g.groupName === oldTpl.groupName && g.type === oldTpl.type && g.pricing === oldTpl.pricing;
                         }
                         if (match) {
-                            changed = true;
+                            groupChanged = true;
                             return Object.assign({}, g, {
                                 templateId: tplId,
                                 templateName: tplData.templateName,
@@ -5099,25 +5162,26 @@ window._doCountUp = function() {
                         }
                         return g;
                     });
-                    if (changed) {
-                        updates['menu/' + item.id + '/optionGroups'] = newOGs;
-                        changedItems.push(Object.assign({}, item, { optionGroups: newOGs, updatedAt: Date.now() }));
+                    var optionSync = replaceAppliedTemplateChoices(item.options || [], tplId, tplData, oldTpl, self.optionTemplates || []);
+                    if (groupChanged || optionSync.changed) {
+                        if (groupChanged) groupItems++;
+                        if (optionSync.changed) optionItems++;
+                        if (item.category) categories[item.category] = true;
+                        changedItems.push(Object.assign({}, item, { optionGroups: newOGs, options: optionSync.rows, updatedAt: Date.now() }));
                     }
                 });
-                if (!Object.keys(updates).length) return;
-                if (changedItems.length) {
-                    Promise.all(changedItems.map(function(nextItem) {
-                        return self.writeMenuItemPrimary(nextItem.id, nextItem, function() {
-                            return update(ref(db, 'menu/' + nextItem.id), { optionGroups: nextItem.optionGroups });
-                        }).then(function() {
-                            self.syncLocalMenuItem(nextItem.id, nextItem);
-                        });
-                    })).catch(function(e) {
-                        console.warn('template menu sync failed', e && e.message ? e.message : e);
-                    });
-                    return;
-                }
-                update(ref(db), updates).catch(function(e){ console.warn('同步模板失敗', e.message); });
+                var summary = { updated: changedItems.length, categories: Object.keys(categories), optionItems: optionItems, groupItems: groupItems };
+                return Promise.all(changedItems.map(function(nextItem) {
+                    return self.writeMenuItemPrimary(nextItem.id, nextItem, function() {
+                        return update(ref(db, 'menu/' + nextItem.id), { optionGroups: nextItem.optionGroups, options: nextItem.options, updatedAt: nextItem.updatedAt });
+                    }).then(function() {
+                        self.syncLocalMenuItem(nextItem.id, nextItem);
+                    }).catch(function(error) { return error; });
+                })).then(function(results) {
+                    var errors = results.filter(Boolean);
+                    if (errors.length) throw new Error(errors.length + ' 項餐點寫入失敗：' + (errors[0].message || errors[0]));
+                    return summary;
+                });
             },
             deleteTemplate: function(id) {
                 if (!confirm('確定刪除此模板？')) return;
@@ -7070,7 +7134,7 @@ window._doCountUp = function() {
             addPosExtra: function(){if(!this.form.posExtras)this.form.posExtras=[];this.form.posExtras.push({name:'',price:0});},
             removePosExtra: function(i){(this.form.posExtras||[]).splice(i,1);},
             movePosExtra: function(i,d){var a=this.form.posExtras;if(!a)return;var n=i+d;if(n<0||n>=a.length)return;var t=a[i];a.splice(i,1);a.splice(n,0,t);},
-            applyOptionsTemplate: function(tpl){var s=this;(tpl.choices||[]).forEach(function(c){if(c.name&&c.name.trim())s.form.options.push({name:c.name,price:c.price||0});});s.showOptionsTemplateDD=false;},
+            applyOptionsTemplate: function(tpl){var s=this;(tpl.choices||[]).forEach(function(c){if(c.name&&c.name.trim())s.form.options.push({name:c.name,price:c.price||0,templateId:tpl.id,templateName:tpl.templateName});});s.showOptionsTemplateDD=false;},
             applyPosExtrasTemplate: function(tpl){var s=this;(tpl.choices||[]).forEach(function(c){if(c.name&&c.name.trim()){if(!s.form.posExtras)s.form.posExtras=[];s.form.posExtras.push({name:c.name,price:c.price||0});}});s.showPosExtrasTemplateDD=false;},
             moveCatDown: function(idx) {
                 var arr = this.settings.categories;
