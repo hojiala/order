@@ -490,7 +490,7 @@
                                 <div>
                                     <template v-if="order.paymentMethod==='linepay'||order.paymentMethod==='linepay_offline'||order.paymentMethod==='linepay_refund'">
                                         <span v-if="order.paymentStatus==='refunded'||order.paymentMethod==='linepay_refund'||lpTxnState[order.id]==='refunded'" class="text-xs font-bold text-purple-500">💜 LINE Pay 已退款</span>
-                                        <span v-else-if="(order.status==='cancelled'||order.wasCancelled)&&(order.paymentStatus==='paid'||lpConfirmed[order.id])" class="text-xs font-bold text-purple-500">💜 LINE Pay 已退款</span>
+                                        <span v-else-if="(order.status==='cancelled'||order.wasCancelled)&&(order.paymentStatus==='paid'||lpConfirmed[order.id])" class="text-xs font-bold text-purple-500">💜 LINE Pay 退款處理中</span>
                                         <span v-else-if="order.paymentStatus==='paid'||lpConfirmed[order.id]" class="text-xs font-bold text-green-600">💚 LINE Pay 已付清</span>
                                         <span v-else-if="order.status==='cancelled'" class="text-xs font-bold text-gray-400">💰 未付款</span>
                                         <span v-else class="text-xs font-bold text-blue-400">💚 LINE Pay 處理中</span>
@@ -1927,7 +1927,37 @@
                 }).then(function(){
                     order.status = 'cancelled';
                     try { var sv = JSON.parse(localStorage.getItem('my_orders')||'[]'); sv.forEach(function(s){if(s.id===order.id)s.status='cancelled';}); localStorage.setItem('my_orders',JSON.stringify(sv)); } catch(e){}
-                    self.showAlertModal('已取消', '訂單已取消，廚房將收到取消通知。');
+                    // LINE Pay 已付款的單：寫 linepay_refund_requests 讓店內 Pi 自動退款（同 pos 機制），
+                    // Firebase 規則只放行「訂單已取消」的退款請求
+                    var pm = String(order.paymentMethod||'').toLowerCase();
+                    var lpKnown = pm.indexOf('linepay')===0 || !!(self.lpConfirmed&&self.lpConfirmed[order.id]) || (self.lpTxnState&&self.lpTxnState[order.id]==='confirmed');
+                    var linePayPaid = lpKnown && order.paymentStatus==='paid';
+                    if (!linePayPaid) { self.showAlertModal('已取消', '訂單已取消，廚房將收到取消通知。'); return; }
+                    self.showAlertModal('已取消', '訂單已取消，LINE Pay 退款處理中…');
+                    return set(ref(db,'linepay_refund_requests/'+order.id),{
+                        orderId:order.id, amount:Number(order.total||0), reason:'顧客取消訂單',
+                        status:'pending', createdAt:Date.now(), source:'index', orderDateKey:dk
+                    }).then(function(){
+                        var attempts=0;
+                        var poll=function(){
+                            attempts++;
+                            return get(ref(db,'linepay_refund_requests/'+order.id)).then(function(snap){
+                                var rv=snap&&snap.val();
+                                if(rv&&(rv.status==='done'||rv.returnCode==='ALREADY_REFUNDED')){
+                                    order.paymentStatus='refunded'; order.paymentMethod='linepay_refund';
+                                    self.showAlertModal('已退款', '訂單已取消，LINE Pay 款項已退回。');
+                                    return;
+                                }
+                                if(rv&&rv.status==='error'){ self.showAlertModal('已取消', '訂單已取消。退款將由店家協助處理，若有疑問請聯繫店家。'); return; }
+                                if(attempts>=40){ self.showAlertModal('已取消', '訂單已取消，退款處理中，稍後可在點餐記錄查看退款狀態。'); return; }
+                                return new Promise(function(r){setTimeout(r,750);}).then(poll);
+                            });
+                        };
+                        return new Promise(function(r){setTimeout(r,750);}).then(poll);
+                    }).catch(function(e){
+                        console.warn('退款請求寫入失敗:', e&&e.message?e.message:e);
+                        self.showAlertModal('已取消', '訂單已取消。退款將由店家協助處理，若有疑問請聯繫店家。');
+                    });
                 }).catch(function(e) { self.showAlertModal('取消失敗', '無法取消訂單：' + e.message); });
             },
             submitToFirebase: function(payMethod) {
