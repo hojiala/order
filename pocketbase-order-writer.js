@@ -1226,6 +1226,8 @@ function shouldRequestTurnstile(config, options) {
     options = options || {};
     if (!config || !config.turnstileSiteKey) return false;
     if (options.skipTurnstile === true || options.disableTurnstile === true) return false;
+    // 更新既有訂單（狀態/付款同步）不做人機驗證；Worker 端以 updateOnly 放行、PB 端禁止藉此建立新單
+    if (options.allowPocketBaseUpdate === true) return false;
     if (options.requireTurnstile !== undefined) return envFlag(options.requireTurnstile, false);
     if (options.useTurnstile !== undefined) return envFlag(options.useTurnstile, false);
     if (typeof window !== "undefined") {
@@ -2603,6 +2605,7 @@ function writeOrderToSecureEndpoint(config, orderId, orderData, options, record,
             orderData: plainJson(orderData || {}, {}),
             record: plainJson(record || {}, {}),
             turnstileToken: turnstileToken,
+            updateOnly: options.allowPocketBaseUpdate === true,
             clientTs: Date.now()
         };
         return requestJson(config.orderEndpoint, {
