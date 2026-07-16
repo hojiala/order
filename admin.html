@@ -3545,6 +3545,7 @@
                     if (!confirm(msg)) return;
                     const updates = {};
                     const phoneCmds = [];
+                    const pbArchiveJobs = [];
                     const futureIds = futureOrders.map(o => o.id);
                     this.orders.forEach(o => {
                         if (o.status !== 'archived' && futureIds.indexOf(o.id) === -1) {
@@ -3571,14 +3572,30 @@
                                 console.warn('archive status override failed', err && err.message ? err.message : err);
                                 return false;
                             }));
-                            updates['orders_archive/' + dateKey + '/' + o.id] = archivedOrder;
-                            updates['orders/' + dateKey + '/' + o.id] = null;
+                            if (this.ordersReadBackend === 'firebase' || o._readBackend === 'firebase') {
+                                updates['orders_archive/' + dateKey + '/' + o.id] = archivedOrder;
+                                updates['orders/' + dateKey + '/' + o.id] = null;
+                            } else {
+                                pbArchiveJobs.push(writeOrderToPocketBase(o.id, archivedOrder, {
+                                    settings: this.settings,
+                                    sourcePage: 'admin_archive',
+                                    allowPocketBaseUpdate: true
+                                }).then(result => {
+                                    if (!result || !result.ok) throw new Error((result && (result.message || result.reason)) || 'PocketBase archive unavailable');
+                                    return result;
+                                }));
+                            }
                         }
                     });
-                    if (!Object.keys(updates).length && !phoneCmds.length) { this.toast("✅ 目前沒有需要結單的訂單"); return; }
+                    if (!Object.keys(updates).length && !phoneCmds.length && !pbArchiveJobs.length) { this.toast("✅ 目前沒有需要結單的訂單"); return; }
                     try {
                         if (Object.keys(updates).length) {
                             await update(ref(db), updates);
+                        }
+                        if (pbArchiveJobs.length) {
+                            const rs = await Promise.allSettled(pbArchiveJobs);
+                            const failed = rs.filter(r => r.status !== 'fulfilled').length;
+                            if (failed > 0) throw new Error('PB 訂單結單失敗 ' + failed + ' 筆');
                         }
                         if (phoneCmds.length) {
                             const rs = await Promise.allSettled(phoneCmds);
