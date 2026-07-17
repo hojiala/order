@@ -667,7 +667,8 @@ export function listOrdersFromPocketBase(options) {
                 dateKeys: Array.isArray(options.dateKeys) ? options.dateKeys : [],
                 perPage: perPage,
                 maxPages: maxPages,
-                sourcePage: text(options.sourcePage)
+                sourcePage: text(options.sourcePage),
+                openToday: options.openToday === true
             })
         }, timeoutMs);
     }).then(function(data) {
@@ -676,6 +677,7 @@ export function listOrdersFromPocketBase(options) {
         return {
             ok: true,
             backend: "pocketbase_secure",
+            openToday: data && data.openToday,
             records: rows,
             orders: rows.map(pocketBaseRecordToOrder)
         };
