@@ -1950,6 +1950,7 @@ window._doCountUp = function() {
                 statsOrders: [], statsLoading: false, allOrdersCache: null,
                 statsSearch: '',
                 remoteStatusOverrides: {},
+                statsStatusUnsubs: [], statsStatusRefreshTimer: null,
                 statsSortKey: 'timestamp', statsSortDir: -1,
                 viewingOrder: null,
                 lpConfirmed: {},
@@ -2173,6 +2174,7 @@ window._doCountUp = function() {
                 if (isManageUser(user)) {
                     if (self.isLoggedIn) return;
                     self.isLoggedIn = true;
+                    self.listenStatsStatusSources();
                     var settingsPromise = self.loadSettings().catch(function(e) {
                         console.warn('manage settings primary read failed during startup:', e && e.message ? e.message : e);
                     });
@@ -6038,6 +6040,25 @@ window._doCountUp = function() {
                 });
                 return best ? best.status : '';
             },
+            listenStatsStatusSources: function() {
+                var self = this;
+                (self.statsStatusUnsubs || []).forEach(function(unsub) { try { unsub(); } catch (e) {} });
+                var scheduleRefresh = function() {
+                    if (self.activeTab !== 'stats') return;
+                    clearTimeout(self.statsStatusRefreshTimer);
+                    self.statsStatusRefreshTimer = setTimeout(function() {
+                        self.allOrdersCache = null;
+                        self.loadStats();
+                    }, 150);
+                };
+                self.statsStatusUnsubs = [
+                    onValue(ref(db, 'integration_sync/display_status_overrides'), function(snap) {
+                        self.remoteStatusOverrides = snap.exists() ? (snap.val() || {}) : {};
+                        scheduleRefresh();
+                    }),
+                    onValue(ref(db, 'phone_ai/orders'), scheduleRefresh)
+                ];
+            },
             applyStatusOverrideToOrder: function(order) {
                 if (!order || typeof order !== 'object') return order;
                 var currentStatus = String(order.status || '').toLowerCase();
@@ -6586,9 +6607,10 @@ window._doCountUp = function() {
                     var phoneOrders = Array.isArray(parts[2]) ? parts[2] : [];
                     self.remoteStatusOverrides = parts[3] || {};
                     var mergedMap = {};
-                    phoneOrders.forEach(function(o){ mergeOrderById(mergedMap, o); });
                     integrationOrders.forEach(function(o){ mergeOrderById(mergedMap, o); });
                     bucketOrders.forEach(function(o){ mergeOrderById(mergedMap, o); });
+                    // phone_ai/orders 是電話訂單的即時真相源，最後合併，避免舊 integration view 把 making 蓋回 new。
+                    phoneOrders.forEach(function(o){ mergeOrderById(mergedMap, o); });
                     self.backfillStatsOrdersToPocketBase(Object.values(mergedMap));
                     self.allOrdersCache = collapseStatsByDisplaySignature(collapseMergedStatsValues(Object.values(mergedMap))).map(function(o) { return self.applyStatusOverrideToOrder(o); });
                     self.doFilter();
