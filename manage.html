@@ -1816,7 +1816,7 @@ window._doCountUp = function() {
 <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getDatabase, ref, set, get, push, update, remove, onValue, onChildAdded, onChildChanged, onChildRemoved, query, orderByChild, equalTo, limitToLast } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
-    import { getAuth, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
+    import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
     import { listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, writeMenuItemToPocketBase, deleteMenuItemFromPocketBase, updateMenuSortInPocketBase, writeSettingsToPocketBase } from "./pocketbase-order-writer.js?v=20260716_0800";
 
     const firebaseConfig = {
@@ -1829,13 +1829,16 @@ window._doCountUp = function() {
         appId: "1:662477350736:web:7e3dd6128a6f66a52aae55"
     };
 
-    const app = initializeApp(firebaseConfig);
+    const app = initializeApp(firebaseConfig, 'manage');
     const db  = getDatabase(app);
     const auth = getAuth(app);
-    // ★ 不可呼叫 setPersistence(browserLocalPersistence)：與 index/dinein 的預設 indexedDB 層
-    //   不一致，另一頁初始化時的持久層整併會清掉這層 → 立即被登出。統一用 getAuth 預設層。
+    // manage 使用命名 Firebase app，登入狀態不再與 POS/admin 的預設 app 共用。
     const authReady = Promise.resolve();
     const { createApp } = Vue;
+    const MANAGE_ALLOWED_EMAILS = ['manage@yuanqi.com'];
+    function isManageUser(user) {
+        return !!(user && !user.isAnonymous && MANAGE_ALLOWED_EMAILS.indexOf((user.email || '').trim().toLowerCase()) !== -1);
+    }
     const THEME_COLOR_RE = /^#[0-9A-Fa-f]{6}$/;
     function cloneDefaultDailyThemes() {
         return {
@@ -2167,11 +2170,7 @@ window._doCountUp = function() {
             authReady.finally(function() {
                 onAuthStateChanged(auth, function(user) {
                 self.authResolved = true;
-                // 匿名使用者（index/dinein 顧客頁產生）不算 staff 登入。
-                // 登出事件加 1.5 秒防抖：顧客頁初始化時的跨分頁同步會短暫發出 null，
-                // 立刻切登入畫面會「閃一下又自動回來」；確認真的沒有 staff 使用者才登出。
-                if (user && !user.isAnonymous) {
-                    if (self._authLogoutTimer) { clearTimeout(self._authLogoutTimer); self._authLogoutTimer = null; }
+                if (isManageUser(user)) {
                     if (self.isLoggedIn) return;
                     self.isLoggedIn = true;
                     var settingsPromise = self.loadSettings().catch(function(e) {
@@ -2185,12 +2184,7 @@ window._doCountUp = function() {
                         self.loadStandardDrinks();
                     });
                 } else {
-                    if (self._authLogoutTimer) clearTimeout(self._authLogoutTimer);
-                    self._authLogoutTimer = setTimeout(function() {
-                        self._authLogoutTimer = null;
-                        var cu = auth.currentUser;
-                        if (!cu || cu.isAnonymous) self.isLoggedIn = false;
-                    }, 1500);
+                    self.isLoggedIn = false;
                 }
                 });
             });
@@ -2217,12 +2211,7 @@ window._doCountUp = function() {
             login: function() {
                 var self = this;
                 if (!this.loginEmail || !this.loginPassword) { this.loginError = '請輸入信箱與密碼'; return; }
-                // ★ 管理後台專用帳號白名單（可在此新增允許的信箱）
-                var ALLOWED_EMAILS = [
-                    'manage@yuanqi.com',     // 管理後台專用帳號
-                    'admin@yuanqi.com'       // 保留舊帳號也可登入（可刪除此行）
-                ];
-                if (ALLOWED_EMAILS.indexOf(this.loginEmail.trim().toLowerCase()) === -1) {
+                if (MANAGE_ALLOWED_EMAILS.indexOf(this.loginEmail.trim().toLowerCase()) === -1) {
                     this.loginError = '此帳號無權限登入管理後台';
                     return;
                 }
