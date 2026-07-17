@@ -2598,7 +2598,13 @@ function writeOrderToSecureEndpoint(config, orderId, orderData, options, record,
     var tokenPromise = shouldRequestTurnstile(config, options)
         ? requestTurnstileToken(config.turnstileSiteKey, options.turnstileTimeoutMs || 90000)
         : Promise.resolve("");
-    return tokenPromise.then(function(turnstileToken) {
+    var user = options.firebaseUser;
+    var firebaseTokenPromise = user && !user.isAnonymous && typeof user.getIdToken === "function"
+        ? Promise.resolve().then(function() { return user.getIdToken(); }).catch(function() { return ""; })
+        : Promise.resolve("");
+    return Promise.all([tokenPromise, firebaseTokenPromise]).then(function(tokens) {
+        var turnstileToken = tokens[0];
+        var firebaseIdToken = tokens[1];
         var payload = {
             orderId: text(orderId || (orderData && orderData.id)),
             sourcePage: text(options.sourcePage || (orderData && orderData.source) || ""),
@@ -2610,9 +2616,11 @@ function writeOrderToSecureEndpoint(config, orderId, orderData, options, record,
             updateOnly: options.allowPocketBaseUpdate === true,
             clientTs: Date.now()
         };
+        var headers = { "Content-Type": "application/json" };
+        if (firebaseIdToken) headers.Authorization = "Bearer " + firebaseIdToken;
         return requestJson(config.orderEndpoint, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: headers,
             body: JSON.stringify(payload)
         }, Number(options.secureTimeoutMs || timeoutMs || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS).then(function(data) {
             var savedRecord = data && data.record && typeof data.record === "object" ? data.record : record;
