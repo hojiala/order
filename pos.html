@@ -868,7 +868,7 @@
                 voiceActive:false,voiceConnecting:false,voiceStatus:"",voiceTranscript:"",
                 posMetaExpanded:false,showStorePayChoiceModal:false,showLinePayChoiceModal:false,showCounterSettingsModal:false,showCashCalculator:false,showBackendStatus:false,posOrderNote:"",
                 counterResetTime:"00:00",counterMaxNo:999,counterLegacyValue:0,counterSaving:false,cashCalcInput:"",
-                ordersRealtimeUnsub:null,ordersRealtimeRefreshTimer:null,
+                ordersRealtimeUnsub:null,ordersRealtimeRefreshTimer:null,openTodayPending:false,openTodayResumeTimer:null,
                 editPickupDate:"",editPickupTime:"",editOrderNote:"",editCustomerName:"",editCustomerPhone:"",editingCartIdx:-1,
                 editShowCustomer:false,editShowPayment:false,editOrderType:'takeout',editTableLabel:'',editingLinePayPaid:false,
                 posOrderType:'takeout',posTableLabel:'',posTables:[],cartDragIdx:null,
@@ -1045,6 +1045,12 @@
                     },1500);
                 }
             });});
+            s._openTodayResumeHandler=function(){
+                if(document.visibilityState!=='hidden')s.requestOpenTodayFromVisible();
+            };
+            document.addEventListener('visibilitychange',s._openTodayResumeHandler);
+            window.addEventListener('focus',s._openTodayResumeHandler);
+            window.addEventListener('pageshow',function(e){if(e.persisted)s._openTodayResumeHandler();});
         },
         methods:{
 
@@ -1243,6 +1249,7 @@
                 var s=this;
                 if(s.pbOrdersReadInFlight)return Promise.resolve(false);
                 s.pbOrdersReadInFlight=true;
+                var requestOpenToday=s.openTodayPending===true;
                 var wasFirebase=s.ordersReadBackend==='firebase';
                 var carry=s.collectFirebaseFallbackOrders();
                 var recentFirebaseWrite=s.lastWriteBackend==='firebase'&&s.lastWriteAt&&(Date.now()-s.lastWriteAt<30000);
@@ -1253,7 +1260,7 @@
                     pocketBaseUrl:s.pocketBaseUrl,
                     pocketBaseOrdersCollection:s.pocketBaseOrdersCollection,
                     sourcePage:'pos',
-                    openToday:true,
+                    openToday:requestOpenToday,
                     firebaseUser:auth.currentUser,
                     dateKeys:s.buildWatchDateKeys(),
                     perPage:500,
@@ -1269,6 +1276,7 @@
                         }
                         throw new Error((result&&(result.message||result.reason))||'PocketBase orders unavailable');
                     }
+                    if(requestOpenToday&&result.openToday&&result.openToday.ok)s.openTodayPending=false;
                     var pbRows=Array.isArray(result.orders)?result.orders:[];
                     s.syncPocketBaseOrderNosToFirebase(pbRows);
                     firebaseRows=s.fillMissingOrderNosFromKnown(firebaseRows,pbRows.concat(carry).concat(s.onlineOrders||[]));
@@ -5416,11 +5424,23 @@
             },
             startAll:function(){
                 var s=this;
+                s.openTodayPending=true;
                 s.startMenuSettingsPrimaryRead();
 
                 s.ordersLoading=true;
                 s.startOrdersPrimaryRead();
                 s.listenRemoteStatusOverrides();
+            },
+            requestOpenTodayFromVisible:function(){
+                var s=this;
+                s.openTodayPending=true;
+                if(!s.isLoggedIn)return;
+                clearTimeout(s.openTodayResumeTimer);
+                s.openTodayResumeTimer=setTimeout(function(){
+                    s.readPocketBaseOrdersPrimary().catch(function(e){
+                        console.warn('POS resume open-today failed; retrying on next poll:',e&&e.message?e.message:e);
+                    });
+                },100);
             },
             // ★ PB 原生 realtime（SSE），不經過 Firebase：訂單一有異動就立刻觸發重新讀取，
             //   讓畫面即時更新，同時完全不增加 Firebase 下載量。這只是「觸發器」，實際
