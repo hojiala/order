@@ -44,6 +44,16 @@
                     <p class="text-xs text-white/70">目前待處理：{{ activeOrdersCount }} 筆</p>
                 </div>
                 <div class="flex items-center gap-3">
+                    <details class="relative">
+                        <summary :class="orderSearch ? 'bg-yellow-400 text-gray-900' : 'bg-white/20 text-white hover:bg-white/30'"
+                            class="h-9 w-9 rounded-full cursor-pointer inline-flex items-center justify-center shadow-sm transition"
+                            style="list-style:none" title="搜尋訂單" aria-label="搜尋訂單">🔍</summary>
+                        <div class="absolute right-0 top-full mt-2 bg-white rounded-xl shadow-xl border border-gray-200 p-2 flex items-center gap-2" style="width:min(18rem,calc(100vw - 2rem));">
+                            <input v-model="orderSearch" type="text" placeholder="姓名、電話、單號、品項..." autofocus
+                                class="min-w-0 flex-1 outline-none text-sm text-gray-700 placeholder-gray-400">
+                            <button v-if="orderSearch" @click="orderSearch=''" class="text-xs font-bold text-gray-400 hover:text-gray-700">清除</button>
+                        </div>
+                    </details>
                     <span :class="ordersReadBackend==='firebase' ? 'bg-amber-100 text-amber-900 border-amber-200' : (ordersReadBackend==='checking' ? 'bg-sky-100 text-sky-900 border-sky-200' : 'bg-emerald-100 text-emerald-900 border-emerald-200')"
                         class="inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-black whitespace-nowrap"
                         :title="ordersReadBackend==='firebase' ? 'PocketBase 目前不可用，訂單讀取使用 Firebase 備援' : (ordersReadBackend==='checking' ? '正在讀取 PocketBase 設定與訂單' : '訂單讀取目前走 PocketBase primary')">
@@ -58,12 +68,6 @@
             </header>
 
             <main class="p-4 max-w-7xl mx-auto">
-                <div class="mb-4 flex items-center gap-2 bg-white rounded-xl shadow-sm border border-gray-100 px-3 py-2">
-                    <span class="text-gray-400">🔍</span>
-                    <input v-model="orderSearch" type="text" placeholder="搜尋姓名、電話、單號、品項..."
-                        class="flex-1 outline-none text-sm text-gray-700 placeholder-gray-400">
-                    <button v-if="orderSearch" @click="orderSearch=''" class="text-xs font-bold text-gray-400 hover:text-gray-700">清除</button>
-                </div>
                 <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                     
                     <div v-for="order in sortedOrders" :key="getOrderRenderKey(order)" 
@@ -2498,7 +2502,7 @@
                         this.pbOrdersSuccessStreak = (this.pbOrdersSuccessStreak || 0) + 1;
                         this.ordersFallbackHoldUntil = 0;
                         if (carry.length) this.backfillOrdersToPocketBaseBestEffort(carry, 'admin_firebase_fallback');
-                        const rows = (Array.isArray(result.orders) ? result.orders : []).concat(carry);
+                        const rows = Array.isArray(result.orders) ? result.orders : [];
                         this.integrationOrdersCache = this.normalizeIncomingOrders(rows);
                         this.phoneOrdersCache = [];
                         this.useIntegrationView = true;
@@ -2980,7 +2984,15 @@
                             // handled by upsertMerged
                         });
                     }
-                    const mergedOrders = this.normalizeIncomingOrders(collapseByDisplaySignature(collapseMergedValues(Object.values(mergedMap)))).map((o) => this.applyRemoteStatusOverrideToOrder(o));
+                    const today = this.todayStr;
+                    const mergedOrders = this.normalizeIncomingOrders(collapseByDisplaySignature(collapseMergedValues(Object.values(mergedMap))))
+                        .map((o) => this.applyRemoteStatusOverrideToOrder(o))
+                        .filter((o) => {
+                            const status = this.getDisplayStatus(o);
+                            if (status === 'archived' || status === 'cancelled') return false;
+                            const day = getOrderDayKey(o);
+                            return !day || day >= today;
+                        });
                     this.orders = mergedOrders;
                     const mergedNewCount = mergedOrders.filter(o => this.getDisplayStatus(o) === 'new').length;
                     if (mergedNewCount > this.previousNewCount && this.previousNewCount !== 0) this.playAlert();
