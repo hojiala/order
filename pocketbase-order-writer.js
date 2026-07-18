@@ -120,6 +120,7 @@ function sourceLabelFor(orderData, sourcePage) {
     var source = text(orderData && orderData.source);
     var labels = {
         online: "線上點餐",
+        web_liff: "LINE 線上點餐",
         dinein: "桌邊點餐",
         qrcode: "桌邊掃碼",
         qr_takeout: "掃碼外帶",
@@ -2613,6 +2614,8 @@ function writeOrderToSecureEndpoint(config, orderId, orderData, options, record,
             orderData: plainJson(orderData || {}, {}),
             record: plainJson(record || {}, {}),
             turnstileToken: turnstileToken,
+            lineIdToken: text(options.lineIdToken || options.line_id_token),
+            pushEnabled: typeof options.pushEnabled === "boolean" ? options.pushEnabled : undefined,
             updateOnly: options.allowPocketBaseUpdate === true,
             clientTs: Date.now()
         };
@@ -2633,6 +2636,48 @@ function writeOrderToSecureEndpoint(config, orderId, orderData, options, record,
                 secureEndpoint: true
             };
         });
+    });
+}
+
+export function requestLineMember(idToken, options) {
+    options = options || {};
+    var config = resolvePocketBaseConfig(options);
+    var endpoint = cleanBaseUrl(
+        optionValue(options, ["lineMemberEndpoint", "pocketBaseLineMemberEndpoint"]) ||
+        (options.settings && options.settings.lineMemberEndpoint) ||
+        ""
+    );
+    if (!endpoint && config.orderEndpoint) {
+        endpoint = config.orderEndpoint.replace(/\/api\/(?:secure\/)?orders$/i, "/api/line/member");
+    }
+    if (!endpoint || !text(idToken)) return Promise.reject(new Error("missing_line_member_endpoint_or_token"));
+    return requestJson(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            lineIdToken: text(idToken),
+            pushEnabled: typeof options.pushEnabled === "boolean" ? options.pushEnabled : undefined,
+            phone: text(options.phone),
+            limit: Math.max(1, Math.min(100, Number(options.limit) || 50))
+        })
+    }, Number(options.timeoutMs || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS);
+}
+
+export function requestLineMembers(options) {
+    options = options || {};
+    var config = resolvePocketBaseConfig(options);
+    var endpoint = config.orderEndpoint ? config.orderEndpoint.replace(/\/api\/(?:secure\/)?orders$/i, "/api/line/members") : "";
+    var user = options.firebaseUser;
+    if (!endpoint || !user || user.isAnonymous || typeof user.getIdToken !== "function") return Promise.reject(new Error("staff_auth_required"));
+    return Promise.resolve(user.getIdToken()).then(function(idToken) {
+        return requestJson(endpoint, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": "Bearer " + idToken
+            },
+            body: JSON.stringify({ limit: Math.max(1, Math.min(1000, Number(options.limit) || 500)) })
+        }, Number(options.timeoutMs || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS);
     });
 }
 

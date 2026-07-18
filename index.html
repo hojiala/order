@@ -25,6 +25,7 @@
 
     <link rel="stylesheet" href="./tailwind.min.css?v=20260714">
     <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/versions/2.29.1/sdk.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&display=swap" rel="stylesheet">
     <style>
         * { font-family: 'Noto Sans TC', sans-serif; }
@@ -390,6 +391,17 @@
                         </div>
                     </div>
                 </div>
+                <div v-if="lineReady" class="bg-green-50 border border-green-100 rounded-2xl px-4 py-3 text-sm text-green-800">
+                    <div class="flex items-center justify-between gap-3">
+                        <span class="font-bold">LINE 會員：{{ lineDisplayName || '已登入' }}</span>
+                        <label class="flex items-center gap-2 text-xs whitespace-nowrap">
+                            <input v-model="linePushEnabled" type="checkbox">
+                            接收訂單通知
+                        </label>
+                    </div>
+                    <a v-if="settings.lineOfficialAccountUrl" :href="settings.lineOfficialAccountUrl" target="_blank" rel="noopener" class="inline-block mt-2 text-xs font-bold underline">加入 LINE 官方帳號，確保能收到通知</a>
+                    <p v-else class="mt-1 text-xs text-green-700">需先加入 LINE 官方帳號，才能收到訂單狀態通知。</p>
+                </div>
                 <div class="bg-orange-50 border border-orange-100 rounded-2xl px-4 py-3 flex items-center gap-2 text-sm text-orange-700">
                     <span>🕐</span>
                     <span class="font-medium">{{ pickupDate }} {{ pickupTime }}</span>
@@ -458,6 +470,15 @@
                 <button @click="showStoreInfo=false" class="text-white text-xl font-bold w-7 h-7 flex items-center justify-center rounded-full hover:bg-orange-400 transition">✕</button>
             </div>
             <div v-if="storeInfoTab==='orders'" class="flex-1 overflow-y-auto px-4 py-3" style="min-height:0;">
+                <div v-if="lineReady" class="mb-3 rounded-xl border border-green-100 bg-green-50 px-3 py-2">
+                    <div class="flex items-center justify-between gap-3">
+                        <span class="text-xs font-bold text-green-700">LINE 會員｜{{ lineDisplayName || '已登入' }}</span>
+                        <label class="flex items-center gap-1 text-xs text-green-700">
+                            <input v-model="linePushEnabled" type="checkbox" @change="updateLinePushPreference">
+                            訂單通知
+                        </label>
+                    </div>
+                </div>
                 <div v-if="myOrders.length===0" class="text-center py-10 text-gray-300">
                     <div style="font-size:2.5rem;margin-bottom:0.5rem;">📋</div>
                     <p class="text-sm">今日尚無點餐記錄</p>
@@ -606,7 +627,9 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getDatabase, ref, push, set, get, update, onValue, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-    import { allocateOrderNoFromPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings } from "./pocketbase-order-writer.js?v=20260716_0800";
+    import { allocateOrderNoFromPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, pocketBaseRecordToOrder, requestLineMember } from "./pocketbase-order-writer.js?v=20260718_001";
+
+    const enteredFromLiff = /(?:^|[?&])liff(?:=1|=true|[.&=])/i.test(location.search) || /(?:^|[?&])liff\.state=/i.test(location.search) || /\bLine\//i.test(navigator.userAgent || '');
 
     const firebaseConfig = {
         apiKey: "AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -693,7 +716,7 @@
                     openTime: '06:00',
                     closeTime: '13:15',
                     pickupDays: 3,
-                    pickupInterval: 30, linePayServerUrl: '', linePayConfirmUrl: '', pocketBaseUrl: '', pocketBaseOrdersCollection: 'orders', counterResetTime: '', counterMaxNo: 999, orderNoMode: 'fifo', announcements: [],
+                    pickupInterval: 30, linePayServerUrl: '', linePayConfirmUrl: '', lineLiffId: '', lineOfficialAccountUrl: '', pocketBaseUrl: '', pocketBaseOrdersCollection: 'orders', counterResetTime: '', counterMaxNo: 999, orderNoMode: 'fifo', announcements: [],
                     holidays: [],
                     weeklyDaysOff: []
                 },
@@ -740,6 +763,12 @@
                 myOrders: [],
                 lpConfirmed: {},
                 lpTxnState: {},
+                lineEntry: enteredFromLiff,
+                lineReady: false,
+                lineIdToken: '',
+                lineDisplayName: '',
+                linePushEnabled: false,
+                lineMember: null,
                 refreshErrorCount: 0
             };
         },
@@ -854,12 +883,86 @@
                 if(!item)return;
                 if(this.$set)this.$set(item,'img','');else item.img='';
             },
+            initLineMember: function() {
+                var self = this;
+                if (!self.lineEntry) return Promise.resolve();
+                var liffId = String((self.settings && self.settings.lineLiffId) || '').trim();
+                if (!liffId) {
+                    self.showAlertModal('LINE 點餐尚未啟用', '請先設定 LIFF ID；目前仍可使用一般網頁點餐。');
+                    return Promise.resolve();
+                }
+                if (!window.liff) return Promise.reject(new Error('LIFF SDK 載入失敗'));
+                return window.liff.init({ liffId: liffId }).then(function() {
+                    if (!window.liff.isLoggedIn()) {
+                        window.liff.login({ redirectUri: window.location.href });
+                        return;
+                    }
+                    self.lineIdToken = window.liff.getIDToken() || '';
+                    if (!self.lineIdToken) throw new Error('LIFF 未取得 ID Token');
+                    var profile = window.liff.getDecodedIDToken() || {};
+                    self.lineDisplayName = String(profile.name || '').trim();
+                    if (!self.inputName && self.lineDisplayName) self.inputName = self.lineDisplayName;
+                    self.lineReady = true;
+                    return self.loadLineMemberOrders();
+                }).catch(function(err) {
+                    console.warn('LIFF 初始化失敗:', err && err.message ? err.message : err);
+                    self.showAlertModal('LINE 登入失敗', '請重新從 LINE 官方帳號開啟點餐頁；目前仍可使用一般網頁點餐。');
+                });
+            },
+            loadLineMemberOrders: function() {
+                var self = this;
+                if (!self.lineIdToken) return Promise.resolve(null);
+                return requestLineMember(self.lineIdToken, {
+                    settings: self.settings,
+                    limit: 50,
+                    timeoutMs: 10000
+                }).then(function(result) {
+                    self.lineMember = result.member || null;
+                    if (result.member) {
+                        self.lineDisplayName = result.member.display_name || self.lineDisplayName;
+                        self.linePushEnabled = result.member.push_enabled === true;
+                        if (!self.inputPhone && result.member.phone) self.inputPhone = result.member.phone;
+                    }
+                    var remote = (result.records || []).map(pocketBaseRecordToOrder);
+                    var seen = {};
+                    var merged = [];
+                    remote.concat(self.myOrders || []).forEach(function(order) {
+                        var id = String(order && order.id || '');
+                        if (!id || seen[id]) return;
+                        seen[id] = true;
+                        merged.push(order);
+                    });
+                    self.myOrders = merged.sort(function(a, b) { return (b.timestamp || 0) - (a.timestamp || 0); });
+                    return result;
+                }).catch(function(err) {
+                    console.warn('LINE 會員訂單讀取失敗:', err && err.message ? err.message : err);
+                    return null;
+                });
+            },
+            updateLinePushPreference: function() {
+                var self = this;
+                var desired = self.linePushEnabled === true;
+                if (!self.lineIdToken) return;
+                requestLineMember(self.lineIdToken, {
+                    settings: self.settings,
+                    pushEnabled: desired,
+                    timeoutMs: 10000
+                }).then(function(result) {
+                    self.lineMember = result.member || self.lineMember;
+                }).catch(function(err) {
+                    self.linePushEnabled = !desired;
+                    self.showAlertModal('設定失敗', 'LINE 通知設定無法儲存，請稍後再試。');
+                    console.warn('LINE 通知設定失敗:', err && err.message ? err.message : err);
+                });
+            },
             syncPocketBaseOrder: function(orderId, orderData, sourcePage) {
                 return writeOrderToPocketBase(orderId, orderData, {
                     settings: this.settings,
                     sourcePage: sourcePage || 'index',
                     timeoutMs: 8000,
-                    secureTimeoutMs: 10000
+                    secureTimeoutMs: 10000,
+                    lineIdToken: this.lineIdToken,
+                    pushEnabled: this.linePushEnabled
                 }).then(function(result) {
                     if (result && result.ok) console.info('PocketBase order sync:', result.action, result.id || orderId);
                     return result;
@@ -874,6 +977,8 @@
                     sourcePage: sourcePage || 'index',
                     timeoutMs: 8000,
                     secureTimeoutMs: 10000,
+                    lineIdToken: this.lineIdToken,
+                    pushEnabled: this.linePushEnabled,
                     writeToFirebase: writeToFirebase
                 }).then(function(result) {
                     if (result && result.backend === 'pocketbase') console.info('Order saved to PocketBase primary:', orderId);
@@ -1008,6 +1113,7 @@
                     self.isLoading = false;
                     self.checkHoliday();
                     if (self.settings.isOpen) self.initDateTime();
+                    self.initLineMember();
                     // 即時監聽設定
                     self.startSettingsPrimaryRefresh();
                     self.startMenuVersionPolling();
@@ -1069,6 +1175,10 @@
                         pickupInterval: Number.isFinite(Number(v.pickupInterval)) ? Number(v.pickupInterval) : (Number.isFinite(Number(prev.pickupInterval)) ? Number(prev.pickupInterval) : 30),
                         linePayServerUrl: v.linePayServerUrl || prev.linePayServerUrl || '',
                         linePayConfirmUrl: v.linePayConfirmUrl || prev.linePayConfirmUrl || '',
+                        lineLiffId: v.lineLiffId || window.LINE_LIFF_ID || prev.lineLiffId || '',
+                        lineOfficialAccountUrl: /^https:\/\//i.test(String(v.lineOfficialAccountUrl || prev.lineOfficialAccountUrl || '').trim())
+                            ? String(v.lineOfficialAccountUrl || prev.lineOfficialAccountUrl || '').trim()
+                            : '',
                         pocketBaseUrl: v.pocketBaseUrl || v.pocketbaseUrl || prev.pocketBaseUrl || 'https://pb.yuangi168.com',
                         pocketBaseOrdersCollection: v.pocketBaseOrdersCollection || v.pocketbaseOrdersCollection || prev.pocketBaseOrdersCollection || 'orders',
                         pocketBaseOrderEndpoint: v.pocketBaseOrderEndpoint || v.pocketbaseOrderEndpoint || v.pocketBaseSecureOrderEndpoint || v.secureOrderEndpoint || prev.pocketBaseOrderEndpoint || '',
@@ -1793,6 +1903,10 @@
             // ★ 嘗試從 Firebase 讀取訂單狀態更新（可能因權限失敗）
             tryRefreshOrderStatus: function() {
                 var self = this;
+                if (self.lineIdToken) {
+                    self.loadLineMemberOrders();
+                    return;
+                }
                 if (!self.myOrders.length) return;
                 var targets = self.myOrders.filter(function(order) {
                     return self.shouldTrackOrderForRefresh(order);
@@ -2043,7 +2157,7 @@
                     pickupDate: this.pickupDate,
                     pickupTime: this.pickupTime,
                     type: this.orderType,
-                    source: 'online',
+                    source: self.lineIdToken ? 'web_liff' : 'online',
                     deviceId: self.deviceId || '',
                     orderNote: this.orderNote || '',
                     paymentMethod: payMethod || 'store',
@@ -2176,8 +2290,8 @@
                     self.showSuccessModal = true;
                     self.cart = [];
                     try { localStorage.removeItem('cart_items'); } catch(e) {}
-                    self.inputName = '';
-                    self.inputPhone = '';
+                    self.inputName = self.lineDisplayName || '';
+                    if (!self.lineReady) self.inputPhone = '';
                     self.orderNote = '';
                     self.currentView = 'menu';
                 }).catch(function(e) {
