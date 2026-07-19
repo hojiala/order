@@ -487,6 +487,12 @@ export function pocketBaseRecordToOrder(record) {
     var dateKey = text(record.date_key || record.dateKey || customer.orderDateKey || customer.pickupDate);
     var orderId = text(record.order_id || record.orderId || record.id);
     var source = text(record.source || "web");
+    var member = text(record.member || record.member_id || record.memberId);
+    // LINE 會員關聯是伺服器驗證後才會寫入的可信欄位。舊資料若曾被
+    // POS/admin 的一般狀態更新誤降級成 online，讀取時直接恢復 LIFF 來源。
+    if (member && ["", "web", "online", "line", "web_liff"].indexOf(source.toLowerCase()) !== -1) {
+        source = "web_liff";
+    }
     var paymentMethod = text(record.payment_method || record.paymentMethod || "");
     var paymentStatus = text(record.payment_status || record.paymentStatus || "");
     var pickupMode = text(record.pickup_mode || record.pickupMode || "");
@@ -497,7 +503,10 @@ export function pocketBaseRecordToOrder(record) {
     var order = {
         id: orderId || text(record.id),
         source: source,
-        sourceLabel: text(record.source_label || record.sourceLabel || sourceLabelFor({ source: source }, source)),
+        sourceLabel: source === "web_liff"
+            ? "LINE 線上點餐"
+            : text(record.source_label || record.sourceLabel || sourceLabelFor({ source: source }, source)),
+        member: member,
         sourceOrderId: orderId || text(record.id),
         status: text(record.status || "new"),
         orderNo: orderNo || null,

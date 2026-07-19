@@ -80,7 +80,7 @@
                         <div v-else-if="isPosSourceOrder(order)" class="text-white text-xs font-bold px-3 py-1 text-center tracking-widest" style="background:#ea580c;">
                             🏪 現場 POS 訂單
                         </div>
-                        <div v-else-if="order.source === 'LINE' || order.source === 'web_liff'" class="bg-green-500 text-white text-xs font-bold px-3 py-1 text-center tracking-widest">
+                        <div v-else-if="isLineSourceOrder(order)" class="bg-green-500 text-white text-xs font-bold px-3 py-1 text-center tracking-widest">
                             🟢 LINE 專屬訂單
                         </div>
                         <div v-else-if="order.source === 'qrcode'" class="bg-purple-500 text-white text-xs font-bold px-3 py-1 text-center tracking-widest">
@@ -288,7 +288,7 @@
         import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
         import { getDatabase, ref, onValue, onChildAdded, onChildChanged, onChildRemoved, update, set, get, remove, query, orderByChild, limitToLast } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
         import { getAuth, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-        import { allocateOrderNoFromPocketBase, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, listMenuItemsFromPocketBase, writeOrderToPocketBase } from "./pocketbase-order-writer.js?v=20260716_0800";
+        import { allocateOrderNoFromPocketBase, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, listMenuItemsFromPocketBase, writeOrderToPocketBase } from "./pocketbase-order-writer.js?v=20260719_003";
 
         // ★★★ 請貼入您相同的 Firebase 配置 ★★★
         const firebaseConfig = {
@@ -1906,7 +1906,10 @@
                         out.phoneAi && out.phoneAi.rawJsonPath,
                         sourceRecordPathRaw
                     ].map((v) => String(v || '')).join(' ').toLowerCase();
-                    if (sourcePath.indexOf('phone_ai/orders/') === 0
+                    if (sourceRaw === 'line' || sourceRaw === 'web_liff' || out.member || sourceLabelRaw.indexOf('line') >= 0) {
+                        out.source = 'web_liff';
+                        out.sourceLabel = 'LINE 線上點餐';
+                    } else if (sourcePath.indexOf('phone_ai/orders/') === 0
                         || sourceRecordPathRaw.indexOf('phone_ai/orders/') === 0
                         || sourceRaw === 'phone_ai'
                         || sourceRaw === 'pos_local'
@@ -2293,6 +2296,12 @@
                 },
                 normalizeIncomingOrders(list) {
                     return (Array.isArray(list) ? list : []).map((order) => this.normalizeIncomingOrder(order));
+                },
+                isLineSourceOrder(order) {
+                    if (!order || typeof order !== 'object') return false;
+                    const src = String(order.source || '').toLowerCase();
+                    const label = String(order.sourceLabel || order._integrationSourceLabel || '').toLowerCase();
+                    return src === 'line' || src === 'web_liff' || !!order.member || label.indexOf('line') >= 0;
                 },
                 isPhoneSourceOrder(order) {
                     if (!order) return false;
@@ -2863,6 +2872,11 @@
                             }
                         }
                         const merged = preferIncoming ? Object.assign({}, current, incoming) : Object.assign({}, incoming, current);
+                        if (this.isLineSourceOrder(current) || this.isLineSourceOrder(incoming)) {
+                            merged.source = 'web_liff';
+                            merged.sourceLabel = 'LINE 線上點餐';
+                            merged.member = current.member || incoming.member || merged.member || '';
+                        }
                         const bestItems = pickRicherItems(current.items, incoming.items);
                         if (bestItems && bestItems.length) merged.items = bestItems.map((it) => Object.assign({}, it));
                         merged.total = pickDisplayTotal(merged, Number(current.total), Number(incoming.total), merged.items);
@@ -2922,7 +2936,7 @@
                         if (src === 'qrcode') return 'qrcode';
                         if (src === 'qr_takeout') return 'qr_takeout';
                         if (src === 'dinein' || type === 'dinein') return 'dinein';
-                        if (src === 'line' || src === 'web_liff') return 'line';
+                        if (this.isLineSourceOrder(order)) return 'line';
                         if (path.indexOf('orders/') === 0 || path.indexOf('orders_archive/') === 0 || src === 'web' || src === 'online' || !src) return 'web';
                         return src;
                     };

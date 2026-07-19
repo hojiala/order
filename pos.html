@@ -288,7 +288,7 @@
                       'bg-purple-100 text-purple-700':order.source==='qrcode',
                       'bg-violet-100 text-violet-700':order.source==='qr_takeout',
                       'bg-green-500/15 text-green-600':order.source!=='pos'&&order.source!=='dinein'&&order.source!=='qrcode'&&order.source!=='qr_takeout'&&order.source!=='phone_ai'&&order.source!=='pos_local'
-                    }" class="text-xs px-1.5 py-0.5 rounded font-bold flex-shrink-0">{{ order.source==='phone_ai' || order.source==='pos_local' ? "電話" : order.source==='pos' ? "POS" : order.source==='line' || order.source==='web_liff' ? "LINE" : order.source==='qr_takeout' ? "掃碼外帶" : order.source==='qrcode' ? "掃碼內用" : order.source==='dinein' ? (order.tableType==='kiosk' ? "外帶" : "內用") : "線上" }}</span>
+                    }" class="text-xs px-1.5 py-0.5 rounded font-bold flex-shrink-0">{{ order.source==='phone_ai' || order.source==='pos_local' ? "電話" : order.source==='pos' ? "POS" : isLineSourceOrder(order) ? "LINE" : order.source==='qr_takeout' ? "掃碼外帶" : order.source==='qrcode' ? "掃碼內用" : order.source==='dinein' ? (order.tableType==='kiosk' ? "外帶" : "內用") : "線上" }}</span>
                   </div>
                   <div class="flex items-center gap-3 mb-1">
                     <span class="text-xs text-orange-600 font-black bg-orange-50 px-2 py-0.5 rounded">No.{{ fmtNo(order.orderNo) }}</span>
@@ -791,7 +791,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getDatabase, ref, onValue, onChildAdded, onChildChanged, onChildRemoved, update, push, set, get, remove, query, orderByChild, limitToLast, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-    import { allocateOrderNoFromPocketBase, resetOrderNoInPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, listMenuItemsFromPocketBase, writeMenuItemToPocketBase, writeSettingsToPocketBase, rememberPublicMenuItems, rememberPublicSettings, normalizePublicSettings, subscribeOrdersRealtime } from "./pocketbase-order-writer.js?v=20260717_open_today_1";
+    import { allocateOrderNoFromPocketBase, resetOrderNoInPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, listMenuItemsFromPocketBase, writeMenuItemToPocketBase, writeSettingsToPocketBase, rememberPublicMenuItems, rememberPublicSettings, normalizePublicSettings, subscribeOrdersRealtime } from "./pocketbase-order-writer.js?v=20260719_003";
     const firebaseConfig = {
         apiKey:"AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
         authDomain:"breakfast-ai-system.firebaseapp.com",
@@ -1891,7 +1891,10 @@
                     sourceRecordPathRaw
                 ].map(function(v){return String(v||'');}).join(' ').toLowerCase();
                 var printSourceRaw=String(out.printSource||out['訂單來源']||'').toLowerCase();
-                if(sourceRaw==='pos'||printSourceRaw==='pos'||sourceLabelRaw.indexOf('pos')>=0){
+                if(sourceRaw==='line'||sourceRaw==='web_liff'||out.member||sourceLabelRaw.indexOf('line')>=0){
+                    out.source='web_liff';
+                    out.sourceLabel='LINE 線上點餐';
+                }else if(sourceRaw==='pos'||printSourceRaw==='pos'||sourceLabelRaw.indexOf('pos')>=0){
                     out.source='pos';
                     out.sourceLabel=out.sourceLabel||'現場 POS';
                     out.printSource='POS';
@@ -2401,6 +2404,12 @@
             normalizeIncomingOrders:function(list){
                 var self=this;
                 return (Array.isArray(list)?list:[]).map(function(order){return self.normalizeIncomingOrder(order);});
+            },
+            isLineSourceOrder:function(order){
+                if(!order||typeof order!=='object')return false;
+                var src=String(order.source||'').toLowerCase();
+                var label=String(order.sourceLabel||order._integrationSourceLabel||'').toLowerCase();
+                return src==='line'||src==='web_liff'||!!order.member||label.indexOf('line')>=0;
             },
             isPhoneSourceOrder:function(order){
                 if(!order)return false;
@@ -4972,6 +4981,11 @@
                         }
                     }
                     var merged=preferIncoming?Object.assign({},current,incoming):Object.assign({},incoming,current);
+                    if(s.isLineSourceOrder(current)||s.isLineSourceOrder(incoming)){
+                        merged.source='web_liff';
+                        merged.sourceLabel='LINE 線上點餐';
+                        merged.member=current.member||incoming.member||merged.member||'';
+                    }
                     var bestItems=pickRicherItems(current.items,incoming.items);
                     if(bestItems&&bestItems.length)merged.items=bestItems.map(function(it){return Object.assign({},it);});
                     merged.total=s.preferOrderTotalForDisplay(merged,Number(current.total),Number(incoming.total),merged.items);
@@ -5055,7 +5069,7 @@
                     if(src==='qrcode')return 'qrcode';
                     if(src==='qr_takeout')return 'qr_takeout';
                     if(src==='dinein'||type==='dinein')return 'dinein';
-                    if(src==='line'||src==='web_liff')return 'line';
+                    if(s.isLineSourceOrder(order))return 'line';
                     if(path.indexOf('orders/')===0||path.indexOf('orders_archive/')===0||src==='web'||src==='online'||!src)return 'web';
                     return src;
                 }
