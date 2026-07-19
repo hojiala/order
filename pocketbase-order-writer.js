@@ -2658,6 +2658,7 @@ export function requestLineMember(idToken, options) {
             lineIdToken: text(idToken),
             pushEnabled: typeof options.pushEnabled === "boolean" ? options.pushEnabled : undefined,
             phone: text(options.phone),
+            cancelOrderId: text(options.cancelOrderId) || undefined,
             limit: Math.max(1, Math.min(100, Number(options.limit) || 50))
         })
     }, Number(options.timeoutMs || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS);
@@ -2676,7 +2677,10 @@ export function requestLineMembers(options) {
                 "Content-Type": "application/json",
                 "Authorization": "Bearer " + idToken
             },
-            body: JSON.stringify({ limit: Math.max(1, Math.min(1000, Number(options.limit) || 500)) })
+            body: JSON.stringify({
+                memberId: text(options.memberId) || undefined,
+                limit: Math.max(1, Math.min(1000, Number(options.limit) || 500))
+            })
         }, Number(options.timeoutMs || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS);
     });
 }

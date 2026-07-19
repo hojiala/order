@@ -526,7 +526,7 @@
                             </div>
                             <div class="mt-2 flex gap-2">
                                 <button @click="reorderItems(order)" class="flex-1 bg-orange-50 hover:bg-orange-100 border border-orange-200 text-orange-600 font-bold text-xs py-2 rounded-xl transition">🔁 再訂1次</button>
-                                <button v-if="order.status==='new'||order.status==='making'" @click="cancelMyOrder(order)" class="flex-1 bg-red-50 hover:bg-red-100 border border-red-200 text-red-500 font-bold text-xs py-2 rounded-xl transition">❌ 取消</button>
+                                <button v-if="order.status==='new'||order.status==='making'" @click="confirmCancelMyOrder(order)" class="flex-1 bg-red-50 hover:bg-red-100 border border-red-200 text-red-500 font-bold text-xs py-2 rounded-xl transition">❌ 取消</button>
                             </div>
                         </div>
                     </div>
@@ -564,14 +564,16 @@
         <div class="bg-white rounded-2xl shadow-2xl mx-5 overflow-hidden" style="max-width:22rem;width:100%;">
             <div class="bg-orange-500 px-5 py-3 flex items-center gap-2">
                 <img src="./images/logo.png" class="h-6 w-auto object-contain" alt="logo">
-                <span class="text-white font-black text-base">元氣早午餐善化中山店</span>
+                <span class="text-white font-black text-base">{{ storeName }}</span>
             </div>
             <div class="px-6 py-5">
                 <p class="text-gray-800 font-bold text-base mb-2">{{ alertDialogTitle }}</p>
                 <p class="text-gray-600 text-sm" style="white-space:pre-line;line-height:1.7;">{{ alertDialogMsg }}</p>
             </div>
-            <div class="px-5 pb-4 flex justify-end">
-                <button @click="showAlertDialog = false"
+            <div class="px-5 pb-4 flex justify-end gap-2">
+                <button v-if="alertDialogResolve" @click="closeAlertDialog(false)"
+                    class="bg-slate-200 text-slate-700 font-bold px-6 py-2 rounded-xl text-sm">取消</button>
+                <button @click="closeAlertDialog(true)"
                     class="bg-orange-500 text-white font-bold px-6 py-2 rounded-xl text-sm"
                     style="box-shadow:0 4px 12px rgba(249,115,22,0.3);">確定</button>
             </div>
@@ -627,7 +629,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getDatabase, ref, push, set, get, update, onValue, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-    import { allocateOrderNoFromPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, pocketBaseRecordToOrder, requestLineMember } from "./pocketbase-order-writer.js?v=20260718_001";
+    import { allocateOrderNoFromPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, pocketBaseRecordToOrder, requestLineMember } from "./pocketbase-order-writer.js?v=20260719_002";
 
     const enteredFromLiff = /(?:^|[?&])liff(?:=1|=true|[.&=])/i.test(location.search) || /(?:^|[?&])liff\.state=/i.test(location.search) || /\bLine\//i.test(navigator.userAgent || '');
 
@@ -750,6 +752,7 @@
                 showAlertDialog: false,
                 alertDialogTitle: '',
                 alertDialogMsg: '',
+                alertDialogResolve: null,
                 showAnnModal: false, annModalText: '', shownAnnCats: {},
                 successPickupTime: '',
                 successOrderTime: '',
@@ -773,6 +776,9 @@
             };
         },
         computed: {
+            storeName: function() {
+                return String((this.settings && (this.settings.storeName || this.settings.storeTitle)) || document.title || '').trim();
+            },
             filteredMenu: function() {
                 return this.menu.filter(function(i) {
                     return i.category === this.currentCategory && this.isItemAvailable(i);
@@ -1165,6 +1171,7 @@
                     var categorySubcategories = (v.categorySubcategories && typeof v.categorySubcategories === 'object' && Object.keys(v.categorySubcategories).length) ? v.categorySubcategories : (prev.categorySubcategories || {});
                     self.settings = {
                         isOpen: has('isOpen') ? v.isOpen !== false : prev.isOpen !== false,
+                        storeName: v.storeName || v.storeTitle || prev.storeName || prev.storeTitle || document.title || '',
                         useCustomLoadingImage: has('useCustomLoadingImage') ? v.useCustomLoadingImage === true : prev.useCustomLoadingImage === true,
                         categories: categories,
                         categorySubcategories: categorySubcategories,
@@ -1794,9 +1801,26 @@
                 // 無對應公告的分類切換，靜默處理（顧客按「我知道了」自行關閉）
             },
             showAlertModal: function(title, msg) {
+                if (this.alertDialogResolve) this.alertDialogResolve(false);
                 this.alertDialogTitle = title;
                 this.alertDialogMsg = msg;
+                this.alertDialogResolve = null;
                 this.showAlertDialog = true;
+            },
+            showConfirmModal: function(title, msg) {
+                var self = this;
+                return new Promise(function(resolve) {
+                    self.alertDialogTitle = title;
+                    self.alertDialogMsg = msg;
+                    self.alertDialogResolve = resolve;
+                    self.showAlertDialog = true;
+                });
+            },
+            closeAlertDialog: function(confirmed) {
+                var resolve = this.alertDialogResolve;
+                this.alertDialogResolve = null;
+                this.showAlertDialog = false;
+                if (resolve) resolve(confirmed === true);
             },
             getItemQty: function(id) {
                 return this.cart.filter(function(c) { return c.id === id; }).reduce(function(s, c) { return s + c.qty; }, 0);
@@ -2011,6 +2035,12 @@
                 if (unavailable.length) notes.push('未加入已下架品項：' + unavailable.join('、'));
                 if (notes.length) self.showAlertModal('請確認購物車', notes.join('\n'));
             },
+            confirmCancelMyOrder: function(order) {
+                var self = this;
+                return self.showConfirmModal('取消訂單', '確定要取消此訂單嗎？').then(function(confirmed) {
+                    if (confirmed) return self.cancelMyOrder(order);
+                });
+            },
             cancelMyOrder: function(order) {
                 var self = this;
                 if (!order || !order.id) return;
@@ -2020,14 +2050,14 @@
                     var diff = (new Date(pd + 'T' + pt + ':00').getTime() - Date.now()) / 60000;
                     if (diff <= limitMin) { self.showAlertModal('無法取消', '距離取餐時間不足 ' + limitMin + ' 分鐘，已無法線上取消訂單。\n如需取消，請直接聯繫店家，造成不便敬請見諒！'); return; }
                 }
-                if (!confirm('確定要取消此訂單嗎？')) return;
                 var dk=(order.orderDateKey||order.pickupDate||(function(){var d=new Date(order.timestamp||Date.now());return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);})());
                 var orderBase='orders/'+dk+'/'+order.id;
                 var cancelTs=Date.now();
                 var cancelTask='cancel_'+cancelTs;
                 var pm = String(order.paymentMethod||'').toLowerCase();
-                var lpKnown = pm.indexOf('linepay')===0 || !!(self.lpConfirmed&&self.lpConfirmed[order.id]) || (self.lpTxnState&&self.lpTxnState[order.id]==='confirmed');
-                var linePayPaid = lpKnown && order.paymentStatus==='paid';
+                var transactionConfirmed = !!(self.lpConfirmed&&self.lpConfirmed[order.id]) || (self.lpTxnState&&self.lpTxnState[order.id]==='confirmed');
+                var lpKnown = pm.indexOf('linepay')===0 || transactionConfirmed;
+                var linePayPaid = lpKnown && (order.paymentStatus==='paid' || transactionConfirmed);
                 var sendCancelPrint = function(){
                     var queueData=Object.assign({},order,{status:'cancelled',cancelledAt:cancelTs,cancelSource:'customer',print_task:cancelTask});
                     delete queueData.id;
@@ -2049,7 +2079,10 @@
                         .then(function(){return set(ref(db,'print_queue/'+order.id),queueData);})
                         .catch(function(e){console.warn('cancel print_queue 寫入失敗:',e&&e.message?e.message:e);});
                 };
-                update(ref(db, orderBase), { status:'cancelled', cancelledAt:cancelTs, cancelSource:'customer', print_task:cancelTask }).then(function() {
+                var cancelWrite = self.lineIdToken
+                    ? requestLineMember(self.lineIdToken, { settings:self.settings, cancelOrderId:order.id, limit:50, timeoutMs:10000 })
+                    : update(ref(db, orderBase), { status:'cancelled', cancelledAt:cancelTs, cancelSource:'customer', print_task:cancelTask });
+                return cancelWrite.then(function() {
                     // ★ LINE Pay 已付款單：取消單由 Pi 退款成功時列印（同 pos 的防重複規則），
                     //   這裡不印；退款失敗/逾時才補印（見下方退款流程）
                     if(linePayPaid) return;
