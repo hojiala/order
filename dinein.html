@@ -807,7 +807,8 @@
                     settings:this.settings,
                     sourcePage:sourcePage||'dinein',
                     timeoutMs:8000,
-                    secureTimeoutMs:10000
+                    secureTimeoutMs:10000,
+                    firebaseUser:auth.currentUser
                 }).then(function(result){
                     if(result&&result.ok)console.info('PocketBase order sync:',result.action,result.id||orderId);
                     return result;
@@ -817,11 +818,14 @@
                 });
             },
             writeOrderPrimary:function(orderId,orderData,sourcePage,writeToFirebase){
+                var currentUser=auth.currentUser;
+                if(currentUser&&!orderData.createdByUid)orderData.createdByUid=currentUser.uid;
                 return writeOrderWithFirebaseFallback(orderId,orderData,{
                     settings:this.settings,
                     sourcePage:sourcePage||'dinein',
                     timeoutMs:8000,
                     secureTimeoutMs:10000,
+                    firebaseUser:currentUser,
                     writeToFirebase:writeToFirebase
                 }).then(function(result){
                     if(result&&result.backend==='pocketbase')console.info('Order saved to PocketBase primary:',orderId);
@@ -866,7 +870,8 @@
                 var s=this;
                 return allocateOrderNoFromPocketBase({
                     settings:this.settings,
-                    sourcePage:sourcePage||'dinein'
+                    sourcePage:sourcePage||'dinein',
+                    firebaseUser:auth.currentUser
                 }).then(function(result){
                     if(result&&result.ok)return result;
                     return s.allocateOrderNoFromFirebaseFallback(sourcePage||'dinein',result);
@@ -1484,18 +1489,16 @@
                     :'確定要取消這筆訂單嗎？（將自動列印取消單至廚房）';
                 if(!confirm(msg))return;
                 var dk=(order.orderDateKey||order.pickupDate||(function(){var d=new Date(order.timestamp||Date.now());return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);})());
-                var taskRef=ref(db,'orders/'+dk+'/'+order.id+'/print_task');
                 var cnTask='cancel_'+Date.now();
-                remove(taskRef).then(function(){
-                    return update(ref(db,'orders/'+dk+'/'+order.id),{status:'cancelled',wasCancelled:true});
-                }).then(function(){
-                    // ★ LINE Pay 已付款：寫退款請求給 Pi 自動退款；取消單由 Pi 退款成功時列印（防重複），
-                    //   退款失敗/逾時才由這裡補印
-                    if(isPaidLinePay)return s.requestCancelRefund(order,dk,taskRef,cnTask);
-                    return set(taskRef,cnTask).then(function(){ s.toast('❌ 訂單已取消，列印取消單...'); });
+                var cancelPatch={status:'cancelled',wasCancelled:true,cancelledAt:Date.now()};
+                if(!isPaidLinePay)cancelPatch.print_task=cnTask;
+                update(ref(db,'orders/'+dk+'/'+order.id),cancelPatch).then(function(){
+                    // LINE Pay 已付款時，只有 Pi 確認退款成功後才列印取消單。
+                    if(isPaidLinePay)return s.requestCancelRefund(order,dk);
+                    s.toast('❌ 訂單已取消，列印取消單...');
                 }).catch(function(e){s.toast('⚠️ 取消失敗：'+e.message);});
             },
-            requestCancelRefund:function(order,dk,taskRef,cnTask){
+            requestCancelRefund:function(order,dk){
                 var s=this;
                 s.toast('❌ 訂單已取消，LINE Pay 退款處理中…');
                 return set(ref(db,'linepay_refund_requests/'+order.id),{
@@ -1508,15 +1511,15 @@
                         return get(ref(db,'linepay_refund_requests/'+order.id)).then(function(snap){
                             var rv=snap&&snap.val();
                             if(rv&&(rv.status==='done'||rv.returnCode==='ALREADY_REFUNDED')){ s.toast('💜 LINE Pay 已退款'); return; }
-                            if(rv&&rv.status==='error'){ return set(taskRef,cnTask).then(function(){ s.toast('⚠️ 退款失敗，將由店家協助處理'); }); }
-                            if(attempts>=40){ return set(taskRef,cnTask).then(function(){ s.toast('⚠️ 退款處理中，稍後可查看訂單狀態'); }); }
+                            if(rv&&rv.status==='error'){ s.toast('⚠️ 退款失敗，將由店家協助處理'); return; }
+                            if(attempts>=40){ s.toast('⚠️ 退款處理中，稍後可查看訂單狀態'); return; }
                             return new Promise(function(r){setTimeout(r,750);}).then(poll);
                         });
                     };
                     return new Promise(function(r){setTimeout(r,750);}).then(poll);
                 }).catch(function(e){
                     console.warn('退款請求寫入失敗:',e&&e.message?e.message:e);
-                    return set(taskRef,cnTask).then(function(){ s.toast('⚠️ 退款將由店家協助處理'); }).catch(function(){});
+                    s.toast('⚠️ 退款將由店家協助處理');
                 });
             },
             // ── 情境2：QR Code 付款 ──
@@ -1712,7 +1715,7 @@
                     }
                     // 購物車已變更：把舊的未付款訂單作廢，避免殘留混淆現場人員
                     try{
-                        update(ref(db,'orders/'+reuse.dateKey+'/'+reuse.orderId),{status:'cancelled',paymentStatus:'cancelled'}).catch(function(){});
+                        update(ref(db,'orders/'+reuse.dateKey+'/'+reuse.orderId),{status:'cancelled',wasCancelled:true,cancelledAt:Date.now()}).catch(function(){});
                         remove(ref(db,'linepay_requests/'+reuse.orderId)).catch(function(){});
                     }catch(e){}
                     s.pendingQRReuse=null;s.qrReuseCandidate=null;

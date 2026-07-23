@@ -1939,16 +1939,6 @@
                     if ((!out.paymentMethod || out.paymentMethod === 'store') && /line.?pay/.test(pmRaw)) {
                         out.paymentMethod = pmRaw.indexOf('offline') >= 0 ? 'linepay_offline' : 'linepay';
                     }
-                    const psRaw = String(out.paymentStatus || out['付款狀態'] || payment.status || '').toLowerCase();
-                    const psText = String(out['付款狀態'] || out.paymentStatusText || '').toLowerCase();
-                    const hasPaidHints = !!(
-                        out.paymentConfirmedAt || out.linePayConfirmedAt || out.linepayConfirmedAt || out.paidAt ||
-                        out.linepayTransactionId || out.linePayTransactionId || out.transactionId ||
-                        psText.indexOf('已付') >= 0 || psText.indexOf('paid') >= 0 || psText.indexOf('confirmed') >= 0
-                    );
-                    if ((out.paymentMethod === 'linepay' || out.paymentMethod === 'linepay_offline') && (psRaw === 'pending' || psRaw === 'unpaid' || !psRaw) && hasPaidHints) {
-                        out.paymentStatus = 'paid';
-                    }
                     if (!out.orderNote && typeof out['訂單備註'] === 'string') out.orderNote = out['訂單備註'];
                     if (!out.phone && out.customer && out.customer.phone) out.phone = out.customer.phone;
                     const customerObj = (out.customer && typeof out.customer === 'object') ? out.customer : {};
@@ -3204,7 +3194,8 @@
                         settings: this.settings || {},
                         pocketBaseUrl: this.pocketBaseUrl,
                         pocketBaseOrdersCollection: this.pocketBaseOrdersCollection,
-                        sourcePage: sourcePage || 'admin'
+                        sourcePage: sourcePage || 'admin',
+                        firebaseUser: auth.currentUser
                     });
                 },
                 async autoAssignOrderNo(orderId) {
@@ -3370,10 +3361,9 @@
                 },
                 getLinePayState(order) {
                     if (!order) return 'pending';
-                    if (order.paymentMethod === 'linepay_refund') return 'refunded';
                     const txnState = this.lpStatus[order.id] || '';
-                    if (order.paymentStatus === 'refunded' || txnState === 'refunded') return 'refunded';
-                    if (order.paymentStatus === 'paid' || this.lpConfirmed[order.id] || txnState === 'confirmed') return 'paid';
+                    if (txnState === 'refunded') return 'refunded';
+                    if (txnState === 'confirmed') return 'paid';
                     return 'pending';
                 },
                 async requestLinePayRefund(order) {
@@ -3381,6 +3371,7 @@
                     const reqRef = ref(db, `linepay_refund_requests/${order.id}`);
 
                     try {
+                        if (!auth.currentUser) throw new Error('staff_auth_required');
                         await set(reqRef, {
                             orderId: order.id,
                             amount: Number(order.total || 0),
@@ -3396,54 +3387,16 @@
                             const snap = await get(reqRef);
                             if (!snap.exists()) continue;
                             const rv = snap.val() || {};
-                            if (rv.status === 'done' || rv.returnCode === 'ALREADY_REFUNDED') {
-                                return { success: true, returnCode: rv.returnCode || '0000', printTask: rv.printTask || '' };
+                            if (rv.status === 'done' && (rv.returnCode === '0000' || rv.returnCode === 'ALREADY_REFUNDED')) {
+                                return { success: true, returnCode: rv.returnCode, printTask: rv.printTask || '', refundTransactionId: rv.refundTransactionId || '' };
                             }
                             if (rv.status === 'error') {
                                 return { success: false, error: rv.error || '退款失敗', returnCode: rv.returnCode || '' };
                             }
                         }
-                    } catch (_) {}
-
-                    const baseCandidates = [];
-                    if (this.linePayServerUrl) baseCandidates.push(this.linePayServerUrl);
-                    try {
-                        const u = new URL(window.location.href);
-                        baseCandidates.push(`${u.protocol}//${u.hostname}:5000`);
-                        baseCandidates.push(`${u.protocol}//${u.hostname}:5001`);
-                        baseCandidates.push(u.origin);
-                    } catch (_) {}
-                    baseCandidates.push('http://127.0.0.1:5000');
-                    baseCandidates.push('http://localhost:5000');
-
-                    const tried = new Set();
-                    for (const b of baseCandidates) {
-                        const base = (b || '').replace(/\/$/, '');
-                        if (!base || tried.has(base)) continue;
-                        tried.add(base);
-                        try {
-                            const ctl = new AbortController();
-                            const timer = setTimeout(() => { try { ctl.abort(); } catch(e) {} }, 2500);
-                            const res = await fetch(base + '/api/linepay/refund', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ orderId: order.id, reason }),
-                                signal: ctl.signal
-                            });
-                            clearTimeout(timer);
-                            if (!res.ok) continue;
-                            const rd = await res.json();
-                            if (rd.success || rd.returnCode === 'ALREADY_REFUNDED') return { success: true, returnCode: rd.returnCode || '0000', printTask: rd.printTask || '' };
-                            if (rd.error) return { success: false, error: rd.error || '退款失敗', returnCode: rd.returnCode || '' };
-                        } catch (_) {}
+                    } catch (err) {
+                        return { success: false, error: (err && err.message) || '退款服務無回應' };
                     }
-
-                    try {
-                        const psnap = await get(ref(db, this.orderBasePath(order.id, order) + "/paymentStatus"));
-                        if (psnap.exists() && String(psnap.val() || '').toLowerCase() === 'refunded') {
-                            return { success: true, returnCode: 'LATE_REFUNDED' };
-                        }
-                    } catch (_) {}
                     return { success: false, error: '退款服務無回應' };
                 },
                 async cancelOrder(order) {
@@ -3486,14 +3439,11 @@
                     if (isLinePay && linePayState === 'pending') {
                         try {
                             const txnSnap = await get(ref(db, `linepay_transactions/${order.id}`));
-                            const paySnap = await get(ref(db, `${orderBase}/paymentStatus`));
                             const txnData = txnSnap.exists() ? (txnSnap.val() || {}) : {};
                             const txnState = (typeof txnData === 'object') ? (txnData.status || '') : txnData;
                             const txnConfirmedAt = (typeof txnData === 'object') ? (txnData.confirmedAt || 0) : 0;
-                            const payState = paySnap.exists() ? paySnap.val() : (latestOrder.paymentStatus || '');
-                            const orderConfirmedAt = latestOrder.paymentConfirmedAt || 0;
-                            if (payState === 'paid' || txnState === 'confirmed' || orderConfirmedAt || txnConfirmedAt) linePayState = 'paid';
-                            else if (payState === 'refunded' || txnState === 'refunded') linePayState = 'refunded';
+                            if (txnState === 'confirmed' && txnConfirmedAt) linePayState = 'paid';
+                            else if (txnState === 'refunded' && txnData.refundReturnCode === '0000' && txnData.refundedAt) linePayState = 'refunded';
                         } catch (_) {}
                     }
 
@@ -3536,29 +3486,16 @@
                             if (refund.success) {
                                 refundPrintTask = refund.printTask || '';
                                 const rts = Date.now();
-                                await this.updateOrderMirror(order.id, {
-                                    paymentStatus: 'refunded',
-                                    paymentMethod: 'linepay_refund',
-                                    refundedAt: rts
-                                }, latestOrder);
-                                await update(ref(db), {
-                                    [`linepay_transactions/${order.id}/status`]: 'refunded',
-                                    [`linepay_transactions/${order.id}/refundedAt`]: rts
-                                });
                                 latestOrder.paymentStatus = 'refunded';
                                 latestOrder.paymentMethod = 'linepay_refund';
                                 latestOrder.refundedAt = rts;
                                 this.lpStatus[order.id] = 'refunded';
                                 delete this.lpConfirmed[order.id];
-                                this.toast(`✅ LINE Pay 退款 $${latestOrder.total || order.total || 0} 已申請（等待狀態同步）`);
+                                this.toast(`✅ LINE Pay 退款 $${latestOrder.total || order.total || 0} 已確認`);
                             } else {
                                 this.toast('⚠️ 退款失敗：'+(refund.error||'服務無回應')+'，請手動退款');
                             }
                         } else if (isLinePay && linePayState !== 'refunded') {
-                            await update(ref(db), {
-                                [`linepay_transactions/${order.id}/status`]: 'cancelled',
-                                [`linepay_transactions/${order.id}/cancelledAt`]: Date.now()
-                            });
                             this.toast('✅ 訂單已取消（LINE Pay 未付款）');
                         } else {
                             this.toast('✅ 訂單已取消');

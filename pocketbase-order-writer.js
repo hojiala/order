@@ -894,10 +894,6 @@ function normalizeSettingsObject(value) {
         });
         return result;
     }
-    function normalizedPinString(input) {
-        var raw = text(decodeJsonLike(input)).trim();
-        return /^\d{4}$/.test(raw) ? raw : "";
-    }
     function normalizedUrlString(input) {
         var raw = text(decodeJsonLike(input)).trim();
         if (!raw) return "";
@@ -911,14 +907,12 @@ function normalizeSettingsObject(value) {
     if (out.categorySubcategories !== undefined) out.categorySubcategories = subcategoryMap(out.categorySubcategories, categories);
     if (out.telegramFallbackNotifyEndpoint !== undefined) out.telegramFallbackNotifyEndpoint = normalizedUrlString(out.telegramFallbackNotifyEndpoint);
     if (out.telegramNotifyEndpoint !== undefined) out.telegramNotifyEndpoint = normalizedUrlString(out.telegramNotifyEndpoint);
-    if (
-        Object.prototype.hasOwnProperty.call(out, "dineinPin") ||
-        Object.prototype.hasOwnProperty.call(out, "qrPin")
-    ) {
-        var finalPin = normalizedPinString(out.dineinPin) || normalizedPinString(out.qrPin) || "";
-        out.dineinPin = finalPin;
-        out.qrPin = finalPin;
-    }
+    delete out.dineinPassword;
+    delete out.dineinPin;
+    delete out.qrPin;
+    delete out.staffSettings;
+    delete out.adminSettings;
+    delete out.authSettings;
     // PocketBase 設定欄位以文字儲存，開關值會變成 "true"/"false" 字串；
     // 前台用 `v.isOpen !== false` 判斷時字串 "false" 會被當成開啟，必須先轉回布林。
     function boolLike(input) {
@@ -2298,18 +2292,20 @@ function writeManageRequest(kind, payload, options) {
     var config = resolvePocketBaseConfig(options);
     var endpoint = secureManageEndpoint(config, kind, options);
     if (!endpoint) return Promise.resolve({ ok: false, skipped: true, reason: "missing_manage_endpoint" });
-    
-    var headers = { "Content-Type": "application/json" };
-    var writeToken = config && config.writeToken;
-    if (writeToken) {
-        headers["X-Order-Write-Token"] = writeToken;
+    var user = options.firebaseUser;
+    if (!user || user.isAnonymous || typeof user.getIdToken !== "function") {
+        return Promise.reject(new Error("staff_auth_required"));
     }
-
-    return requestJson(endpoint, {
-        method: "POST",
-        headers: headers,
-        body: JSON.stringify(payload || {})
-    }, Number(options.secureTimeoutMs || options.timeoutMs || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS);
+    return Promise.resolve(user.getIdToken()).then(function(idToken) {
+        return requestJson(endpoint, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": "Bearer " + idToken
+            },
+            body: JSON.stringify(payload || {})
+        }, Number(options.secureTimeoutMs || options.timeoutMs || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS);
+    });
 }
 
 export function writeMenuItemToPocketBase(itemId, itemData, options) {
@@ -2366,22 +2362,11 @@ export function updateMenuSortInPocketBase(items, options) {
             }
             return result || { ok: false, backend: "pocketbase", reason: "menu_sort_write_failed" };
         }).then(function(result) {
-            if (result && result.ok) return result;
-            return updateMenuSortViaCollection(items, options);
-        }).then(function(result) {
             if (result && result.ok) {
                 rememberSortedItems();
                 return result;
             }
             return result;
-        }).catch(function(error) {
-            return updateMenuSortViaCollection(items, options).then(function(result) {
-                if (result && result.ok) {
-                    rememberSortedItems();
-                    return result;
-                }
-                return { ok: false, backend: "pocketbase", error: error, fallback: result, message: error && error.message ? error.message : String(error) };
-            });
         });
 }
 
@@ -2393,15 +2378,7 @@ export function writeSettingsToPocketBase(settingsPatch, options) {
             rememberPublicSettings(options, Object.assign({}, (options.settings || {}), patch));
             return Object.assign({ ok: true, backend: "pocketbase" }, result || {});
         }
-        return writeSettingsViaCollection(patch, options);
-    }).catch(function(error) {
-        return writeSettingsViaCollection(patch, options).then(function(result) {
-            if (result && result.ok) {
-                rememberPublicSettings(options, Object.assign({}, (options.settings || {}), patch));
-                return result;
-            }
-            return { ok: false, backend: "pocketbase", error: error, fallback: result, message: error && error.message ? error.message : String(error) };
-        });
+        return result;
     }).then(function(result) {
         if (result && result.ok) rememberPublicSettings(options, Object.assign({}, (options.settings || {}), patch));
         return result;
@@ -2524,15 +2501,17 @@ function requestJson(url, init, timeoutMs) {
 export function allocateOrderNoFromPocketBase(options) {
     options = options || {};
     var config = resolvePocketBaseConfig(options);
-    if (!config.baseUrl) {
-        return Promise.resolve({ ok: false, skipped: true, reason: "missing_pocketbase_url" });
+    var endpoint = cleanBaseUrl(config.orderEndpoint || "").replace(
+        /\/api\/(?:secure\/)?orders$/i,
+        "/api/order-counter/next"
+    );
+    if (!endpoint || endpoint === config.orderEndpoint) {
+        return Promise.resolve({ ok: false, skipped: true, reason: "missing_secure_counter_endpoint" });
     }
     if (typeof window !== "undefined" && window.location && window.location.protocol === "https:" &&
-        /^http:\/\//i.test(config.baseUrl) && !/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(config.baseUrl)) {
+        /^http:\/\//i.test(endpoint) && !/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(endpoint)) {
         return Promise.resolve({ ok: false, skipped: true, reason: "mixed_content_http_pocketbase_url" });
     }
-    var headers = { "Content-Type": "application/json" };
-    if (config.token) headers.Authorization = "Bearer " + config.token;
     var settings = options.settings || {};
     var state = settings.orderCounterState || {};
     var resetValue = options.resetTime || settings.counterResetTime || state.resetTime;
@@ -2542,11 +2521,20 @@ export function allocateOrderNoFromPocketBase(options) {
     };
     if (text(resetValue)) payload.resetTime = text(resetValue);
     if (text(maxValue)) payload.maxNo = numericOrUndefined(maxValue) || 999;
-    return requestJson(config.baseUrl + "/api/order-counter/next", {
-        method: "POST",
-        headers: headers,
-        body: JSON.stringify(payload)
-    }, Number(options.timeoutMs || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS).then(function(data) {
+    var user = options.firebaseUser;
+    var idTokenPromise = user && typeof user.getIdToken === "function"
+        ? Promise.resolve().then(function() { return user.getIdToken(); })
+        : Promise.reject(new Error("firebase_auth_required"));
+    return idTokenPromise.then(function(idToken) {
+        return requestJson(endpoint, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": "Bearer " + idToken
+            },
+            body: JSON.stringify(payload)
+        }, Number(options.timeoutMs || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS);
+    }).then(function(data) {
         var orderNo = numericOrUndefined(data && (data.orderNo || data.order_no || data.value));
         if (!orderNo) return { ok: false, reason: "invalid_counter_response", response: data };
         return {
@@ -2566,15 +2554,17 @@ export function allocateOrderNoFromPocketBase(options) {
 export function resetOrderNoInPocketBase(options) {
     options = options || {};
     var config = resolvePocketBaseConfig(options);
-    if (!config.baseUrl) {
-        return Promise.resolve({ ok: false, skipped: true, reason: "missing_pocketbase_url" });
+    var endpoint = cleanBaseUrl(config.orderEndpoint || "").replace(
+        /\/api\/(?:secure\/)?orders$/i,
+        "/api/order-counter/reset"
+    );
+    if (!endpoint || endpoint === config.orderEndpoint) {
+        return Promise.resolve({ ok: false, skipped: true, reason: "missing_secure_counter_endpoint" });
     }
     if (typeof window !== "undefined" && window.location && window.location.protocol === "https:" &&
-        /^http:\/\//i.test(config.baseUrl) && !/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(config.baseUrl)) {
+        /^http:\/\//i.test(endpoint) && !/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(endpoint)) {
         return Promise.resolve({ ok: false, skipped: true, reason: "mixed_content_http_pocketbase_url" });
     }
-    var headers = { "Content-Type": "application/json" };
-    if (config.token) headers.Authorization = "Bearer " + config.token;
     var settings = options.settings || {};
     var state = settings.orderCounterState || {};
     var payload = {
@@ -2582,11 +2572,20 @@ export function resetOrderNoInPocketBase(options) {
         resetTime: text(options.resetTime || settings.counterResetTime || state.resetTime || "00:00"),
         maxNo: numericOrUndefined(options.maxNo || settings.counterMaxNo || state.maxNo || 999) || 999
     };
-    return requestJson(config.baseUrl + "/api/order-counter/reset", {
-        method: "POST",
-        headers: headers,
-        body: JSON.stringify(payload)
-    }, Number(options.timeoutMs || RESET_TIMEOUT_MS) || RESET_TIMEOUT_MS).then(function(data) {
+    var user = options.firebaseUser;
+    var idTokenPromise = user && !user.isAnonymous && typeof user.getIdToken === "function"
+        ? Promise.resolve().then(function() { return user.getIdToken(); })
+        : Promise.reject(new Error("staff_auth_required"));
+    return idTokenPromise.then(function(idToken) {
+        return requestJson(endpoint, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": "Bearer " + idToken
+            },
+            body: JSON.stringify(payload)
+        }, Number(options.timeoutMs || RESET_TIMEOUT_MS) || RESET_TIMEOUT_MS);
+    }).then(function(data) {
         return Object.assign({ ok: true }, data || {});
     }).catch(function(e) {
         return { ok: false, error: e, message: e && e.message ? e.message : String(e) };
@@ -2609,7 +2608,7 @@ function writeOrderToSecureEndpoint(config, orderId, orderData, options, record,
         ? requestTurnstileToken(config.turnstileSiteKey, options.turnstileTimeoutMs || 90000)
         : Promise.resolve("");
     var user = options.firebaseUser;
-    var firebaseTokenPromise = user && !user.isAnonymous && typeof user.getIdToken === "function"
+    var firebaseTokenPromise = user && typeof user.getIdToken === "function"
         ? Promise.resolve().then(function() { return user.getIdToken(); }).catch(function() { return ""; })
         : Promise.resolve("");
     return Promise.all([tokenPromise, firebaseTokenPromise]).then(function(tokens) {
@@ -2768,12 +2767,21 @@ function notifyFirebaseFallbackOnce(orderId, orderData, options, reason, firebas
         clientTs: Date.now(),
         firebase: plainJson(firebaseResult || {}, {})
     };
-    return requestJson(endpoint, {
-        method: "POST",
-        keepalive: true,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body)
-    }, Number(options.notifyTimeoutMs || 3500) || 3500).then(function(result) {
+    var user = options.firebaseUser;
+    var tokenPromise = user && typeof user.getIdToken === "function"
+        ? Promise.resolve().then(function() { return user.getIdToken(); })
+        : Promise.reject(new Error("firebase_auth_required"));
+    return tokenPromise.then(function(idToken) {
+        return requestJson(endpoint, {
+            method: "POST",
+            keepalive: true,
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": "Bearer " + idToken
+            },
+            body: JSON.stringify(body)
+        }, Number(options.notifyTimeoutMs || 3500) || 3500);
+    }).then(function(result) {
         try {
             if (typeof localStorage !== "undefined") localStorage.setItem(storageKey, String(Date.now()));
         } catch(e) {}

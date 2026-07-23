@@ -967,6 +967,7 @@
                     sourcePage: sourcePage || 'index',
                     timeoutMs: 8000,
                     secureTimeoutMs: 10000,
+                    firebaseUser: auth.currentUser,
                     lineIdToken: this.lineIdToken,
                     pushEnabled: this.linePushEnabled
                 }).then(function(result) {
@@ -978,11 +979,14 @@
                 });
             },
             writeOrderPrimary: function(orderId, orderData, sourcePage, writeToFirebase) {
+                var currentUser = auth.currentUser;
+                if (currentUser && !orderData.createdByUid) orderData.createdByUid = currentUser.uid;
                 return writeOrderWithFirebaseFallback(orderId, orderData, {
                     settings: this.settings,
                     sourcePage: sourcePage || 'index',
                     timeoutMs: 8000,
                     secureTimeoutMs: 10000,
+                    firebaseUser: currentUser,
                     lineIdToken: this.lineIdToken,
                     pushEnabled: this.linePushEnabled,
                     writeToFirebase: writeToFirebase
@@ -1047,7 +1051,8 @@
                 var self = this;
                 return allocateOrderNoFromPocketBase({
                     settings: this.settings,
-                    sourcePage: sourcePage || 'index'
+                    sourcePage: sourcePage || 'index',
+                    firebaseUser: auth.currentUser
                 }).then(function(result) {
                     if (result && result.ok) return result;
                     return self.allocateOrderNoFromFirebaseFallback(sourcePage || 'index', result);
@@ -2058,35 +2063,14 @@
                 var transactionConfirmed = !!(self.lpConfirmed&&self.lpConfirmed[order.id]) || (self.lpTxnState&&self.lpTxnState[order.id]==='confirmed');
                 var lpKnown = pm.indexOf('linepay')===0 || transactionConfirmed;
                 var linePayPaid = lpKnown && (order.paymentStatus==='paid' || transactionConfirmed);
-                var sendCancelPrint = function(){
-                    var queueData=Object.assign({},order,{status:'cancelled',cancelledAt:cancelTs,cancelSource:'customer',print_task:cancelTask});
-                    delete queueData.id;
-                    var directUrl=self.settings&&self.settings.nodeRedPrintUrl;
-                    if(directUrl){
-                        var directBody=Object.assign({orderId:order.id},queueData);
-                        return fetch(directUrl,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(directBody)})
-                            .then(function(r){if(!r.ok)throw new Error(r.status);})
-                            .catch(function(e){
-                                console.warn('cancel 直接列印失敗，走 Firebase:',e.message||e);
-                                return set(ref(db,'print_queue/'+order.id),null).catch(function(){})
-                                    .then(function(){return new Promise(function(resolve){setTimeout(resolve,120);});})
-                                    .then(function(){return set(ref(db,'print_queue/'+order.id),queueData);})
-                                    .catch(function(e2){console.warn('cancel print_queue 寫入失敗:',e2&&e2.message?e2.message:e2);});
-                            });
-                    }
-                    return set(ref(db,'print_queue/'+order.id),null).catch(function(){})
-                        .then(function(){return new Promise(function(resolve){setTimeout(resolve,120);});})
-                        .then(function(){return set(ref(db,'print_queue/'+order.id),queueData);})
-                        .catch(function(e){console.warn('cancel print_queue 寫入失敗:',e&&e.message?e.message:e);});
-                };
+                var cancelPatch={status:'cancelled',cancelledAt:cancelTs,cancelSource:'customer',wasCancelled:true};
+                if(!linePayPaid)cancelPatch.print_task=cancelTask;
                 var cancelWrite = self.lineIdToken
                     ? requestLineMember(self.lineIdToken, { settings:self.settings, cancelOrderId:order.id, limit:50, timeoutMs:10000 })
-                    : update(ref(db, orderBase), { status:'cancelled', cancelledAt:cancelTs, cancelSource:'customer', print_task:cancelTask });
+                    : update(ref(db, orderBase), cancelPatch);
                 return cancelWrite.then(function() {
-                    // ★ LINE Pay 已付款單：取消單由 Pi 退款成功時列印（同 pos 的防重複規則），
-                    //   這裡不印；退款失敗/逾時才補印（見下方退款流程）
-                    if(linePayPaid) return;
-                    return sendCancelPrint();
+                    // LINE Pay 已付款單只有 Pi 確認退款成功後才列印取消單。
+                    return;
                 }).then(function(){
                     order.status = 'cancelled';
                     try { var sv = JSON.parse(localStorage.getItem('my_orders')||'[]'); sv.forEach(function(s){if(s.id===order.id)s.status='cancelled';}); localStorage.setItem('my_orders',JSON.stringify(sv)); } catch(e){}
@@ -2103,20 +2087,19 @@
                             attempts++;
                             return get(ref(db,'linepay_refund_requests/'+order.id)).then(function(snap){
                                 var rv=snap&&snap.val();
-                                if(rv&&(rv.status==='done'||rv.returnCode==='ALREADY_REFUNDED')){
+                                if(rv&&rv.status==='done'&&(rv.returnCode==='0000'||rv.returnCode==='ALREADY_REFUNDED')){
                                     order.paymentStatus='refunded'; order.paymentMethod='linepay_refund';
                                     self.showAlertModal('已退款', '訂單已取消，LINE Pay 款項已退回。');
                                     return;
                                 }
-                                if(rv&&rv.status==='error'){ sendCancelPrint(); self.showAlertModal('已取消', '訂單已取消。退款將由店家協助處理，若有疑問請聯繫店家。'); return; }
-                                if(attempts>=40){ sendCancelPrint(); self.showAlertModal('已取消', '訂單已取消，退款處理中，稍後可在點餐記錄查看退款狀態。'); return; }
+                                if(rv&&rv.status==='error'){ self.showAlertModal('已取消', '訂單已取消。退款將由店家協助處理，若有疑問請聯繫店家。'); return; }
+                                if(attempts>=40){ self.showAlertModal('已取消', '訂單已取消，退款處理中，稍後可在點餐記錄查看退款狀態。'); return; }
                                 return new Promise(function(r){setTimeout(r,750);}).then(poll);
                             });
                         };
                         return new Promise(function(r){setTimeout(r,750);}).then(poll);
                     }).catch(function(e){
                         console.warn('退款請求寫入失敗:', e&&e.message?e.message:e);
-                        sendCancelPrint();
                         self.showAlertModal('已取消', '訂單已取消。退款將由店家協助處理，若有疑問請聯繫店家。');
                     });
                 }).catch(function(e) { self.showAlertModal('取消失敗', '無法取消訂單：' + e.message); });

@@ -1923,16 +1923,6 @@
                 if((!out.paymentMethod||out.paymentMethod==='store')&&/line.?pay/.test(pmRaw)){
                     out.paymentMethod=pmRaw.indexOf('offline')>=0?'linepay_offline':'linepay';
                 }
-                var psRaw=String(out.paymentStatus||out['付款狀態']||payment.status||'').toLowerCase();
-                var psText=String(out['付款狀態']||out.paymentStatusText||'').toLowerCase();
-                var hasPaidHints=!!(
-                    out.paymentConfirmedAt||out.linePayConfirmedAt||out.linepayConfirmedAt||out.paidAt||
-                    out.linepayTransactionId||out.linePayTransactionId||out.transactionId||
-                    psText.indexOf('已付')>=0||psText.indexOf('paid')>=0||psText.indexOf('confirmed')>=0
-                );
-                if((out.paymentMethod==='linepay'||out.paymentMethod==='linepay_offline')&&(psRaw==='pending'||psRaw==='unpaid'||!psRaw)&&hasPaidHints){
-                    out.paymentStatus='paid';
-                }
                 if(!out.orderNote&&typeof out['\u8a02\u55ae\u5099\u8a3b']==='string')out.orderNote=out['\u8a02\u55ae\u5099\u8a3b'];
                 if(!out.phone&&out.customer&&out.customer.phone)out.phone=out.customer.phone;
                 var customerObj=(out.customer&&typeof out.customer==='object')?out.customer:{};
@@ -4699,7 +4689,8 @@
                 writeSettingsToPocketBase({counterResetTime:time,counterMaxNo:maxNo},{
                     settings:s.settings||{},
                     timeoutMs:8000,
-                    secureTimeoutMs:10000
+                    secureTimeoutMs:10000,
+                    firebaseUser:auth.currentUser
                 })
                     .then(function(){
                         s.settings=Object.assign({},s.settings||{},{counterResetTime:time,counterMaxNo:maxNo});
@@ -4720,13 +4711,15 @@
                     pocketBaseOrdersCollection:this.pocketBaseOrdersCollection,
                     sourcePage:'pos',
                     resetTime:resetTime,
-                    maxNo:maxNo
+                    maxNo:maxNo,
+                    firebaseUser:auth.currentUser
                 }).then(function(result){
                     if(!result||!result.ok)throw new Error((result&&result.message)||'PocketBase counter reset failed');
                     return writeSettingsToPocketBase({counterResetTime:resetTime,counterMaxNo:maxNo},{
                         settings:s.settings||{},
                         timeoutMs:8000,
-                        secureTimeoutMs:10000
+                        secureTimeoutMs:10000,
+                        firebaseUser:auth.currentUser
                     });
                 });
             },
@@ -5490,17 +5483,16 @@
             },
             getLinePayState:function(order){
                 if(!order)return'pending';
-                if(order.paymentMethod==='linepay_refund')return'refunded';
                 var txnState=this.lpStatus[order.id]||'';
-                if(order.paymentStatus==='refunded'||txnState==='refunded')return'refunded';
-                if(order.paymentStatus==='paid'||this.lpConfirmed[order.id]||txnState==='confirmed')return'paid';
+                if(txnState==='refunded')return'refunded';
+                if(txnState==='confirmed')return'paid';
                 return'pending';
             },
             requestLinePayRefund:async function(order){
                 var reason='店家取消訂單';
                 var dbRestUrl='https://breakfast-ai-system-default-rtdb.asia-southeast1.firebasedatabase.app';
                 try{
-                    // ★ 寫入+讀取全部用 fetch() REST API（繞過 SDK WebSocket）
+                    if(!auth.currentUser)throw new Error('staff_auth_required');
                     var token=await auth.currentUser.getIdToken();
                     var authQ='?auth='+encodeURIComponent(token);
                     var wRes=await fetch(dbRestUrl+'/linepay_refund_requests/'+order.id+'.json'+authQ,{
@@ -5509,67 +5501,17 @@
                         body:JSON.stringify({orderId:order.id,amount:Number(order.total||0),reason:reason,status:'pending',createdAt:Date.now(),source:'pos',orderDateKey:this.resolveOrderDateKey(order)||order.pickupDate||''})
                     });
                     if(!wRes.ok)throw new Error('HTTP '+wRes.status);
-                    var refundDk=this.resolveOrderDateKey(order)||order.pickupDate||'';
                     for(var i=0;i<40;i++){
                         await new Promise(function(r){setTimeout(r,750);});
-                        try{
-                            var res=await fetch(dbRestUrl+'/linepay_refund_requests/'+order.id+'.json?auth='+encodeURIComponent(token));
-                            var rv=await res.json();
-                            if(rv){
-                                if(rv.status==='done'||rv.returnCode==='ALREADY_REFUNDED')return{success:true,returnCode:rv.returnCode||'0000',printTask:rv.printTask||''};
-                                if(rv.status==='error')return{success:false,error:rv.error||'退款失敗',returnCode:rv.returnCode||''};
-                            }
-                        }catch(_){}
-                        // 保險：refund_requests 狀態通道異常時，直接看訂單 paymentStatus（公開可讀），
-                        // Pi 一寫入 refunded 就立刻結束，不用耗滿 30 秒
-                        if(i%4===3&&refundDk){
-                            try{
-                                var psRes=await fetch(dbRestUrl+'/orders/'+refundDk+'/'+order.id+'/paymentStatus.json');
-                                var psv=await psRes.json();
-                                if(psv==='refunded')return{success:true,returnCode:'ORDER_REFUNDED'};
-                            }catch(_){}
-                        }
-                    }
-                }catch(_){ }
-
-                var bases=[];
-                if(this.linePayServerUrl)bases.push(this.linePayServerUrl);
-                try{
-                    var u=new URL(window.location.href);
-                    bases.push(u.protocol+'//'+u.hostname+':5000');
-                    bases.push(u.protocol+'//'+u.hostname+':5001');
-                    bases.push(u.origin);
-                }catch(_){ }
-                bases.push('http://127.0.0.1:5000');
-                bases.push('http://localhost:5000');
-
-                var tried={};
-                for(var bi=0;bi<bases.length;bi++){
-                    var base=(bases[bi]||'').replace(/\/$/,'');
-                    if(!base||tried[base])continue;
-                    tried[base]=true;
-                    try{
-                        var ctl=new AbortController();
-                        var timer=setTimeout(function(){try{ctl.abort();}catch(e){}},2500);
-                        var res=await fetch(base+'/api/linepay/refund',{
-                            method:'POST',
-                            headers:{'Content-Type':'application/json'},
-                            body:JSON.stringify({orderId:order.id,reason:reason}),
-                            signal:ctl.signal
-                        });
-                        clearTimeout(timer);
+                        var res=await fetch(dbRestUrl+'/linepay_refund_requests/'+order.id+'.json?auth='+encodeURIComponent(token));
                         if(!res.ok)continue;
-                        var rd=await res.json();
-                        if(rd.success||rd.returnCode==='ALREADY_REFUNDED')return{success:true,returnCode:rd.returnCode||'0000',printTask:rd.printTask||''};
-                        if(rd.error)return{success:false,error:rd.error||'退款失敗',returnCode:rd.returnCode||''};
-                    }catch(_){ }
-                }
-                try{
-                    var psnap=await get(ref(db,'orders/'+this.resolveOrderDateKey(order)+'/'+order.id+'/paymentStatus'));
-                    if(psnap.exists()&&String(psnap.val()||'').toLowerCase()==='refunded'){
-                        return{success:true,returnCode:'LATE_REFUNDED'};
+                        var rv=await res.json();
+                        if(rv&&rv.status==='done'&&(rv.returnCode==='0000'||rv.returnCode==='ALREADY_REFUNDED')){
+                            return{success:true,returnCode:rv.returnCode,printTask:rv.printTask||'',refundTransactionId:rv.refundTransactionId||''};
+                        }
+                        if(rv&&rv.status==='error')return{success:false,error:rv.error||'退款失敗',returnCode:rv.returnCode||''};
                     }
-                }catch(_){ }
+                }catch(err){return{success:false,error:(err&&err.message)||'退款服務無回應'};}
                 return{success:false,error:'退款服務無回應'};
             },
             cancelOrderCore:async function(order){
@@ -5588,14 +5530,11 @@
                 if(isLinePay&&linePayState==='pending'){
                     try{
                         var txnSnap=await get(ref(db,'linepay_transactions/'+order.id));
-                        var paySnap=await get(ref(db,'orders/'+s.resolveOrderDateKey(latestOrder)+'/'+order.id+'/paymentStatus'));
                         var txnData=txnSnap.exists()?(txnSnap.val()||{}):{};
                         var txnState=(typeof txnData==='object')?(txnData.status||''):txnData;
                         var txnConfirmedAt=(typeof txnData==='object')?(txnData.confirmedAt||0):0;
-                        var payState=paySnap.exists()?paySnap.val():(latestOrder.paymentStatus||'');
-                        var orderConfirmedAt=latestOrder.paymentConfirmedAt||0;
-                        if(payState==='paid'||txnState==='confirmed'||orderConfirmedAt||txnConfirmedAt)linePayState='paid';
-                        else if(payState==='refunded'||txnState==='refunded')linePayState='refunded';
+                        if(txnState==='confirmed'&&txnConfirmedAt)linePayState='paid';
+                        else if(txnState==='refunded'&&txnData.refundReturnCode==='0000'&&txnData.refundedAt)linePayState='refunded';
                     }catch(_){ }
                 }
                 var shouldRefund=isLinePay&&linePayState==='paid';
@@ -5647,15 +5586,6 @@
                     var refund=await s.requestLinePayRefund(latestOrder);
                     if(refund.success){
                         var rts=Date.now();
-                        await s.updateOrderMirror(order.id,{
-                            paymentStatus:'refunded',
-                            paymentMethod:'linepay_refund',
-                            refundedAt:rts
-                        },Object.assign({},latestOrder,updates));
-                        await update(ref(db),{
-                            ['linepay_transactions/'+order.id+'/status']:'refunded',
-                            ['linepay_transactions/'+order.id+'/refundedAt']:rts
-                        });
                         latestOrder.paymentStatus='refunded';
                         latestOrder.paymentMethod='linepay_refund';
                         latestOrder.refundedAt=rts;
@@ -5663,15 +5593,12 @@
                         if(refundPrintTask)latestOrder.print_task=refundPrintTask;
                         s.lpStatus[order.id]='refunded';
                         delete s.lpConfirmed[order.id];
-                        s.toast('✅ LINE Pay 已申請退款（等待狀態同步）');
+                        s.toast('✅ LINE Pay 已確認退款');
                     }else{
                         alert('⚠️ 訂單已取消，但退款失敗：'+(refund.error||'服務無回應')+'。請手動退款。');
                     }
                 }else if(isLinePay&&linePayState!=='refunded'){
-                    await update(ref(db),{
-                        ['linepay_transactions/'+order.id+'/status']:'cancelled',
-                        ['linepay_transactions/'+order.id+'/cancelledAt']:Date.now()
-                    });
+                    s.toast('✅ 訂單已取消（LINE Pay 未付款）');
                 }
 
                 if(shouldRefund){ await new Promise(function(r){setTimeout(r,500);}); }
@@ -6557,39 +6484,8 @@
                         if(isLinePay){
                             // ★ LINE Pay：讀+寫全部用 fetch() REST API（完全繞過 Firebase SDK WebSocket）
                             s.toast('⏳ 正在建立 LINE Pay 連結...');
-                            var handled=false,directPoll=null,reqTimer=null,directFallbackTimer=null,directRequested=false;
+                            var handled=false,directPoll=null,reqTimer=null;
                             var dbRestUrl='https://breakfast-ai-system-default-rtdb.asia-southeast1.firebasedatabase.app';
-                            var tryDirectLinePayRequest=function(){
-                                if(handled||directRequested)return;
-                                var base=String(s.linePayServerUrl||'').trim().replace(/\/+$/,'');
-                                if(!base)return;
-                                directRequested=true;
-                                fetch(base+'/api/linepay/request',{
-                                    method:'POST',
-                                    headers:{'Content-Type':'application/json'},
-                                    body:JSON.stringify({
-                                        orderId:orderId,
-                                        amount:o.total,
-                                        items:o.items,
-                                        orderDateKey:o.orderDateKey||o.pickupDate||"",
-                                        confirmBaseUrl:confirmBase,
-                                        returnPage:'pos'
-                                    })
-                                }).then(function(res){
-                                    return res.json().catch(function(){return {};}).then(function(body){
-                                        return {ok:res.ok,body:body||{}};
-                                    });
-                                }).then(function(ret){
-                                    if(handled)return;
-                                    var payUrl=s.extractLinePayUrlFromPayload(ret.body);
-                                    if(ret.ok&&payUrl){
-                                        handled=true;clearInterval(directPoll);clearTimeout(reqTimer);clearTimeout(directFallbackTimer);
-                                        s.isSubmitting=false;s.clearCart();
-                                        try{localStorage.setItem('linepay_return_url',window.location.href);}catch(e){}
-                                        window.location.href=payUrl;
-                                    }
-                                }).catch(function(){});
-                            };
                             auth.currentUser.getIdToken().then(function(token){
                                 var authQ='?auth='+encodeURIComponent(token);
                                 // ★ Step 1: 用 fetch() PUT 寫入請求（不用 SDK set）
@@ -6614,12 +6510,12 @@
                                                 var st=String(data.status||'').toLowerCase();
                                                 var payUrl=s.extractLinePayUrlFromPayload(data);
                                                 if(payUrl&&(st==='ready'||st==='created'||st==='ok'||st==='pending'||st==='')){
-                                                    handled=true;clearInterval(directPoll);clearTimeout(reqTimer);clearTimeout(directFallbackTimer);
+                                                    handled=true;clearInterval(directPoll);clearTimeout(reqTimer);
                                                     s.isSubmitting=false;s.clearCart();
                                                     try{localStorage.setItem('linepay_return_url',window.location.href);}catch(e){}
                                                     window.location.href=payUrl;
                                                 }else if(st==='error'||st==='failed'){
-                                                    handled=true;clearInterval(directPoll);clearTimeout(reqTimer);clearTimeout(directFallbackTimer);
+                                                    handled=true;clearInterval(directPoll);clearTimeout(reqTimer);
                                                     s.isSubmitting=false;
                                                     s.toast('⚠️ LINE Pay 失敗：'+(data.error||'未知錯誤'));
                                                 }
@@ -6627,17 +6523,16 @@
                                     };
                                     setTimeout(_pollFetch,800);
                                     directPoll=setInterval(_pollFetch,1500);
-                                    directFallbackTimer=setTimeout(tryDirectLinePayRequest,1800);
                                 });
                             }).catch(function(e){
-                                if(!handled){handled=true;clearInterval(directPoll);clearTimeout(reqTimer);clearTimeout(directFallbackTimer);}
+                                if(!handled){handled=true;clearInterval(directPoll);clearTimeout(reqTimer);}
                                 s.isSubmitting=false;
                                 s.toast('⚠️ LINE Pay 寫入失敗：'+e.message);
                             });
                             // 30 秒逾時
                             reqTimer=setTimeout(function(){
                                 if(!handled){
-                                    handled=true;clearInterval(directPoll);clearTimeout(directFallbackTimer);
+                                    handled=true;clearInterval(directPoll);
                                     s.isSubmitting=false;
                                     s.toast('⚠️ LINE Pay 逾時，請確認樹莓派服務正常');
                                 }
@@ -7062,39 +6957,9 @@
 
                         s.toast('⏳ 正在建立 LINE Pay 連結...');
                         // ★ 讀+寫全部用 fetch() REST API（繞過 SDK WebSocket）
-                        var handled2=false,directPoll2=null,reqTimer2=null,directFallbackTimer2=null,directRequested2=false;
+                        var handled2=false,directPoll2=null,reqTimer2=null;
                         var orderDateKey2=s.resolveOrderDateKey(targetOrder);
                         var dbRestUrl2='https://breakfast-ai-system-default-rtdb.asia-southeast1.firebasedatabase.app';
-                        var tryDirectLinePayRequest2=function(){
-                            if(handled2||directRequested2)return;
-                            var base2=String(s.linePayServerUrl||'').trim().replace(/\/+$/,'');
-                            if(!base2)return;
-                            directRequested2=true;
-                            fetch(base2+'/api/linepay/request',{
-                                method:'POST',
-                                headers:{'Content-Type':'application/json'},
-                                body:JSON.stringify({
-                                    orderId:id,
-                                    amount:upd.total||0,
-                                    items:upd.items||[],
-                                    orderDateKey:orderDateKey2,
-                                    confirmBaseUrl:confirmBase,
-                                    returnPage:'pos'
-                                })
-                            }).then(function(res){
-                                return res.json().catch(function(){return {};}).then(function(body){
-                                    return {ok:res.ok,body:body||{}};
-                                });
-                            }).then(function(ret){
-                                if(handled2)return;
-                                var payUrlDirect=s.extractLinePayUrlFromPayload(ret.body);
-                                if(ret.ok&&payUrlDirect){
-                                    handled2=true;clearInterval(directPoll2);clearTimeout(reqTimer2);clearTimeout(directFallbackTimer2);
-                                    try{localStorage.setItem('linepay_return_url',window.location.href);}catch(e){}
-                                    window.location.href=payUrlDirect;
-                                }
-                            }).catch(function(){});
-                        };
                         s.exitOnline();
                         auth.currentUser.getIdToken().then(function(token){
                             var authQ2='?auth='+encodeURIComponent(token);
@@ -7116,25 +6981,24 @@
                                             var st2=String(data.status||'').toLowerCase();
                                             var payUrl2=s.extractLinePayUrlFromPayload(data);
                                             if(payUrl2&&(st2==='ready'||st2==='created'||st2==='ok'||st2==='pending'||st2==='')){
-                                                handled2=true;clearInterval(directPoll2);clearTimeout(reqTimer2);clearTimeout(directFallbackTimer2);
+                                                handled2=true;clearInterval(directPoll2);clearTimeout(reqTimer2);
                                                 try{localStorage.setItem('linepay_return_url',window.location.href);}catch(e){}
                                                 window.location.href=payUrl2;
                                             }else if(st2==='error'||st2==='failed'){
-                                                handled2=true;clearInterval(directPoll2);clearTimeout(reqTimer2);clearTimeout(directFallbackTimer2);
+                                                handled2=true;clearInterval(directPoll2);clearTimeout(reqTimer2);
                                                 s.toast('⚠️ LINE Pay 失敗：'+(data.error||'未知錯誤'));
                                             }
                                         }).catch(function(){});
                                 };
                                 setTimeout(_pollFetch2,800);
                                 directPoll2=setInterval(_pollFetch2,1500);
-                                directFallbackTimer2=setTimeout(tryDirectLinePayRequest2,1800);
                             });
                         }).catch(function(e){
-                            if(!handled2){handled2=true;clearInterval(directPoll2);clearTimeout(reqTimer2);clearTimeout(directFallbackTimer2);}
+                            if(!handled2){handled2=true;clearInterval(directPoll2);clearTimeout(reqTimer2);}
                             s.toast('⚠️ LINE Pay 寫入失敗：'+e.message);
                         });
                         reqTimer2=setTimeout(function(){
-                            if(!handled2){handled2=true;clearInterval(directPoll2);clearTimeout(directFallbackTimer2);s.toast('⚠️ LINE Pay 逾時，請確認樹莓派服務正常');}
+                            if(!handled2){handled2=true;clearInterval(directPoll2);s.toast('⚠️ LINE Pay 逾時，請確認樹莓派服務正常');}
                         },90000);
                         return;
                     }
@@ -7220,7 +7084,8 @@
                     settings:this.settings||{},
                     currentMenuItems:this.menu||[],
                     timeoutMs:8000,
-                    secureTimeoutMs:10000
+                    secureTimeoutMs:10000,
+                    firebaseUser:auth.currentUser
                 })
                     .then(function(){
                         item.updatedAt=patch.updatedAt;

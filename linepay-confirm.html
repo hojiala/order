@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
+<meta name="referrer" content="no-referrer">
 <title>LINE Pay 付款處理</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -68,7 +69,7 @@ body{font-family:"Helvetica Neue",Arial,"PingFang TC","Microsoft JhengHei",sans-
 <!-- Firebase SDK -->
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/11.3.0/firebase-app.js";
-import { getDatabase, ref, set, get, update, onValue } from "https://www.gstatic.com/firebasejs/11.3.0/firebase-database.js";
+import { getAuth, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.3.0/firebase-auth.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -79,13 +80,16 @@ const firebaseConfig = {
 };
 
 const app = initializeApp(firebaseConfig);
-const db = getDatabase(app);
+const auth = getAuth(app);
 
 // ── 解析 URL 參數 ──
 const params = new URLSearchParams(window.location.search);
 const orderId = params.get('orderId');
 const action = params.get('action');           // confirm 或 cancel
 const transactionId = params.get('transactionId');
+const callbackToken = params.get('callbackToken') || '';
+const callbackAmount = Number(params.get('amount') || 0);
+const callbackOrderDateKey = params.get('orderDateKey') || '';
 
 function showView(id) {
   ['loading', 'success', 'cancelled', 'error'].forEach(v => {
@@ -98,6 +102,38 @@ function safeStorageGet(key) {
 }
 function safeStorageRemove(key) {
   try { localStorage.removeItem(key); } catch (e) {}
+}
+function waitForExistingIdToken(timeoutMs = 5000) {
+  if (auth.currentUser) return auth.currentUser.getIdToken().catch(() => '');
+  return new Promise(resolve => {
+    let settled = false;
+    let unsubscribe = () => {};
+    let timer = null;
+    const finish = value => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      unsubscribe();
+      resolve(value || '');
+    };
+    timer = setTimeout(() => finish(''), timeoutMs);
+    unsubscribe = onAuthStateChanged(auth, user => {
+      if (!user) return;
+      user.getIdToken().then(finish).catch(() => finish(''));
+    }, () => finish(''));
+  });
+}
+function firebaseRestUrl(baseUrl, path, idToken) {
+  const url = new URL(`${baseUrl}/${path.replace(/^\/+/, '')}.json`);
+  if (idToken) url.searchParams.set('auth', idToken);
+  return url.toString();
+}
+function showConfirmationPending() {
+  document.getElementById('success').querySelector('.title').textContent = '付款確認中';
+  document.getElementById('success').querySelector('.msg').textContent =
+    '已收到 LINE Pay 回傳，後端正在向 LINE Pay 核對；確認完成前不會標示為已付款';
+  document.getElementById('phoneReminder').style.display = 'none';
+  showView('success');
 }
 function getBackUrl() {
   const urlParams = new URLSearchParams(window.location.search);
@@ -168,66 +204,28 @@ async function processPayment() {
 
   // ── 取消 ──
   if (action === 'cancel') {
-    try {
-      const _cancelDbUrl = 'https://breakfast-ai-system-default-rtdb.asia-southeast1.firebasedatabase.app';
-      // ★ 用 fetch() 取得 orderDateKey
-      let cancelDateKey = '';
-      try {
-        const txnRes = await fetch(`${_cancelDbUrl}/linepay_transactions/${orderId}.json`);
-        const txnData = await txnRes.json();
-        if (txnData) cancelDateKey = txnData.orderDateKey || '';
-      } catch(e) {}
-      if (cancelDateKey) {
-        await fetch(`${_cancelDbUrl}/orders/${cancelDateKey}/${orderId}/paymentStatus.json`, {
-          method: 'PUT', headers: {'Content-Type':'application/json'}, body: '"pending"'
-        });
-      }
-      await fetch(`${_cancelDbUrl}/linepay_transactions/${orderId}.json`, {
-        method: 'PATCH', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ status: 'cancelled', cancelledAt: Date.now() })
-      });
-    } catch (e) {
-      console.error('更新取消狀態失敗:', e);
-    }
+    // 取消導回只代表顧客離開付款頁，不能由瀏覽器改寫金流交易狀態。
     showView('cancelled');
     return;
   }
 
   // ── 確認付款 ──
   try {
-    // 從 URL 取得 transactionId（LINE Pay 回傳）
-    const urlTxnId = new URLSearchParams(window.location.search).get('transactionId');
-    
-    // 先嘗試從 URL 取得，再從 Firebase 取
-    let txnId = urlTxnId || transactionId || '';
-    let amount = 0;
-    let orderDateKey = '';
-
-    // ★ 用 fetch() GET 取得交易資訊（繞過 SDK WebSocket）
+    const txnId = String(transactionId || '').trim();
+    const amount = callbackAmount;
+    const orderDateKey = callbackOrderDateKey;
     const _dbUrl = 'https://breakfast-ai-system-default-rtdb.asia-southeast1.firebasedatabase.app';
-    for (let retry = 0; retry < 3; retry++) {
-      try {
-        const txnRes = await fetch(`${_dbUrl}/linepay_transactions/${orderId}.json`);
-        const txnData = await txnRes.json();
-        if (txnData) {
-          txnId = txnId || txnData.transactionId || '';
-          amount = txnData.amount || 0;
-          orderDateKey = txnData.orderDateKey || '';
-          break;
-        }
-      } catch(e) {
-        console.error('讀取交易記錄失敗(retry '+retry+'):', e);
-        await new Promise(r => setTimeout(r, 1000));
-      }
-    }
 
-    if (!txnId || !amount) {
-      document.getElementById('errorMsg').textContent = '找不到交易記錄 (orderId:' + orderId + ')';
+    if (!txnId || !Number.isFinite(amount) || amount <= 0 ||
+        !/^[a-f0-9]{32}$/i.test(callbackToken) ||
+        !/^\d{4}-\d{2}-\d{2}$/.test(orderDateKey)) {
+      document.getElementById('errorMsg').textContent = '付款回跳資料不完整，請聯絡店員核對';
       showView('error');
       return;
     }
 
-    // ★ 用 fetch() PUT 寫入確認請求（繞過 SDK WebSocket，確保寫入即時到達 server）
+    // callbackToken 是建立交易時由後端產生的一次性能力憑證；
+    // Firebase 規則會同時核對交易編號、金額與日期。
     const dbRestUrl = 'https://breakfast-ai-system-default-rtdb.asia-southeast1.firebasedatabase.app';
     let writeOk = false;
     for (let retry = 0; retry < 3; retry++) {
@@ -239,6 +237,9 @@ async function processPayment() {
             transactionId: String(txnId),
             amount: Number(amount),
             orderId: orderId,
+            orderDateKey: orderDateKey,
+            callbackToken: callbackToken,
+            status: 'pending',
             timestamp: Date.now()
           })
         });
@@ -257,17 +258,25 @@ async function processPayment() {
       return;
     }
 
-    // 等待背景 Worker 處理（fetch() 直接呼叫 REST API，繞過 SDK 快取，最多 45 秒）
+    try { history.replaceState(null, '', window.location.pathname); } catch (e) {}
+
+    // 僅原下單者或店員可讀交易狀態；沒有既有 Firebase 身分時保持「確認中」。
+    const idToken = await waitForExistingIdToken();
+    if (!idToken) {
+      showConfirmationPending();
+      return;
+    }
+
     let confirmed = false;
     for (let i = 0; i < 30; i++) {
       await new Promise(r => setTimeout(r, 1500));
       try {
-        const res = await fetch(`${dbRestUrl}/linepay_transactions/${orderId}/status.json`);
+        const res = await fetch(firebaseRestUrl(dbRestUrl, `linepay_transactions/${orderId}/status`, idToken));
         const st = await res.json();
         if (st === 'confirmed') { confirmed = true; break; }
         if (st === 'confirm_failed') {
           try {
-            const errRes = await fetch(`${dbRestUrl}/linepay_transactions/${orderId}/error.json`);
+            const errRes = await fetch(firebaseRestUrl(dbRestUrl, `linepay_transactions/${orderId}/error`, idToken));
             const errMsg = await errRes.json();
             document.getElementById('errorMsg').textContent = errMsg || '付款確認失敗';
           } catch(e) {
@@ -281,9 +290,8 @@ async function processPayment() {
 
     if (confirmed) {
       try {
-        // ★ 用 fetch() 讀取訂單資料
-        const orderPath = orderDateKey ? `orders/${orderDateKey}/${orderId}` : `orders/${orderId}`;
-        const orderRes = await fetch(`${_dbUrl}/${orderPath}.json`);
+        const orderPath = `orders/${orderDateKey}/${orderId}`;
+        const orderRes = await fetch(firebaseRestUrl(_dbUrl, orderPath, idToken));
         const orderData = await orderRes.json();
         if (orderData) {
           const dayNames = ['星期日','星期一','星期二','星期三','星期四','星期五','星期六'];
@@ -308,10 +316,7 @@ async function processPayment() {
       showView('success');
       if (isPosClose) { setTimeout(function(){ try{window.close();}catch(e){} }, 3000); }
     } else {
-      document.getElementById('success').querySelector('.title').textContent = '付款處理中';
-      document.getElementById('success').querySelector('.msg').textContent =
-        '您的付款正在確認中，請稍後在訂單中查看付款狀態';
-      showView('success');
+      showConfirmationPending();
     }
 
   } catch (e) {
