@@ -174,6 +174,7 @@ function customerPayload(orderData, options) {
         999
     ) || 999;
     payload.printSource = payload.printSource || text(orderData && (orderData.printSource || orderData["訂單來源"]));
+    payload.createdByUid = payload.createdByUid || text(orderData && orderData.createdByUid);
     if (!payload.stationMap && orderData && Array.isArray(orderData.stationMap)) payload.stationMap = orderData.stationMap;
     if (!payload.stationSettings && orderData && Array.isArray(orderData.stationSettings)) payload.stationSettings = orderData.stationSettings;
     return payload;
@@ -2837,8 +2838,8 @@ export function writeOrderWithFirebaseFallback(orderId, orderData, options) {
     options = options || {};
     var writeToFirebase = typeof options.writeToFirebase === "function" ? options.writeToFirebase : null;
     var fallback = function(reason) {
+        var detail = reason && (reason.message || reason.reason || (reason.error && reason.error.message) || "");
         try {
-            var detail = reason && (reason.message || reason.reason || (reason.error && reason.error.message) || "");
             var body = reason && (reason.body || (reason.error && reason.error.body));
             if (detail || body) console.warn("PocketBase primary write failed; using Firebase fallback:", detail || "", body || "");
         } catch(e) {}
@@ -2851,26 +2852,21 @@ export function writeOrderWithFirebaseFallback(orderId, orderData, options) {
                 return notifyFirebaseFallbackOnce(orderId, orderData, options, reason, firebaseResult).then(function(notifyResult) {
                     return { ok: true, backend: "firebase", fallback: true, pocketBase: reason, firebase: firebaseResult, telegramNotify: notifyResult };
                 });
+            })
+            .catch(function(firebaseError) {
+                var firebaseDetail = firebaseError && firebaseError.message ? firebaseError.message : String(firebaseError || "unknown");
+                throw new Error("PocketBase: " + (detail || "unknown") + "; Firebase: " + firebaseDetail);
             });
     };
     return writeOrderToPocketBase(orderId, orderData, options)
         .then(function(pbResult) {
             if (pbResult && pbResult.ok) {
-                // ★ LINE Pay 訂單必須同時存在於 Firebase orders/<date>/<orderId>：
-                // linepay_server.py 付款確認後要從該路徑讀回完整訂單才能寫 print_queue 觸發列印，
-                // 只寫 PocketBase 會導致付款成功但工單不印
-                if (writeToFirebase && /^linepay/.test(String((orderData && orderData.paymentMethod) || ""))) {
-                    try {
-                        Promise.resolve(writeToFirebase(null)).catch(function(e) {
-                            console.warn("LINE Pay order Firebase dual-write failed:", e && e.message || e);
-                        });
-                    } catch(e) {}
-                }
+                // PocketBase hook is the sole PB-success mirror owner; a second browser SET
+                // races the hook and is rejected by owner-only Firebase update rules.
                 return { ok: true, backend: "pocketbase", fallback: false, pocketBase: pbResult };
             }
             return fallback(pbResult || { ok: false, reason: "pocketbase_not_available" });
-        })
-        .catch(function(err) {
+        }, function(err) {
             return fallback({ ok: false, error: err, message: err && err.message ? err.message : String(err) });
         });
 }

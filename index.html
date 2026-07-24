@@ -629,7 +629,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getDatabase, ref, push, set, get, update, onValue, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-    import { allocateOrderNoFromPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, pocketBaseRecordToOrder, requestLineMember } from "./pocketbase-order-writer.js?v=20260719_003";
+    import { allocateOrderNoFromPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, pocketBaseRecordToOrder, requestLineMember } from "./pocketbase-order-writer.20260724_002.js";
 
     const enteredFromLiff = /(?:^|[?&])liff(?:=1|=true|[.&=])/i.test(location.search) || /(?:^|[?&])liff\.state=/i.test(location.search) || /\bLine\//i.test(navigator.userAgent || '');
 
@@ -698,9 +698,19 @@
     // （pos/manage/admin）從 indexedDB 移除，造成那些頁面莫名登出。
     // 等 auth 還原完成後，沒有使用者才匿名登入（匿名帳號會在本機重複使用）。
     const auth = getAuth(app);
+    let firebaseSignInPromise = null;
+    function ensureFirebaseUser() {
+        if (auth.currentUser) return Promise.resolve(auth.currentUser);
+        if (!firebaseSignInPromise) {
+            firebaseSignInPromise = signInAnonymously(auth)
+                .then(function(credential) { return credential.user; })
+                .finally(function() { firebaseSignInPromise = null; });
+        }
+        return firebaseSignInPromise;
+    }
     const offAuthInit = onAuthStateChanged(auth, function(user) {
         offAuthInit();
-        if (!user) signInAnonymously(auth).catch(function(e) { console.warn('匿名登入失敗:', e.message); });
+        if (!user) ensureFirebaseUser().catch(function(e) { console.warn('匿名登入失敗:', e.message); });
     });
     const { createApp } = Vue;
 
@@ -979,17 +989,19 @@
                 });
             },
             writeOrderPrimary: function(orderId, orderData, sourcePage, writeToFirebase) {
-                var currentUser = auth.currentUser;
-                if (currentUser && !orderData.createdByUid) orderData.createdByUid = currentUser.uid;
-                return writeOrderWithFirebaseFallback(orderId, orderData, {
-                    settings: this.settings,
-                    sourcePage: sourcePage || 'index',
-                    timeoutMs: 8000,
-                    secureTimeoutMs: 10000,
-                    firebaseUser: currentUser,
-                    lineIdToken: this.lineIdToken,
-                    pushEnabled: this.linePushEnabled,
-                    writeToFirebase: writeToFirebase
+                var self = this;
+                return ensureFirebaseUser().then(function(currentUser) {
+                    orderData.createdByUid = currentUser.uid;
+                    return writeOrderWithFirebaseFallback(orderId, orderData, {
+                        settings: self.settings,
+                        sourcePage: sourcePage || 'index',
+                        timeoutMs: 8000,
+                        secureTimeoutMs: 10000,
+                        firebaseUser: currentUser,
+                        lineIdToken: self.lineIdToken,
+                        pushEnabled: self.linePushEnabled,
+                        writeToFirebase: writeToFirebase
+                    });
                 }).then(function(result) {
                     if (result && result.backend === 'pocketbase') console.info('Order saved to PocketBase primary:', orderId);
                     else if (result && result.backend === 'firebase') console.warn('PocketBase unavailable; order saved to Firebase fallback:', orderId);

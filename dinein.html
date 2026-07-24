@@ -134,7 +134,7 @@
         <div class="relative w-full max-w-2xl mx-auto px-5 md:px-0 py-10 flex flex-col items-center justify-center min-h-full">
             <div class="w-full flex flex-col items-center">
                 <div class="w-full rounded-2xl md:rounded-3xl shadow-2xl overflow-hidden">
-                    <img src="./images/Currently%20Closed.webp" alt="非營業時間" class="w-full h-auto block">
+                    <img src="./images/Currently%20Closed.webp?v=20260724" alt="非營業時間" class="w-full h-auto block">
                 </div>
                 <div v-if="todayIsDayOff" class="mt-4 md:mt-5 bg-white/95 backdrop-blur-sm border border-orange-100 rounded-full px-5 py-2.5 md:px-8 md:py-3 text-[13px] md:text-base text-orange-600 font-bold shadow-xl flex items-center gap-1.5 whitespace-nowrap">
                     <span class="text-base md:text-xl">🌴</span> 今日公休
@@ -552,7 +552,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
     import { getDatabase, ref, push, set, get, update, remove, onValue, query, orderByChild, equalTo, limitToLast, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
-    import { allocateOrderNoFromPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings } from "./pocketbase-order-writer.js?v=20260716_0800";
+    import { allocateOrderNoFromPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings } from "./pocketbase-order-writer.20260724_002.js";
 
     const firebaseConfig = {
         apiKey:"AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -615,9 +615,19 @@
     // ★ 桌邊/自助平板匿名登入（預設本機持久化，匿名帳號重複使用）。
     // 不可呼叫 setPersistence(inMemoryPersistence)：它會把同網域已持久化的 staff 登入
     // （pos/manage/admin）從 indexedDB 移除，造成那些頁面莫名登出。
+    let firebaseSignInPromise=null;
+    function ensureFirebaseUser(){
+        if(auth.currentUser)return Promise.resolve(auth.currentUser);
+        if(!firebaseSignInPromise){
+            firebaseSignInPromise=signInAnonymously(auth)
+                .then(function(credential){return credential.user})
+                .finally(function(){firebaseSignInPromise=null});
+        }
+        return firebaseSignInPromise;
+    }
     const offAuthInit=onAuthStateChanged(auth,function(user){
         offAuthInit();
-        if(!user) signInAnonymously(auth).catch(function(e){console.warn('匿名登入失敗:',e.message)});
+        if(!user)ensureFirebaseUser().catch(function(e){console.warn('匿名登入失敗:',e.message)});
     });
     const{createApp}=Vue;
 
@@ -818,15 +828,17 @@
                 });
             },
             writeOrderPrimary:function(orderId,orderData,sourcePage,writeToFirebase){
-                var currentUser=auth.currentUser;
-                if(currentUser&&!orderData.createdByUid)orderData.createdByUid=currentUser.uid;
-                return writeOrderWithFirebaseFallback(orderId,orderData,{
-                    settings:this.settings,
-                    sourcePage:sourcePage||'dinein',
-                    timeoutMs:8000,
-                    secureTimeoutMs:10000,
-                    firebaseUser:currentUser,
-                    writeToFirebase:writeToFirebase
+                var s=this;
+                return ensureFirebaseUser().then(function(currentUser){
+                    orderData.createdByUid=currentUser.uid;
+                    return writeOrderWithFirebaseFallback(orderId,orderData,{
+                        settings:s.settings,
+                        sourcePage:sourcePage||'dinein',
+                        timeoutMs:8000,
+                        secureTimeoutMs:10000,
+                        firebaseUser:currentUser,
+                        writeToFirebase:writeToFirebase
+                    });
                 }).then(function(result){
                     if(result&&result.backend==='pocketbase')console.info('Order saved to PocketBase primary:',orderId);
                     else if(result&&result.backend==='firebase')console.warn('PocketBase unavailable; order saved to Firebase fallback:',orderId);
