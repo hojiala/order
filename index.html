@@ -629,7 +629,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getDatabase, ref, push, set, get, update, onValue, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-    import { allocateOrderNoFromPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, writeLinePayRequestAfterMirror, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, pocketBaseRecordToOrder, requestLineMember } from "./pocketbase-order-writer.20260724_002.js?v=20260724_003";
+    import { allocateOrderNoFromPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, writeLinePayRequestAfterMirror, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, pocketBaseRecordToOrder, requestLineMember } from "./pocketbase-order-writer.20260724_002.js?v=20260724_004";
 
     const enteredFromLiff = /(?:^|[?&])liff(?:=1|=true|[.&=])/i.test(location.search) || /(?:^|[?&])liff\.state=/i.test(location.search) || /\bLine\//i.test(navigator.userAgent || '');
 
@@ -1035,41 +1035,19 @@
                 if (!/^\d{4}-\d{2}-\d{2}$/.test(pd)) return false;
                 return pd > this.getCounterBusinessDateKey(Date.now());
             },
-            allocateOrderNoFromFirebaseFallback: function(sourcePage, pbResult) {
-                var self = this;
-                var resetTime = self.normalizeCounterResetTime((self.settings && self.settings.counterResetTime) || '00:00');
-                var maxNo = Math.max(1, Math.min(9999, Math.floor(Number((self.settings && self.settings.counterMaxNo) || 999) || 999)));
-                var cycleKey = self.getCounterCycleKey(Date.now());
-                return runTransaction(ref(db, 'settings/orderCounter'), function(current) {
-                    return (Number(current) || 0) + 1;
-                }, { applyLocally: false }).then(function(tx) {
-                    if (!tx || !tx.committed || !tx.snapshot || !tx.snapshot.exists()) throw new Error('Firebase counter transaction failed');
-                    var no = Number(tx.snapshot.val() || 0) || 0;
-                    if (!no) throw new Error('Firebase counter returned empty value');
-                    return {
-                        ok: true,
-                        backend: 'firebase',
-                        fallback: true,
-                        orderNo: no,
-                        serialNumber: no,
-                        cycleKey: cycleKey,
-                        resetTime: resetTime,
-                        maxNo: maxNo,
-                        pbMessage: pbResult && (pbResult.message || pbResult.reason) || ''
-                    };
-                });
-            },
             allocateOrderNoPrimary: function(sourcePage) {
                 var self = this;
-                return allocateOrderNoFromPocketBase({
-                    settings: this.settings,
-                    sourcePage: sourcePage || 'index',
-                    firebaseUser: auth.currentUser
+                return ensureFirebaseUser().then(function(currentUser) {
+                    return allocateOrderNoFromPocketBase({
+                        settings: self.settings,
+                        sourcePage: sourcePage || 'index',
+                        firebaseUser: currentUser
+                    });
                 }).then(function(result) {
                     if (result && result.ok) return result;
-                    return self.allocateOrderNoFromFirebaseFallback(sourcePage || 'index', result);
+                    return { ok: false, backend: 'pocketbase', message: result && (result.message || result.reason) || 'counter_unavailable' };
                 }).catch(function(e) {
-                    return self.allocateOrderNoFromFirebaseFallback(sourcePage || 'index', { message: e && e.message ? e.message : String(e || '') });
+                    return { ok: false, backend: 'none', message: e && e.message ? e.message : String(e || 'counter_unavailable') };
                 });
             },
             normalizeCategorySubcategories: function(raw, categories) {
