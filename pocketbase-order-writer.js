@@ -2694,6 +2694,23 @@ export function requestLineMembers(options) {
     });
 }
 
+export function writeLinePayRequestAfterMirror(writeRequest, options) {
+    options = options || {};
+    if (typeof writeRequest !== "function") return Promise.reject(new TypeError("writeRequest must be a function"));
+    var maxAttempts = Math.max(1, Math.min(20, Number(options.maxAttempts) || 11));
+    var delayMs = options.delayMs === undefined ? 500 : Math.max(0, Number(options.delayMs) || 0);
+    var attempt = 0;
+    function run() {
+        attempt++;
+        return Promise.resolve().then(writeRequest).catch(function(err) {
+            var detail = text(err && (err.code || err.message || err));
+            if (attempt >= maxAttempts || !/permission[_-]denied|permission denied/i.test(detail)) throw err;
+            return new Promise(function(resolve) { setTimeout(resolve, delayMs); }).then(run);
+        });
+    }
+    return run();
+}
+
 function deriveTelegramNotifyEndpoint(settings, options) {
     settings = settings || {};
     options = options || {};
