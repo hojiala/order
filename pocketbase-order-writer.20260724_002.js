@@ -1557,9 +1557,15 @@ function firebasePublicUrl(path) {
     return baseUrl + "/" + String(path || "").replace(/^\/+/, "") + ".json";
 }
 
-function requestFirebasePublicJson(path, timeoutMs) {
+function requestFirebasePublicJson(path, timeoutMs, firebaseUser) {
     var url = firebasePublicUrl(path);
     if (!url) return Promise.reject(new Error("missing_firebase_database_url"));
+    if (firebaseUser && !firebaseUser.isAnonymous && typeof firebaseUser.getIdToken === "function") {
+        return Promise.resolve(firebaseUser.getIdToken()).then(function(idToken) {
+            if (!text(idToken)) throw new Error("firebase_staff_auth_required");
+            return requestJson(url + (url.indexOf("?") === -1 ? "?" : "&") + "auth=" + encodeURIComponent(idToken), { method: "GET" }, timeoutMs);
+        });
+    }
     return requestJson(url, { method: "GET" }, timeoutMs);
 }
 
@@ -1648,7 +1654,11 @@ export function readSettingsFromPocketBase(options) {
         });
     }
     function loadFirebaseSettings(endpointErr) {
-        return requestFirebasePublicJson("settings", timeoutMs).then(function(data) {
+        var firebaseUser = options.firebaseUser;
+        var request = firebaseUser && !firebaseUser.isAnonymous && typeof firebaseUser.getIdToken === "function"
+            ? requestFirebasePublicJson("settings", timeoutMs, firebaseUser)
+            : Promise.reject(new Error("firebase_staff_auth_required"));
+        return request.then(function(data) {
             var parsed = parseFirebaseSettingsResponse(data);
             if (!settingsLooksUsable(parsed.settings)) throw new Error("Firebase settings incomplete");
             if (options.skipCacheWrite !== true) writePublicCache(cacheKey, parsed);
