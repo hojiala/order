@@ -629,7 +629,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getDatabase, ref, push, set, get, update, onValue, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-    import { allocateOrderNoFromPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, writeLinePayRequestAfterMirror, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, pocketBaseRecordToOrder, requestLineMember } from "./pocketbase-order-writer.20260724_002.js?v=20260724_004";
+    import { allocateOrderNoFromPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, writeLinePayRequestAfterMirror, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, pocketBaseRecordToOrder, requestLineMember } from "./pocketbase-order-writer.20260724_002.js?v=20260726_006";
 
     const enteredFromLiff = /(?:^|[?&])liff(?:=1|=true|[.&=])/i.test(location.search) || /(?:^|[?&])liff\.state=/i.test(location.search) || /\bLine\//i.test(navigator.userAgent || '');
 
@@ -2058,38 +2058,36 @@
                 var cancelWrite = self.lineIdToken
                     ? requestLineMember(self.lineIdToken, { settings:self.settings, cancelOrderId:order.id, limit:50, timeoutMs:10000 })
                     : update(ref(db, orderBase), cancelPatch);
-                return cancelWrite.then(function() {
+                var cancelResult = null;
+                return cancelWrite.then(function(result) {
+                    cancelResult = result || null;
                     // LINE Pay 已付款單只有 Pi 確認退款成功後才列印取消單。
-                    return;
                 }).then(function(){
                     order.status = 'cancelled';
                     try { var sv = JSON.parse(localStorage.getItem('my_orders')||'[]'); sv.forEach(function(s){if(s.id===order.id)s.status='cancelled';}); localStorage.setItem('my_orders',JSON.stringify(sv)); } catch(e){}
-                    // LINE Pay 已付款的單：寫 linepay_refund_requests 讓店內 Pi 自動退款（同 pos 機制），
-                    // Firebase 規則只放行「訂單已取消」的退款請求
                     if (!linePayPaid) { self.showAlertModal('已取消', '訂單已取消，廚房將收到取消通知。'); return; }
+                    if (cancelResult && cancelResult.refund && cancelResult.refund.ok === false) {
+                        self.showAlertModal('已取消', '訂單已取消，但退款排程失敗，請聯繫店家協助退款。');
+                        return;
+                    }
                     self.showAlertModal('已取消', '訂單已取消，LINE Pay 退款處理中…');
-                    return set(ref(db,'linepay_refund_requests/'+order.id),{
-                        orderId:order.id, amount:Number(order.total||0), reason:'顧客取消訂單',
-                        status:'pending', createdAt:Date.now(), source:'index', orderDateKey:dk
-                    }).then(function(){
-                        var attempts=0;
-                        var poll=function(){
-                            attempts++;
-                            return get(ref(db,'linepay_refund_requests/'+order.id)).then(function(snap){
-                                var rv=snap&&snap.val();
-                                if(rv&&rv.status==='done'&&(rv.returnCode==='0000'||rv.returnCode==='ALREADY_REFUNDED')){
-                                    order.paymentStatus='refunded'; order.paymentMethod='linepay_refund';
-                                    self.showAlertModal('已退款', '訂單已取消，LINE Pay 款項已退回。');
-                                    return;
-                                }
-                                if(rv&&rv.status==='error'){ self.showAlertModal('已取消', '訂單已取消。退款將由店家協助處理，若有疑問請聯繫店家。'); return; }
-                                if(attempts>=40){ self.showAlertModal('已取消', '訂單已取消，退款處理中，稍後可在點餐記錄查看退款狀態。'); return; }
-                                return new Promise(function(r){setTimeout(r,750);}).then(poll);
-                            });
-                        };
-                        return new Promise(function(r){setTimeout(r,750);}).then(poll);
-                    }).catch(function(e){
-                        console.warn('退款請求寫入失敗:', e&&e.message?e.message:e);
+                    var attempts=0;
+                    var poll=function(){
+                        attempts++;
+                        return get(ref(db,'linepay_refund_requests/'+order.id)).then(function(snap){
+                            var rv=snap&&snap.val();
+                            if(rv&&rv.status==='done'&&(rv.returnCode==='0000'||rv.returnCode==='ALREADY_REFUNDED')){
+                                order.paymentStatus='refunded'; order.paymentMethod='linepay_refund';
+                                self.showAlertModal('已退款', '訂單已取消，LINE Pay 款項已退回。');
+                                return;
+                            }
+                            if(rv&&rv.status==='error'){ self.showAlertModal('已取消', '訂單已取消。退款將由店家協助處理，若有疑問請聯繫店家。'); return; }
+                            if(attempts>=40){ self.showAlertModal('已取消', '訂單已取消，退款處理中，稍後可在點餐記錄查看退款狀態。'); return; }
+                            return new Promise(function(r){setTimeout(r,750);}).then(poll);
+                        });
+                    };
+                    return new Promise(function(r){setTimeout(r,750);}).then(poll).catch(function(e){
+                        console.warn('退款狀態讀取失敗:', e&&e.message?e.message:e);
                         self.showAlertModal('已取消', '訂單已取消。退款將由店家協助處理，若有疑問請聯繫店家。');
                     });
                 }).catch(function(e) { self.showAlertModal('取消失敗', '無法取消訂單：' + e.message); });

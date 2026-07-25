@@ -13,6 +13,7 @@ let backfillPausedUntil = 0;
 let publicSettingsPausedUntil = 0;
 let publicMenuPausedUntil = 0;
 let publicCacheDbPromise = null;
+try { if (typeof localStorage !== "undefined") localStorage.removeItem("pocketbase_write_token"); } catch (_) {}
 
 function cleanBaseUrl(url) {
     var value = String(url || "").trim();
@@ -466,19 +467,13 @@ export function resolvePocketBaseConfig(options) {
         (typeof window !== "undefined" && (window.POCKETBASE_TOKEN || "")) ||
         storageValue(["pocketbase_token"])
     );
-    var writeToken = text(
-        options.pocketBaseWriteToken ||
-        options.pocketbaseWriteToken ||
-        (typeof window !== "undefined" && (window.POCKETBASE_WRITE_TOKEN || "")) ||
-        storageValue(["pocketbase_write_token"])
-    );
     var turnstileSiteKey = text(
         optionValue(options, ["turnstileSiteKey", "cloudflareTurnstileSiteKey", "pocketBaseTurnstileSiteKey"]) ||
         nested.turnstileSiteKey ||
         (typeof window !== "undefined" && (window.TURNSTILE_SITE_KEY || "")) ||
         storageValue(["turnstile_site_key", "TURNSTILE_SITE_KEY"])
     );
-    return { baseUrl: baseUrl, orderEndpoint: orderEndpoint, manageEndpoint: manageEndpoint, collection: collection, token: token, writeToken: writeToken, turnstileSiteKey: turnstileSiteKey };
+    return { baseUrl: baseUrl, orderEndpoint: orderEndpoint, manageEndpoint: manageEndpoint, collection: collection, token: token, turnstileSiteKey: turnstileSiteKey };
 }
 
 export function pocketBaseRecordToOrder(record) {
@@ -2022,10 +2017,6 @@ export function rememberPublicSettings(options, settings) {
 
 function secureManageEndpoint(config, kind, options) {
     options = options || {};
-    var writeToken = config && config.writeToken;
-    if (writeToken && config.baseUrl) {
-        return config.baseUrl.replace(/\/+$/, "") + "/api/secure/manage/" + kind;
-    }
 
     function defaultWorkerManageEndpoint() {
         var fallback = cleanBaseUrl(configuredDefaultOrderEndpoint() || "");
