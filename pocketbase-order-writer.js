@@ -1232,6 +1232,8 @@ function shouldRequestTurnstile(config, options) {
     if (options.allowPocketBaseUpdate === true) return false;
     if (options.requireTurnstile !== undefined) return envFlag(options.requireTurnstile, false);
     if (options.useTurnstile !== undefined) return envFlag(options.useTurnstile, false);
+    // LIFF 的 LINE ID token 會由 PocketBase 向 LINE 驗證；不再讓 WebView 額外等待 Turnstile。
+    if (text(options.lineIdToken || options.line_id_token)) return false;
     if (typeof window !== "undefined") {
         if (window.PB_REQUIRE_TURNSTILE !== undefined) return envFlag(window.PB_REQUIRE_TURNSTILE, false);
         if (window.REQUIRE_TURNSTILE !== undefined) return envFlag(window.REQUIRE_TURNSTILE, false);
@@ -1557,9 +1559,15 @@ function firebasePublicUrl(path) {
     return baseUrl + "/" + String(path || "").replace(/^\/+/, "") + ".json";
 }
 
-function requestFirebasePublicJson(path, timeoutMs) {
+function requestFirebasePublicJson(path, timeoutMs, firebaseUser) {
     var url = firebasePublicUrl(path);
     if (!url) return Promise.reject(new Error("missing_firebase_database_url"));
+    if (firebaseUser && !firebaseUser.isAnonymous && typeof firebaseUser.getIdToken === "function") {
+        return Promise.resolve(firebaseUser.getIdToken()).then(function(idToken) {
+            if (!text(idToken)) throw new Error("firebase_staff_auth_required");
+            return requestJson(url + (url.indexOf("?") === -1 ? "?" : "&") + "auth=" + encodeURIComponent(idToken), { method: "GET" }, timeoutMs);
+        });
+    }
     return requestJson(url, { method: "GET" }, timeoutMs);
 }
 
@@ -1648,7 +1656,11 @@ export function readSettingsFromPocketBase(options) {
         });
     }
     function loadFirebaseSettings(endpointErr) {
-        return requestFirebasePublicJson("settings", timeoutMs).then(function(data) {
+        var firebaseUser = options.firebaseUser;
+        var request = firebaseUser && !firebaseUser.isAnonymous && typeof firebaseUser.getIdToken === "function"
+            ? requestFirebasePublicJson("settings", timeoutMs, firebaseUser)
+            : Promise.reject(new Error("firebase_staff_auth_required"));
+        return request.then(function(data) {
             var parsed = parseFirebaseSettingsResponse(data);
             if (!settingsLooksUsable(parsed.settings)) throw new Error("Firebase settings incomplete");
             if (options.skipCacheWrite !== true) writePublicCache(cacheKey, parsed);
@@ -2615,6 +2627,7 @@ function writeOrderToSecureEndpoint(config, orderId, orderData, options, record,
             record: plainJson(record || {}, {}),
             turnstileToken: turnstileToken,
             lineIdToken: text(options.lineIdToken || options.line_id_token),
+            lineSessionToken: text(options.lineSessionToken || options.line_session_token),
             pushEnabled: typeof options.pushEnabled === "boolean" ? options.pushEnabled : undefined,
             updateOnly: options.allowPocketBaseUpdate === true,
             clientTs: Date.now()
@@ -2633,6 +2646,7 @@ function writeOrderToSecureEndpoint(config, orderId, orderData, options, record,
                 id: text((data && data.id) || (savedRecord && savedRecord.id) || ""),
                 record: savedRecord,
                 data: data,
+                lineMemberSessionToken: text(data && data.lineMemberSessionToken),
                 secureEndpoint: true
             };
         });
@@ -2650,14 +2664,16 @@ export function requestLineMember(idToken, options) {
     if (!endpoint && config.orderEndpoint) {
         endpoint = config.orderEndpoint.replace(/\/api\/(?:secure\/)?orders$/i, "/api/line/member");
     }
-    if (!endpoint || !text(idToken)) return Promise.reject(new Error("missing_line_member_endpoint_or_token"));
+    if (!endpoint || (!text(idToken) && !text(options.lineSessionToken))) return Promise.reject(new Error("missing_line_member_endpoint_or_token"));
     return requestJson(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
             lineIdToken: text(idToken),
+            lineSessionToken: text(options.lineSessionToken),
             pushEnabled: typeof options.pushEnabled === "boolean" ? options.pushEnabled : undefined,
             phone: text(options.phone),
+            deviceId: text(options.deviceId || options.device_id),
             cancelOrderId: text(options.cancelOrderId) || undefined,
             limit: Math.max(1, Math.min(100, Number(options.limit) || 50))
         })

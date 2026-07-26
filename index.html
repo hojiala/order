@@ -629,7 +629,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getDatabase, ref, push, set, get, update, onValue, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-    import { allocateOrderNoFromPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, writeLinePayRequestAfterMirror, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, pocketBaseRecordToOrder, requestLineMember } from "./pocketbase-order-writer.20260724_002.js?v=20260726_011";
+    import { allocateOrderNoFromPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, writeLinePayRequestAfterMirror, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, pocketBaseRecordToOrder, requestLineMember } from "./pocketbase-order-writer.20260724_002.js?v=20260726_012";
 
     const enteredFromLiff = /(?:^|[?&])liff(?:=1|=true|[.&=])/i.test(location.search) || /(?:^|[?&])liff\.state=/i.test(location.search) || /\bLine\//i.test(navigator.userAgent || '');
 
@@ -1013,10 +1013,9 @@
             },
             writeOrderPrimary: function(orderId, orderData, sourcePage, writeToFirebase) {
                 var self = this;
-                var memberReady = self.lineIdToken && !self.lineMemberSessionToken
-                    ? (self.lineMemberAuthPromise || self.loadLineMemberOrders())
-                    : Promise.resolve();
-                return memberReady.then(function() { return ensureFirebaseUser(); }).then(function(currentUser) {
+                // 建單端點本身會驗證 LINE 身分；不可先串行等待會員訂單列表，
+                // 否則第一次 LIFF 結帳會多等一整次遠端請求。
+                return ensureFirebaseUser().then(function(currentUser) {
                     orderData.createdByUid = currentUser.uid;
                     return writeOrderWithFirebaseFallback(orderId, orderData, {
                         settings: self.settings,
@@ -2084,7 +2083,7 @@
                 var cancelPatch={status:'cancelled',cancelledAt:cancelTs,cancelSource:'customer',wasCancelled:true};
                 if(!linePayPaid)cancelPatch.print_task=cancelTask;
                 var cancelWrite = self.lineIdToken
-                    ? requestLineMember(self.lineIdToken, { settings:self.settings, lineSessionToken:self.lineMemberSessionToken, cancelOrderId:order.id, limit:50, timeoutMs:10000 })
+                    ? requestLineMember(self.lineIdToken, { settings:self.settings, lineSessionToken:self.lineMemberSessionToken, cancelOrderId:order.id, deviceId:order.deviceId||self.deviceId, limit:50, timeoutMs:10000 })
                     : update(ref(db, orderBase), cancelPatch);
                 var cancelResult = null;
                 return cancelWrite.then(function(result) {
@@ -2237,7 +2236,11 @@
                         orderData.print_task = 'kitchen_' + Date.now();
                     }
                     return self.writeOrderPrimary(orderId, orderData, 'index', function() {
-                        return set(bucketOrderRef, orderData);
+                        // PB 可能已完成建單/鏡像但回應在途中逾時；Firebase fallback
+                        // 只能補不存在的單，不得抹掉 PB 已寫入的 member/orderNo。
+                        return runTransaction(bucketOrderRef, function(current) {
+                            return current ? Object.assign({}, orderData, current) : orderData;
+                        });
                     }).then(function(result) {
                         orderData._writeBackend = (result && result.backend) || 'firebase';
                         var pbRecord = result && result.pocketBase && result.pocketBase.record;
@@ -2295,7 +2298,7 @@
                                 status: 'pending',
                                 createdAt: Date.now()
                             });
-                        }).then(function() {
+                        }, { maxAttempts: 6, delayMs: 150 }).then(function() {
                             // Firebase 即時通知 paymentUrl；不再每秒輪詢而額外等待。
                             var requestRef = ref(db, 'linepay_requests/' + orderId);
                             var finished = false;

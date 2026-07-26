@@ -2673,6 +2673,7 @@ export function requestLineMember(idToken, options) {
             lineSessionToken: text(options.lineSessionToken),
             pushEnabled: typeof options.pushEnabled === "boolean" ? options.pushEnabled : undefined,
             phone: text(options.phone),
+            deviceId: text(options.deviceId || options.device_id),
             cancelOrderId: text(options.cancelOrderId) || undefined,
             limit: Math.max(1, Math.min(100, Number(options.limit) || 50))
         })
