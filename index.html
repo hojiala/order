@@ -629,7 +629,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getDatabase, ref, push, set, get, update, onValue, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-    import { allocateOrderNoFromPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, writeLinePayRequestAfterMirror, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, pocketBaseRecordToOrder, requestLineMember } from "./pocketbase-order-writer.20260724_002.js?v=20260726_008";
+    import { allocateOrderNoFromPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, writeLinePayRequestAfterMirror, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, pocketBaseRecordToOrder, requestLineMember } from "./pocketbase-order-writer.20260724_002.js?v=20260726_009";
 
     const enteredFromLiff = /(?:^|[?&])liff(?:=1|=true|[.&=])/i.test(location.search) || /(?:^|[?&])liff\.state=/i.test(location.search) || /\bLine\//i.test(navigator.userAgent || '');
 
@@ -2193,14 +2193,17 @@
                 // ★ 「依取餐時間」模式的預訂單：不在送單當下配號/列印，由店內主機開店批次處理
                 var numberingDeferred = self.isPickupTimeNumberingDeferred(orderData);
                 if (numberingDeferred) orderData.numberingDeferred = true;
+                // LIFF LINE Pay 由 PB 建單 hook 原子配號，省去一次 Worker/PB 往返；PB 失敗時保留待配號旗標。
+                var serverAllocatesOrderNo = payMethod === 'linepay' && !!self.lineIdToken && !numberingDeferred;
+                if (serverAllocatesOrderNo) orderData.counterPending = true;
                 // ★ 先取得流水號（延後配號的單跳過）
-                (numberingDeferred ? Promise.resolve(null) : self.allocateOrderNoPrimary('index'))
+                ((numberingDeferred || serverAllocatesOrderNo) ? Promise.resolve(null) : self.allocateOrderNoPrimary('index'))
                 .then(function(counter) {
                     var assignedNo = counter && counter.ok ? counter.orderNo : null;
                     if (assignedNo) {
                         orderData.orderNo = assignedNo;
                         orderData.counterCycleKey = counter.cycleKey || '';
-                    } else if (!numberingDeferred) {
+                    } else if (!numberingDeferred && !serverAllocatesOrderNo) {
                         orderData.counterPending = true;
                     }
                     // 非 LINE Pay 訂單：同時寫入 print_task 觸發列印（延後配號的單由開店批次觸發）
