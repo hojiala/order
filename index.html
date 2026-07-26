@@ -2193,8 +2193,8 @@
                 // ★ 「依取餐時間」模式的預訂單：不在送單當下配號/列印，由店內主機開店批次處理
                 var numberingDeferred = self.isPickupTimeNumberingDeferred(orderData);
                 if (numberingDeferred) orderData.numberingDeferred = true;
-                // ★ 先取得流水號（延後配號的單跳過）
-                (numberingDeferred ? Promise.resolve(null) : self.allocateOrderNoPrimary('index'))
+                // PocketBase 建單 hook 本身會原子配號；LINE Pay 不再先多跑一次相同的遠端請求。
+                (numberingDeferred || payMethod === 'linepay' ? Promise.resolve(null) : self.allocateOrderNoPrimary('index'))
                 .then(function(counter) {
                     var assignedNo = counter && counter.ok ? counter.orderNo : null;
                     if (assignedNo) {
@@ -2267,30 +2267,36 @@
                                 createdAt: Date.now()
                             });
                         }).then(function() {
-                            // 輪詢 Firebase 等待樹莓派回寫 paymentUrl（最多 20 秒）
-                            var tries = 0;
-                            var poll = setInterval(function() {
-                                tries++;
-                                get(ref(db, 'linepay_requests/' + orderId)).then(function(snap) {
-                                    if(!snap.exists()) return;
-                                    var r = snap.val();
-                                    if(r.status === 'ready' && r.paymentUrl) {
-                                        clearInterval(poll);
-                                        self.showAlertDialog = false;
-                                        try{localStorage.setItem('linepay_return_url', window.location.href)}catch(e){}
-                                        try{localStorage.setItem('lastOrderTime', Date.now().toString());}catch(e){}
-                                        self.cart=[];try{localStorage.removeItem('cart_items')}catch(e){}
-                                        self.currentView='menu';
-                                        window.location.href = r.paymentUrl;
-                                    } else if(r.status === 'error') {
-                                        clearInterval(poll);
-                                        self.showAlertModal('LINE Pay 失敗', (r.error||'未知錯誤') + '\n訂單已送出，請改用店內付款');
-                                    } else if(tries >= 20) {
-                                        clearInterval(poll);
-                                        self.showAlertModal('LINE Pay 逾時', '樹莓派無回應，請確認服務是否正常運行\n訂單已送出，請改用店內付款');
-                                    }
-                                }).catch(function(){});
-                            }, 1000);
+                            // Firebase 即時通知 paymentUrl；不再每秒輪詢而額外等待。
+                            var requestRef = ref(db, 'linepay_requests/' + orderId);
+                            var finished = false;
+                            var stopWatching = function(){};
+                            var timeout = setTimeout(function() {
+                                if(finished) return;
+                                finished = true;
+                                stopWatching();
+                                self.showAlertModal('LINE Pay 逾時', '樹莓派無回應，請確認服務是否正常運行\n訂單已送出，請改用店內付款');
+                            }, 20000);
+                            stopWatching = onValue(requestRef, function(snap) {
+                                if(finished || !snap.exists()) return;
+                                var r = snap.val();
+                                if(r.status === 'ready' && r.paymentUrl) {
+                                    finished = true;
+                                    clearTimeout(timeout);
+                                    stopWatching();
+                                    self.showAlertDialog = false;
+                                    try{localStorage.setItem('linepay_return_url', window.location.href)}catch(e){}
+                                    try{localStorage.setItem('lastOrderTime', Date.now().toString());}catch(e){}
+                                    self.cart=[];try{localStorage.removeItem('cart_items')}catch(e){}
+                                    self.currentView='menu';
+                                    window.location.href = r.paymentUrl;
+                                } else if(r.status === 'error') {
+                                    finished = true;
+                                    clearTimeout(timeout);
+                                    stopWatching();
+                                    self.showAlertModal('LINE Pay 失敗', (r.error||'未知錯誤') + '\n訂單已送出，請改用店內付款');
+                                }
+                            }, function(){});
                         }).catch(function(e){
                             self.showAlertModal('LINE Pay 失敗', '無法寫入請求：' + e.message);
                         });
