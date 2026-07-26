@@ -1232,6 +1232,8 @@ function shouldRequestTurnstile(config, options) {
     if (options.allowPocketBaseUpdate === true) return false;
     if (options.requireTurnstile !== undefined) return envFlag(options.requireTurnstile, false);
     if (options.useTurnstile !== undefined) return envFlag(options.useTurnstile, false);
+    // LIFF 的 LINE ID token 會由 PocketBase 向 LINE 驗證；不再讓 WebView 額外等待 Turnstile。
+    if (text(options.lineIdToken || options.line_id_token)) return false;
     if (typeof window !== "undefined") {
         if (window.PB_REQUIRE_TURNSTILE !== undefined) return envFlag(window.PB_REQUIRE_TURNSTILE, false);
         if (window.REQUIRE_TURNSTILE !== undefined) return envFlag(window.REQUIRE_TURNSTILE, false);
