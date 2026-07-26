@@ -629,7 +629,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getDatabase, ref, push, set, get, update, onValue, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-    import { allocateOrderNoFromPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, writeLinePayRequestAfterMirror, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, pocketBaseRecordToOrder, requestLineMember } from "./pocketbase-order-writer.20260724_002.js?v=20260726_010";
+    import { allocateOrderNoFromPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, writeLinePayRequestAfterMirror, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, pocketBaseRecordToOrder, requestLineMember } from "./pocketbase-order-writer.20260724_002.js?v=20260726_011";
 
     const enteredFromLiff = /(?:^|[?&])liff(?:=1|=true|[.&=])/i.test(location.search) || /(?:^|[?&])liff\.state=/i.test(location.search) || /\bLine\//i.test(navigator.userAgent || '');
 
@@ -779,6 +779,10 @@
                 lineEntry: enteredFromLiff,
                 lineReady: false,
                 lineIdToken: '',
+                lineMemberSessionToken: (function() {
+                    try { return sessionStorage.getItem('line_member_session_token') || ''; } catch(e) { return ''; }
+                })(),
+                lineMemberAuthPromise: null,
                 lineDisplayName: '',
                 linePushEnabled: false,
                 lineMember: null,
@@ -928,11 +932,13 @@
             loadLineMemberOrders: function() {
                 var self = this;
                 if (!self.lineIdToken) return Promise.resolve(null);
-                return requestLineMember(self.lineIdToken, {
+                var requestPromise = requestLineMember(self.lineIdToken, {
                     settings: self.settings,
+                    lineSessionToken: self.lineMemberSessionToken,
                     limit: 50,
                     timeoutMs: 10000
                 }).then(function(result) {
+                    self.rememberLineMemberSession(result);
                     self.lineMember = result.member || null;
                     if (result.member) {
                         self.lineDisplayName = result.member.display_name || self.lineDisplayName;
@@ -954,6 +960,18 @@
                     console.warn('LINE 會員訂單讀取失敗:', err && err.message ? err.message : err);
                     return null;
                 });
+                if (!self.lineMemberSessionToken) self.lineMemberAuthPromise = requestPromise;
+                return requestPromise.then(function(result) {
+                    if (self.lineMemberAuthPromise === requestPromise) self.lineMemberAuthPromise = null;
+                    return result;
+                });
+            },
+            rememberLineMemberSession: function(result) {
+                var token = String((result && (result.lineMemberSessionToken ||
+                    (result.data && result.data.lineMemberSessionToken))) || '').trim();
+                if (!token) return;
+                this.lineMemberSessionToken = token;
+                try { sessionStorage.setItem('line_member_session_token', token); } catch(e) {}
             },
             updateLinePushPreference: function() {
                 var self = this;
@@ -961,9 +979,11 @@
                 if (!self.lineIdToken) return;
                 requestLineMember(self.lineIdToken, {
                     settings: self.settings,
+                    lineSessionToken: self.lineMemberSessionToken,
                     pushEnabled: desired,
                     timeoutMs: 10000
                 }).then(function(result) {
+                    self.rememberLineMemberSession(result);
                     self.lineMember = result.member || self.lineMember;
                 }).catch(function(err) {
                     self.linePushEnabled = !desired;
@@ -972,6 +992,7 @@
                 });
             },
             syncPocketBaseOrder: function(orderId, orderData, sourcePage) {
+                var self = this;
                 return writeOrderToPocketBase(orderId, orderData, {
                     settings: this.settings,
                     sourcePage: sourcePage || 'index',
@@ -979,8 +1000,10 @@
                     secureTimeoutMs: 10000,
                     firebaseUser: auth.currentUser,
                     lineIdToken: this.lineIdToken,
+                    lineSessionToken: this.lineMemberSessionToken,
                     pushEnabled: this.linePushEnabled
                 }).then(function(result) {
+                    self.rememberLineMemberSession(result);
                     if (result && result.ok) console.info('PocketBase order sync:', result.action, result.id || orderId);
                     return result;
                 }).catch(function(e) {
@@ -990,7 +1013,10 @@
             },
             writeOrderPrimary: function(orderId, orderData, sourcePage, writeToFirebase) {
                 var self = this;
-                return ensureFirebaseUser().then(function(currentUser) {
+                var memberReady = self.lineIdToken && !self.lineMemberSessionToken
+                    ? (self.lineMemberAuthPromise || self.loadLineMemberOrders())
+                    : Promise.resolve();
+                return memberReady.then(function() { return ensureFirebaseUser(); }).then(function(currentUser) {
                     orderData.createdByUid = currentUser.uid;
                     return writeOrderWithFirebaseFallback(orderId, orderData, {
                         settings: self.settings,
@@ -999,10 +1025,12 @@
                         secureTimeoutMs: 10000,
                         firebaseUser: currentUser,
                         lineIdToken: self.lineIdToken,
+                        lineSessionToken: self.lineMemberSessionToken,
                         pushEnabled: self.linePushEnabled,
                         writeToFirebase: writeToFirebase
                     });
                 }).then(function(result) {
+                    self.rememberLineMemberSession(result && result.pocketBase);
                     if (result && result.backend === 'pocketbase') console.info('Order saved to PocketBase primary:', orderId);
                     else if (result && result.backend === 'firebase') console.warn('PocketBase unavailable; order saved to Firebase fallback:', orderId);
                     return result;
@@ -2056,10 +2084,11 @@
                 var cancelPatch={status:'cancelled',cancelledAt:cancelTs,cancelSource:'customer',wasCancelled:true};
                 if(!linePayPaid)cancelPatch.print_task=cancelTask;
                 var cancelWrite = self.lineIdToken
-                    ? requestLineMember(self.lineIdToken, { settings:self.settings, cancelOrderId:order.id, limit:50, timeoutMs:10000 })
+                    ? requestLineMember(self.lineIdToken, { settings:self.settings, lineSessionToken:self.lineMemberSessionToken, cancelOrderId:order.id, limit:50, timeoutMs:10000 })
                     : update(ref(db, orderBase), cancelPatch);
                 var cancelResult = null;
                 return cancelWrite.then(function(result) {
+                    self.rememberLineMemberSession(result);
                     cancelResult = result || null;
                     // LINE Pay 已付款單只有 Pi 確認退款成功後才列印取消單。
                 }).then(function(){

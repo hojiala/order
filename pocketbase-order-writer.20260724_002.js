@@ -2627,6 +2627,7 @@ function writeOrderToSecureEndpoint(config, orderId, orderData, options, record,
             record: plainJson(record || {}, {}),
             turnstileToken: turnstileToken,
             lineIdToken: text(options.lineIdToken || options.line_id_token),
+            lineSessionToken: text(options.lineSessionToken || options.line_session_token),
             pushEnabled: typeof options.pushEnabled === "boolean" ? options.pushEnabled : undefined,
             updateOnly: options.allowPocketBaseUpdate === true,
             clientTs: Date.now()
@@ -2645,6 +2646,7 @@ function writeOrderToSecureEndpoint(config, orderId, orderData, options, record,
                 id: text((data && data.id) || (savedRecord && savedRecord.id) || ""),
                 record: savedRecord,
                 data: data,
+                lineMemberSessionToken: text(data && data.lineMemberSessionToken),
                 secureEndpoint: true
             };
         });
@@ -2662,12 +2664,13 @@ export function requestLineMember(idToken, options) {
     if (!endpoint && config.orderEndpoint) {
         endpoint = config.orderEndpoint.replace(/\/api\/(?:secure\/)?orders$/i, "/api/line/member");
     }
-    if (!endpoint || !text(idToken)) return Promise.reject(new Error("missing_line_member_endpoint_or_token"));
+    if (!endpoint || (!text(idToken) && !text(options.lineSessionToken))) return Promise.reject(new Error("missing_line_member_endpoint_or_token"));
     return requestJson(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
             lineIdToken: text(idToken),
+            lineSessionToken: text(options.lineSessionToken),
             pushEnabled: typeof options.pushEnabled === "boolean" ? options.pushEnabled : undefined,
             phone: text(options.phone),
             cancelOrderId: text(options.cancelOrderId) || undefined,
