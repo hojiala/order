@@ -3181,12 +3181,33 @@
                             }
                         }
                         queueData.print_task = task;
-                        const qRef = ref(db, 'print_queue/' + orderId);
-                        remove(qRef).catch(() => {})
-                            .then(() => new Promise(r => setTimeout(r, 120)))
-                            .then(() => withLatestStations(queueData))
-                            .then((data) => set(qRef, data))
-                            .catch(e => console.warn('print_queue 寫入失敗:', e.message));
+                        const fallback = () => {
+                            const qRef = ref(db, 'print_queue/' + orderId);
+                            return remove(qRef).catch(() => {})
+                                .then(() => new Promise(r => setTimeout(r, 120)))
+                                .then(() => withLatestStations(queueData))
+                                .then((data) => set(qRef, data))
+                                .catch(e => console.warn('print_queue 寫入失敗:', e.message));
+                        };
+                        const printBase = String(this.linePayServerUrl || '').replace(/\/+$/, '');
+                        if (printBase && auth.currentUser) {
+                            auth.currentUser.getIdToken()
+                                .then((token) => fetch(printBase + '/api/pos/print', {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+                                    body: JSON.stringify({ orderId, orderData: queueData })
+                                }))
+                                .then((response) => {
+                                    if (!response.ok) throw new Error(response.status);
+                                    console.log('🖨️ 後端直接列印成功');
+                                })
+                                .catch((error) => {
+                                    console.warn('🖨️ 後端直接列印失敗，走 Firebase 備援:', error.message || error);
+                                    return fallback();
+                                });
+                        } else {
+                            fallback();
+                        }
                     } catch(e) { console.warn('print_queue error:', e); }
                 },
                 allocateOrderNoPrimary(sourcePage) {
@@ -3352,8 +3373,7 @@
                     }
                     try {
                         const receiptTask = `receipt_${Date.now()}`;
-                        await this.clearPrintTaskMirror(order.id, order);
-                        await this.setPrintTaskMirror(order.id, receiptTask, order);
+                        this.writeToPrintQueue(order.id, receiptTask, order);
                         console.log("客戶收據列印指令發送成功");
                     } catch (err) {
                         this.toast("❌ 印收據失敗：" + err);
