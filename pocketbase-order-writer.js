@@ -2861,8 +2861,16 @@ export function writeOrderToPocketBase(orderId, orderData, options) {
 export function writeOrderWithFirebaseFallback(orderId, orderData, options) {
     options = options || {};
     var writeToFirebase = typeof options.writeToFirebase === "function" ? options.writeToFirebase : null;
+    var sourcePage = text(options.sourcePage).trim().toLowerCase();
+    var publicFirebaseFallbackDisabled = sourcePage === "index" || sourcePage === "dinein";
     var fallback = function(reason) {
         var detail = reason && (reason.message || reason.reason || (reason.error && reason.error.message) || "");
+        if (publicFirebaseFallbackDisabled) {
+            try {
+                console.warn("PocketBase primary write failed; public Firebase fallback disabled:", detail || "");
+            } catch(e) {}
+            return Promise.reject(new Error("PocketBase order write failed; public Firebase fallback disabled"));
+        }
         try {
             var body = reason && (reason.body || (reason.error && reason.error.body));
             if (detail || body) console.warn("PocketBase primary write failed; using Firebase fallback:", detail || "", body || "");
