@@ -2646,6 +2646,8 @@ function writeOrderToSecureEndpoint(config, orderId, orderData, options, record,
                 id: text((data && data.id) || (savedRecord && savedRecord.id) || ""),
                 record: savedRecord,
                 data: data,
+                backend: text(data && data.backend) || "pocketbase",
+                fallback: !!(data && data.fallback),
                 lineMemberSessionToken: text(data && data.lineMemberSessionToken),
                 secureEndpoint: true
             };
@@ -2893,6 +2895,24 @@ export function writeOrderWithFirebaseFallback(orderId, orderData, options) {
     return writeOrderToPocketBase(orderId, orderData, options)
         .then(function(pbResult) {
             if (pbResult && pbResult.ok) {
+                if (pbResult.backend === "firebase" || pbResult.fallback === true) {
+                    return notifyFirebaseFallbackOnce(
+                        orderId,
+                        orderData,
+                        options,
+                        { message: "PocketBase unavailable; Worker used Firebase", data: pbResult.data },
+                        pbResult.record
+                    ).then(function(notifyResult) {
+                        return {
+                            ok: true,
+                            backend: "firebase",
+                            fallback: true,
+                            pocketBase: pbResult,
+                            firebase: pbResult.record,
+                            telegramNotify: notifyResult
+                        };
+                    });
+                }
                 // PocketBase hook is the sole PB-success mirror owner; a second browser SET
                 // races the hook and is rejected by owner-only Firebase update rules.
                 return { ok: true, backend: "pocketbase", fallback: false, pocketBase: pbResult };
