@@ -235,10 +235,15 @@ async function processPayment() {
     // callbackToken 是建立交易時由後端產生的一次性能力憑證；
     // Firebase 規則會同時核對交易編號、金額與日期。
     const dbRestUrl = 'https://breakfast-ai-system-default-rtdb.asia-southeast1.firebasedatabase.app';
+    const idToken = await waitForExistingIdToken();
+    if (!idToken) {
+      showConfirmationPending();
+      return;
+    }
     let writeOk = false;
     for (let retry = 0; retry < 3; retry++) {
       try {
-        const wRes = await fetch(`${dbRestUrl}/linepay_confirms/${orderId}.json`, {
+        const wRes = await fetch(firebaseRestUrl(dbRestUrl, `linepay_confirms/${orderId}`, idToken), {
           method: 'PUT',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({
@@ -267,13 +272,6 @@ async function processPayment() {
     }
 
     try { history.replaceState(null, '', window.location.pathname); } catch (e) {}
-
-    // 僅原下單者或店員可讀交易狀態；沒有既有 Firebase 身分時保持「確認中」。
-    const idToken = await waitForExistingIdToken();
-    if (!idToken) {
-      showConfirmationPending();
-      return;
-    }
 
     let confirmed = false;
     for (let i = 0; i < 30; i++) {
@@ -322,6 +320,10 @@ async function processPayment() {
       } catch(e) { console.error(e); }
       document.getElementById('phoneReminder').style.display = 'block';
       showView('success');
+      if (params.get('returnPage') === 'pos') {
+        window.location.replace(backUrl);
+        return;
+      }
       if (isPosClose) { setTimeout(function(){ try{window.close();}catch(e){} }, 3000); }
     } else {
       showConfirmationPending();
