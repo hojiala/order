@@ -791,7 +791,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getDatabase, ref, onValue, onChildAdded, onChildChanged, onChildRemoved, update, push, set, get, remove, query, orderByChild, limitToLast, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-    import { allocateOrderNoFromPocketBase, resetOrderNoInPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, listMenuItemsFromPocketBase, writeMenuItemToPocketBase, writeSettingsToPocketBase, rememberPublicMenuItems, rememberPublicSettings, normalizePublicSettings, subscribeOrdersRealtime } from "./pocketbase-order-writer.20260724_002.js?v=20260730_014";
+    import { allocateOrderNoFromPocketBase, resetOrderNoInPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, requestLinePayViaBackend, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, listMenuItemsFromPocketBase, writeMenuItemToPocketBase, writeSettingsToPocketBase, rememberPublicMenuItems, rememberPublicSettings, normalizePublicSettings, subscribeOrdersRealtime } from "./pocketbase-order-writer.20260724_002.js?v=20260801_001";
     const firebaseConfig = {
         apiKey:"AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
         authDomain:"breakfast-ai-system.firebaseapp.com",
@@ -1702,6 +1702,45 @@
                     payUrl=p.web||p.url||p.href||'';
                 }
                 return String(payUrl||'').trim();
+            },
+            startPosLinePay:function(orderId,orderDateKey,confirmBase,clearCartOnRedirect){
+                var s=this;
+                s.toast('⏳ 正在建立 LINE Pay 連結...');
+                return requestLinePayViaBackend(orderId,orderDateKey,{
+                    settings:s.settings,
+                    firebaseUser:auth.currentUser,
+                    confirmBaseUrl:confirmBase,
+                    returnPage:'pos'
+                }).then(function(result){
+                    return new Promise(function(resolve,reject){
+                        var finished=false,stopWatching=function(){},timer=null;
+                        var finish=function(error,payUrl){
+                            if(finished)return;
+                            finished=true;clearTimeout(timer);stopWatching();s.isSubmitting=false;
+                            if(error){reject(error);return;}
+                            if(clearCartOnRedirect)s.clearCart();
+                            try{localStorage.setItem('linepay_return_url',window.location.href);}catch(e){}
+                            window.location.href=payUrl;
+                            resolve();
+                        };
+                        var handle=function(data){
+                            if(!data)return false;
+                            var status=String(data.status||'').toLowerCase();
+                            var payUrl=s.extractLinePayUrlFromPayload(data);
+                            if(payUrl&&status==='ready'){finish(null,payUrl);return true;}
+                            if(status==='error'||status==='failed'){finish(new Error(data.error||'未知錯誤'));return true;}
+                            return false;
+                        };
+                        if(handle(result&&result.request))return;
+                        stopWatching=onValue(ref(db,'linepay_requests/'+orderId),function(snap){
+                            if(snap.exists())handle(snap.val());
+                        },function(error){finish(error||new Error('linepay_watch_failed'));});
+                        timer=setTimeout(function(){finish(new Error('逾時，請確認樹莓派服務正常'));},25000);
+                    });
+                }).catch(function(error){
+                    s.isSubmitting=false;
+                    s.toast('⚠️ LINE Pay 失敗：'+(error&&error.message||error||'未知錯誤'));
+                });
             },
             normalizeSourceRecordPath:function(order,orderId){
                 var o=order||{};
@@ -6483,66 +6522,12 @@
                         var orderId=snap.key;s.lastOrderId=orderId;
 
                         if(isLinePay){
-                            // ★ LINE Pay：讀+寫全部用 fetch() REST API（完全繞過 Firebase SDK WebSocket）
-                            s.toast('⏳ 正在建立 LINE Pay 連結...');
-                            var handled=false,directPoll=null,reqTimer=null;
-                            var dbRestUrl='https://breakfast-ai-system-default-rtdb.asia-southeast1.firebasedatabase.app';
-                            auth.currentUser.getIdToken().then(function(token){
-                                var authQ='?auth='+encodeURIComponent(token);
-                                // ★ Step 1: 用 fetch() PUT 寫入請求（不用 SDK set）
-                                return fetch(dbRestUrl+'/linepay_requests/'+orderId+'.json'+authQ,{
-                                    method:'PUT',
-                                    headers:{'Content-Type':'application/json'},
-                                    body:JSON.stringify({
-                                        amount:o.total,items:o.items,
-                                        orderDateKey:o.orderDateKey||o.pickupDate||"",
-                                        confirmBaseUrl:confirmBase,
-                                        returnPage:'pos',
-                                        status:'pending',createdAt:Date.now()
-                                    })
-                                }).then(function(wRes){
-                                    if(!wRes.ok)throw new Error('寫入失敗 HTTP '+wRes.status);
-                                    // ★ Step 2: 用 fetch() GET 輪詢後端結果
-                                    var _pollFetch=function(){
-                                        if(handled)return;
-                                        fetch(dbRestUrl+'/linepay_requests/'+orderId+'.json'+authQ)
-                                            .then(function(r){return r.json();}).then(function(data){
-                                                if(handled||!data)return;
-                                                var st=String(data.status||'').toLowerCase();
-                                                var payUrl=s.extractLinePayUrlFromPayload(data);
-                                                if(payUrl&&(st==='ready'||st==='created'||st==='ok'||st==='pending'||st==='')){
-                                                    handled=true;clearInterval(directPoll);clearTimeout(reqTimer);
-                                                    s.isSubmitting=false;s.clearCart();
-                                                    try{localStorage.setItem('linepay_return_url',window.location.href);}catch(e){}
-                                                    window.location.href=payUrl;
-                                                }else if(st==='error'||st==='failed'){
-                                                    handled=true;clearInterval(directPoll);clearTimeout(reqTimer);
-                                                    s.isSubmitting=false;
-                                                    s.toast('⚠️ LINE Pay 失敗：'+(data.error||'未知錯誤'));
-                                                }
-                                            }).catch(function(){});
-                                    };
-                                    setTimeout(_pollFetch,800);
-                                    directPoll=setInterval(_pollFetch,1500);
-                                });
-                            }).catch(function(e){
-                                if(!handled){handled=true;clearInterval(directPoll);clearTimeout(reqTimer);}
-                                s.isSubmitting=false;
-                                s.toast('⚠️ LINE Pay 寫入失敗：'+e.message);
-                            });
-                            // 30 秒逾時
-                            reqTimer=setTimeout(function(){
-                                if(!handled){
-                                    handled=true;clearInterval(directPoll);
-                                    s.isSubmitting=false;
-                                    s.toast('⚠️ LINE Pay 逾時，請確認樹莓派服務正常');
-                                }
-                            },90000);
+                            // Worker 從 Firebase canonical 訂單建立 queue；瀏覽器不再提交金額或品項。
+                            s.startPosLinePay(orderId,o.orderDateKey||o.pickupDate||'',confirmBase,true);
                         }else{
                             // ★ 店內付款：立即列印；print_task 已隨訂單本體一起寫入，避免 POS 監聽器補印第二次
-                            Promise.resolve().then(function(){
-                                // ★ print_queue 由前端立即寫入；PB hook 只做 Firebase orders mirror，不負責列印觸發
-                                s.writeToPrintQueue(orderId,storePrintTask,o);
+                            s.writeToPrintQueue(orderId,storePrintTask,o).then(function(delivery){
+                                if(!delivery||!delivery.ok)throw (delivery&&delivery.error)||new Error('列印服務無回應');
                                 if(isCash){
                                     s.toast("✅ 現金已付款 $"+o.total+" (No."+String(o.orderNo).padStart(3,"0")+")");
                                 }else{
@@ -6770,18 +6755,18 @@
                         return remove(qRef).catch(function(){})
                             .then(function(){ return new Promise(function(resolve){ setTimeout(resolve,120); }); })
                             .then(function(){ return set(qRef,queueData); })
-                            .catch(function(e){console.warn('print_queue寫入失敗:',e.message);});
+                            .then(function(){return {ok:true,backend:'firebase'};})
+                            .catch(function(e){console.warn('print_queue寫入失敗:',e.message);return {ok:false,error:e};});
                     };
                     var printBase=String(this.linePayServerUrl||'').replace(/\/+$/,'');
                     if(printBase&&auth.currentUser){
-                        auth.currentUser.getIdToken()
+                        return auth.currentUser.getIdToken()
                             .then(function(token){return fetch(printBase+'/api/pos/print',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},body:JSON.stringify({orderId:orderId,orderData:queueData})});})
-                            .then(function(r){if(!r.ok)throw new Error(r.status);console.log('🖨️ 後端直接列印成功');})
+                            .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);console.log('🖨️ 後端直接列印成功');return {ok:true,backend:'linepay'};})
                             .catch(function(e){console.warn('🖨️ 後端直接列印失敗，走 Firebase 備援:',e.message||e);return fallback();});
-                    }else{
-                        fallback();
                     }
-                }catch(e){console.warn('print_queue error:',e);}
+                    return fallback();
+                }catch(e){console.warn('print_queue error:',e);return Promise.resolve({ok:false,error:e});}
             },
             saveOrderEdit:async function(){
                 var s=this;
@@ -6952,51 +6937,9 @@
                             return;
                         }
 
-                        s.toast('⏳ 正在建立 LINE Pay 連結...');
-                        // ★ 讀+寫全部用 fetch() REST API（繞過 SDK WebSocket）
-                        var handled2=false,directPoll2=null,reqTimer2=null;
                         var orderDateKey2=s.resolveOrderDateKey(targetOrder);
-                        var dbRestUrl2='https://breakfast-ai-system-default-rtdb.asia-southeast1.firebasedatabase.app';
                         s.exitOnline();
-                        auth.currentUser.getIdToken().then(function(token){
-                            var authQ2='?auth='+encodeURIComponent(token);
-                            return fetch(dbRestUrl2+'/linepay_requests/'+id+'.json'+authQ2,{
-                                method:'PUT',
-                                headers:{'Content-Type':'application/json'},
-                                body:JSON.stringify({
-                                    amount:upd.total||0,items:upd.items||[],
-                                    orderDateKey:orderDateKey2,confirmBaseUrl:confirmBase,
-                                    returnPage:'pos',status:'pending',createdAt:Date.now()
-                                })
-                            }).then(function(wRes){
-                                if(!wRes.ok)throw new Error('寫入失敗 HTTP '+wRes.status);
-                                var _pollFetch2=function(){
-                                    if(handled2)return;
-                                    fetch(dbRestUrl2+'/linepay_requests/'+id+'.json'+authQ2)
-                                        .then(function(r){return r.json();}).then(function(data){
-                                            if(handled2||!data)return;
-                                            var st2=String(data.status||'').toLowerCase();
-                                            var payUrl2=s.extractLinePayUrlFromPayload(data);
-                                            if(payUrl2&&(st2==='ready'||st2==='created'||st2==='ok'||st2==='pending'||st2==='')){
-                                                handled2=true;clearInterval(directPoll2);clearTimeout(reqTimer2);
-                                                try{localStorage.setItem('linepay_return_url',window.location.href);}catch(e){}
-                                                window.location.href=payUrl2;
-                                            }else if(st2==='error'||st2==='failed'){
-                                                handled2=true;clearInterval(directPoll2);clearTimeout(reqTimer2);
-                                                s.toast('⚠️ LINE Pay 失敗：'+(data.error||'未知錯誤'));
-                                            }
-                                        }).catch(function(){});
-                                };
-                                setTimeout(_pollFetch2,800);
-                                directPoll2=setInterval(_pollFetch2,1500);
-                            });
-                        }).catch(function(e){
-                            if(!handled2){handled2=true;clearInterval(directPoll2);clearTimeout(reqTimer2);}
-                            s.toast('⚠️ LINE Pay 寫入失敗：'+e.message);
-                        });
-                        reqTimer2=setTimeout(function(){
-                            if(!handled2){handled2=true;clearInterval(directPoll2);s.toast('⚠️ LINE Pay 逾時，請確認樹莓派服務正常');}
-                        },90000);
+                        s.startPosLinePay(id,orderDateKey2,confirmBase,false);
                         return;
                     }
 
