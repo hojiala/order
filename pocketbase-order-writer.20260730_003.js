@@ -2313,6 +2313,15 @@ function writeManageRequest(kind, payload, options) {
     });
 }
 
+export function readManageSettingsFromPocketBase(options) {
+    return writeManageRequest("settings", { action: "read" }, options || {}).then(function(result) {
+        if (!result || result.ok === false || !result.settings || typeof result.settings !== "object") {
+            throw new Error((result && (result.message || result.reason)) || "PocketBase manage settings read unavailable");
+        }
+        return Object.assign({ ok: true, backend: "pocketbase_manage" }, result);
+    });
+}
+
 export function writeMenuItemToPocketBase(itemId, itemData, options) {
     options = options || {};
     var payload = {

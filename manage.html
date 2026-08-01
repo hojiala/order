@@ -1879,7 +1879,7 @@ window._doCountUp = function() {
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getDatabase, ref, set, get, push, update, remove, onValue, onChildAdded, onChildChanged, onChildRemoved, query, orderByChild, equalTo, limitToLast } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-    import { listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, writeMenuItemToPocketBase, deleteMenuItemFromPocketBase, updateMenuSortInPocketBase, writeSettingsToPocketBase, requestLineMembers, pocketBaseRecordToOrder } from "./pocketbase-order-writer.20260724_002.js?v=20260730_014";
+    import { listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, readManageSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, writeMenuItemToPocketBase, deleteMenuItemFromPocketBase, updateMenuSortInPocketBase, writeSettingsToPocketBase, requestLineMembers, pocketBaseRecordToOrder } from "./pocketbase-order-writer.20260724_002.js?v=20260801_002";
 
     const firebaseConfig = {
         apiKey: "AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -6974,14 +6974,22 @@ window._doCountUp = function() {
                 };
                 // ★ 後台一律強制讀最新資料，不吃本機快取：
                 //   若後台顯示到舊設定（例如舊的公告開關），按「儲存設定」時整包寫回會把舊值復活。
-                return readSettingsFromPocketBase({ settings: this.settings || {}, timeoutMs: 6000, forceFresh: true, ignoreCooldown: true, allowDirectCollectionFallback: true, firebaseUser: auth.currentUser }).then(function(result) {
-                    if (result && result.ok && result.settings && Object.keys(result.settings).length) {
-                        apply(result.settings, 'pocketbase');
-                        return;
-                    }
-                    console.warn('PocketBase settings empty; keeping current settings');
+                var loadPublicSettings = function() {
+                    return readSettingsFromPocketBase({ settings: self.settings || {}, timeoutMs: 6000, forceFresh: true, ignoreCooldown: true, allowDirectCollectionFallback: true, firebaseUser: auth.currentUser }).then(function(result) {
+                        if (result && result.ok && result.settings && Object.keys(result.settings).length) {
+                            apply(result.settings, 'pocketbase_public');
+                            return;
+                        }
+                        console.warn('PocketBase settings empty; keeping current settings');
+                    });
+                };
+                return readManageSettingsFromPocketBase(this.pocketBaseManageOptions({ timeoutMs: 15000, secureTimeoutMs: 15000 })).then(function(result) {
+                    apply(result.settings, 'pocketbase_manage');
                 }).catch(function(err) {
-                    console.warn('PocketBase settings read failed; keeping current settings:', err && err.message ? err.message : err);
+                    console.warn('PocketBase protected settings read failed; using public settings:', err && err.message ? err.message : err);
+                    return loadPublicSettings().catch(function(publicErr) {
+                        console.warn('PocketBase settings read failed; keeping current settings:', publicErr && publicErr.message ? publicErr.message : publicErr);
+                    });
                 });
             },
             saveSettings: function() {
