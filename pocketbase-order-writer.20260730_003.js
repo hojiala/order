@@ -842,10 +842,26 @@ function unwrapValueWrapper(value) {
     return current;
 }
 
-function normalizeSettingsObject(value) {
+function normalizeSettingsBooleans(value) {
     var decoded = unwrapValueWrapper(value);
     if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) return {};
     var out = Object.assign({}, decoded);
+    function boolLike(input) {
+        var v = decodeJsonLike(input);
+        if (typeof v === "boolean") return v;
+        var raw = text(v).trim().toLowerCase();
+        if (raw === "false" || raw === "0" || raw === "no" || raw === "off") return false;
+        if (raw === "true" || raw === "1" || raw === "yes" || raw === "on") return true;
+        return v !== false && v !== 0;
+    }
+    ["isOpen", "dineinIsOpen", "dineinCartClearEnabled", "hideAllTab", "orderCooldownEnabled", "useCustomLoadingImage"].forEach(function(key) {
+        if (out[key] !== undefined) out[key] = boolLike(out[key]);
+    });
+    return out;
+}
+
+function normalizeSettingsObject(value) {
+    var out = normalizeSettingsBooleans(value);
     function listLike(input) {
         var normalized = decodeJsonLike(input);
         if (Array.isArray(normalized)) return normalized;
@@ -910,19 +926,6 @@ function normalizeSettingsObject(value) {
     delete out.staffSettings;
     delete out.adminSettings;
     delete out.authSettings;
-    // PocketBase 設定欄位以文字儲存，開關值會變成 "true"/"false" 字串；
-    // 前台用 `v.isOpen !== false` 判斷時字串 "false" 會被當成開啟，必須先轉回布林。
-    function boolLike(input) {
-        var v = decodeJsonLike(input);
-        if (typeof v === "boolean") return v;
-        var raw = text(v).trim().toLowerCase();
-        if (raw === "false" || raw === "0" || raw === "no" || raw === "off") return false;
-        if (raw === "true" || raw === "1" || raw === "yes" || raw === "on") return true;
-        return v !== false && v !== 0;
-    }
-    ["isOpen", "dineinIsOpen", "dineinCartClearEnabled", "hideAllTab", "orderCooldownEnabled", "useCustomLoadingImage"].forEach(function(key) {
-        if (out[key] !== undefined) out[key] = boolLike(out[key]);
-    });
     return out;
 }
 
@@ -2318,6 +2321,7 @@ export function readManageSettingsFromPocketBase(options) {
         if (!result || result.ok === false || !result.settings || typeof result.settings !== "object") {
             throw new Error((result && (result.message || result.reason)) || "PocketBase manage settings read unavailable");
         }
+        result.settings = normalizeSettingsBooleans(result.settings);
         return Object.assign({ ok: true, backend: "pocketbase_manage" }, result);
     });
 }
