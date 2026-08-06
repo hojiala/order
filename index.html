@@ -629,7 +629,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getDatabase, ref, push, set, get, update, onValue, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-    import { allocateOrderNoFromPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, requestLinePayViaBackend, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, pocketBaseRecordToOrder, requestLineMember } from "./pocketbase-order-writer.20260730_003.js";
+    import { allocateOrderNoFromPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, requestLinePayViaBackend, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, pocketBaseRecordToOrder, requestLineMember, cancelOwnedOrderViaBackend } from "./pocketbase-order-writer.20260806_004.js";
 
     const enteredFromLiff = /(?:^|[?&])liff(?:=1|=true|[.&=])/i.test(location.search) || /(?:^|[?&])liff\.state=/i.test(location.search) || /\bLine\//i.test(navigator.userAgent || '');
 
@@ -2072,19 +2072,13 @@
                     var diff = (new Date(pd + 'T' + pt + ':00').getTime() - Date.now()) / 60000;
                     if (diff <= limitMin) { self.showAlertModal('無法取消', '距離取餐時間不足 ' + limitMin + ' 分鐘，已無法線上取消訂單。\n如需取消，請直接聯繫店家，造成不便敬請見諒！'); return; }
                 }
-                var dk=(order.orderDateKey||order.pickupDate||(function(){var d=new Date(order.timestamp||Date.now());return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);})());
-                var orderBase='orders/'+dk+'/'+order.id;
-                var cancelTs=Date.now();
-                var cancelTask='cancel_'+cancelTs;
                 var pm = String(order.paymentMethod||'').toLowerCase();
                 var transactionConfirmed = !!(self.lpConfirmed&&self.lpConfirmed[order.id]) || (self.lpTxnState&&self.lpTxnState[order.id]==='confirmed');
                 var lpKnown = pm.indexOf('linepay')===0 || transactionConfirmed;
                 var linePayPaid = lpKnown && (order.paymentStatus==='paid' || transactionConfirmed);
-                var cancelPatch={status:'cancelled',cancelledAt:cancelTs,cancelSource:'customer',wasCancelled:true};
-                if(!linePayPaid)cancelPatch.print_task=cancelTask;
                 var cancelWrite = self.lineIdToken
                     ? requestLineMember(self.lineIdToken, { settings:self.settings, lineSessionToken:self.lineMemberSessionToken, cancelOrderId:order.id, deviceId:order.deviceId||self.deviceId, limit:50, timeoutMs:10000 })
-                    : update(ref(db, orderBase), cancelPatch);
+                    : cancelOwnedOrderViaBackend(order.id, { settings:self.settings, firebaseUser:auth.currentUser, timeoutMs:10000 });
                 var cancelResult = null;
                 return cancelWrite.then(function(result) {
                     self.rememberLineMemberSession(result);

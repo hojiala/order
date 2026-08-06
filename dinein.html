@@ -552,7 +552,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
     import { getDatabase, ref, push, set, get, update, remove, onValue, query, orderByChild, equalTo, limitToLast, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
-    import { allocateOrderNoFromPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, requestLinePayViaBackend, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings } from "./pocketbase-order-writer.20260730_003.js";
+    import { allocateOrderNoFromPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, requestLinePayViaBackend, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, cancelOwnedOrderViaBackend } from "./pocketbase-order-writer.20260806_004.js";
 
     const firebaseConfig = {
         apiKey:"AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -636,7 +636,7 @@
             // 設備綁定
             deviceBound:false, isPhoneMode:false, phoneSession:'', qrOrderType:'dinein', selectedTable:'', selectedKiosk:'',
             showPinVerify:false, pinInput:'', pinError:'', storePin:'',
-            deviceId:'', deviceLabel:'', deviceType:'',
+            deviceId:'', deviceLabel:'', deviceType:'', deviceSignature:'',
             // 設定
             isLoading:true, menuReady:false, settingsReady:false,
             settings:{isOpen:true,dineinIsOpen:true,useCustomLoadingImage:false,openTime:'06:00',closeTime:'13:15',weeklyDaysOff:[],holidays:[],dailyHours:{},pickupInterval:15,linePayServerUrl:'',linePayConfirmUrl:'',pocketBaseUrl:'',pocketBaseOrdersCollection:'orders',counterResetTime:'',counterMaxNo:999,announcements:[]},settingsStationsLoaded:false,settingsReadBackend:'checking',menuReadBackend:'checking',
@@ -737,6 +737,9 @@
             var urlParams=new URLSearchParams(window.location.search);
             var qrTable=urlParams.get('table');
             var qrTakeout=urlParams.get('takeout');
+            var queryDeviceSignature=urlParams.get('sig')||'';
+            if(queryDeviceSignature){try{sessionStorage.setItem('dinein_device_signature',queryDeviceSignature)}catch(e){}}
+            try{s.deviceSignature=queryDeviceSignature||sessionStorage.getItem('dinein_device_signature')||''}catch(e){s.deviceSignature=queryDeviceSignature}
             if(qrTable||qrTakeout){
                 var num=(qrTable||qrTakeout).replace(/[^0-9]/g,'');
                 if(num){
@@ -751,6 +754,7 @@
                         s.deviceType='table';
                         s.qrOrderType='dinein';
                     }
+                    try{if(s.deviceSignature)localStorage.setItem('dinein_sig_'+s.deviceId,s.deviceSignature)}catch(e){}
                     s.isPhoneMode=true;
                     try{
                         var sid=sessionStorage.getItem('phone_session');
@@ -775,7 +779,7 @@
             }
             // 恢復設備綁定（平板模式）
             // 優先檢查 URL 參數 ?deviceId=（LINE Pay 付款後返回時帶入）
-            var urlDeviceId = new URLSearchParams(window.location.search).get('deviceId');
+            var urlDeviceId = urlParams.get('deviceId');
             if(urlDeviceId){
                 // ★ 直接解析 deviceId 格式（table_8, kiosk_1, takeout_1）不需查 Firebase
                 var parts=urlDeviceId.split('_');
@@ -789,6 +793,7 @@
                 }else{
                     this.deviceId=urlDeviceId; this.deviceLabel=urlDeviceId; this.deviceType='dinein';
                 }
+                try{this.deviceSignature=this.deviceSignature||localStorage.getItem('dinein_sig_'+this.deviceId)||''}catch(e){}
                 this.deviceBound=true;
                 this.initApp();
             } else {
@@ -796,7 +801,7 @@
                     var saved=localStorage.getItem('dinein_device');
                     if(saved){
                         var d=JSON.parse(saved);
-                        this.deviceId=d.deviceId;this.deviceLabel=d.deviceLabel;this.deviceType=d.deviceType;
+                        this.deviceId=d.deviceId;this.deviceLabel=d.deviceLabel;this.deviceType=d.deviceType;this.deviceSignature=this.deviceSignature||d.deviceSignature||'';
                         this.deviceBound=true;
                         this.initApp();
                     }
@@ -818,7 +823,9 @@
                     sourcePage:sourcePage||'dinein',
                     timeoutMs:8000,
                     secureTimeoutMs:10000,
-                    firebaseUser:auth.currentUser
+                    firebaseUser:auth.currentUser,
+                    dineinDeviceId:this.deviceId,
+                    dineinDeviceSignature:this.deviceSignature
                 }).then(function(result){
                     if(result&&result.ok)console.info('PocketBase order sync:',result.action,result.id||orderId);
                     return result;
@@ -837,6 +844,8 @@
                         timeoutMs:8000,
                         secureTimeoutMs:20000,
                         firebaseUser:currentUser,
+                        dineinDeviceId:s.deviceId,
+                        dineinDeviceSignature:s.deviceSignature,
                         writeToFirebase:writeToFirebase
                     });
                 }).then(function(result){
@@ -870,7 +879,9 @@
                     return allocateOrderNoFromPocketBase({
                         settings:s.settings,
                         sourcePage:sourcePage||'dinein',
-                        firebaseUser:currentUser
+                        firebaseUser:currentUser,
+                        dineinDeviceId:s.deviceId,
+                        dineinDeviceSignature:s.deviceSignature
                     });
                 }).then(function(result){
                     if(result&&result.ok)return result;
@@ -942,12 +953,13 @@
                     this.deviceType='kiosk';
                 }
                 this.deviceBound=true;
-                try{localStorage.setItem('dinein_device',JSON.stringify({deviceId:this.deviceId,deviceLabel:this.deviceLabel,deviceType:this.deviceType}))}catch(e){}
+                try{localStorage.setItem('dinein_device',JSON.stringify({deviceId:this.deviceId,deviceLabel:this.deviceLabel,deviceType:this.deviceType,deviceSignature:this.deviceSignature}))}catch(e){}
                 this.initApp();
             },
             unbind:function(){
-                this.deviceBound=false;this.deviceId='';this.deviceLabel='';
-                try{localStorage.removeItem('dinein_device')}catch(e){}
+                var oldDeviceId=this.deviceId;
+                this.deviceBound=false;this.deviceId='';this.deviceLabel='';this.deviceSignature='';
+                try{localStorage.removeItem('dinein_device');if(oldDeviceId)localStorage.removeItem('dinein_sig_'+oldDeviceId);sessionStorage.removeItem('dinein_device_signature')}catch(e){}
             },
             verifyPassword:function(){
                 if(!this.passwordInput){this.passwordError='請輸入密碼';return}
@@ -1488,23 +1500,16 @@
                     ?'此訂單已完成 LINE Pay 付款。確定取消？（將自動退款）'
                     :'確定要取消這筆訂單嗎？（將自動列印取消單至廚房）';
                 if(!confirm(msg))return;
-                var dk=(order.orderDateKey||order.pickupDate||(function(){var d=new Date(order.timestamp||Date.now());return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);})());
-                var cnTask='cancel_'+Date.now();
-                var cancelPatch={status:'cancelled',wasCancelled:true,cancelledAt:Date.now()};
-                if(!isPaidLinePay)cancelPatch.print_task=cnTask;
-                update(ref(db,'orders/'+dk+'/'+order.id),cancelPatch).then(function(){
+                cancelOwnedOrderViaBackend(order.id,{settings:s.settings,firebaseUser:auth.currentUser,timeoutMs:10000}).then(function(){
                     // LINE Pay 已付款時，只有 Pi 確認退款成功後才列印取消單。
-                    if(isPaidLinePay)return s.requestCancelRefund(order,dk);
+                    if(isPaidLinePay)return s.requestCancelRefund(order);
                     s.toast('❌ 訂單已取消，列印取消單...');
                 }).catch(function(e){s.toast('⚠️ 取消失敗：'+e.message);});
             },
-            requestCancelRefund:function(order,dk){
+            requestCancelRefund:function(order){
                 var s=this;
                 s.toast('❌ 訂單已取消，LINE Pay 退款處理中…');
-                return set(ref(db,'linepay_refund_requests/'+order.id),{
-                    orderId:order.id, amount:Number(order.total||0), reason:'顧客取消訂單',
-                    status:'pending', createdAt:Date.now(), source:'dinein', orderDateKey:dk
-                }).then(function(){
+                return Promise.resolve().then(function(){
                     var attempts=0;
                     var poll=function(){
                         attempts++;
@@ -1709,7 +1714,7 @@
                     }
                     // 購物車已變更：把舊的未付款訂單作廢，避免殘留混淆現場人員
                     try{
-                        update(ref(db,'orders/'+reuse.dateKey+'/'+reuse.orderId),{status:'cancelled',wasCancelled:true,cancelledAt:Date.now()}).catch(function(){});
+                        cancelOwnedOrderViaBackend(reuse.orderId,{settings:s.settings,firebaseUser:auth.currentUser,timeoutMs:10000}).catch(function(){});
                     }catch(e){}
                     s.pendingQRReuse=null;s.qrReuseCandidate=null;
                 }
