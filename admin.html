@@ -204,6 +204,7 @@
                                     <button @click="printOrder(order); activeMenu = null" class="w-full text-left px-4 py-3 hover:bg-gray-100 text-gray-700 border-b text-sm font-bold">🖨️ 補印工單</button>
                                     <button @click="printReceipt(order); activeMenu = null" class="w-full text-left px-4 py-3 hover:bg-gray-100 text-gray-700 border-b text-sm font-bold">🧾 印收據</button>
                                     <button v-if="getDisplayStatus(order) !== 'done' && getDisplayStatus(order) !== 'cancelled'" @click="cancelOrder(order); activeMenu = null" class="w-full text-left px-4 py-3 hover:bg-red-50 text-red-600 text-sm font-bold">❌ 取消訂單</button>
+                                    <button v-if="getDisplayStatus(order) === 'cancelled'" @click="archiveCancelledOrder(order); activeMenu = null" class="w-full text-left px-4 py-3 hover:bg-slate-100 text-slate-700 text-sm font-bold">🗄️ 移除畫面（保留歷史）</button>
                                 </div>
                             </div>
                         </div>
@@ -492,7 +493,7 @@
                         const sourcePath = this.normalizeSourceRecordPath(order, order && order.id || '');
                         const family = (sourcePath.indexOf('phone_ai/orders/') === 0 || src === 'phone_ai' || src === 'pos_local' || label.indexOf('\u96fb\u8a71') !== -1 || label.indexOf('phone') !== -1)
                             ? 'phone_ai'
-                            : ((src === 'pos') ? 'pos' : ((src === 'qrcode' || src === 'qr_takeout' || src === 'dinein' || src === 'line' || src === 'web_liff') ? src : 'web'));
+                            : ((src === 'pos') ? 'pos' : ((src === 'qrcode' || src === 'qr_takeout' || src === 'dinein') ? src : 'web'));
                         if (family === 'phone_ai') {
                             // 電話單以 sourceOrderId 為唯一鍵（不含日期）：同一張單的
                             // phone_ai 紀錄、integration view、PB、orders 桶鏡射才會合併成一筆
@@ -507,7 +508,9 @@
                         }
                         const no = String(order.orderNo || order.serialNumber || '').trim();
                         const day = dayOf(order);
-                        const sourceOrderId = String(order.sourceOrderId || order.orderId || '').trim();
+                        const sourceOrderId = window.OrderBatchTools && window.OrderBatchTools.canonicalOrderId
+                            ? window.OrderBatchTools.canonicalOrderId(order.sourceOrderId || order.orderId || '')
+                            : String(order.sourceOrderId || order.orderId || '').trim();
                         if (sourceOrderId && day && family) return ['oid', family, day, sourceOrderId].join('|');
                         const total = Number(order.total || (order.totals && order.totals.finalTotal) || 0);
                         const phone = String((order.customer && order.customer.phone) || order.phone || '').replace(/\D/g, '');
@@ -3014,7 +3017,7 @@
                         if (src === 'qrcode') return 'qrcode';
                         if (src === 'qr_takeout') return 'qr_takeout';
                         if (src === 'dinein' || type === 'dinein') return 'dinein';
-                        if (this.isLineSourceOrder(order)) return 'line';
+                        if (this.isLineSourceOrder(order)) return 'web';
                         if (path.indexOf('orders/') === 0 || path.indexOf('orders_archive/') === 0 || src === 'web' || src === 'online' || !src) return 'web';
                         return src;
                     };
@@ -3690,7 +3693,54 @@
                     } catch (err) {
                         this.toast('❌ 取消訂單失敗：' + err);
                     }
-                },                // ★ 結單：只封存今天及過去的訂單，保留未來預約
+                },
+                async archiveCancelledOrder(order) {
+                    if (!order || this.getDisplayStatus(order) !== 'cancelled') return;
+                    if (!confirm('確定移除此已取消訂單？\n訂單會封存並保留在歷史紀錄。')) return;
+                    const sourcePath = this.normalizeSourceRecordPath(order, order.id);
+                    const sourceMatch = sourcePath.match(/(?:^|\/)orders\/(\d{4}-\d{2}-\d{2})\/([^\/?#]+)/);
+                    const d = new Date(order.timestamp || Date.now());
+                    const fallbackDate = d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2);
+                    const validDate = (value) => /^\d{4}-\d{2}-\d{2}$/.test(String(value || '').trim());
+                    const dates = [sourceMatch && sourceMatch[1], order._sourceDateKey, order.orderDateKey, order.pickupDate, fallbackDate]
+                        .map((value) => String(value || '').trim())
+                        .filter((value, index, all) => validDate(value) && all.indexOf(value) === index);
+                    const sourceId = String((sourceMatch && sourceMatch[2]) || order.id || '').trim();
+                    const canonical = window.OrderBatchTools && window.OrderBatchTools.canonicalOrderId;
+                    const pbOrderId = canonical ? canonical(order.sourceOrderId || order.orderId || sourceId) : sourceId;
+                    const archived = Object.assign({}, order, { status: 'archived', wasCancelled: true });
+                    let saved = false;
+                    let lastError = null;
+                    if (this.ordersReadBackend === 'firebase' || order._readBackend === 'firebase') {
+                        const updates = {};
+                        updates['orders_archive/' + dates[0] + '/' + sourceId] = archived;
+                        dates.forEach((dateKey) => { updates['orders/' + dateKey + '/' + sourceId] = null; });
+                        try { await update(ref(db), updates); saved = true; } catch (err) { lastError = err; }
+                    }
+                    try {
+                        const result = await writeOrderToPocketBase(pbOrderId, archived, {
+                            settings: this.settings,
+                            firebaseUser: auth.currentUser,
+                            sourcePage: 'admin_archive_one',
+                            allowPocketBaseUpdate: true
+                        });
+                        if (result && result.ok) saved = true;
+                    } catch (err) {
+                        lastError = lastError || err;
+                    }
+                    if (!saved) {
+                        this.toast('❌ 移除失敗：' + String((lastError && lastError.message) || lastError || '後端無回應'));
+                        return;
+                    }
+                    this.writeRemoteStatusOverride(archived, 'archived').catch(() => {});
+                    const targetKeys = window.OrderBatchTools ? window.OrderBatchTools.orderIdentityKeys(order) : [String(order.id || '')];
+                    this.orders = (this.orders || []).filter((candidate) => {
+                        const keys = window.OrderBatchTools ? window.OrderBatchTools.orderIdentityKeys(candidate) : [String(candidate && candidate.id || '')];
+                        return !keys.some((key) => targetKeys.indexOf(key) !== -1);
+                    });
+                    this.toast('✅ 已從畫面移除，訂單仍保留於歷史紀錄');
+                },
+                // ★ 結單：只封存今天及過去的訂單，保留未來預約
                 async dailyClose() {
                     const today = new Date();
                     const todayStr = today.getFullYear()+'-'+('0'+(today.getMonth()+1)).slice(-2)+'-'+('0'+today.getDate()).slice(-2);
