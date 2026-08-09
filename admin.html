@@ -20,7 +20,7 @@
     <script>window.PB_REQUIRE_TURNSTILE = false;</script>
     <link rel="stylesheet" href="./tailwind.min.css?v=20260714">
     <script src="https://unpkg.com/vue@3.5.40/dist/vue.global.prod.js" integrity="sha384-yjSqnKX+01fhYzLUMRlCkMrHMTdKxwYcGIk5HZ6ug+4nfJn10+F7YsKRuGR5kQac" crossorigin="anonymous"></script>
-    <script src="./order-batch-tools.20260809_001.js?v=20260809_001"></script>
+    <script src="./order-batch-tools.20260809_002.js?v=20260809_002"></script>
     <style>[v-cloak] { display: none; }</style>
 </head>
 <body class="bg-gray-100 font-sans">
@@ -345,7 +345,7 @@
         import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
         import { getDatabase, ref, onValue, onChildAdded, onChildChanged, onChildRemoved, update, set, get, remove, query, orderByChild, limitToLast } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
         import { getAuth, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-        import { allocateOrderNoFromPocketBase, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, readManageMenuFromPocketBase, listMenuItemsFromPocketBase, writeOrderToPocketBase } from "./pocketbase-order-writer.20260724_002.js?v=20260730_014";
+        import { allocateOrderNoFromPocketBase, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, readManageMenuFromPocketBase, listMenuItemsFromPocketBase, writeOrderToPocketBase } from "./pocketbase-order-writer.20260809_005.js";
 
         // ★★★ 請貼入您相同的 Firebase 配置 ★★★
         const firebaseConfig = {
@@ -2809,7 +2809,7 @@
                         const src = String(order.source || '').toLowerCase().trim();
                         return ['no', day, no, src].join('|');
                     };
-                    const getMergeKey = (order) => {
+                    const getLegacyMergeKey = (order) => {
                         if (!order) return '';
                         const sourcePath = (order.integration && order.integration.sourceRecordPath) || order.sourceRecordPath || '';
                         const pathId = getPathOrderId(sourcePath);
@@ -2825,6 +2825,15 @@
                         if (order.id) return String(order.id);
                         return '';
                     };
+                    const getMergeKeys = (order) => {
+                        const shared = window.OrderBatchTools && window.OrderBatchTools.orderIdentityKeys;
+                        const keys = shared ? shared(order) : [];
+                        const legacy = getLegacyMergeKey(order);
+                        if (legacy) keys.push(legacy);
+                        if (order && order.id) keys.push(String(order.id));
+                        return Array.from(new Set(keys.filter(Boolean)));
+                    };
+                    const getMergeKey = (order) => getMergeKeys(order)[0] || '';
                     const sumItems = (items) => {
                         if (!Array.isArray(items)) return 0;
                         return items.reduce((sum, it) => {
@@ -2897,6 +2906,9 @@
                         if (s === 'archived') return 1;
                         return 0;
                     };
+                    const paymentRank = (order) => window.OrderBatchTools && window.OrderBatchTools.paymentRank
+                        ? window.OrderBatchTools.paymentRank(order)
+                        : 0;
                     const isPhoneLikeForMerge = (order) => {
                         if (!order) return false;
                         const src = String(order.source || '').toLowerCase();
@@ -2934,6 +2946,12 @@
                             }
                         }
                         const merged = preferIncoming ? Object.assign({}, current, incoming) : Object.assign({}, incoming, current);
+                        const paymentSource = paymentRank(incoming) > paymentRank(current) ? incoming : current;
+                        if (paymentRank(paymentSource) > 0) {
+                            if (paymentSource.paymentStatus) merged.paymentStatus = paymentSource.paymentStatus;
+                            if (paymentSource.paymentMethod) merged.paymentMethod = paymentSource.paymentMethod;
+                            if (paymentSource.payment) merged.payment = Object.assign({}, merged.payment || {}, paymentSource.payment);
+                        }
                         if (this.isLineSourceOrder(current) || this.isLineSourceOrder(incoming)) {
                             merged.source = 'web_liff';
                             merged.sourceLabel = 'LINE 線上點餐';
@@ -2947,9 +2965,8 @@
                     };
                     const upsertMerged = (map, order) => {
                         if (!order || !order.id) return;
-                        const primary = getMergeKey(order) || String(order.id);
-                        const fallbackKey = primary ? '' : getFallbackDedupKey(order);
-                        const aliases = Array.from(new Set([primary, fallbackKey, String(order.id)].filter(Boolean)));
+                        const aliases = getMergeKeys(order);
+                        if (!aliases.length) aliases.push(getFallbackDedupKey(order) || String(order.id));
                         let keepKey = aliases.find((k) => !!map[k]) || aliases[0];
                         let merged = Object.assign({}, order);
                         aliases.forEach((k) => {
@@ -2963,9 +2980,8 @@
                         const aliasMap = {};
                         (Array.isArray(values) ? values : []).forEach((order) => {
                             if (!order || !order.id) return;
-                            const primary = getMergeKey(order) || String(order.id);
-                            const fallbackKey = primary ? '' : getFallbackDedupKey(order);
-                            const aliases = Array.from(new Set([primary, fallbackKey, String(order.id)].filter(Boolean)));
+                            const aliases = getMergeKeys(order);
+                            if (!aliases.length) aliases.push(getFallbackDedupKey(order) || String(order.id));
                             if (!aliases.length) return;
                             const hits = aliases.map((k) => aliasMap[k]).filter(Boolean);
                             let merged = Object.assign({}, order);
@@ -3008,7 +3024,9 @@
                         const family = getSourceFamilyForSignature(order);
                         const no = String(order.orderNo || order.serialNumber || '').trim();
                         const day = getOrderDayKey(order);
-                        const sourceOrderId = String(order.sourceOrderId || order.orderId || '').trim();
+                        const sourceOrderId = window.OrderBatchTools && window.OrderBatchTools.canonicalOrderId
+                            ? window.OrderBatchTools.canonicalOrderId(order.sourceOrderId || order.orderId || '')
+                            : String(order.sourceOrderId || order.orderId || '').trim();
                         const total = Number(order.total || (order.totals && order.totals.finalTotal) || 0);
                         const phone = String((order.customer && order.customer.phone) || order.phone || '').trim();
                         const pickup = String(order.pickupTime || order.pickupTimeLabel || '').trim();

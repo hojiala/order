@@ -18,7 +18,7 @@
   <!-- 店內 POS 使用登入權杖，不使用 Cloudflare Turnstile。 -->
   <script>window.PB_REQUIRE_TURNSTILE = false;</script>
   <script src="https://unpkg.com/vue@3.5.40/dist/vue.global.prod.js" integrity="sha384-yjSqnKX+01fhYzLUMRlCkMrHMTdKxwYcGIk5HZ6ug+4nfJn10+F7YsKRuGR5kQac" crossorigin="anonymous"></script>
-  <script src="./order-batch-tools.20260809_001.js?v=20260809_001"></script>
+  <script src="./order-batch-tools.20260809_002.js?v=20260809_002"></script>
   <style>
     [v-cloak]{display:none}*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
     body{font-family:"Helvetica Neue",Arial,"PingFang TC","Microsoft JhengHei",sans-serif;overscroll-behavior:none}
@@ -845,7 +845,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getDatabase, ref, onValue, onChildAdded, onChildChanged, onChildRemoved, update, push, set, get, remove, query, orderByChild, limitToLast, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-    import { allocateOrderNoFromPocketBase, resetOrderNoInPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, requestLinePayViaBackend, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, readManageMenuFromPocketBase, listMenuItemsFromPocketBase, writeMenuItemToPocketBase, writeSettingsToPocketBase, rememberPublicMenuItems, rememberPublicSettings, normalizePublicSettings, subscribeOrdersRealtime } from "./pocketbase-order-writer.20260724_002.js?v=20260801_001";
+    import { allocateOrderNoFromPocketBase, resetOrderNoInPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, requestLinePayViaBackend, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, readManageMenuFromPocketBase, listMenuItemsFromPocketBase, writeMenuItemToPocketBase, writeSettingsToPocketBase, rememberPublicMenuItems, rememberPublicSettings, normalizePublicSettings, subscribeOrdersRealtime } from "./pocketbase-order-writer.20260809_005.js";
     const firebaseConfig = {
         apiKey:"AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
         authDomain:"breakfast-ai-system.firebaseapp.com",
@@ -4982,7 +4982,7 @@
                     var src=String(order.source||'').toLowerCase().trim();
                     return ['no',day,no,src].join('|');
                 };
-                var getMergeKey=function(order){
+                var getLegacyMergeKey=function(order){
                     if(!order)return '';
                     var sourcePath=(order.integration&&order.integration.sourceRecordPath)||order.sourceRecordPath||'';
                     var pathId=getPathOrderId(sourcePath);
@@ -4997,6 +4997,15 @@
                     }
                     return order.id?String(order.id):'';
                 };
+                var getMergeKeys=function(order){
+                    var shared=window.OrderBatchTools&&window.OrderBatchTools.orderIdentityKeys;
+                    var keys=shared?shared(order):[];
+                    var legacy=getLegacyMergeKey(order);
+                    if(legacy)keys.push(legacy);
+                    if(order&&order.id)keys.push(String(order.id));
+                    return keys.filter(function(k,i,arr){return k&&arr.indexOf(k)===i;});
+                };
+                var getMergeKey=function(order){return getMergeKeys(order)[0]||'';};
                 var sumItems=function(items){
                     if(!Array.isArray(items))return 0;
                     return items.reduce(function(sum,it){
@@ -5032,6 +5041,9 @@
                     if(s==='new'||s==='making'||s==='done'||s==='ready'||s==='cancelled')return 2;
                     if(s==='archived')return 1;
                     return 0;
+                };
+                var paymentRank=function(order){
+                    return window.OrderBatchTools&&window.OrderBatchTools.paymentRank?window.OrderBatchTools.paymentRank(order):0;
                 };
                 var isPhoneLikeForMerge=function(order){
                     if(!order)return false;
@@ -5072,6 +5084,12 @@
                         }
                     }
                     var merged=preferIncoming?Object.assign({},current,incoming):Object.assign({},incoming,current);
+                    var paymentSource=paymentRank(incoming)>paymentRank(current)?incoming:current;
+                    if(paymentRank(paymentSource)>0){
+                        if(paymentSource.paymentStatus)merged.paymentStatus=paymentSource.paymentStatus;
+                        if(paymentSource.paymentMethod)merged.paymentMethod=paymentSource.paymentMethod;
+                        if(paymentSource.payment)merged.payment=Object.assign({},merged.payment||{},paymentSource.payment);
+                    }
                     if(s.isLineSourceOrder(current)||s.isLineSourceOrder(incoming)){
                         merged.source='web_liff';
                         merged.sourceLabel='LINE 線上點餐';
@@ -5095,12 +5113,8 @@
                 };
                 var upsertMerged=function(map,o){
                     if(!o||!o.id)return;
-                    var keys=[];
-                    var primary=getMergeKey(o);
-                    if(primary)keys.push(String(primary));
-                    var fallbackKey=primary?'':getFallbackDedupKey(o);
-                    if(fallbackKey)keys.push(String(fallbackKey));
-                    if(o.id)keys.push(String(o.id));
+                    var keys=getMergeKeys(o);
+                    if(!keys.length)keys=[getFallbackDedupKey(o)||String(o.id)];
                     var uniq={};
                     keys=keys.filter(function(k){
                         if(!k)return false;
@@ -5120,12 +5134,8 @@
                     var aliasMap={};
                     (Array.isArray(values)?values:[]).forEach(function(o){
                         if(!o||!o.id)return;
-                        var keys=[];
-                        var primary=getMergeKey(o);
-                        if(primary)keys.push(String(primary));
-                        var fallbackKey=primary?'':getFallbackDedupKey(o);
-                        if(fallbackKey)keys.push(String(fallbackKey));
-                        if(o.id)keys.push(String(o.id));
+                        var keys=getMergeKeys(o);
+                        if(!keys.length)keys=[getFallbackDedupKey(o)||String(o.id)];
                         var uniq={};
                         keys=keys.filter(function(k){
                             if(!k)return false;
@@ -5170,7 +5180,9 @@
                     var family=getSourceFamilyForSignature(order);
                     var no=String(order.orderNo||order.serialNumber||'').trim();
                     var day=getOrderDayKey(order);
-                    var sourceOrderId=String(order.sourceOrderId||order.orderId||'').trim();
+                    var sourceOrderId=window.OrderBatchTools&&window.OrderBatchTools.canonicalOrderId
+                        ?window.OrderBatchTools.canonicalOrderId(order.sourceOrderId||order.orderId||'')
+                        :String(order.sourceOrderId||order.orderId||'').trim();
                     var total=Number(order.total||((order.totals&&order.totals.finalTotal)||0));
                     var phone=String((order.customer&&order.customer.phone)||order.phone||'').trim();
                     var pickup=String(order.pickupTime||order.pickupTimeLabel||'').trim();
