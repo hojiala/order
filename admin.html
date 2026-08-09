@@ -20,6 +20,7 @@
     <script>window.PB_REQUIRE_TURNSTILE = false;</script>
     <link rel="stylesheet" href="./tailwind.min.css?v=20260714">
     <script src="https://unpkg.com/vue@3.5.40/dist/vue.global.prod.js" integrity="sha384-yjSqnKX+01fhYzLUMRlCkMrHMTdKxwYcGIk5HZ6ug+4nfJn10+F7YsKRuGR5kQac" crossorigin="anonymous"></script>
+    <script src="./order-batch-tools.20260809_001.js?v=20260809_001"></script>
     <style>[v-cloak] { display: none; }</style>
 </head>
 <body class="bg-gray-100 font-sans">
@@ -38,12 +39,12 @@
             
             <div v-if="activeMenu" @click="activeMenu = null" class="fixed inset-0 z-10"></div>
 
-            <header class="text-white p-4 sticky top-0 z-50 shadow-md flex justify-between items-center" style="background:var(--day-theme-bg,var(--day-theme,#111827))">
+            <header class="text-white p-4 sticky top-0 z-50 shadow-md flex flex-wrap gap-2 justify-between items-center" style="background:var(--day-theme-bg,var(--day-theme,#111827))">
                 <div>
                     <h1 class="text-xl font-bold">訂單管理中樞</h1>
                     <p class="text-xs text-white/70">目前待處理：{{ activeOrdersCount }} 筆</p>
                 </div>
-                <div class="flex items-center gap-3">
+                <div class="flex flex-wrap justify-end items-center gap-3">
                     <details class="relative">
                         <summary :class="orderSearch ? 'bg-yellow-400 text-gray-900' : 'bg-white/20 text-white hover:bg-white/30'"
                             class="h-9 w-9 rounded-full cursor-pointer inline-flex items-center justify-center shadow-sm transition"
@@ -60,6 +61,9 @@
                         <span :class="ordersReadBackend==='firebase' ? 'bg-amber-500' : (ordersReadBackend==='checking' ? 'bg-sky-500' : 'bg-emerald-500')" class="h-2 w-2 rounded-full"></span>
                         {{ ordersReadBackend==='firebase' ? 'Firebase 備援中' : (ordersReadBackend==='checking' ? 'PB 檢查中' : 'PB 讀取中') }}
                     </span>
+                    <button @click="openBatchPrint" class="bg-white/20 hover:bg-white/30 text-white font-bold px-3 py-2 rounded text-sm transition shadow">
+                        🖨️ 批次補印
+                    </button>
                     <button @click="dailyClose" class="bg-yellow-500 hover:bg-yellow-600 text-gray-900 font-bold px-4 py-2 rounded text-sm transition shadow-lg">
                         🌙 結單
                     </button>
@@ -212,6 +216,59 @@
                 </div>
             </main>
 
+            <div v-if="showBatchPrint" class="fixed inset-0 z-[100] flex items-center justify-center p-4" style="background:rgba(0,0,0,.55)" @click.self="!batchPrinting && (showBatchPrint=false)">
+                <div class="bg-white rounded-2xl shadow-2xl w-full max-w-xl overflow-hidden" style="max-height:90vh;display:flex;flex-direction:column">
+                    <div class="bg-gray-800 px-5 py-3 flex items-center justify-between">
+                        <div>
+                            <p class="text-white font-bold">🖨️ 批次補印與備料統計</p>
+                            <p class="text-gray-400 text-xs mt-0.5">以目前畫面上的訂單為範圍</p>
+                        </div>
+                        <button @click="showBatchPrint=false" :disabled="batchPrinting" class="text-gray-400 hover:text-white text-xl disabled:opacity-40">✕</button>
+                    </div>
+                    <div class="p-5 space-y-4 overflow-y-auto">
+                        <div class="grid grid-cols-2 gap-3">
+                            <label class="text-sm font-bold text-gray-700">起始流水號
+                                <input v-model="batchPrintFrom" type="number" min="1" inputmode="numeric" placeholder="003" class="mt-1 w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-lg font-mono focus:outline-none focus:border-orange-400">
+                            </label>
+                            <label class="text-sm font-bold text-gray-700">結束流水號
+                                <input v-model="batchPrintTo" type="number" min="1" inputmode="numeric" placeholder="010" class="mt-1 w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-lg font-mono focus:outline-none focus:border-orange-400">
+                            </label>
+                        </div>
+                        <p class="text-sm text-gray-600">指定範圍實際匹配 <b class="text-orange-600">{{ batchRangeOrders.length }}</b> 筆；張數以目前存在的訂單計算。</p>
+                        <div class="grid grid-cols-2 gap-2">
+                            <button @click="printBatchRange" :disabled="batchPrinting || batchRangeOrders.length===0" class="bg-orange-500 hover:bg-orange-600 disabled:opacity-40 text-white font-bold rounded-xl py-3">指定列印（{{ batchRangeOrders.length }}）</button>
+                            <button @click="printAllVisibleOrders" :disabled="batchPrinting || batchAllOrders.length===0" class="bg-red-600 hover:bg-red-700 disabled:opacity-40 text-white font-bold rounded-xl py-3">全部列印（{{ batchAllOrders.length }}）</button>
+                        </div>
+                        <button @click="buildBatchSummary" :disabled="batchRangeOrders.length===0" class="w-full bg-cyan-600 hover:bg-cyan-700 disabled:opacity-40 text-white font-bold rounded-xl py-3">📋 顯示指定範圍備料統計</button>
+                        <div v-if="batchPrinting || batchPrintProgress" class="rounded-xl bg-blue-50 border border-blue-200 px-4 py-3 text-blue-700 text-sm font-bold">{{ batchPrintProgress }}</div>
+
+                        <div v-if="batchSummary" class="space-y-3 border-t pt-4">
+                            <p class="font-bold text-gray-800">共 {{ batchSummary.ordersCount }} 筆訂單</p>
+                            <div>
+                                <p class="text-sm font-bold text-gray-700 mb-2">餐點總數（依訂單品項，精確）</p>
+                                <div class="grid grid-cols-2 gap-2">
+                                    <div v-for="row in batchSummary.itemRows" :key="'item-'+row.name" class="bg-gray-50 rounded-lg px-3 py-2 flex justify-between text-sm"><span>{{ row.name }}</span><b>{{ formatBatchQty(row.qty) }} {{ row.unit }}</b></div>
+                                </div>
+                            </div>
+                            <div v-if="batchSummary.extraRows.length">
+                                <p class="text-sm font-bold text-purple-700 mb-2">加點總數</p>
+                                <div class="grid grid-cols-2 gap-2">
+                                    <div v-for="row in batchSummary.extraRows" :key="'extra-'+row.name" class="bg-purple-50 rounded-lg px-3 py-2 flex justify-between text-sm"><span>{{ row.name }}</span><b>{{ formatBatchQty(row.qty) }} {{ row.unit }}</b></div>
+                                </div>
+                            </div>
+                            <div>
+                                <p class="text-sm font-bold text-cyan-700 mb-2">備料用量（依菜單設定）</p>
+                                <div v-if="batchSummary.prepRows.length" class="grid grid-cols-2 gap-2">
+                                    <div v-for="row in batchSummary.prepRows" :key="'prep-'+row.name+'-'+row.unit" class="bg-cyan-50 rounded-lg px-3 py-2 flex justify-between text-sm"><span>{{ row.name }}</span><b>{{ formatBatchQty(row.qty) }} {{ row.unit }}</b></div>
+                                </div>
+                                <p v-else class="text-sm text-gray-500 bg-gray-50 rounded-lg p-3">尚無餐點設定「備料用量」。請到 manage → 菜單管理 → 餐點填寫。</p>
+                            </div>
+                            <p v-if="batchSummary.missingRecipes.length" class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3">未設定備料用量：{{ batchSummary.missingRecipes.join('、') }}</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- ★ 訂單編輯 Modal -->
             <div v-if="editModal" class="fixed inset-0 z-[100] flex items-center justify-center" style="background:rgba(0,0,0,0.5)" @click.self="editModal=null">
                 <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 overflow-hidden" style="max-height:85vh;display:flex;flex-direction:column;">
@@ -288,7 +345,7 @@
         import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
         import { getDatabase, ref, onValue, onChildAdded, onChildChanged, onChildRemoved, update, set, get, remove, query, orderByChild, limitToLast } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
         import { getAuth, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-        import { allocateOrderNoFromPocketBase, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, listMenuItemsFromPocketBase, writeOrderToPocketBase } from "./pocketbase-order-writer.20260724_002.js?v=20260730_014";
+        import { allocateOrderNoFromPocketBase, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, readManageMenuFromPocketBase, listMenuItemsFromPocketBase, writeOrderToPocketBase } from "./pocketbase-order-writer.20260724_002.js?v=20260730_014";
 
         // ★★★ 請貼入您相同的 Firebase 配置 ★★★
         const firebaseConfig = {
@@ -400,6 +457,12 @@
                     ordersFallbackHoldUntil: 0,
                     useIntegrationView: false,
                     orderSearch: '',
+                    showBatchPrint: false,
+                    batchPrintFrom: '',
+                    batchPrintTo: '',
+                    batchPrinting: false,
+                    batchPrintProgress: '',
+                    batchSummary: null,
                     toastMsg: '', toastTimer: null,
                     alertSound: new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg')
                 }
@@ -538,6 +601,12 @@
                         const status = this.getDisplayStatus(o);
                         return (status === 'new' || status === 'making') && status !== 'cancelled' && status !== 'archived';
                     }).length;
+                },
+                batchAllOrders() {
+                    return window.OrderBatchTools ? window.OrderBatchTools.uniquePrintableOrders(this.sortedOrders) : [];
+                },
+                batchRangeOrders() {
+                    return window.OrderBatchTools ? window.OrderBatchTools.selectRange(this.sortedOrders, this.batchPrintFrom, this.batchPrintTo) : [];
                 }
             },
             created() {
@@ -1337,7 +1406,10 @@
                     });
                     const run = () => {
                         const hasCurrentMenu = Array.isArray(this.menuItems) && this.menuItems.length > 0;
-                        return listMenuItemsFromPocketBase({ settings: this.settings || {}, timeoutMs: 2200, allowDirectCollectionFallback: true }).then((result) => {
+                        return readManageMenuFromPocketBase({ settings: this.settings || {}, timeoutMs: 3500, secureTimeoutMs: 3500, firebaseUser: auth.currentUser }).catch((manageErr) => {
+                            console.warn('PocketBase protected menu read failed; using public menu:', manageErr && manageErr.message ? manageErr.message : manageErr);
+                            return listMenuItemsFromPocketBase({ settings: this.settings || {}, timeoutMs: 2200, allowDirectCollectionFallback: true });
+                        }).then((result) => {
                         if (result && result.ok && Array.isArray(result.items) && result.items.length) {
                             apply(result.items || []);
                             this.menuReadBackend = 'pocketbase';
@@ -3187,11 +3259,15 @@
                                 .then(() => new Promise(r => setTimeout(r, 120)))
                                 .then(() => withLatestStations(queueData))
                                 .then((data) => set(qRef, data))
-                                .catch(e => console.warn('print_queue 寫入失敗:', e.message));
+                                .then(() => ({ ok: true, backend: 'firebase' }))
+                                .catch((e) => {
+                                    console.warn('print_queue 寫入失敗:', e.message);
+                                    return { ok: false, error: e };
+                                });
                         };
                         const printBase = String(this.linePayServerUrl || '').replace(/\/+$/, '');
                         if (printBase && auth.currentUser) {
-                            auth.currentUser.getIdToken()
+                            return auth.currentUser.getIdToken()
                                 .then((token) => fetch(printBase + '/api/pos/print', {
                                     method: 'POST',
                                     headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
@@ -3200,15 +3276,19 @@
                                 .then((response) => {
                                     if (!response.ok) throw new Error(response.status);
                                     console.log('🖨️ 後端直接列印成功');
+                                    return { ok: true, backend: 'linepay' };
                                 })
                                 .catch((error) => {
                                     console.warn('🖨️ 後端直接列印失敗，走 Firebase 備援:', error.message || error);
                                     return fallback();
                                 });
                         } else {
-                            fallback();
+                            return fallback();
                         }
-                    } catch(e) { console.warn('print_queue error:', e); }
+                    } catch(e) {
+                        console.warn('print_queue error:', e);
+                        return Promise.resolve({ ok: false, error: e });
+                    }
                 },
                 allocateOrderNoPrimary(sourcePage) {
                     return allocateOrderNoFromPocketBase({
@@ -3343,22 +3423,83 @@
                         this.updateOrderMirror(orderId, { status: newStatus }, order)
                     ]).catch(err => this.toast("\u274c \u66f4\u65b0\u72c0\u614b\u5931\u6557"));
                 },
-                async printOrder(order) {
+                openBatchPrint() {
+                    const list = window.OrderBatchTools ? window.OrderBatchTools.uniquePrintableOrders(this.sortedOrders) : [];
+                    if (list.length) {
+                        this.batchPrintFrom = String(window.OrderBatchTools.orderNoOf(list[0]) || '');
+                        this.batchPrintTo = String(window.OrderBatchTools.orderNoOf(list[list.length - 1]) || '');
+                    }
+                    this.batchSummary = null;
+                    this.batchPrintProgress = '';
+                    this.showBatchPrint = true;
+                },
+                formatBatchQty(value) {
+                    const n = Number(value);
+                    return Number.isInteger(n) ? String(n) : String(Math.round(n * 100) / 100);
+                },
+                buildBatchSummary() {
+                    if (!window.OrderBatchTools || !this.batchRangeOrders.length) return;
+                    this.batchSummary = window.OrderBatchTools.summarize(this.batchRangeOrders, this.menuItems || []);
+                },
+                printBatchRange() {
+                    return this.runBatchPrint(this.batchRangeOrders, '指定範圍');
+                },
+                printAllVisibleOrders() {
+                    return this.runBatchPrint(this.batchAllOrders, '目前畫面全部');
+                },
+                async runBatchPrint(orders, label) {
+                    const list = Array.isArray(orders) ? orders.slice() : [];
+                    if (!list.length || this.batchPrinting) return;
+                    if (!confirm(label + '共 ' + list.length + ' 筆訂單，確定依流水號順序補印工單？')) return;
+                    this.batchPrinting = true;
+                    let sent = 0;
+                    let skipped = 0;
+                    let failed = 0;
+                    try {
+                        for (let i = 0; i < list.length; i++) {
+                            const order = list[i];
+                            this.batchPrintProgress = '正在送出 ' + (i + 1) + ' / ' + list.length + '（No.' + String(window.OrderBatchTools.orderNoOf(order)).padStart(3, '0') + '）';
+                            try {
+                                const result = await this.printOrder(order, true);
+                                if (result && result.skipped) skipped++;
+                                else if (!result || result.ok !== false) sent++;
+                                else failed++;
+                            } catch (e) {
+                                failed++;
+                                console.warn('批次補印失敗:', order && order.id, e && e.message ? e.message : e);
+                            }
+                        }
+                        this.batchPrintProgress = '完成：送出 ' + sent + ' 筆' + (skipped ? '，略過 ' + skipped + ' 筆' : '') + (failed ? '，失敗 ' + failed + ' 筆' : '');
+                        this.toast('🖨️ ' + this.batchPrintProgress);
+                    } finally {
+                        this.batchPrinting = false;
+                    }
+                },
+                async printOrder(order, silent) {
                     if (this.isPhoneCommandOrder(order)) {
-                        await this.queuePhoneOrderCommand(order, 'print_kitchen', { printMode: 'reprint', isReprint: true, printTask: 'kitchen_reprint_' + Date.now() });
-                        this.toast('🖨️ 已送出電話訂單補印命令');
-                        return;
+                        try {
+                            await this.queuePhoneOrderCommand(order, 'print_kitchen', { printMode: 'reprint', isReprint: true, printTask: 'kitchen_reprint_' + Date.now() });
+                            if (!silent) this.toast('🖨️ 已送出電話訂單補印命令');
+                            return { ok: true, backend: 'phone_command' };
+                        } catch (e) {
+                            if (!silent) this.toast('❌ 電話訂單補印失敗：' + e.message);
+                            return { ok: false, error: e };
+                        }
                     }
                     if (this.isIntegrationReadOnlyOrder(order)) {
-                        this.toast('☎️ 電話整合訂單請先在電話後台補印');
-                        return;
+                        if (!silent) this.toast('☎️ 電話整合訂單請先在電話後台補印');
+                        return { ok: false, skipped: true, reason: 'integration_read_only' };
                     }
                     try {
                         const reprintTask = `kitchen_reprint_${Date.now()}`;
-                        this.writeToPrintQueue(order.id, reprintTask, order);
+                        const result = await this.writeToPrintQueue(order.id, reprintTask, order);
+                        if (!result || result.ok === false) throw ((result && result.error) || new Error('列印服務無回應'));
                         console.log("廚房工單補印指令發送成功");
+                        if (!silent) this.toast('🖨️ 補印工單中...');
+                        return result;
                     } catch (err) {
-                        this.toast("❌ 補印工單失敗：" + err);
+                        if (!silent) this.toast("❌ 補印工單失敗：" + err);
+                        return { ok: false, error: err };
                     }
                 },
                 async printReceipt(order) {

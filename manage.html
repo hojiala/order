@@ -1195,25 +1195,6 @@
                     </div>
                 </div>
 
-                <!-- Node-RED 直接列印（跳過 Firebase print_queue） -->
-                <div v-show="settingsSubTab==='tools'" :style="{order: 2.6}" class="bg-slate-800 rounded-xl border border-emerald-900/50 p-5">
-                    <div class="flex items-center gap-2 mb-1">
-                        <span class="text-lg">🖨️</span>
-                        <p class="font-bold text-white">Node-RED 直接列印</p>
-                    </div>
-                    <p class="text-slate-400 text-sm mb-4">填入店內 Node-RED 的列印 API 網址後，POS / 桌邊 / 線上點餐送單時會直接呼叫店內 Node-RED 列印，不再繞經 Firebase <code class="text-emerald-300">print_queue</code>，可把出單延遲從 7 秒左右降到 1 秒。留空則沿用原本的 Firebase 列印流程。</p>
-                    <div class="space-y-3">
-                        <div>
-                            <label class="text-slate-300 text-sm font-bold block mb-1">列印 API 網址（nodeRedPrintUrl）</label>
-                            <input v-model="settings.nodeRedPrintUrl" type="text"
-                                placeholder="http://Node-RED主機:實際連接埠/api/pos-print"
-                                class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2.5 text-white text-sm placeholder-slate-400 focus:outline-none focus:border-emerald-500">
-                            <p class="text-amber-400/90 text-xs mt-1">⚠️ 若點餐頁是用 <b>https://</b> 開啟，瀏覽器會封鎖對 <b>http://</b> 內網位址的請求（混合內容），此時直接列印會失敗並自動退回 Firebase。要真正生效，請讓店內機器以 <b>http://</b> 或內網網域開啟點餐頁，或改用可經 HTTPS 存取的 Node-RED 網址。</p>
-                            <p class="text-slate-500 text-xs mt-1">此網址只會保存在店面設定，供店內裝置呼叫；只有列印觸發改走這裡，訂單資料仍照常雙寫（PocketBase 主庫 → hook → Firebase 備援）。</p>
-                        </div>
-                    </div>
-                </div>
-
                 <div v-show="settingsSubTab==='tools'" :style="{order: 0.5}" class="bg-slate-800 rounded-xl border border-cyan-900/50 p-5">
                     <div class="flex items-center gap-2 mb-1">
                         <span class="text-lg">🖼️</span>
@@ -1667,6 +1648,26 @@
                 </div>
             </div>
 
+            <div class="border border-cyan-900/60 rounded-xl p-4 bg-cyan-950/20">
+                <div class="flex items-center justify-between gap-3 mb-2">
+                    <div>
+                        <p class="text-cyan-300 text-xs font-bold uppercase tracking-wider">備料用量（每份）</p>
+                        <p class="text-slate-500 text-xs mt-1">供 POS／出餐後台依流水號區間計算；請填可直接相加的實際數量，不從餐點描述猜測。</p>
+                    </div>
+                    <button @click="addPrepItem" type="button" class="text-cyan-300 hover:text-cyan-200 text-sm font-bold whitespace-nowrap">＋ 新增</button>
+                </div>
+                <div v-if="!form.prepItems || form.prepItems.length===0" class="text-slate-500 text-sm text-center py-3 border border-dashed border-cyan-900/50 rounded-lg">尚未設定備料用量</div>
+                <div v-for="(part,pi) in (form.prepItems||[])" :key="pi" class="grid gap-2 mb-2 items-center" style="grid-template-columns:minmax(0,1fr) 6rem 5rem 2rem">
+                    <input v-model="part.name" type="text" placeholder="食材（例：蛋）"
+                        class="min-w-0 bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm placeholder-slate-500 focus:outline-none focus:border-cyan-500">
+                    <input v-model.number="part.qty" type="number" min="0.01" step="0.25" placeholder="1"
+                        class="w-full bg-slate-700 border border-slate-600 rounded-lg px-2 py-2 text-white text-sm text-center focus:outline-none focus:border-cyan-500">
+                    <input v-model="part.unit" type="text" placeholder="顆/片/份"
+                        class="w-full bg-slate-700 border border-slate-600 rounded-lg px-2 py-2 text-white text-sm text-center placeholder-slate-500 focus:outline-none focus:border-cyan-500">
+                    <button @click="removePrepItem(pi)" type="button" class="text-slate-500 hover:text-red-400 text-xl">×</button>
+                </div>
+            </div>
+
             <!-- 上架開關 -->
             <div class="flex items-center justify-between bg-slate-700/50 rounded-lg px-4 py-3">
                 <div>
@@ -1879,7 +1880,7 @@ window._doCountUp = function() {
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getDatabase, ref, set, get, push, update, remove, onValue, onChildAdded, onChildChanged, onChildRemoved, query, orderByChild, equalTo, limitToLast } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-    import { listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, readManageSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, writeMenuItemToPocketBase, deleteMenuItemFromPocketBase, updateMenuSortInPocketBase, writeSettingsToPocketBase, requestLineMembers, pocketBaseRecordToOrder } from "./pocketbase-order-writer.20260724_002.js?v=20260801_003";
+    import { listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, readManageSettingsFromPocketBase, readManageMenuFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, writeMenuItemToPocketBase, deleteMenuItemFromPocketBase, updateMenuSortInPocketBase, writeSettingsToPocketBase, requestLineMembers, pocketBaseRecordToOrder } from "./pocketbase-order-writer.20260724_002.js?v=20260801_003";
 
     const firebaseConfig = {
         apiKey: "AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -1993,7 +1994,7 @@ window._doCountUp = function() {
                 menuItems: [], menuLoading: true, settingsReadBackend: 'checking', menuReadBackend: 'checking', filterCat: '',
                 // Modal
                 showModal: false, isEditing: false, isSaving: false,
-                form: { id:null, name:'', shortName:'', price:'', category:'蛋餅、燒餅', subCategory:'', desc:'', img:'', options:[], optionGroups:[], posExtras:[], station:'麵包台', printStations:['麵包台'], availableAfter:'', active:true },
+                form: { id:null, name:'', shortName:'', price:'', category:'蛋餅、燒餅', subCategory:'', desc:'', img:'', options:[], optionGroups:[], posExtras:[], prepItems:[], station:'麵包台', printStations:['麵包台'], availableAfter:'', active:true },
                 // Templates
                 optionTemplates: [],
                 showTemplateDropdown: false,
@@ -2046,7 +2047,7 @@ window._doCountUp = function() {
                     useCustomLoadingImage: false,
                     openTime: '06:00', closeTime: '13:15',
                     dailyHours: {},
-                    pickupDays: 3, pickupInterval: 30, linePayServerUrl: '', linePayConfirmUrl: '', lineLiffId: '', lineOfficialAccountUrl: '', pocketBaseUrl: '', pocketBaseOrdersCollection: 'orders', nodeRedPrintUrl: '', telegramFallbackNotifyEndpoint: '', telegramFallbackMessageTemplate: '⚠️ {storeName}\n線上點餐已切換到 Firebase 備援模式\n\n原因：{reason}\n時間：{time}\n處理方式：請用出餐後台查看新訂單', announcements: [],
+                    pickupDays: 3, pickupInterval: 30, linePayServerUrl: '', linePayConfirmUrl: '', lineLiffId: '', lineOfficialAccountUrl: '', pocketBaseUrl: '', pocketBaseOrdersCollection: 'orders', telegramFallbackNotifyEndpoint: '', telegramFallbackMessageTemplate: '⚠️ {storeName}\n線上點餐已切換到 Firebase 備援模式\n\n原因：{reason}\n時間：{time}\n處理方式：請用出餐後台查看新訂單', announcements: [],
                     holidays: [],
                     weeklyDaysOff: [],
                     dailyThemes: cloneDefaultDailyThemes(),
@@ -4200,7 +4201,11 @@ window._doCountUp = function() {
                     return;
                 };
                 var loadFromPrimary = function() {
-                    return listMenuItemsFromPocketBase({ settings: self.settings || {}, timeoutMs: 3500, allowDirectCollectionFallback: true }).then(function(result) {
+                    var options = self.pocketBaseManageOptions({ timeoutMs: 5000, secureTimeoutMs: 5000, currentMenuItems: self.menuItems || [] });
+                    return readManageMenuFromPocketBase(options).catch(function(manageErr) {
+                        console.warn('PocketBase protected menu read failed; using public menu:', manageErr && manageErr.message ? manageErr.message : manageErr);
+                        return listMenuItemsFromPocketBase({ settings: self.settings || {}, timeoutMs: 3500, allowDirectCollectionFallback: true });
+                    }).then(function(result) {
                         if (result && result.ok && result.items && result.items.length) {
                             apply(result.items || []);
                             self.menuReadBackend = result.backend || 'pocketbase';
@@ -4277,7 +4282,7 @@ window._doCountUp = function() {
                 this.form = {
                     id:null, name:'', price:'', category: this.allCategories[0]||'蛋餅、燒餅', subCategory:'',
                     shortName:'',
-                    desc:'', img:'', options:[], optionGroups:[], posExtras:[],
+                    desc:'', img:'', options:[], optionGroups:[], posExtras:[], prepItems:[],
                     station: defaultStation, printStations: this.normalizePrintStations([], defaultStation), availableAfter:'', active:true
                 };
                 this.compressStatus = ''; this.compressedSizeKB = 0;
@@ -4293,6 +4298,7 @@ window._doCountUp = function() {
                     options: item.options ? JSON.parse(JSON.stringify(item.options)) : [],
                     optionGroups: item.optionGroups ? JSON.parse(JSON.stringify(item.optionGroups)) : [],
                     posExtras: item.posExtras ? JSON.parse(JSON.stringify(item.posExtras)) : [],
+                    prepItems: item.prepItems ? JSON.parse(JSON.stringify(item.prepItems)) : [],
                     station: station,
                     printStations: this.normalizePrintStations(item.printStations || item.stations || [], station),
                     availableAfter: item.availableAfter || '',
@@ -4615,6 +4621,9 @@ window._doCountUp = function() {
                     options: this.form.options.filter(function(o) { return o.name.trim(); }),
                     optionGroups: (this.form.optionGroups || []).filter(function(g) { return g.groupName && g.choices && g.choices.length; }),
                     posExtras: (this.form.posExtras || []).filter(function(e) { return e.name && e.name.trim(); }),
+                    prepItems: (this.form.prepItems || []).map(function(part) {
+                        return { name: String(part && part.name || '').trim(), qty: Number(part && part.qty), unit: String(part && part.unit || '').trim() };
+                    }).filter(function(part) { return part.name && Number.isFinite(part.qty) && part.qty > 0; }),
                     station: this.form.station || this.getDefaultStationName(),
                     printStations: this.normalizePrintStations(this.form.printStations, this.form.station || this.getDefaultStationName()),
                     availableAfter: this.form.availableAfter || '',
@@ -4625,14 +4634,16 @@ window._doCountUp = function() {
                 var itemId = this.isEditing ? this.form.id : '';
                 if (!this.isEditing) itemData.createdAt = Date.now();
                 this.writeMenuItemPrimary(itemId, itemData, function() {
-                    if (self.isEditing) return update(ref(db, 'menu/' + self.form.id), itemData).then(function() { return { id: self.form.id }; });
-                    return push(ref(db, 'menu'), itemData).then(function(newRef) { return { id: newRef.key }; });
+                    var publicItemData = Object.assign({}, itemData);
+                    delete publicItemData.prepItems;
+                    if (self.isEditing) return update(ref(db, 'menu/' + self.form.id), publicItemData).then(function() { return { id: self.form.id }; });
+                    return push(ref(db, 'menu'), publicItemData).then(function(newRef) { return { id: newRef.key }; });
                 }).then(function(result) {
                     var savedId = (result && result.id) || (result && result.firebase && result.firebase.id) || itemId;
                     if (savedId) self.syncLocalMenuItem(savedId, Object.assign({}, itemData, { id: savedId }));
                     self.closeModal();
                     if (result && result.fallback) {
-                        alert('⚠️ 注意：主資料庫（PocketBase）修改餐點超時，已自動寫入備用資料庫（Firebase）。\n後台主頁面可能需要重新整理才能顯示更新。');
+                        alert('⚠️ 注意：主資料庫（PocketBase）修改餐點超時，公開菜單欄位已寫入 Firebase 備援。\n備料用量屬店內資料，不會寫入公開 Firebase；請在 PocketBase 恢復後重新儲存這筆餐點。');
                     }
                 }).catch(function(e) {
                     alert('儲存失敗：' + e.message);
@@ -6943,7 +6954,6 @@ window._doCountUp = function() {
                         pocketBaseUrl: s.pocketBaseUrl || s.pocketbaseUrl || prev.pocketBaseUrl || 'https://pb.yuangi168.com',
                         pocketBaseOrdersCollection: s.pocketBaseOrdersCollection || s.pocketbaseOrdersCollection || 'orders',
                         pocketBaseOrderEndpoint: s.pocketBaseOrderEndpoint || s.pocketbaseOrderEndpoint || s.pocketBaseSecureOrderEndpoint || s.secureOrderEndpoint || '',
-                        nodeRedPrintUrl: s.nodeRedPrintUrl || prev.nodeRedPrintUrl || '',
                         turnstileSiteKey: s.turnstileSiteKey || s.cloudflareTurnstileSiteKey || '',
                         telegramFallbackNotifyEndpoint: s.telegramFallbackNotifyEndpoint || s.telegramNotifyEndpoint || prev.telegramFallbackNotifyEndpoint || '',
                         telegramFallbackMessageTemplate: s.telegramFallbackMessageTemplate || prev.telegramFallbackMessageTemplate || self.defaultTelegramFallbackMessage(),
@@ -7027,7 +7037,6 @@ window._doCountUp = function() {
                     lineOfficialAccountUrl: self.settings.lineOfficialAccountUrl || '',
                     pocketBaseUrl: self.settings.pocketBaseUrl || '',
                     pocketBaseOrdersCollection: self.settings.pocketBaseOrdersCollection || 'orders',
-                    nodeRedPrintUrl: String(self.settings.nodeRedPrintUrl || '').trim(),
                     telegramFallbackNotifyEndpoint: self.settings.telegramFallbackNotifyEndpoint || '',
                     telegramFallbackMessageTemplate: self.settings.telegramFallbackMessageTemplate || self.defaultTelegramFallbackMessage(),
                     announcements: self.settings.announcements || [],
@@ -7342,6 +7351,8 @@ window._doCountUp = function() {
             addPosExtra: function(){if(!this.form.posExtras)this.form.posExtras=[];this.form.posExtras.push({name:'',price:0});},
             removePosExtra: function(i){(this.form.posExtras||[]).splice(i,1);},
             movePosExtra: function(i,d){var a=this.form.posExtras;if(!a)return;var n=i+d;if(n<0||n>=a.length)return;var t=a[i];a.splice(i,1);a.splice(n,0,t);},
+            addPrepItem: function(){if(!this.form.prepItems)this.form.prepItems=[];this.form.prepItems.push({name:'',qty:1,unit:'份'});},
+            removePrepItem: function(i){(this.form.prepItems||[]).splice(i,1);},
             applyOptionsTemplate: function(tpl){var s=this;templateChoicesForTarget(tpl,false).forEach(function(c){if(c.name&&c.name.trim())s.form.options.push({name:c.name,price:c.price||0,templateId:tpl.id,templateName:tpl.templateName});});s.showOptionsTemplateDD=false;},
             applyPosExtrasTemplate: function(tpl){var s=this;templateChoicesForTarget(tpl,true).forEach(function(c){if(c.name&&c.name.trim()){if(!s.form.posExtras)s.form.posExtras=[];s.form.posExtras.push({name:c.name,price:c.price||0,isSection:!!c.isSection,templateId:tpl.id,templateName:tpl.templateName});}});s.showPosExtrasTemplateDD=false;},
             moveCatDown: function(idx) {

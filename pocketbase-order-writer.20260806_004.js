@@ -1113,7 +1113,7 @@ function dedupeMenuItems(items) {
         ["subCategory", "img", "desc", "shortName", "printName", "category", "price", "station", "availableAfter"].forEach(function(field) {
             if ((merged[field] === undefined || merged[field] === null || merged[field] === "") && secondary[field] !== undefined) merged[field] = secondary[field];
         });
-        ["options", "optionGroups", "posExtras", "printStations"].forEach(function(field) {
+        ["options", "optionGroups", "posExtras", "prepItems", "printStations"].forEach(function(field) {
             if ((!Array.isArray(merged[field]) || !merged[field].length) && Array.isArray(secondary[field]) && secondary[field].length) merged[field] = secondary[field];
         });
         var primarySort = finiteNumber(primary && primary.sortOrder);
@@ -1152,7 +1152,7 @@ function menuItemFromRecord(record) {
     var item = Object.assign({}, payload);
     [
         "name", "shortName", "printName", "price", "category", "subCategory", "desc", "img",
-        "imageUrl", "image", "photo", "options", "optionGroups", "posExtras", "station",
+        "imageUrl", "image", "photo", "options", "optionGroups", "posExtras", "prepItems", "station",
         "printStations", "availableAfter", "active", "sortOrder", "sort_order", "order", "sortIndex", "__sortIndex", "createdAt", "updatedAt",
         "firebase_id", "firebaseId", "item_id", "itemId", "menu_id", "menuId"
     ].forEach(function(field) {
@@ -1200,8 +1200,9 @@ function menuItemLooksRenderable(item) {
     var hasOptions = Array.isArray(item.options) && item.options.length > 0;
     var hasOptionGroups = Array.isArray(item.optionGroups) && item.optionGroups.length > 0;
     var hasPosExtras = Array.isArray(item.posExtras) && item.posExtras.length > 0;
+    var hasPrepItems = Array.isArray(item.prepItems) && item.prepItems.length > 0;
     var hasPrintStations = Array.isArray(item.printStations) && item.printStations.length > 0;
-    if (name || category || subCategory || desc || img || station || hasPrice || hasOptions || hasOptionGroups || hasPosExtras || hasPrintStations) return true;
+    if (name || category || subCategory || desc || img || station || hasPrice || hasOptions || hasOptionGroups || hasPosExtras || hasPrepItems || hasPrintStations) return true;
     var id = text(item.id || item.item_id || item.itemId || item.menu_id || item.menuId || item.firebase_id || item.firebaseId).trim();
     if (/_(pos_extras|options|choices)_/i.test(id)) return false;
     return false;
@@ -2322,6 +2323,16 @@ export function readManageSettingsFromPocketBase(options) {
             throw new Error((result && (result.message || result.reason)) || "PocketBase manage settings read unavailable");
         }
         result.settings = normalizeSettingsBooleans(result.settings);
+        return Object.assign({ ok: true, backend: "pocketbase_manage" }, result);
+    });
+}
+
+export function readManageMenuFromPocketBase(options) {
+    return writeManageRequest("menu", { action: "read" }, options || {}).then(function(result) {
+        if (!result || result.ok === false || !Array.isArray(result.items)) {
+            throw new Error((result && (result.message || result.reason)) || "PocketBase manage menu read unavailable");
+        }
+        result.items = sortMenuItems(dedupeMenuItems(result.items.map(decodeJsonLike).filter(menuItemLooksRenderable)));
         return Object.assign({ ok: true, backend: "pocketbase_manage" }, result);
     });
 }
