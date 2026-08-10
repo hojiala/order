@@ -1879,8 +1879,9 @@ window._doCountUp = function() {
 <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getDatabase, ref, set, get, push, update, remove, onValue, onChildAdded, onChildChanged, onChildRemoved, query, orderByChild, equalTo, limitToLast } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
-    import { getAuth, signInWithEmailAndPassword, sendEmailVerification, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
+    import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
     import { listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, readManageSettingsFromPocketBase, readManageMenuFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, writeMenuItemToPocketBase, deleteMenuItemFromPocketBase, updateMenuSortInPocketBase, writeSettingsToPocketBase, requestLineMembers, pocketBaseRecordToOrder } from "./pocketbase-order-writer.20260809_005.js";
+    import { activateTrustedVirtualStaff } from "./staff-auth-activation.20260810_001.js?v=20260810_002";
 
     const firebaseConfig = {
         apiKey: "AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -2362,12 +2363,15 @@ window._doCountUp = function() {
                 authReady.then(function() { return signInWithEmailAndPassword(auth, self.loginEmail, self.loginPassword); })
                     .then(function(credential) {
                         if (credential.user.emailVerified) return credential;
-                        return sendEmailVerification(credential.user).then(function() { return signOut(auth); }).then(function() { throw new Error('email_verification_required'); });
+                        return activateTrustedVirtualStaff(credential.user)
+                            .then(function() { return signOut(auth); })
+                            .then(function() { return signInWithEmailAndPassword(auth, self.loginEmail, self.loginPassword); })
+                            .then(function(refreshed) { if (!refreshed.user.emailVerified) throw new Error('virtual_staff_activation_failed'); return refreshed; });
                     })
                     .then(function(){try{localStorage.setItem('manage_remembered_email',self.loginEmail.trim());}catch(e){}})
                     .catch(function(error) {
-                        self.loginError = error && error.message === 'email_verification_required'
-                            ? '已寄出驗證信，完成信箱驗證後請重新登入'
+                        self.loginError = error && /^virtual_staff_activation_/.test(error.message || '')
+                            ? '虛擬管理帳號啟用失敗，請聯絡系統管理員'
                             : '登入失敗，請確認信箱與密碼是否正確';
                     })
                     .finally(function() { self.isLoggingIn = false; });

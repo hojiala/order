@@ -844,8 +844,9 @@
 <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getDatabase, ref, onValue, onChildAdded, onChildChanged, onChildRemoved, update, push, set, get, remove, query, orderByChild, limitToLast, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
-    import { getAuth, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, sendEmailVerification, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
+    import { getAuth, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
     import { allocateOrderNoFromPocketBase, resetOrderNoInPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, requestLinePayViaBackend, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, readManageMenuFromPocketBase, listMenuItemsFromPocketBase, writeMenuItemToPocketBase, writeSettingsToPocketBase, rememberPublicMenuItems, rememberPublicSettings, normalizePublicSettings, subscribeOrdersRealtime } from "./pocketbase-order-writer.20260809_005.js";
+    import { activateTrustedVirtualStaff } from "./staff-auth-activation.20260810_001.js?v=20260810_002";
     const firebaseConfig = {
         apiKey:"AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
         authDomain:"breakfast-ai-system.firebaseapp.com",
@@ -4875,12 +4876,15 @@
                 authReady.then(function(){return signInWithEmailAndPassword(auth,s.loginEmail.trim(),s.loginPassword);})
                     .then(function(credential){
                         if(credential.user.emailVerified)return credential;
-                        return sendEmailVerification(credential.user).then(function(){return signOut(auth);}).then(function(){throw new Error('email_verification_required');});
+                        return activateTrustedVirtualStaff(credential.user)
+                            .then(function(){return signOut(auth);})
+                            .then(function(){return signInWithEmailAndPassword(auth,s.loginEmail.trim(),s.loginPassword);})
+                            .then(function(refreshed){if(!refreshed.user.emailVerified)throw new Error('virtual_staff_activation_failed');return refreshed;});
                     })
                     .then(function(){try{localStorage.setItem('pos_remembered_email',s.loginEmail.trim());}catch(e){}})
                     .catch(function(e){
                         var m={"auth/user-not-found":"找不到此帳號","auth/wrong-password":"密碼錯誤","auth/invalid-email":"信箱格式錯誤","auth/invalid-credential":"信箱或密碼錯誤"};
-                        s.loginError=e&&e.message==='email_verification_required'?'已寄出驗證信，完成信箱驗證後請重新登入':(m[e.code]||("登入失敗："+e.message));
+                        s.loginError=e&&/^virtual_staff_activation_/.test(e.message||'')?'虛擬管理帳號啟用失敗，請聯絡系統管理員':(m[e.code]||("登入失敗："+e.message));
                     }).finally(function(){s.isLoggingIn=false;});
             },
             doLogout:function(){if(confirm("確定登出POS？"))signOut(auth);},

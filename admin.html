@@ -345,8 +345,9 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
         import { getDatabase, ref, onValue, onChildAdded, onChildChanged, onChildRemoved, update, set, get, remove, query, orderByChild, limitToLast } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
-        import { getAuth, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, sendEmailVerification, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
+        import { getAuth, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
         import { allocateOrderNoFromPocketBase, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, readManageMenuFromPocketBase, listMenuItemsFromPocketBase, writeOrderToPocketBase } from "./pocketbase-order-writer.20260809_005.js";
+        import { activateTrustedVirtualStaff } from "./staff-auth-activation.20260810_001.js?v=20260810_002";
 
         // ★★★ 請貼入您相同的 Firebase 配置 ★★★
         const firebaseConfig = {
@@ -2503,16 +2504,17 @@
                 async login() {
                     try {
                         await authReady;
-                        const credential = await signInWithEmailAndPassword(auth, this.email, this.password);
+                        let credential = await signInWithEmailAndPassword(auth, this.email, this.password);
                         if (!credential.user.emailVerified) {
-                            await sendEmailVerification(credential.user);
+                            await activateTrustedVirtualStaff(credential.user);
                             await signOut(auth);
-                            throw new Error('email_verification_required');
+                            credential = await signInWithEmailAndPassword(auth, this.email, this.password);
+                            if (!credential.user.emailVerified) throw new Error('virtual_staff_activation_failed');
                         }
                         try { localStorage.setItem('admin_remembered_email', this.email); } catch(e) {}
                     } catch (error) {
-                        this.toast(error && error.message === 'email_verification_required'
-                            ? '📧 已寄出驗證信，完成信箱驗證後請重新登入'
+                        this.toast(error && /^virtual_staff_activation_/.test(error.message || '')
+                            ? '❌ 虛擬管理帳號啟用失敗，請聯絡系統管理員'
                             : '❌ 登入失敗，請檢查信箱與密碼');
                     }
                 },
