@@ -844,7 +844,7 @@
 <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getDatabase, ref, onValue, onChildAdded, onChildChanged, onChildRemoved, update, push, set, get, remove, query, orderByChild, limitToLast, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
-    import { getAuth, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
+    import { getAuth, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, sendEmailVerification, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
     import { allocateOrderNoFromPocketBase, resetOrderNoInPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, requestLinePayViaBackend, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, readManageMenuFromPocketBase, listMenuItemsFromPocketBase, writeMenuItemToPocketBase, writeSettingsToPocketBase, rememberPublicMenuItems, rememberPublicSettings, normalizePublicSettings, subscribeOrdersRealtime } from "./pocketbase-order-writer.20260809_005.js";
     const firebaseConfig = {
         apiKey:"AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -1092,7 +1092,7 @@
             // 登出事件加 1.5 秒防抖：index/dinein 初始化時的跨分頁同步會短暫發出 null，
             // 立刻切登入畫面會造成「閃一下又自動回來」；確認真的沒有 staff 使用者才登出。
             authReady.finally(function(){onAuthStateChanged(auth,function(u){
-                if(u&&!u.isAnonymous){
+                if(u&&!u.isAnonymous&&u.emailVerified){
                     if(s._authLogoutTimer){clearTimeout(s._authLogoutTimer);s._authLogoutTimer=null;}
                     if(!s.isLoggedIn){s.isLoggedIn=true;s.startAll();}
                 }else{
@@ -4873,10 +4873,14 @@
                 if(!s.loginEmail||!s.loginPassword){s.loginError="請輸入信箱與密碼";return;}
                 s.isLoggingIn=true;s.loginError="";
                 authReady.then(function(){return signInWithEmailAndPassword(auth,s.loginEmail.trim(),s.loginPassword);})
+                    .then(function(credential){
+                        if(credential.user.emailVerified)return credential;
+                        return sendEmailVerification(credential.user).then(function(){return signOut(auth);}).then(function(){throw new Error('email_verification_required');});
+                    })
                     .then(function(){try{localStorage.setItem('pos_remembered_email',s.loginEmail.trim());}catch(e){}})
                     .catch(function(e){
                         var m={"auth/user-not-found":"找不到此帳號","auth/wrong-password":"密碼錯誤","auth/invalid-email":"信箱格式錯誤","auth/invalid-credential":"信箱或密碼錯誤"};
-                        s.loginError=m[e.code]||("登入失敗："+e.message);
+                        s.loginError=e&&e.message==='email_verification_required'?'已寄出驗證信，完成信箱驗證後請重新登入':(m[e.code]||("登入失敗："+e.message));
                     }).finally(function(){s.isLoggingIn=false;});
             },
             doLogout:function(){if(confirm("確定登出POS？"))signOut(auth);},
