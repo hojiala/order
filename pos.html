@@ -301,8 +301,11 @@
                   </div>
                   <p class="text-xs text-gray-400">&#128197; 取餐：{{ order.pickupDate && order.pickupDate !== todayStr ? order.pickupDate + ' ' : '' }}{{ order.tableType==='kiosk' && order.pickupTime==='內用' ? '外帶自取' : getDisplayPickupTime(order.pickupTime) }}</p>
                   <p class="text-xs text-gray-400 mt-0.5">&#128336; 下單：{{ formatOrderDateTime(order) }}</p>
-                  <p class="text-xs text-gray-500 mt-0.5 truncate">{{ orderItemsSummary(order) }}</p>
-                  <p v-if="order.orderNote" class="text-xs text-blue-500 mt-0.5 truncate">&#128221; {{ order.orderNote }}</p>
+                  <div class="mt-2 rounded-lg border border-gray-200 bg-white/80 px-2.5 py-2">
+                    <p class="mb-1 text-[11px] font-bold text-gray-400">餐點明細</p>
+                    <p class="whitespace-pre-line text-xs leading-relaxed text-gray-700" style="overflow-wrap:anywhere">{{ orderItemsSummary(order) }}</p>
+                  </div>
+                  <p v-if="order.orderNote" class="mt-1.5 text-xs leading-relaxed text-blue-500" style="overflow-wrap:anywhere">&#128221; {{ order.orderNote }}</p>
                 </div>
               <div class="flex-shrink-0 text-right">
                   <p class="text-orange-500 font-black text-base">${{ order.total }}</p>
@@ -846,7 +849,7 @@
     import { getDatabase, ref, onValue, onChildAdded, onChildChanged, onChildRemoved, update, push, set, get, remove, query, orderByChild, limitToLast, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
     import { allocateOrderNoFromPocketBase, resetOrderNoInPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, requestLinePayViaBackend, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, readManageMenuFromPocketBase, listMenuItemsFromPocketBase, writeMenuItemToPocketBase, writeSettingsToPocketBase, rememberPublicMenuItems, rememberPublicSettings, normalizePublicSettings, subscribeOrdersRealtime } from "./pocketbase-order-writer.20260809_005.js";
-    import { isBackofficeUser } from "./staff-auth-activation.20260810_001.js?v=20260810_003";
+    import { isBackofficeUser } from "./staff-auth-activation.20260810_001.js?v=20260813_001";
     const firebaseConfig = {
         apiKey:"AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
         authDomain:"breakfast-ai-system.firebaseapp.com",
@@ -929,7 +932,7 @@
                 posOrderType:'takeout',posTableLabel:'',posTables:[],cartDragIdx:null,
                 posPickupDate:"",posPickupTime:"",
                 orderMode:"pos",editingOrder:null,
-                onlineOrders:[],ordersLoading:false,assigningNos:{},orderBuckets:{},orderBucketUnsubs:[],integrationOrdersUnsub:null,integrationOrdersCache:[],phoneOrdersUnsub:null,phoneOrdersCache:[],useIntegrationView:false,ordersReadBackend:'checking',settingsReadBackend:'checking',menuReadBackend:'checking',lastWriteBackend:'',lastWriteAt:0,menuEditOverrideUntil:0,menuLocalOverrides:{},menuSettingsPollTimer:null,pbOrdersPollTimer:null,pbOrdersReadInFlight:false,pbOrdersEverConnected:false,pbOrdersFailureCount:0,pbOrdersSuccessStreak:0,ordersFallbackHoldUntil:0,remoteStatusOverrides:{},remoteStatusOverridesUnsub:null,orderHydrateInFlight:{},orderHydrateDone:{},
+                onlineOrders:[],ordersLoading:false,assigningNos:{},orderBuckets:{},orderBucketUnsubs:[],integrationOrdersUnsub:null,integrationOrdersCache:[],phoneOrdersUnsub:null,phoneOrdersCache:[],useIntegrationView:false,ordersReadBackend:'checking',settingsReadBackend:'checking',menuReadBackend:'checking',lastWriteBackend:'',lastWriteAt:0,menuEditOverrideUntil:0,menuLocalOverrides:{},menuSettingsPollTimer:null,menuVersion:'',menuVersionPollTimer:null,menuVersionReadInFlight:false,pbOrdersPollTimer:null,pbOrdersReadInFlight:false,pbOrdersEverConnected:false,pbOrdersFailureCount:0,pbOrdersSuccessStreak:0,ordersFallbackHoldUntil:0,remoteStatusOverrides:{},remoteStatusOverridesUnsub:null,orderHydrateInFlight:{},orderHydrateDone:{},
                 orderSearch:"",
                 showBatchPrint:false,batchPrintFrom:"",batchPrintTo:"",batchPrinting:false,batchPrintProgress:"",batchSummary:null,
                 activeItem:null,tempQty:1,tempNote:"",tempDrinkNote:"",tempSels:[],tempOG:{},tempPosExtras:[],tempComboSize:{},tempDrinkAddons:[],
@@ -1088,6 +1091,14 @@
         },
         created:function(){
             var s=this;
+            try{
+                var savedMenuOverrides=JSON.parse(localStorage.getItem('yuangi_menu_active_overrides_v1')||'null');
+                if(savedMenuOverrides&&Date.now()-Number(savedMenuOverrides.savedAt||0)<60*1000&&savedMenuOverrides.items&&typeof savedMenuOverrides.items==='object'){
+                    s.menuLocalOverrides=savedMenuOverrides.items;
+                }else{
+                    localStorage.removeItem('yuangi_menu_active_overrides_v1');
+                }
+            }catch(menuOverrideErr){localStorage.removeItem('yuangi_menu_active_overrides_v1');}
             var d=new Date();s.posPickupDate=d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);
             // 匿名使用者（index/dinein 顧客頁產生）不算 staff 登入。
             // 登出事件加 1.5 秒防抖：index/dinein 初始化時的跨分頁同步會短暫發出 null，
@@ -4374,7 +4385,7 @@
                     else if(eggFound&&eggFound!=='__skip__')noteSuffix=' +'+eggFound;
                     if(n)lines.push(qtyOf(it)+'x'+n+(nAddons?' '+nAddons:'')+noteSuffix);
                 });
-                return lines.join(', ');
+                return lines.join('\n');
             },
             orderItemsSummary:function(order){
                 try{
@@ -4631,7 +4642,7 @@
                     }
                     out.push(qty+'x'+name);
                 }
-                return out.join(', ');
+                return out.join('\n');
                 }catch(e){
                     console.warn('orderItemsSummary failed:',e&&e.message?e.message:e);
                     var fallbackItems=(order&&Array.isArray(order.items))?order.items:[];
@@ -4640,7 +4651,7 @@
                         if(!Number.isFinite(q)||q<=0)q=1;
                         var n=String(it&&(it.name||it['\u54c1\u9805']||it.itemName||'')).trim();
                         return n?(q+'x'+n):'';
-                    }).filter(Boolean).join(', ');
+                    }).filter(Boolean).join('\n');
                 }
             },
             orderSig:function(items){
@@ -4876,12 +4887,12 @@
                 authReady.then(function(){return signInWithEmailAndPassword(auth,s.loginEmail.trim(),s.loginPassword);})
                     .then(function(credential){
                         if(isBackofficeUser(credential.user))return credential;
-                        return signOut(auth).then(function(){throw new Error('email_verification_required');});
+                        return signOut(auth).then(function(){throw new Error('backoffice_uid_required');});
                     })
                     .then(function(){try{localStorage.setItem('pos_remembered_email',s.loginEmail.trim());}catch(e){}})
                     .catch(function(e){
                         var m={"auth/user-not-found":"找不到此帳號","auth/wrong-password":"密碼錯誤","auth/invalid-email":"信箱格式錯誤","auth/invalid-credential":"信箱或密碼錯誤"};
-                        s.loginError=e&&e.message==='email_verification_required'?'此帳號尚未完成信箱驗證':(m[e.code]||("登入失敗："+e.message));
+                        s.loginError=e&&e.message==='backoffice_uid_required'?'此帳號無權限登入後台':(m[e.code]||("登入失敗："+e.message));
                     }).finally(function(){s.isLoggingIn=false;});
             },
             doLogout:function(){if(confirm("確定登出POS？"))signOut(auth);},
@@ -5385,7 +5396,7 @@
                     var prev=item.id?previousById[item.id]:null;
                     var merged=Object.assign({},prev||{},item);
                     var override=item.id&&s.menuLocalOverrides?s.menuLocalOverrides[item.id]:null;
-                    if(override&&Date.now()-Number(override.updatedAt||0)<10*60*1000){
+                    if(override&&Date.now()-Number(override.updatedAt||0)<60*1000){
                         if(override.active!==undefined)merged.active=override.active;
                         if(override.updatedAt!==undefined)merged.updatedAt=override.updatedAt;
                     }
@@ -5395,6 +5406,12 @@
                     if(incomingSort!==null)merged.sortOrder=incomingSort;
                     else if(prev&&prev.sortOrder!==undefined&&!hasOwn(item,'sortOrder'))merged.sortOrder=prev.sortOrder;
                     if(prev&&prev.createdAt&&!hasOwn(item,'createdAt'))merged.createdAt=prev.createdAt;
+                    var incomingUpdated=createdNumber(item.updatedAt||item.updated_at);
+                    var previousUpdated=createdNumber(prev&&(prev.updatedAt||prev.updated_at));
+                    if(prev&&previousUpdated>incomingUpdated&&hasOwn(prev,'active')){
+                        merged.active=prev.active;
+                        merged.updatedAt=prev.updatedAt||prev.updated_at;
+                    }
                     return{item:merged,idx:idx};
                 }).sort(function(a,b){
                     var sa=itemSortValue(a.item),sb=itemSortValue(b.item);
@@ -5421,25 +5438,30 @@
             loadMenuPrimary:function(options){
                 options=options||{};
                 var s=this;
-                if(s.menuEditOverrideUntil&&Date.now()<s.menuEditOverrideUntil){
-                    s.menuLoading=false;
-                    return Promise.resolve(s.menu||[]);
-                }
-                return readManageMenuFromPocketBase({settings:s.settings||{},timeoutMs:options.timeoutMs||4500,secureTimeoutMs:options.timeoutMs||4500,firebaseUser:auth.currentUser}).catch(function(manageErr){
-                    console.warn('PocketBase protected menu read failed; using public menu:',manageErr&&manageErr.message?manageErr.message:manageErr);
-                    return listMenuItemsFromPocketBase({settings:s.settings||{},timeoutMs:options.timeoutMs||3500,forceFresh:!!options.forceFresh,ignoreCooldown:!!options.ignoreCooldown,allowDirectCollectionFallback:true});
-                }).then(function(result){
+                return listMenuItemsFromPocketBase({settings:s.settings||{},timeoutMs:10000,forceFresh:true,ignoreCooldown:true,disableCacheFallback:true,allowDirectCollectionFallback:false,allowFirebasePublicFallback:false}).then(function(result){
                     if(result&&result.ok&&result.items&&result.items.length){
                         s.applyMenuItemsFromPrimary(result.items||[]);
                         s.menuReadBackend=result.backend||'pocketbase';
                         return result.items||[];
                     }
-                    console.warn('PocketBase menu empty; keeping current/cache menu');
+                    s.menuLoading=false;
                     return [];
-                }).catch(function(err){
-                    console.warn('PocketBase menu read failed; keeping current/cache menu:',err&&err.message?err.message:err);
+                }).catch(function(){
+                    s.menuLoading=false;
                     return [];
                 });
+            },
+            loadProtectedMenuDetails:function(){
+                var s=this;
+                if(s.protectedMenuDetailsLoaded)return Promise.resolve(s.menu||[]);
+                if(s.protectedMenuLoadPromise)return s.protectedMenuLoadPromise;
+                s.protectedMenuLoadPromise=readManageMenuFromPocketBase({settings:s.settings||{},timeoutMs:12000,secureTimeoutMs:12000,firebaseUser:auth.currentUser}).then(function(result){
+                    if(!result||!result.ok||!result.items||!result.items.length)throw new Error('menu_details_unavailable');
+                    s.applyMenuItemsFromPrimary(result.items||[]);
+                    s.protectedMenuDetailsLoaded=true;
+                    return s.menu||[];
+                }).finally(function(){s.protectedMenuLoadPromise=null;});
+                return s.protectedMenuLoadPromise;
             },
             applySettingsFromPrimary:function(v){
                 var s=this;
@@ -5477,7 +5499,7 @@
                     (s.settings&&Array.isArray(s.settings.stations)&&s.settings.stations.length)||
                     String(s.pocketBaseUrl||(s.settings&&(s.settings.pocketBaseUrl||s.settings.pocketbaseUrl))||'').trim()
                 );
-                return readSettingsFromPocketBase({settings:s.settings||{},timeoutMs:options.timeoutMs||3500,forceFresh:!!options.forceFresh,ignoreCooldown:!!options.ignoreCooldown,allowDirectCollectionFallback:true,firebaseUser:auth.currentUser}).then(function(result){
+                return readSettingsFromPocketBase({settings:s.settings||{},timeoutMs:options.timeoutMs||3500,forceFresh:!!options.forceFresh,ignoreCooldown:!!options.ignoreCooldown,allowDirectCollectionFallback:false,allowFirebasePublicFallback:false,firebaseUser:auth.currentUser}).then(function(result){
                     if(result&&result.ok&&result.settings&&Object.keys(result.settings).length){
                         s.applySettingsFromPrimary(result.settings);
                         s.settingsReadBackend=result.backend||'pocketbase';
@@ -5491,6 +5513,26 @@
                     return s.loadSettingsFromFirebase();
                 });
             },
+            checkMenuVersion:function(){
+                var s=this;
+                if(!s.isLoggedIn||document.visibilityState==='hidden'||s.menuVersionReadInFlight)return Promise.resolve();
+                var base=String(s.pocketBaseUrl||(s.settings&&(s.settings.pocketBaseUrl||s.settings.pocketbaseUrl))||'https://pb.yuangi168.com').replace(/\/+$/,'');
+                s.menuVersionReadInFlight=true;
+                return fetch(base+'/api/public/menu-version',{cache:'no-store'}).then(function(response){
+                    if(!response.ok)throw new Error('menu_version_unavailable');
+                    return response.json();
+                }).then(function(data){
+                    var next=String(data&&data.version||'');
+                    if(!next)return;
+                    if(!s.menuVersion){s.menuVersion=next;return;}
+                    if(next===s.menuVersion)return;
+                    var previous=s.menuVersion;
+                    s.menuVersion=next;
+                    return s.loadMenuPrimary({forceFresh:true}).then(function(items){
+                        if(!items||!items.length)s.menuVersion=previous;
+                    });
+                }).catch(function(){}).finally(function(){s.menuVersionReadInFlight=false;});
+            },
             startMenuSettingsPrimaryRead:function(){
                 var s=this;
                 if(s.menuSettingsPollTimer)return;
@@ -5502,6 +5544,8 @@
                 };
                 run(true,false);
                 s.menuSettingsPollTimer=setInterval(function(){run(false);},300000);
+                s.checkMenuVersion();
+                s.menuVersionPollTimer=setInterval(function(){s.checkMenuVersion();},5000);
             },
             hasVisibleLinePayOrders:function(){
                 return (this.onlineOrders||[]).some(function(o){
@@ -7085,9 +7129,22 @@
                 var s=this;
                 var next=!item.active;
                 item.active=next;
-                this.menuEditOverrideUntil=Date.now()+10*60*1000;
                 var overrideUpdatedAt=Date.now();
                 this.menuLocalOverrides[item.id]={active:next,updatedAt:overrideUpdatedAt};
+                var clearStoredOverride=function(){
+                    delete s.menuLocalOverrides[item.id];
+                    try{
+                        var raw=localStorage.getItem('yuangi_menu_active_overrides_v1');
+                        var saved=raw?JSON.parse(raw):null;
+                        var items=saved&&saved.items&&typeof saved.items==='object'?saved.items:{};
+                        [item.id,item.name,item.label,item.printName,item.shortName].forEach(function(key){
+                            key=String(key||'').trim();
+                            if(key)delete items[key];
+                        });
+                        if(Object.keys(items).length)localStorage.setItem('yuangi_menu_active_overrides_v1',JSON.stringify({savedAt:Date.now(),items:items}));
+                        else localStorage.removeItem('yuangi_menu_active_overrides_v1');
+                    }catch(storageErr){localStorage.removeItem('yuangi_menu_active_overrides_v1');}
+                };
                 try{
                     var rawOverrides=localStorage.getItem('yuangi_menu_active_overrides_v1');
                     var parsedOverrides=rawOverrides?JSON.parse(rawOverrides):{};
@@ -7099,8 +7156,9 @@
                     localStorage.setItem('yuangi_menu_active_overrides_v1',JSON.stringify({savedAt:overrideUpdatedAt,items:overrideItems}));
                 }catch(storageErr){}
                 this.menuReadBackend='pocketbase';
-                var patch=Object.assign({},item,{active:next,updatedAt:this.menuLocalOverrides[item.id].updatedAt});
+                var patch={id:item.id,active:next,updatedAt:this.menuLocalOverrides[item.id].updatedAt};
                 writeMenuItemToPocketBase(item.id,patch,{
+                    action:'availability',
                     settings:this.settings||{},
                     currentMenuItems:this.menu||[],
                     timeoutMs:8000,
@@ -7110,16 +7168,24 @@
                     .then(function(){
                         item.updatedAt=patch.updatedAt;
                         rememberPublicMenuItems({settings:s.settings||{}},s.menu||[]);
+                        clearStoredOverride();
                         return null;
                     })
                     .catch(function(e){
                         item.active=!next;
-                        delete s.menuLocalOverrides[item.id];
+                        clearStoredOverride();
                         alert("更新失敗："+e.message);
                     });
             },
             // ── 列印功能（從 admin.html 移植：remove+set 確保必然觸發 Node-RED）──
             openBatchPrint:function(){
+                var s=this;
+                if(!s.protectedMenuDetailsLoaded){
+                    s.loadProtectedMenuDetails().then(function(){s.openBatchPrint();}).catch(function(){
+                        alert('完整備料資料暫時無法讀取，請稍後再試。');
+                    });
+                    return;
+                }
                 var list=window.OrderBatchTools?window.OrderBatchTools.uniquePrintableOrders(this.filteredOrders):[];
                 if(list.length){
                     this.batchPrintFrom=String(window.OrderBatchTools.orderNoOf(list[0])||'');
