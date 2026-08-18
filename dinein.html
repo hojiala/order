@@ -1085,22 +1085,18 @@
                 s.settingsRefreshTimer=setInterval(function(){s.loadSettings().then(function(){return s.loadMenu();}).catch(function(e){console.warn('settings refresh failed:',e&&e.message?e.message:e);});},300000);
             },
             startMenuVersionPolling:function(){
-                // 進場立即偵測 + 每10秒輪詢設定/菜單版本，快速同步店內按鍵操作。
+                // 版號只代表本頁已套用的菜單，不共用 localStorage，避免舊快取被誤判為最新。
                 var s=this;
                 if(s.menuVersionTimer)return;
-                if(!s._lastMenuVersion){try{s._lastMenuVersion=localStorage.getItem('pb_menu_version_seen')||'';}catch(e){s._lastMenuVersion='';}}
                 var poll=function(){
                     var base=String(s.settings&&s.settings.pocketBaseUrl||'').replace(/\/+$/,'');
                     if(!base)return;
                     fetch(base+'/api/public/menu-version',{cache:'no-store'}).then(function(r){return r.ok?r.json():null;}).then(function(data){
                         var v=data&&data.version?String(data.version):'';
                         if(!v)return;
-                        if(s._lastMenuVersion&&v!==s._lastMenuVersion){
-                            console.log('menu version changed ('+s._lastMenuVersion+' -> '+v+'), auto refreshing menu');
-                            s.loadSettings({forceFresh:true,ignoreCooldown:true}).then(function(){return s.loadMenu({forceFresh:true,ignoreCooldown:true});}).catch(function(e){console.warn('menu auto refresh failed:',e&&e.message?e.message:e);});
-                        }
-                        s._lastMenuVersion=v;
-                        try{localStorage.setItem('pb_menu_version_seen',v);}catch(e){}
+                        if(s._lastMenuVersion===v)return;
+                        console.log('menu version changed ('+(s._lastMenuVersion||'first-check')+' -> '+v+'), auto refreshing menu');
+                        return s.loadMenu({forceFresh:true,ignoreCooldown:true,disableCacheFallback:true,allowFirebasePublicFallback:false}).then(function(applied){if(applied)s._lastMenuVersion=v;});
                     }).catch(function(){});
                 };
                 s.menuVersionTimer=setInterval(poll,10000);
@@ -1148,14 +1144,14 @@
                     else if(cats.indexOf(s.currentCategory)===-1)s.currentCategory=cats.length?cats[0]:'';
                     s.$nextTick(function(){s._menuLoaded=true;});
                 };
-                return listMenuItemsFromPocketBase({settings:this.settings||{},activeOnly:true,timeoutMs:options.timeoutMs||3500,forceFresh:!!options.forceFresh,ignoreCooldown:!!options.ignoreCooldown,allowDirectCollectionFallback:options.allowDirectCollectionFallback===true,allowFirebasePublicFallback:true}).then(function(result){
-                    if(result&&result.ok&&result.items&&result.items.length){applyMenuSettings(result.items||[],s.settings||{});s.menuReadBackend=result.backend||'pocketbase';if(result.generatedAt){s._lastMenuVersion=String(result.generatedAt);try{localStorage.setItem('pb_menu_version_seen',s._lastMenuVersion);}catch(e){}}return;}
+                return listMenuItemsFromPocketBase({settings:this.settings||{},activeOnly:true,timeoutMs:options.timeoutMs||3500,forceFresh:!!options.forceFresh,ignoreCooldown:!!options.ignoreCooldown,disableCacheFallback:options.disableCacheFallback===true,allowDirectCollectionFallback:options.allowDirectCollectionFallback===true,allowFirebasePublicFallback:options.allowFirebasePublicFallback!==false}).then(function(result){
+                    if(result&&result.ok&&result.items&&result.items.length){applyMenuSettings(result.items||[],s.settings||{});s.menuReadBackend=result.backend||'pocketbase';return true;}
                     console.warn('PocketBase menu empty; keeping current/cache menu');
-                    return;
+                    return false;
                 }).catch(function(e){
                     console.warn('PocketBase menu read failed; keeping current/cache menu:',e&&e.message?e.message:e);
-                    return;
-                }).then(function(){s.menuReady=true;});
+                    return false;
+                }).then(function(applied){s.menuReady=true;return applied;});
             },
             listenOrders:function(){
                 var s=this;

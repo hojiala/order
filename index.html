@@ -629,7 +629,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getDatabase, ref, push, set, get, update, onValue, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-    import { allocateOrderNoFromPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, requestLinePayViaBackend, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, pocketBaseRecordToOrder, requestLineMember, cancelOwnedOrderViaBackend } from "./pocketbase-order-writer.20260809_005.js";
+    import { writeOrderToPocketBase, writeOrderWithFirebaseFallback, requestLinePayViaBackend, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, pocketBaseRecordToOrder, requestLineMember, cancelOwnedOrderViaBackend, filterCartToAvailableMenu } from "./pocketbase-order-writer.20260809_005.js?v=20260816_006";
 
     const enteredFromLiff = /(?:^|[?&])liff(?:=1|=true|[.&=])/i.test(location.search) || /(?:^|[?&])liff\.state=/i.test(location.search) || /\bLine\//i.test(navigator.userAgent || '');
 
@@ -1062,21 +1062,6 @@
                 if (!/^\d{4}-\d{2}-\d{2}$/.test(pd)) return false;
                 return pd > this.getCounterBusinessDateKey(Date.now());
             },
-            allocateOrderNoPrimary: function(sourcePage) {
-                var self = this;
-                return ensureFirebaseUser().then(function(currentUser) {
-                    return allocateOrderNoFromPocketBase({
-                        settings: self.settings,
-                        sourcePage: sourcePage || 'index',
-                        firebaseUser: currentUser
-                    });
-                }).then(function(result) {
-                    if (result && result.ok) return result;
-                    return { ok: false, backend: 'pocketbase', message: result && (result.message || result.reason) || 'counter_unavailable' };
-                }).catch(function(e) {
-                    return { ok: false, backend: 'none', message: e && e.message ? e.message : String(e || 'counter_unavailable') };
-                });
-            },
             normalizeCategorySubcategories: function(raw, categories) {
                 var source = (raw && typeof raw === 'object') ? raw : {};
                 var cats = Array.isArray(categories) ? categories : [];
@@ -1293,15 +1278,10 @@
                 }, 300000);
             },
             startMenuVersionPolling: function() {
-                // 進場立即偵測 + 每 10 秒輪詢：店內按鍵關閉接單後，已開啟頁面也能快速同步。
-                // 回應僅數十 bytes),和自己手上菜單的版本比對,不同就重抓並無感更新
-                // (購物車不受影響)。已看過版本持久化在 localStorage,
-                // 讓「上次來訪留下的舊快取」在進場當下就被偵測並更新。
+                // 進場立即核對 + 每 10 秒輪詢；版號只屬於本頁已套用的菜單，
+                // 不共用 localStorage，避免 LIFF／其他分頁先寫入版號後讓舊快取被誤判為最新。
                 var self = this;
                 if (self.menuVersionTimer) return;
-                if (!self._lastMenuVersion) {
-                    try { self._lastMenuVersion = localStorage.getItem('pb_menu_version_seen') || ''; } catch (e) { self._lastMenuVersion = ''; }
-                }
                 var poll = function() {
                     var base = String(self.settings && self.settings.pocketBaseUrl || '').replace(/\/+$/, '');
                     if (!base) return;
@@ -1310,14 +1290,11 @@
                     }).then(function(data) {
                         var v = data && data.version ? String(data.version) : '';
                         if (!v) return;
-                        if (self._lastMenuVersion && v !== self._lastMenuVersion) {
-                            console.log('menu version changed (' + self._lastMenuVersion + ' -> ' + v + '), auto refreshing menu');
-                            self.loadSettings({ forceFresh: true, ignoreCooldown: true }).then(function() {
-                                return self.loadMenu({ forceFresh: true, ignoreCooldown: true });
-                            }).catch(function(e) { console.warn('menu auto refresh failed:', e && e.message ? e.message : e); });
-                        }
-                        self._lastMenuVersion = v;
-                        try { localStorage.setItem('pb_menu_version_seen', v); } catch (e) {}
+                        if (self._lastMenuVersion === v) return;
+                        console.log('menu version changed (' + (self._lastMenuVersion || 'first-check') + ' -> ' + v + '), auto refreshing menu');
+                        return self.loadMenu({ forceFresh: true, ignoreCooldown: true, disableCacheFallback: true, allowFirebasePublicFallback: false }).then(function(applied) {
+                            if (applied) self._lastMenuVersion = v;
+                        });
                     }).catch(function() { /* 版本查詢失敗就等下一輪,不打擾使用者 */ });
                 };
                 self.menuVersionTimer = setInterval(poll, 10000);
@@ -1365,27 +1342,26 @@
                     var cats = ORDER.filter(function(c) { return found.indexOf(c) !== -1 && posOnly.indexOf(c) === -1; });
                     found.forEach(function(c) { if (cats.indexOf(c) === -1 && posOnly.indexOf(c) === -1) cats.push(c); });
                     self.menu = posOnly.length ? items.filter(function(i) { return posOnly.indexOf(i.category) === -1; }) : items;
+                    var oldCartCount = self.cart.length;
+                    self.cart = filterCartToAvailableMenu(self.cart, items);
+                    if (self.cart.length !== oldCartCount) self.toast('⚠️ 已移除 ' + (oldCartCount - self.cart.length) + ' 個已下架餐點');
                     self.categories = cats;
                     if (!self.categoryTouched && cats.length) self.currentCategory = cats[0];
                     else if (cats.indexOf(self.currentCategory) === -1) self.currentCategory = cats.length ? cats[0] : '';
                     self.$nextTick(function() { self._menuLoaded = true; });
                 };
-                return listMenuItemsFromPocketBase({ settings: this.settings || {}, activeOnly: true, timeoutMs: options.timeoutMs || 3500, forceFresh: !!options.forceFresh, ignoreCooldown: !!options.ignoreCooldown, allowDirectCollectionFallback: options.allowDirectCollectionFallback === true, allowFirebasePublicFallback: true }).then(function(result) {
+                return listMenuItemsFromPocketBase({ settings: this.settings || {}, activeOnly: true, timeoutMs: options.timeoutMs || 3500, forceFresh: !!options.forceFresh, ignoreCooldown: !!options.ignoreCooldown, disableCacheFallback: options.disableCacheFallback === true, allowDirectCollectionFallback: options.allowDirectCollectionFallback === true, allowFirebasePublicFallback: options.allowFirebasePublicFallback !== false }).then(function(result) {
                     if (result && result.ok && result.items && result.items.length) {
                         applyMenuSettings(result.items || [], self.settings || {});
                         self.menuReadBackend = result.backend || 'pocketbase';
-                        if (result.generatedAt) {
-                            self._lastMenuVersion = String(result.generatedAt);
-                            try { localStorage.setItem('pb_menu_version_seen', self._lastMenuVersion); } catch (e) {}
-                        }
-                        return;
+                        return true;
                     }
                     console.warn('PocketBase menu empty; keeping current/cache menu');
-                    return;
+                    return false;
                 }).catch(function(e) {
                     console.warn('PocketBase menu read failed; keeping current/cache menu:', e && e.message ? e.message : e);
-                    return;
-                }).then(function() { self.menuReady = true; });
+                    return false;
+                }).then(function(applied) { self.menuReady = true; return applied; });
             },
             initDateTime: function() {
                 var now = new Date();
@@ -2213,7 +2189,7 @@
                     timestamp: Date.now(),
                     orderDateKey: this.pickupDate
                 };
-                // ★ 先取流水號，再送出訂單（確保訂單一建立就有 orderNo + print_task）
+                // 流水號由 PocketBase 安全建單交易原子配置，避免公開 counter 被消耗。
                 var orderDateKey = orderData.pickupDate || (function(){ var d=new Date(orderData.timestamp || Date.now()); return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); })();
                 orderData.orderDateKey = orderDateKey;
                 var orderId = push(ref(db, 'orders/' + orderDateKey)).key;
@@ -2221,8 +2197,7 @@
                 // ★ 「依取餐時間」模式的預訂單：不在送單當下配號/列印，由店內主機開店批次處理
                 var numberingDeferred = self.isPickupTimeNumberingDeferred(orderData);
                 if (numberingDeferred) orderData.numberingDeferred = true;
-                // PocketBase 建單 hook 本身會原子配號；LINE Pay 不再先多跑一次相同的遠端請求。
-                (numberingDeferred || payMethod === 'linepay' ? Promise.resolve(null) : self.allocateOrderNoPrimary('index'))
+                Promise.resolve(null)
                 .then(function(counter) {
                     var assignedNo = counter && counter.ok ? counter.orderNo : null;
                     if (assignedNo) {
