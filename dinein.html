@@ -170,6 +170,9 @@
                         <button v-if="!isPhoneMode" @click="showPasswordDialog=true" class="text-gray-400 text-xs hover:text-gray-600 transition">⚙️</button>
                     </div>
                 </div>
+                <div v-if="isDineinPreparationWindow" role="status" aria-live="polite" class="bg-orange-50 border-y border-orange-200 px-4 py-2 text-center text-sm text-orange-700 font-bold">
+                    ⏳ 開店準備中，{{ todayOfficialOpenTime }} 起依序製作
+                </div>
                 <div v-if="estimatedWait>0" class="bg-amber-50 border-b border-amber-100 px-4 py-2 flex items-center justify-center gap-2 text-sm text-amber-700 font-medium">
                     <span>⏱️</span>
                     <span>目前預估等候約 <strong>{{ estimatedWait }}</strong> 分鐘</span>
@@ -342,6 +345,9 @@
                     <h2 class="font-bold text-gray-800">訂單確認</h2>
                 </div>
                 <div class="bg-orange-500 text-white px-3 py-1 rounded-xl font-black text-sm">{{ deviceLabel }}</div>
+            </div>
+            <div v-if="isDineinPreparationWindow" role="status" aria-live="polite" class="bg-orange-50 border-b border-orange-200 px-4 py-2 text-center text-sm text-orange-700 font-bold">
+                ⏳ 開店準備中，{{ todayOfficialOpenTime }} 起依序製作
             </div>
             <div class="p-4 pb-52 max-w-3xl mx-auto w-full flex-1" style="display:flex;flex-direction:column;gap:0.75rem;">
                 <div class="bg-white rounded-2xl overflow-hidden border border-gray-100 mb-3">
@@ -552,7 +558,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
     import { getDatabase, ref, push, set, get, update, remove, onValue, query, orderByChild, equalTo, limitToLast, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
-    import { allocateOrderNoFromPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, requestLinePayViaBackend, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, cancelOwnedOrderViaBackend } from "./pocketbase-order-writer.20260809_005.js";
+    import { writeOrderToPocketBase, writeOrderWithFirebaseFallback, requestLinePayViaBackend, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, cancelOwnedOrderViaBackend, filterCartToAvailableMenu } from "./pocketbase-order-writer.20260809_005.js?v=20260816_006";
 
     const firebaseConfig = {
         apiKey:"AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -629,6 +635,47 @@
         offAuthInit();
         if(!user)ensureFirebaseUser().catch(function(e){console.warn('匿名登入失敗:',e.message)});
     });
+    function getDineinBusinessWindow(settings, now){
+        settings=settings||{};now=now||new Date();
+        var clampOffset=function(value,fallback){
+            var n=Number(value);
+            return Number.isFinite(n)?Math.max(0,Math.min(180,Math.floor(n))):fallback;
+        };
+        var toMinutes=function(value,fallback){
+            var m=String(value||'').match(/^(\d{1,2}):(\d{2})$/);
+            if(!m)return fallback;
+            var hour=Number(m[1]),minute=Number(m[2]);
+            return hour>=0&&hour<=23&&minute>=0&&minute<=59?hour*60+minute:fallback;
+        };
+        var toTime=function(total){
+            if(total===1440)return'24:00';
+            return('0'+Math.floor(total/60)).slice(-2)+':'+('0'+(total%60)).slice(-2);
+        };
+        var day=now.getDay();
+        var wdo=settings.weeklyDaysOff||[];if(!Array.isArray(wdo))wdo=Object.values(wdo);
+        var isDayOff=wdo.some(function(value){return parseInt(value,10)===day;});
+        var todayStr=now.getFullYear()+'-'+('0'+(now.getMonth()+1)).slice(-2)+'-'+('0'+now.getDate()).slice(-2);
+        var hols=settings.holidays||[];if(!Array.isArray(hols))hols=Object.values(hols);
+        if(hols.indexOf(todayStr)!==-1)isDayOff=true;
+        var dailyHours=settings.dailyHours||{};
+        var dayKey=['sun','mon','tue','wed','thu','fri','sat'][day];
+        var todayHours=dailyHours[day]||dailyHours[String(day)]||dailyHours[dayKey]||null;
+        var open=(todayHours&&todayHours.openTime)||settings.openTime||'06:00';
+        var close=(todayHours&&todayHours.closeTime)||settings.closeTime||'13:15';
+        var openMinutes=toMinutes(open,360),closeMinutes=toMinutes(close,795);
+        var effectiveOpenMinutes=Math.max(0,openMinutes-clampOffset(settings.dineinEarlyOpenMinutes,30));
+        var effectiveCloseMinutes=Math.min(1440,closeMinutes+clampOffset(settings.dineinLateCloseMinutes,5));
+        var nowMinutes=now.getHours()*60+now.getMinutes();
+        var validWindow=closeMinutes>openMinutes;
+        return{
+            dayOff:isDayOff,
+            outside:isDayOff||!validWindow||nowMinutes<effectiveOpenMinutes||nowMinutes>=effectiveCloseMinutes,
+            preparing:!isDayOff&&validWindow&&nowMinutes>=effectiveOpenMinutes&&nowMinutes<openMinutes,
+            officialOpenTime:toTime(openMinutes),
+            effectiveOpenTime:toTime(effectiveOpenMinutes),
+            effectiveCloseTime:toTime(effectiveCloseMinutes)
+        };
+    }
     const{createApp}=Vue;
 
     createApp({
@@ -639,7 +686,7 @@
             deviceId:'', deviceLabel:'', deviceType:'', deviceSignature:'',
             // 設定
             isLoading:true, menuReady:false, settingsReady:false,
-            settings:{isOpen:true,dineinIsOpen:true,useCustomLoadingImage:false,openTime:'06:00',closeTime:'13:15',weeklyDaysOff:[],holidays:[],dailyHours:{},pickupInterval:15,linePayServerUrl:'',linePayConfirmUrl:'',pocketBaseUrl:'',pocketBaseOrdersCollection:'orders',counterResetTime:'',counterMaxNo:999,announcements:[],mqttAnnouncementSelection:{}},settingsStationsLoaded:false,settingsReadBackend:'checking',menuReadBackend:'checking',
+            settings:{isOpen:true,dineinIsOpen:true,dineinEarlyOpenMinutes:30,dineinLateCloseMinutes:5,useCustomLoadingImage:false,openTime:'06:00',closeTime:'13:15',weeklyDaysOff:[],holidays:[],dailyHours:{},pickupInterval:15,linePayServerUrl:'',linePayConfirmUrl:'',pocketBaseUrl:'',pocketBaseOrdersCollection:'orders',counterResetTime:'',counterMaxNo:999,announcements:[],mqttAnnouncementSelection:{}},settingsStationsLoaded:false,settingsReadBackend:'checking',menuReadBackend:'checking',
             // 菜單
             categories:[], currentCategory:'', categoryTouched:false, menu:[], categorySubcategories:{},
             // 點餐
@@ -666,29 +713,18 @@
             qrPollTimer:null, qrCountdownTimer:null, qrUnsubscribe:null
         }},
         computed:{
-            todayIsDayOff:function(){
-                // ★ 今天是否為公休（固定公休星期或特定公休日）
-                var s=this.settings,now=new Date(),day=now.getDay();
+            dineinBusinessWindow:function(){
                 var dummy=this.nowMinute;
-                var wdo=s.weeklyDaysOff||[];if(!Array.isArray(wdo))wdo=Object.values(wdo);
-                for(var i=0;i<wdo.length;i++){if(parseInt(wdo[i],10)===day)return true;}
-                var todayStr=now.getFullYear()+'-'+('0'+(now.getMonth()+1)).slice(-2)+'-'+('0'+now.getDate()).slice(-2);
-                var hols=s.holidays||[];if(!Array.isArray(hols))hols=Object.values(hols);
-                return hols.indexOf(todayStr)!==-1;
+                return getDineinBusinessWindow(this.settings,new Date());
+            },
+            todayIsDayOff:function(){
+                return this.dineinBusinessWindow.dayOff;
             },
             outsideBusinessHours:function(){
-                var s=this.settings,now=new Date(),day=now.getDay();
-                var dummy=this.nowMinute;
-                if(this.todayIsDayOff)return true;
-                var dh=s.dailyHours||{};
-                var dayKey=['sun','mon','tue','wed','thu','fri','sat'][day];
-                // manage 儲存的 dailyHours 以數字 0~6 為鍵；保留舊的英文鍵作為相容
-                var todayHours=dh[day]||dh[String(day)]||dh[dayKey]||null;
-                var open=s.openTime||'06:00',close=s.closeTime||'13:15';
-                if(todayHours){if(todayHours.openTime)open=todayHours.openTime;if(todayHours.closeTime)close=todayHours.closeTime;}
-                var hhmm=('0'+now.getHours()).slice(-2)+':'+('0'+now.getMinutes()).slice(-2);
-                return hhmm<open||hhmm>=close;
+                return this.dineinBusinessWindow.outside;
             },
+            isDineinPreparationWindow:function(){return this.dineinBusinessWindow.preparing;},
+            todayOfficialOpenTime:function(){return this.dineinBusinessWindow.officialOpenTime;},
             filteredMenu:function(){var s=this;return s.menu.filter(function(i){return i.category===s.currentCategory&&s.isItemAvailable(i)})},
             groupedCurrentMenu:function(){
                 var items=this.filteredMenu||[];
@@ -873,23 +909,6 @@
             getCounterCycleKey:function(ts){
                 return this.getCounterBusinessDateKey(ts)+'@'+this.normalizeCounterResetTime((this.settings&&this.settings.counterResetTime)||'00:00');
             },
-            allocateOrderNoPrimary:function(sourcePage){
-                var s=this;
-                return ensureFirebaseUser().then(function(currentUser){
-                    return allocateOrderNoFromPocketBase({
-                        settings:s.settings,
-                        sourcePage:sourcePage||'dinein',
-                        firebaseUser:currentUser,
-                        dineinDeviceId:s.deviceId,
-                        dineinDeviceSignature:s.deviceSignature
-                    });
-                }).then(function(result){
-                    if(result&&result.ok)return result;
-                    return{ok:false,backend:'pocketbase',message:result&&(result.message||result.reason)||'counter_unavailable'};
-                }).catch(function(e){
-                    return{ok:false,backend:'none',message:e&&e.message?e.message:String(e||'counter_unavailable')};
-                });
-            },
             normalizeCategorySubcategories:function(raw,categories){
                 var source=(raw&&typeof raw==='object')?raw:{};
                 var cats=Array.isArray(categories)?categories:[];
@@ -1026,7 +1045,7 @@
                     var hasStationSettings=!!(v.stations&&v.stations.length);
                     var categories=(Array.isArray(v.categories)&&v.categories.length)?v.categories:(prev.categories||[]);
                     var categorySubcategories=(v.categorySubcategories&&typeof v.categorySubcategories==='object'&&Object.keys(v.categorySubcategories).length)?v.categorySubcategories:(prev.categorySubcategories||{});
-                    s.settings={isOpen:has('isOpen')?v.isOpen!==false:prev.isOpen!==false,dineinIsOpen:has('dineinIsOpen')?v.dineinIsOpen!==false:prev.dineinIsOpen!==false,dineinCartClearEnabled:has('dineinCartClearEnabled')?String(v.dineinCartClearEnabled)==='true':prev.dineinCartClearEnabled===true,dineinCartClearMinutes:Number(has('dineinCartClearMinutes')?v.dineinCartClearMinutes:prev.dineinCartClearMinutes)||30,useCustomLoadingImage:has('useCustomLoadingImage')?v.useCustomLoadingImage===true:prev.useCustomLoadingImage===true,categories:categories,categorySubcategories:categorySubcategories,hideAllTab:has('hideAllTab')?!!v.hideAllTab:!!prev.hideAllTab,openTime:v.openTime||prev.openTime||'06:00',closeTime:v.closeTime||prev.closeTime||'13:15',
+                    s.settings={isOpen:has('isOpen')?v.isOpen!==false:prev.isOpen!==false,dineinIsOpen:has('dineinIsOpen')?v.dineinIsOpen!==false:prev.dineinIsOpen!==false,dineinEarlyOpenMinutes:Number.isFinite(Number(has('dineinEarlyOpenMinutes')?v.dineinEarlyOpenMinutes:prev.dineinEarlyOpenMinutes))?Math.max(0,Math.min(180,Math.floor(Number(has('dineinEarlyOpenMinutes')?v.dineinEarlyOpenMinutes:prev.dineinEarlyOpenMinutes)))):30,dineinLateCloseMinutes:Number.isFinite(Number(has('dineinLateCloseMinutes')?v.dineinLateCloseMinutes:prev.dineinLateCloseMinutes))?Math.max(0,Math.min(180,Math.floor(Number(has('dineinLateCloseMinutes')?v.dineinLateCloseMinutes:prev.dineinLateCloseMinutes)))):5,dineinCartClearEnabled:has('dineinCartClearEnabled')?String(v.dineinCartClearEnabled)==='true':prev.dineinCartClearEnabled===true,dineinCartClearMinutes:Number(has('dineinCartClearMinutes')?v.dineinCartClearMinutes:prev.dineinCartClearMinutes)||30,useCustomLoadingImage:has('useCustomLoadingImage')?v.useCustomLoadingImage===true:prev.useCustomLoadingImage===true,categories:categories,categorySubcategories:categorySubcategories,hideAllTab:has('hideAllTab')?!!v.hideAllTab:!!prev.hideAllTab,openTime:v.openTime||prev.openTime||'06:00',closeTime:v.closeTime||prev.closeTime||'13:15',
                         weeklyDaysOff:weekDaysValue('weeklyDaysOff',prev.weeklyDaysOff),holidays:arrayValue('holidays',prev.holidays),dailyHours:v.dailyHours||prev.dailyHours||{},pickupInterval:Number.isFinite(Number(v.pickupInterval))?Number(v.pickupInterval):(Number.isFinite(Number(prev.pickupInterval))?Number(prev.pickupInterval):15),linePayServerUrl:v.linePayServerUrl||prev.linePayServerUrl||'',linePayConfirmUrl:v.linePayConfirmUrl||prev.linePayConfirmUrl||'',pocketBaseUrl:v.pocketBaseUrl||v.pocketbaseUrl||prev.pocketBaseUrl||'https://pb.yuangi168.com',pocketBaseOrdersCollection:v.pocketBaseOrdersCollection||v.pocketbaseOrdersCollection||prev.pocketBaseOrdersCollection||'orders',pocketBaseOrderEndpoint:v.pocketBaseOrderEndpoint||v.pocketbaseOrderEndpoint||v.pocketBaseSecureOrderEndpoint||v.secureOrderEndpoint||prev.pocketBaseOrderEndpoint||'',turnstileSiteKey:v.turnstileSiteKey||v.cloudflareTurnstileSiteKey||prev.turnstileSiteKey||'',telegramFallbackNotifyEndpoint:v.telegramFallbackNotifyEndpoint||v.telegramNotifyEndpoint||prev.telegramFallbackNotifyEndpoint||'',telegramFallbackMessageTemplate:v.telegramFallbackMessageTemplate||prev.telegramFallbackMessageTemplate||'',counterResetTime:v.counterResetTime||prev.counterResetTime||'',counterMaxNo:v.counterMaxNo||prev.counterMaxNo||999,announcements:v.announcements||prev.announcements||[],mqttAnnouncementSelection:(v.mqttAnnouncementSelection&&typeof v.mqttAnnouncementSelection==='object')?v.mqttAnnouncementSelection:(prev.mqttAnnouncementSelection||{}),stations:hasStationSettings?v.stations:((prev.stations&&prev.stations.length)?prev.stations:defaultStations),posOnlyCategories:v.posOnlyCategories||prev.posOnlyCategories||[]};
                     s.categorySubcategories=s.normalizeCategorySubcategories(s.settings.categorySubcategories,s.settings.categories||s.categories);
                     s.settingsStationsLoaded=hasStationSettings||(prev.stations&&prev.stations.length)||false;
@@ -1121,6 +1140,9 @@
                     var cats=ORDER.filter(function(c){return found.indexOf(c)!==-1&&posOnly.indexOf(c)===-1});
                     found.forEach(function(c){if(cats.indexOf(c)===-1&&posOnly.indexOf(c)===-1)cats.push(c)});
                     s.menu=posOnly.length?items.filter(function(i){return posOnly.indexOf(i.category)===-1}):items;
+                    var oldCartCount=s.cart.length;
+                    s.cart=filterCartToAvailableMenu(s.cart,items);
+                    if(s.cart.length!==oldCartCount){s.saveCart();s.toast('⚠️ 已移除 '+(oldCartCount-s.cart.length)+' 個已下架餐點')}
                     s.categories=cats;
                     if(!s.categoryTouched&&cats.length)s.currentCategory=cats[0];
                     else if(cats.indexOf(s.currentCategory)===-1)s.currentCategory=cats.length?cats[0]:'';
@@ -1678,6 +1700,8 @@
             submitOrder:function(payMethod){
                 if(!this.cart.length||this.isSubmitting)return;
                 var s=this;
+                if(s.settings.dineinIsOpen===false){s.toast('⚠️ 桌邊點餐目前暫停接單');return;}
+                if(s.outsideBusinessHours){s.toast(s.todayIsDayOff?'⚠️ 今日公休，無法送出訂單':'⚠️ 目前非點餐時段，無法送出訂單');return;}
                 // ★ 先前 LINE Pay QR 取消後留下的未付款訂單：同一購物車重送時「重用」，不再新建訂單
                 var reuse=s.pendingQRReuse;
                 if(reuse&&reuse.orderId){
@@ -1730,13 +1754,12 @@
                     orderNote:s.orderNote||'',
                     orderDateKey:todayStr
                 };
-                // ★ 先取流水號，再送出訂單（確保訂單一建立就有 orderNo）
+                // 流水號由 PocketBase 安全建單交易原子配置，避免公開 counter 被消耗。
                 var orderDateKey=orderData.pickupDate||todayStr;
                 orderData.orderDateKey=orderDateKey;
                 var orderId=push(ref(db,'orders/'+orderDateKey)).key;
                 var bucketOrderRef=ref(db,'orders/'+orderDateKey+'/'+orderId);
-                // ★ 先向 PocketBase counter 取得流水號
-                s.allocateOrderNoPrimary('dinein')
+                Promise.resolve(null)
                 .then(function(counter){
                     var assignedNo=counter&&counter.ok?counter.orderNo:null;
                     if(assignedNo){

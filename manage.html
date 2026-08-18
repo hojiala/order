@@ -925,10 +925,12 @@
                         <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
                             <p class="font-bold text-white">🔗 QR Code 網址列表</p>
                             <div class="flex gap-2">
+                                <button @click="refreshQrSignatures" :disabled="!qrEntries.length" class="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white font-bold px-3 py-1.5 rounded-lg text-xs transition">🔏 產生簽章網址</button>
                                 <button @click="addQrEntry('table')" class="bg-blue-600 hover:bg-blue-500 text-white font-bold px-3 py-1.5 rounded-lg text-xs transition">＋ 新增桌號</button>
                                 <button @click="addQrEntry('takeout')" class="bg-purple-600 hover:bg-purple-500 text-white font-bold px-3 py-1.5 rounded-lg text-xs transition">＋ 掃碼外帶</button>
                             </div>
                         </div>
+                        <p v-if="qrSignatureStatus" class="text-xs mb-3" :class="Object.keys(qrSignatures).length===qrEntries.length ? 'text-emerald-400' : 'text-yellow-400'">{{ qrSignatureStatus }}</p>
                         <p v-if="!qrBaseUrl" class="text-yellow-400 text-sm">⚠️ 請先設定上方的基礎網址</p>
                         <div v-else-if="qrEntries.length===0" class="text-slate-500 text-sm text-center py-6">尚無 QR Code，請點上方按鈕新增</div>
                         <div v-else class="space-y-2">
@@ -943,7 +945,7 @@
                                 <input :value="getQrUrl(entry)" readonly
                                     class="flex-1 bg-transparent text-slate-400 text-xs border-none outline-none select-all cursor-text min-w-0"
                                     @click="$event.target.select()">
-                                <button @click="copyQrUrlEntry(entry)" class="text-orange-400 hover:text-orange-300 text-xs font-bold whitespace-nowrap transition flex-shrink-0">📋 複製</button>
+                                <button @click="copyQrUrlEntry(entry)" :disabled="!getQrSignature(entry)" class="text-orange-400 hover:text-orange-300 disabled:text-slate-600 text-xs font-bold whitespace-nowrap transition flex-shrink-0">📋 複製</button>
                                 <button @click="removeQrEntry(ei)" class="text-red-400 hover:text-red-300 text-lg leading-none font-bold flex-shrink-0 transition">✕</button>
                             </div>
                         </div>
@@ -951,9 +953,10 @@
                             <p class="text-slate-300 text-sm font-bold mb-2">💡 使用說明</p>
                             <p class="text-slate-400 text-xs leading-relaxed">
                                 1. 點「＋新增桌號」或「＋掃碼外帶」新增項目（自動儲存）<br>
-                                2. 複製網址 → 到 <a href="https://www.qr-code-generator.com/" target="_blank" class="text-orange-400 underline">QR Code 產生器</a> 產生圖片 → 列印<br>
-                                3. 內用 QR Code 貼桌面立牌，外帶 QR Code 貼櫃台或門口<br>
-                                4. 掃碼訂單在 POS / 管理後台顯示為 📱掃碼 或 📱外帶
+                                2. 點「產生簽章網址」，確認每筆網址都有 sig 參數<br>
+                                3. 在 Chrome 開啟複製的網址 → 選單「投放、儲存及分享」→「建立 QR 圖碼」→ 下載；請勿把簽章網址貼到第三方產生器<br>
+                                4. 逐張掃描確認桌號或外帶標籤，再列印並更換現場 QR Code<br>
+                                5. 掃碼訂單在 POS / 管理後台顯示為 📱掃碼 或 📱外帶
                             </p>
                         </div>
                     </div>
@@ -984,6 +987,34 @@
                     </div>
                     <div v-if="!settings.dineinIsOpen" class="mt-3 bg-red-900/30 border border-red-800 rounded-lg p-3">
                         <p class="text-red-400 text-sm">⚠️ 目前已暫停桌邊點餐。內用顧客無法送出桌邊訂單。</p>
+                    </div>
+                </div>
+
+                <!-- dinein 提前開放／延後停止接單 -->
+                <div v-show="settingsSubTab==='ops'" :style="{order: 2.2}" class="bg-slate-800 rounded-xl border border-slate-700 p-5">
+                    <p class="font-bold text-white mb-1">桌邊／掃碼／自助點餐延長時段</p>
+                    <p class="text-slate-400 text-sm mb-4">沿用每日門市營業時間，只調整 dinein 入口；index 線上點餐與取餐日期時間不受影響。</p>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <label class="bg-slate-700/50 rounded-lg p-3">
+                            <span class="block text-slate-300 text-sm font-bold mb-2">桌邊點餐提前開放</span>
+                            <span class="flex items-center gap-2">
+                                <input v-model.number="settings.dineinEarlyOpenMinutes" type="number" min="0" max="180" step="5"
+                                    class="bg-slate-700 border border-slate-600 rounded-lg px-3 py-1.5 text-white text-sm w-24 text-center focus:outline-none focus:border-emerald-500">
+                                <span class="text-slate-300 text-sm">分鐘（0＝不提前）</span>
+                            </span>
+                        </label>
+                        <label class="bg-slate-700/50 rounded-lg p-3">
+                            <span class="block text-slate-300 text-sm font-bold mb-2">桌邊點餐延後停止接單</span>
+                            <span class="flex items-center gap-2">
+                                <input v-model.number="settings.dineinLateCloseMinutes" type="number" min="0" max="180" step="5"
+                                    class="bg-slate-700 border border-slate-600 rounded-lg px-3 py-1.5 text-white text-sm w-24 text-center focus:outline-none focus:border-emerald-500">
+                                <span class="text-slate-300 text-sm">分鐘（0＝不延後）</span>
+                            </span>
+                        </label>
+                    </div>
+                    <div class="mt-3 bg-emerald-900/25 border border-emerald-800 rounded-lg p-3">
+                        <p class="text-emerald-300 text-sm font-bold">以預設營業時間計算：{{ shiftDineinTime(settings.openTime, -settings.dineinEarlyOpenMinutes) }} ～ {{ shiftDineinTime(settings.closeTime, settings.dineinLateCloseMinutes) }}</p>
+                        <p class="text-slate-400 text-xs mt-1">套用桌邊平板、內用／外帶掃碼 QR 與自助機；每週公休與特定公休日仍關閉。</p>
                     </div>
                 </div>
 
@@ -1881,7 +1912,7 @@ window._doCountUp = function() {
     import { getDatabase, ref, set, get, push, update, remove, onValue, onChildAdded, onChildChanged, onChildRemoved, query, orderByChild, equalTo, limitToLast } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
     import { listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, readManageSettingsFromPocketBase, readManageMenuFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, writeMenuItemToPocketBase, deleteMenuItemFromPocketBase, updateMenuSortInPocketBase, writeSettingsToPocketBase, requestLineMembers, pocketBaseRecordToOrder } from "./pocketbase-order-writer.20260809_005.js";
-    import { isBackofficeUser } from "./staff-auth-activation.20260810_001.js?v=20260810_003";
+    import { isManageUser } from "./staff-auth-activation.20260810_001.js?v=20260813_001";
 
     const firebaseConfig = {
         apiKey: "AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -1899,10 +1930,6 @@ window._doCountUp = function() {
     // manage 使用命名 Firebase app，登入狀態不再與 POS/admin 的預設 app 共用。
     const authReady = Promise.resolve();
     const { createApp } = Vue;
-    const MANAGE_ALLOWED_EMAILS = ['manage@yuanqi.com'];
-    function isManageUser(user) {
-        return !!(isBackofficeUser(user) && MANAGE_ALLOWED_EMAILS.indexOf((user.email || '').trim().toLowerCase()) !== -1);
-    }
     const THEME_COLOR_RE = /^#[0-9A-Fa-f]{6}$/;
     function cloneDefaultDailyThemes() {
         return {
@@ -1993,6 +2020,8 @@ window._doCountUp = function() {
                 posExtraDragIdx: null, posExtraDragOverIdx: null,
                 // Menu
                 menuItems: [], menuLoading: true, settingsReadBackend: 'checking', menuReadBackend: 'checking', filterCat: '',
+                menuRefreshHandler: null, menuRefreshAt: 0, menuLoadPromise: null,
+                menuVersion: '', menuVersionPollTimer: null, menuVersionReadInFlight: false,
                 // Modal
                 showModal: false, isEditing: false, isSaving: false,
                 form: { id:null, name:'', shortName:'', price:'', category:'蛋餅、燒餅', subCategory:'', desc:'', img:'', options:[], optionGroups:[], posExtras:[], prepItems:[], station:'麵包台', printStations:['麵包台'], availableAfter:'', active:true },
@@ -2042,6 +2071,8 @@ window._doCountUp = function() {
                 settings: {
                     isOpen: true,
                     dineinIsOpen: true,
+                    dineinEarlyOpenMinutes: 30,
+                    dineinLateCloseMinutes: 5,
                     dineinCartClearEnabled: false,
                     dineinCartClearMinutes: 30,
                     orderNoMode: 'fifo',
@@ -2103,7 +2134,7 @@ window._doCountUp = function() {
                 settingsSaving: false, settingsSaved: false,
                 allowFirebaseManageFallback: true,
                 // QR Code 管理
-                qrBaseUrl: '', qrPin: '', qrEntries: [],
+                qrBaseUrl: '', qrPin: '', qrEntries: [], qrSignatures: {}, qrSignatureStatus: '',
                 // Week day names
                 weekDayNames: ['日','一','二','三','四','五','六'],
                 themeDayOrder: [1,2,3,4,5,6,0]
@@ -2259,8 +2290,31 @@ window._doCountUp = function() {
             });
         },
 
+        mounted: function() {
+            var self = this;
+            this.menuRefreshHandler = function() {
+                if (!self.isLoggedIn || self.activeTab !== 'menu' || document.visibilityState === 'hidden') return;
+                if (Date.now() - self.menuRefreshAt < 1500) return;
+                self.menuRefreshAt = Date.now();
+                self.loadMenu().catch(function(e) {
+                    console.warn('manage menu refresh failed:', e && e.message ? e.message : e);
+                });
+            };
+            window.addEventListener('focus', this.menuRefreshHandler);
+            document.addEventListener('visibilitychange', this.menuRefreshHandler);
+            this.checkMenuVersion();
+            this.menuVersionPollTimer = setInterval(function() { self.checkMenuVersion(); }, 5000);
+        },
+
+        beforeUnmount: function() {
+            window.removeEventListener('focus', this.menuRefreshHandler);
+            document.removeEventListener('visibilitychange', this.menuRefreshHandler);
+            if (this.menuVersionPollTimer) clearInterval(this.menuVersionPollTimer);
+        },
+
         watch: {
             activeTab: function(newTab) {
+                if (newTab === 'menu' && this.menuRefreshHandler) this.menuRefreshHandler();
                 if (newTab === 'stats') {
                     if (this.lineMemberOrdersMode) {
                         this.startLinePayTransactionsListener();
@@ -2355,20 +2409,16 @@ window._doCountUp = function() {
             login: function() {
                 var self = this;
                 if (!this.loginEmail || !this.loginPassword) { this.loginError = '請輸入信箱與密碼'; return; }
-                if (MANAGE_ALLOWED_EMAILS.indexOf(this.loginEmail.trim().toLowerCase()) === -1) {
-                    this.loginError = '此帳號無權限登入管理後台';
-                    return;
-                }
                 this.isLoggingIn = true; this.loginError = '';
                 authReady.then(function() { return signInWithEmailAndPassword(auth, self.loginEmail, self.loginPassword); })
                     .then(function(credential) {
                         if (isManageUser(credential.user)) return credential;
-                        return signOut(auth).then(function() { throw new Error('email_verification_required'); });
+                        return signOut(auth).then(function() { throw new Error('manage_uid_required'); });
                     })
                     .then(function(){try{localStorage.setItem('manage_remembered_email',self.loginEmail.trim());}catch(e){}})
                     .catch(function(error) {
-                        self.loginError = error && error.message === 'email_verification_required'
-                            ? '此帳號尚未完成信箱驗證'
+                        self.loginError = error && error.message === 'manage_uid_required'
+                            ? '此帳號無權限登入管理後台'
                             : '登入失敗，請確認信箱與密碼是否正確';
                     })
                     .finally(function() { self.isLoggingIn = false; });
@@ -4130,7 +4180,30 @@ window._doCountUp = function() {
                 if (!this.form) return;
                 this.form.printStations = this.normalizePrintStations(this.form.printStations, this.form.station);
             },
+            checkMenuVersion: function() {
+                var self = this;
+                if (!self.isLoggedIn || document.visibilityState === 'hidden' || self.menuVersionReadInFlight) return Promise.resolve();
+                var base = String((self.settings && (self.settings.pocketBaseUrl || self.settings.pocketbaseUrl)) || 'https://pb.yuangi168.com').replace(/\/+$/, '');
+                self.menuVersionReadInFlight = true;
+                return fetch(base + '/api/public/menu-version', { cache: 'no-store' }).then(function(response) {
+                    if (!response.ok) throw new Error('menu_version_unavailable');
+                    return response.json();
+                }).then(function(data) {
+                    var next = String(data && data.version || '');
+                    if (!next) return;
+                    if (!self.menuVersion) { self.menuVersion = next; return; }
+                    if (next === self.menuVersion) return;
+                    var previous = self.menuVersion;
+                    self.menuVersion = next;
+                    return self.loadMenu().then(function(items) {
+                        if (!items || !items.length) self.menuVersion = previous;
+                    });
+                }).catch(function() {}).finally(function() {
+                    self.menuVersionReadInFlight = false;
+                });
+            },
             loadMenu: function() {
+                if (this.menuLoadPromise) return this.menuLoadPromise;
                 var self = this;
                 var hasCurrentMenu = Array.isArray(this.menuItems) && this.menuItems.length > 0;
                 if (!hasCurrentMenu) this.menuLoading = true;
@@ -4175,6 +4248,12 @@ window._doCountUp = function() {
                         if (incomingSort !== null) merged.sortOrder = incomingSort;
                         else if (prev && prev.sortOrder !== undefined && !hasOwn(item, 'sortOrder')) merged.sortOrder = prev.sortOrder;
                         if (prev && prev.createdAt && !hasOwn(item, 'createdAt')) merged.createdAt = prev.createdAt;
+                        var incomingUpdated = createdNumber(item.updatedAt || item.updated_at);
+                        var previousUpdated = createdNumber(prev && (prev.updatedAt || prev.updated_at));
+                        if (prev && previousUpdated > incomingUpdated && hasOwn(prev, 'active')) {
+                            merged.active = prev.active;
+                            merged.updatedAt = prev.updatedAt || prev.updated_at;
+                        }
                         return { item: merged, idx: idx };
                     }).sort(function(a,b) {
                         var sa = itemSortValue(a.item);
@@ -4194,15 +4273,6 @@ window._doCountUp = function() {
                     }
                     self.menuLoading = false;
                 };
-                var loadFromFirebase = function() {
-                    return get(ref(db, 'menu')).then(function(snapshot) {
-                        var data = snapshot.val() || {};
-                        var items = Object.entries(data).map(function(e) { return Object.assign({ id: e[0] }, e[1]); });
-                        apply(items);
-                        rememberPublicMenuItems({ settings: self.settings || {} }, items);
-                        self.menuReadBackend = 'firebase';
-                    });
-                };
                 var finishWithoutMenu = function(backend) {
                     self.menuLoading = false;
                     if (!Array.isArray(self.menuItems)) self.menuItems = [];
@@ -4210,37 +4280,22 @@ window._doCountUp = function() {
                     return;
                 };
                 var loadFromPrimary = function() {
-                    var options = self.pocketBaseManageOptions({ timeoutMs: 5000, secureTimeoutMs: 5000, currentMenuItems: self.menuItems || [] });
-                    return readManageMenuFromPocketBase(options).catch(function(manageErr) {
-                        console.warn('PocketBase protected menu read failed; using public menu:', manageErr && manageErr.message ? manageErr.message : manageErr);
-                        return listMenuItemsFromPocketBase({ settings: self.settings || {}, timeoutMs: 3500, allowDirectCollectionFallback: true });
-                    }).then(function(result) {
+                    return listMenuItemsFromPocketBase({ settings: self.settings || {}, timeoutMs: 10000, forceFresh: true, ignoreCooldown: true, disableCacheFallback: true, allowDirectCollectionFallback: false, allowFirebasePublicFallback: false }).then(function(result) {
                         if (result && result.ok && result.items && result.items.length) {
                             apply(result.items || []);
                             self.menuReadBackend = result.backend || 'pocketbase';
                             if (self.allowFirebaseManageFallback === true && self.isLoggedIn) {
                                 self.cleanupFirebaseOrphans(result.items || []);
                             }
-                            return;
+                            return result.items || [];
                         }
-                        console.warn('PocketBase menu empty; keeping current menu');
-                        if (hasCurrentMenu) return finishWithoutMenu(self.menuReadBackend || 'current');
-                        if (self.allowFirebaseManageFallback !== true) return finishWithoutMenu('empty');
-                        return loadFromFirebase().catch(function(firebaseErr) {
-                            console.warn('Firebase menu fallback failed:', firebaseErr && firebaseErr.message ? firebaseErr.message : firebaseErr);
-                            return finishWithoutMenu('empty');
-                        });
-                    }).catch(function(err) {
-                        console.warn('PocketBase menu read failed; keeping current menu:', err && err.message ? err.message : err);
-                        if (hasCurrentMenu) return finishWithoutMenu(self.menuReadBackend || 'current');
-                        if (self.allowFirebaseManageFallback !== true) return finishWithoutMenu('error');
-                        return loadFromFirebase().catch(function(firebaseErr) {
-                            console.warn('Firebase menu fallback failed:', firebaseErr && firebaseErr.message ? firebaseErr.message : firebaseErr);
-                            return finishWithoutMenu('error');
-                        });
+                        return finishWithoutMenu(hasCurrentMenu ? (self.menuReadBackend || 'current') : 'empty');
+                    }).catch(function() {
+                        return finishWithoutMenu(hasCurrentMenu ? (self.menuReadBackend || 'current') : 'error');
                     });
                 };
-                return loadFromPrimary();
+                this.menuLoadPromise = loadFromPrimary().finally(function() { self.menuLoadPromise = null; });
+                return this.menuLoadPromise;
             },
             cleanupFirebaseOrphans: function(pbItems) {
                 var self = this;
@@ -4297,7 +4352,45 @@ window._doCountUp = function() {
                 this.compressStatus = ''; this.compressedSizeKB = 0;
                 this.isEditing = false; this.showModal = true;
             },
+            loadProtectedMenuDetails: function() {
+                var self = this;
+                if (self.protectedMenuDetailsLoaded) return Promise.resolve(self.menuItems || []);
+                if (self.protectedMenuLoadPromise) return self.protectedMenuLoadPromise;
+                self.protectedMenuLoadPromise = readManageMenuFromPocketBase(self.pocketBaseManageOptions({ timeoutMs: 12000, secureTimeoutMs: 12000, currentMenuItems: self.menuItems || [] })).then(function(result) {
+                    if (!result || !result.ok || !result.items || !result.items.length) throw new Error('menu_details_unavailable');
+                    var detailsById = {};
+                    (result.items || []).forEach(function(row) { if (row && row.id) detailsById[row.id] = row; });
+                    self.menuItems = (self.menuItems || []).map(function(current) {
+                        var detail = current && detailsById[current.id];
+                        if (!detail) return current;
+                        var merged = Object.assign({}, current, detail);
+                        var currentAt = Date.parse(current.updatedAt || current.updated_at || '') || Number(current.updatedAt || current.updated_at || 0) || 0;
+                        var detailAt = Date.parse(detail.updatedAt || detail.updated_at || '') || Number(detail.updatedAt || detail.updated_at || 0) || 0;
+                        if (currentAt > detailAt) {
+                            merged.active = current.active;
+                            merged.updatedAt = current.updatedAt || current.updated_at;
+                        }
+                        return merged;
+                    });
+                    self.protectedMenuDetailsLoaded = true;
+                    return self.menuItems || [];
+                }).finally(function() {
+                    self.protectedMenuLoadPromise = null;
+                });
+                return self.protectedMenuLoadPromise;
+            },
             openEditModal: function(item) {
+                if (!this.protectedMenuDetailsLoaded) {
+                    var self = this;
+                    var itemId = item && item.id;
+                    this.loadProtectedMenuDetails().then(function() {
+                        var fullItem = (self.menuItems || []).find(function(row) { return row && row.id === itemId; });
+                        if (fullItem) self.openEditModal(fullItem);
+                    }).catch(function() {
+                        alert('完整餐點資料暫時無法讀取，請稍後再試。');
+                    });
+                    return;
+                }
                 var station = item.station || this.getDefaultStationName();
                 this.form = {
                     id: item.id, name: item.name||'', shortName: item.shortName || item.printName || '', price: item.price||'',
@@ -4387,9 +4480,9 @@ window._doCountUp = function() {
                 else this.menuItems.push(item);
                 rememberPublicMenuItems({ settings: this.settings || {} }, this.menuItems);
             },
-            writeMenuItemPrimary: function(itemId, itemData, firebaseFallback) {
+            writeMenuItemPrimary: function(itemId, itemData, firebaseFallback, writeOptions) {
                 var self = this;
-                return writeMenuItemToPocketBase(itemId, itemData, this.pocketBaseManageOptions({ currentMenuItems: this.menuItems || [] }))
+                return writeMenuItemToPocketBase(itemId, itemData, this.pocketBaseManageOptions(Object.assign({ currentMenuItems: this.menuItems || [] }, writeOptions || {})))
                     .then(function(result) {
                         if (result && result.ok) {
                             if (self.allowFirebaseManageFallback === true) {
@@ -4663,10 +4756,10 @@ window._doCountUp = function() {
             toggleActive: function(item) {
                 var self = this;
                 var nextActive = !item.active;
-                var patch = Object.assign({}, item, { active: nextActive, updatedAt: Date.now() });
+                var patch = { id: item.id, active: nextActive, updatedAt: Date.now() };
                 this.writeMenuItemPrimary(item.id, patch, function() {
                     return update(ref(db, 'menu/' + item.id), { active: nextActive });
-                }).then(function() {
+                }, { action: 'availability', timeoutMs: 10000, secureTimeoutMs: 10000 }).then(function() {
                     item.active = nextActive;
                     item.updatedAt = patch.updatedAt;
                     rememberPublicMenuItems({ settings: self.settings || {} }, self.menuItems || []);
@@ -6791,6 +6884,14 @@ window._doCountUp = function() {
             },
 
             // ── SETTINGS ──
+            shiftDineinTime: function(value, offsetMinutes) {
+                var match = String(value || '').match(/^(\d{1,2}):(\d{2})$/);
+                if (!match) return '--:--';
+                var total = Number(match[1]) * 60 + Number(match[2]) + (Number(offsetMinutes) || 0);
+                total = Math.max(0, Math.min(1440, Math.round(total)));
+                if (total === 1440) return '24:00';
+                return ('0' + Math.floor(total / 60)).slice(-2) + ':' + ('0' + (total % 60)).slice(-2);
+            },
             getDayHours: function(dayIdx, type) {
                 var dh = this.settings.dailyHours || {};
                 var day = dh[dayIdx];
@@ -6935,6 +7036,8 @@ window._doCountUp = function() {
                     self.settings = {
                         isOpen: s.isOpen !== false,
                         dineinIsOpen: s.dineinIsOpen !== false,
+                        dineinEarlyOpenMinutes: Number.isFinite(Number(s.dineinEarlyOpenMinutes)) ? Math.max(0, Math.min(180, Math.floor(Number(s.dineinEarlyOpenMinutes)))) : 30,
+                        dineinLateCloseMinutes: Number.isFinite(Number(s.dineinLateCloseMinutes)) ? Math.max(0, Math.min(180, Math.floor(Number(s.dineinLateCloseMinutes)))) : 5,
                         dineinCartClearEnabled: String(s.dineinCartClearEnabled) === 'true',
                         dineinCartClearMinutes: (Number.isFinite(Number(s.dineinCartClearMinutes)) && Number(s.dineinCartClearMinutes) > 0) ? Number(s.dineinCartClearMinutes) : 30,
                         orderNoMode: String(s.orderNoMode || '').toLowerCase() === 'pickup_time' ? 'pickup_time' : 'fifo',
@@ -6986,6 +7089,7 @@ window._doCountUp = function() {
                     self.qrBaseUrl = self.settings.qrBaseUrl || '';
                     self.qrPin = self.settings.dineinPin ? String(self.settings.dineinPin) : '';
                     self.qrEntries = Array.isArray(self.settings.qrEntries) ? self.settings.qrEntries.slice() : [];
+                    self.refreshQrSignatures();
                     if (self.settings.pocketBaseUrl && !self._statsReloadedAfterSettings && self.activeTab === 'stats') {
                         self._statsReloadedAfterSettings = true;
                         self.loadStats();
@@ -6994,21 +7098,17 @@ window._doCountUp = function() {
                 // ★ 後台一律強制讀最新資料，不吃本機快取：
                 //   若後台顯示到舊設定（例如舊的公告開關），按「儲存設定」時整包寫回會把舊值復活。
                 var loadPublicSettings = function() {
-                    return readSettingsFromPocketBase({ settings: self.settings || {}, timeoutMs: 6000, forceFresh: true, ignoreCooldown: true, allowDirectCollectionFallback: true, firebaseUser: auth.currentUser }).then(function(result) {
+                    return readSettingsFromPocketBase({ settings: self.settings || {}, timeoutMs: 10000, forceFresh: true, ignoreCooldown: true, allowDirectCollectionFallback: false, allowFirebasePublicFallback: false, firebaseUser: auth.currentUser }).then(function(result) {
                         if (result && result.ok && result.settings && Object.keys(result.settings).length) {
                             apply(result.settings, 'pocketbase_public');
                             return;
                         }
-                        console.warn('PocketBase settings empty; keeping current settings');
                     });
                 };
                 return readManageSettingsFromPocketBase(this.pocketBaseManageOptions({ timeoutMs: 15000, secureTimeoutMs: 15000 })).then(function(result) {
                     apply(result.settings, 'pocketbase_manage');
-                }).catch(function(err) {
-                    console.warn('PocketBase protected settings read failed; using public settings:', err && err.message ? err.message : err);
-                    return loadPublicSettings().catch(function(publicErr) {
-                        console.warn('PocketBase settings read failed; keeping current settings:', publicErr && publicErr.message ? publicErr.message : publicErr);
-                    });
+                }).catch(function() {
+                    return loadPublicSettings().catch(function() {});
                 });
             },
             saveSettings: function() {
@@ -7020,6 +7120,8 @@ window._doCountUp = function() {
                 var settingsPatch = {
                     isOpen: self.settings.isOpen,
                     dineinIsOpen: self.settings.dineinIsOpen !== false,
+                    dineinEarlyOpenMinutes: Number.isFinite(Number(self.settings.dineinEarlyOpenMinutes)) ? Math.max(0, Math.min(180, Math.floor(Number(self.settings.dineinEarlyOpenMinutes)))) : 30,
+                    dineinLateCloseMinutes: Number.isFinite(Number(self.settings.dineinLateCloseMinutes)) ? Math.max(0, Math.min(180, Math.floor(Number(self.settings.dineinLateCloseMinutes)))) : 5,
                     dineinCartClearEnabled: self.settings.dineinCartClearEnabled === true,
                     dineinCartClearMinutes: (Number.isFinite(Number(self.settings.dineinCartClearMinutes)) && Number(self.settings.dineinCartClearMinutes) > 0) ? Number(self.settings.dineinCartClearMinutes) : 30,
                     orderNoMode: self.settings.orderNoMode === 'pickup_time' ? 'pickup_time' : 'fifo',
@@ -7124,18 +7226,84 @@ window._doCountUp = function() {
                     this.qrEntries.push({ type: 'table', num: next, label: next + '桌' });
                 }
                 this.saveQrEntries();
+                this.refreshQrSignatures();
             },
             removeQrEntry: function(idx) {
                 if (!confirm('確定刪除「' + this.qrEntries[idx].label + '」？')) return;
                 this.qrEntries.splice(idx, 1);
                 this.saveQrEntries();
+                this.refreshQrSignatures();
+            },
+            qrEntryDeviceId: function(entry) {
+                var num = String(entry && entry.num || '').replace(/\D/g, '');
+                if (!num) return '';
+                return (entry && entry.type === 'takeout' ? 'takeout_' : 'table_') + num;
+            },
+            getQrSignature: function(entry) {
+                return String(this.qrSignatures[this.qrEntryDeviceId(entry)] || '');
+            },
+            dineinSignatureEndpoint: function() {
+                var settings = this.settings || {};
+                var orderEndpoint = String(settings.pocketBaseOrderEndpoint || settings.pocketbaseOrderEndpoint || settings.pocketBaseSecureOrderEndpoint || settings.secureOrderEndpoint || '').trim();
+                if (/\/api\/(?:secure\/)?orders\/?$/i.test(orderEndpoint)) {
+                    return orderEndpoint.replace(/\/api\/(?:secure\/)?orders\/?$/i, '/api/manage/dinein-signatures');
+                }
+                var notifyEndpoint = this.resolveTelegramNotifyEndpoint();
+                if (/\/api\/notify\/fallback\/?$/i.test(notifyEndpoint)) {
+                    return notifyEndpoint.replace(/\/api\/notify\/fallback\/?$/i, '/api/manage/dinein-signatures');
+                }
+                return 'https://secure-order.yuangi168.com/api/manage/dinein-signatures';
+            },
+            refreshQrSignatures: function() {
+                var self = this;
+                var deviceIds = (Array.isArray(self.qrEntries) ? self.qrEntries : []).map(function(entry) {
+                    return self.qrEntryDeviceId(entry);
+                }).filter(Boolean);
+                if (!deviceIds.length) {
+                    self.qrSignatures = {};
+                    self.qrSignatureStatus = '';
+                    return Promise.resolve({});
+                }
+                if (!auth.currentUser) {
+                    self.qrSignatures = {};
+                    self.qrSignatureStatus = '請先以管理者帳號登入後產生簽章網址';
+                    return Promise.resolve({});
+                }
+                self.qrSignatureStatus = '正在產生簽章網址…';
+                return auth.currentUser.getIdToken().then(function(idToken) {
+                    return fetch(self.dineinSignatureEndpoint(), {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + idToken },
+                        body: JSON.stringify({ deviceIds: deviceIds })
+                    });
+                }).then(function(response) {
+                    return response.json().catch(function() { return {}; }).then(function(data) {
+                        if (!response.ok || !data.ok) throw new Error(data.message || 'dinein_signature_failed');
+                        return data;
+                    });
+                }).then(function(data) {
+                    self.qrSignatures = data.signatures || {};
+                    self.qrSignatureStatus = '已產生 ' + Object.keys(self.qrSignatures).length + ' 組簽章網址；請重新製作並更換現場 QR Code';
+                    return self.qrSignatures;
+                }).catch(function(error) {
+                    self.qrSignatures = {};
+                    self.qrSignatureStatus = '簽章尚未就緒：' + (error && error.message ? error.message : error);
+                    return {};
+                });
             },
             getQrUrl: function(entry) {
                 var base = (this.qrBaseUrl || '').replace(/\/$/, '');
-                if (entry.type === 'takeout') return base + '/dinein.html?takeout=' + entry.num;
-                return base + '/dinein.html?table=' + entry.num;
+                var url = entry.type === 'takeout'
+                    ? base + '/dinein.html?takeout=' + encodeURIComponent(entry.num)
+                    : base + '/dinein.html?table=' + encodeURIComponent(entry.num);
+                var signature = this.getQrSignature(entry);
+                return signature ? url + '&sig=' + encodeURIComponent(signature) : url;
             },
             copyQrUrlEntry: function(entry) {
+                if (!this.getQrSignature(entry)) {
+                    alert('尚未取得簽章，請先按「產生簽章網址」');
+                    return;
+                }
                 var url = this.getQrUrl(entry);
                 navigator.clipboard.writeText(url).then(function() {
                     alert('✅ 已複製「' + entry.label + '」的網址');
