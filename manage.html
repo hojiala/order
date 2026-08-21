@@ -25,7 +25,7 @@
         [v-cloak] { display: none; }
         * { box-sizing: border-box; }
         body { font-family: 'Helvetica Neue', Arial, 'PingFang TC', 'Microsoft JhengHei', sans-serif; }
-        .toggle-switch { position: relative; display: inline-block; width: 56px; height: 28px; }
+        .toggle-switch { position: relative; display: inline-block; width: 56px; height: 28px; flex: 0 0 56px; }
         .toggle-switch input { opacity: 0; width: 0; height: 0; }
         .toggle-slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background: #374151; border-radius: 28px; transition: 0.3s; }
         .toggle-slider:before { position: absolute; content: ""; height: 22px; width: 22px; left: 3px; bottom: 3px; background: white; border-radius: 50%; transition: 0.3s; }
@@ -847,6 +847,19 @@
                 </div>
                 <button @click="loadLineMembers" :disabled="lineMembersLoading" class="bg-slate-700 hover:bg-slate-600 text-white text-sm font-bold px-3 py-2 rounded-lg">{{ lineMembersLoading ? '讀取中…' : '重新整理' }}</button>
             </div>
+            <div class="mb-4 rounded-xl border border-slate-700 bg-slate-800 p-5">
+                <div class="flex items-center justify-between gap-4">
+                    <div>
+                        <p class="font-bold text-white">LINE 訂單推播</p>
+                        <p class="mt-1 text-sm text-slate-400">預設關閉；關閉時不會傳送訂單狀態推播，LIFF 點餐記錄也會隱藏「訂單通知」。</p>
+                    </div>
+                    <label class="toggle-switch">
+                        <input type="checkbox" v-model="settings.lineOrderPushEnabled" :disabled="linePushSettingSaving" @change="saveLineOrderPushSetting">
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+                <p v-if="linePushSettingSaving" class="mt-2 text-xs text-slate-400">儲存中…</p>
+            </div>
             <p v-if="lineMembersError" class="rounded-lg border border-red-800 bg-red-900/30 px-3 py-2 text-sm text-red-300 mb-3">{{ lineMembersError }}</p>
             <div v-if="!lineMembersLoading && !lineMembers.length" class="rounded-xl border border-slate-700 bg-slate-800 p-8 text-center text-slate-400">尚無 LINE 會員</div>
             <div v-else class="overflow-x-auto rounded-xl border border-slate-700 bg-slate-800">
@@ -866,7 +879,7 @@
                             </td>
                             <td class="px-3 py-2 text-right">${{ member.total_spent || 0 }}</td>
                             <td class="px-3 py-2">{{ member.last_order_at ? formatMemberDate(member.last_order_at) : '—' }}</td>
-                            <td class="px-3 py-2"><span :class="member.push_enabled ? 'text-green-400' : 'text-slate-500'">{{ member.push_enabled ? '開啟' : '關閉' }}</span></td>
+                            <td class="px-3 py-2"><span :class="settings.lineOrderPushEnabled && member.push_enabled ? 'text-green-400' : 'text-slate-500'">{{ !settings.lineOrderPushEnabled ? '總開關關閉' : (member.push_enabled ? '開啟' : '關閉') }}</span></td>
                         </tr>
                     </tbody>
                 </table>
@@ -2014,7 +2027,7 @@ window._doCountUp = function() {
                     { id: 'members',   label: 'LINE 會員', icon: '💬' },
                     { id: 'settings',  label: '店面設定', icon: '⚙️' }
                 ],
-                lineMembers: [], lineMembersLoading: false, lineMembersError: '', lineMemberOrdersLoadingId: '', lineMemberOrdersMode: false, lineMemberOrdersMember: null,
+                lineMembers: [], lineMembersLoading: false, lineMembersError: '', linePushSettingSaving: false, lineMemberOrdersLoadingId: '', lineMemberOrdersMode: false, lineMemberOrdersMember: null,
                 dragIdx: null, dragOverIdx: null, dragType: null, menuOrderDirty: false, tplOrderDirty: false,
                 tplChoiceDragIdx: null, tplChoiceDragOverIdx: null,
                 posExtraDragIdx: null, posExtraDragOverIdx: null,
@@ -2075,6 +2088,7 @@ window._doCountUp = function() {
                     dineinLateCloseMinutes: 5,
                     dineinCartClearEnabled: false,
                     dineinCartClearMinutes: 30,
+                    lineOrderPushEnabled: false,
                     orderNoMode: 'fifo',
                     useCustomLoadingImage: false,
                     openTime: '06:00', closeTime: '13:15',
@@ -2345,6 +2359,21 @@ window._doCountUp = function() {
                 var date = new Date(value);
                 if (isNaN(date.getTime())) return String(value || '');
                 return date.toLocaleString('zh-TW', { year:'numeric', month:'2-digit', day:'2-digit' });
+            },
+            saveLineOrderPushSetting: function() {
+                var self = this;
+                var enabled = self.settings.lineOrderPushEnabled === true;
+                var patch = { lineOrderPushEnabled: enabled };
+                self.linePushSettingSaving = true;
+                self.lineMembersError = '';
+                return self.writeSettingsPrimary(patch, function() { return update(ref(db, 'settings'), patch); }).then(function() {
+                    rememberPublicSettings({ settings: self.settings || {} }, Object.assign({}, self.settings || {}, patch));
+                }).catch(function(err) {
+                    self.settings.lineOrderPushEnabled = !enabled;
+                    self.lineMembersError = 'LINE 推播設定儲存失敗：' + String((err && err.message) || err || '未知錯誤');
+                }).finally(function() {
+                    self.linePushSettingSaving = false;
+                });
             },
             loadLineMembers: function() {
                 var self = this;
@@ -7040,6 +7069,7 @@ window._doCountUp = function() {
                         dineinLateCloseMinutes: Number.isFinite(Number(s.dineinLateCloseMinutes)) ? Math.max(0, Math.min(180, Math.floor(Number(s.dineinLateCloseMinutes)))) : 5,
                         dineinCartClearEnabled: String(s.dineinCartClearEnabled) === 'true',
                         dineinCartClearMinutes: (Number.isFinite(Number(s.dineinCartClearMinutes)) && Number(s.dineinCartClearMinutes) > 0) ? Number(s.dineinCartClearMinutes) : 30,
+                        lineOrderPushEnabled: String(s.lineOrderPushEnabled) === 'true',
                         orderNoMode: String(s.orderNoMode || '').toLowerCase() === 'pickup_time' ? 'pickup_time' : 'fifo',
                         useCustomLoadingImage: s.useCustomLoadingImage === true,
                         openTime: s.openTime || '06:00',
@@ -7124,6 +7154,7 @@ window._doCountUp = function() {
                     dineinLateCloseMinutes: Number.isFinite(Number(self.settings.dineinLateCloseMinutes)) ? Math.max(0, Math.min(180, Math.floor(Number(self.settings.dineinLateCloseMinutes)))) : 5,
                     dineinCartClearEnabled: self.settings.dineinCartClearEnabled === true,
                     dineinCartClearMinutes: (Number.isFinite(Number(self.settings.dineinCartClearMinutes)) && Number(self.settings.dineinCartClearMinutes) > 0) ? Number(self.settings.dineinCartClearMinutes) : 30,
+                    lineOrderPushEnabled: self.settings.lineOrderPushEnabled === true,
                     orderNoMode: self.settings.orderNoMode === 'pickup_time' ? 'pickup_time' : 'fifo',
                     useCustomLoadingImage: self.settings.useCustomLoadingImage === true,
                     openTime: self.settings.openTime,
