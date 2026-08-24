@@ -152,6 +152,7 @@
                                         <div class="font-bold text-lg">
                                             <span class="text-red-600 mr-2">{{ item.qty }}x</span>{{ getItemDisplayName(item) }}
                                         </div>
+                                        <div class="text-red-500 font-bold ml-2 flex-shrink-0">${{ getDisplayLineTotal(item) }}</div>
                                     </div>
                                     <!-- 選項群組（容量、溫度、套餐飲料）-->
                                     <div v-if="getDisplayEggDoneness(item, order)" class="text-sm text-orange-700 font-bold mt-1">
@@ -163,6 +164,7 @@
                                             {{ getDisplayOptionGroupName(sel.groupName) }}：{{ sel.name }}
                                         </span>
                                     </div>
+                                    <div v-if="getDisplayComboDrinkMeta(item)" class="text-sm text-orange-600 font-bold mt-1">🧋 {{ getDisplayComboDrinkMeta(item) }}</div>
                                     <!-- 舊版套餐飲料 -->
                                     <div v-if="getItemMealDrinkText(item, order)" class="text-sm text-orange-600 font-bold mt-1">
                                         🧋 {{ getItemMealDrinkLabel(item, order) }}：{{ getItemMealDrinkText(item, order) }}
@@ -1440,21 +1442,17 @@
                     return operational ? '' : note;
                 },
                 getDisplayOrderItems(order) {
-                    const items = (order && Array.isArray(order.items)) ? order.items : [];
-                    const hiddenDrinkIdx = {};
-                    let hasMain = false;
-                    items.forEach((it) => {
-                        if (!this.isComboMainLineForDisplay(it)) return;
-                        hasMain = true;
-                        const sibling = this.findComboDrinkSiblingForDisplay(it, order);
-                        const siblingIdx = sibling ? items.indexOf(sibling) : -1;
-                        if (siblingIdx >= 0) hiddenDrinkIdx[siblingIdx] = true;
-                    });
-                    return items.filter((it, idx) => {
-                        if (hiddenDrinkIdx[idx]) return false;
-                        if (!this.isComboDrinkLineForDisplay(it)) return true;
-                        return !hasMain;
-                    });
+                    return (order && Array.isArray(order.items)) ? order.items : [];
+                },
+                getDisplayComboDrinkMeta(item) {
+                    if (!this.isComboDrinkLineForDisplay(item)) return '';
+                    const text = (v) => String(v === undefined || v === null ? '' : v).trim();
+                    const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+                    const credit = num(item.comboDrinkCredit);
+                    const label = text(item.comboDrinkLabel) || (credit > 0 && credit <= 5 ? '\u642d\u914d\u98f2\u6599\u62985\u5143' : '\u5957\u9910\u98f2\u6599');
+                    const amount = Math.max(0, Math.round(num(item.comboDrinkSurcharge)));
+                    const charge = text(item.comboDrinkChargeText) || (amount > 0 ? ((credit > 0 && credit <= 5 ? '\u98f2\u6599\u52a0\u8cfc$' : '\u88dc\u5dee\u50f9$') + amount) : '');
+                    return [label, charge].filter(Boolean).join('\uff0f');
                 },
                 getDisplayOptionSelections(item, order) {
                     const sels = Array.isArray(item && item.optionGroupSelections) ? item.optionGroupSelections : [];
@@ -1489,6 +1487,10 @@
                     optionObjects.forEach((obj) => {
                         Object.keys(obj).forEach((group) => pushSelection(group, obj[group], { price: 0, baseValue: 0 }));
                     });
+                    if (this.isComboDrinkLineForDisplay(item)) {
+                        pushSelection('\u5bb9\u91cf', item.size || item['\u5bb9\u91cf'], { price: 0, baseValue: 0 });
+                        pushSelection('\u6eab\u5ea6', item.temp || item['\u6eab\u5ea6'], { price: 0, baseValue: 0 });
+                    }
                     if (isCombo && !out.some((sel) => String(sel.groupName || '').indexOf('\u86cb') !== -1)) {
                         const rawPieces = [];
                         const addRaw = (v) => { const s = String(v || '').trim(); if (s) rawPieces.push(s); };
@@ -1819,6 +1821,7 @@
                 },
                 getItemMealDrinkText(item, order) {
                     if (!this.isComboMainLineForDisplay(item)) return '';
+                    if (this.findComboDrinkSiblingForDisplay(item, order)) return '';
                     const state = { size: String(item.size || item['\u5bb9\u91cf'] || '').trim(), temp: String(item.temp || item['\u6eab\u5ea6'] || '').trim() };
                     let drinkName = '';
                     let upgrade = this.getComboUpgradeForDisplay(item, order);

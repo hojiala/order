@@ -461,6 +461,7 @@
               <span v-for="sel in getCartVisibleOptionChips(item,idx)" :key="sel.groupName+'_'+sel.name"
                 class="text-xs bg-orange-50 text-orange-600 border border-orange-200 px-1.5 py-0.5 rounded">
                 {{ sel.name }}</span></div>
+            <div v-if="getCartComboDrinkMetaText(item)" class="text-xs text-orange-500 font-bold mt-0.5">🧋 {{ getCartComboDrinkMetaText(item) }}</div>
             <div v-if="getCartItemMealDrinkText(item,idx)" class="text-xs text-orange-500 mt-0.5">🧋 {{ getCartItemMealDrinkText(item,idx) }}</div>
             <div v-if="getCartDisplayComboDrinkAddons(item,idx).length" class="text-xs text-orange-400 mt-0.5">＋ {{ getCartDisplayComboDrinkAddons(item,idx).map(function(o){return o.name+(o.price>0?(' +$'+o.price):'');}).join(', ') }}</div>
             <div v-if="formatAddonList(item.options,true)" class="text-xs text-gray-400 mt-0.5">{{ formatAddonList(item.options,true) }}</div>
@@ -2817,6 +2818,10 @@
                     if(!drink)return '';
                     return [size,temp,drink].join('|');
                 }
+                // 新版電話單已把套餐飲料保存為獨立品項；送回 Pi 時不可再折疊回主餐。
+                if(src.some(function(row){
+                    return !!(row&&row.isComboDrink&&text(row.comboGroupId)&&num(row.comboDrinkFullPrice)>0&&num(row.comboDrinkCredit)>0);
+                }))return src;
                 var mainComboSigBudget={};
                 src.forEach(function(row){
                     if(!isMain(row))return;
@@ -3404,7 +3409,6 @@
                         mainComboSigBudget[one]=(mainComboSigBudget[one]||0)+1;
                     });
                 });
-                var hasMainComboSig=Object.keys(mainComboSigBudget).length>0;
                 cart=cart.filter(function(it,i){
                     if(used[i])return false;
                     if(!isDrink(it))return true;
@@ -3422,9 +3426,6 @@
                         var sigMeta=comboSigFromText(meta);
                         if(sigMeta&&mainComboSigBudget[sigMeta]>0){
                             mainComboSigBudget[sigMeta]-=1;
-                            return false;
-                        }
-                        if(!gid&&comboDrinkRe.test(meta)&&hasMainComboSig){
                             return false;
                         }
                     }
@@ -3680,12 +3681,23 @@
                 }
                 var name=text(item.name||item['\u54c1\u9805']);
                 if(this.getCartItemMealDrinkText(item,idx))return name;
-                if(item.isComboDrink)return name;
                 var size=text(item.size||item['\u5bb9\u91cf']);
                 var temp=text(item.temp||item['\u6eab\u5ea6']);
+                if(item.isComboDrink)return [size,temp,stripCup(name)||name].filter(Boolean).join('/')||name;
                 var looksDrink=!!(size||temp)&&/(?:\u5496\u5561|\u5976\u8336|\u7d05\u8336|\u7da0\u8336|\u8c46\u6f3f|\u98f2\u6599|\u8336|\u9bae\u5976|\u7f8e\u5f0f)/.test(name);
                 if(!looksDrink)return name;
                 return stripCup(name)||name;
+            },
+            getCartComboDrinkMetaText:function(item){
+                if(!item||!item.isComboDrink)return '';
+                function text(v){return String(v===undefined||v===null?'':v).trim();}
+                function num(v){var n=Number(v);return Number.isFinite(n)?n:0;}
+                var credit=num(item.comboDrinkCredit);
+                var label=text(item.comboDrinkLabel)||(credit>0&&credit<=5?'\u642d\u914d\u98f2\u6599\u62985\u5143':'\u5957\u9910\u98f2\u6599');
+                var amount=Math.max(0,Math.round(num(item.comboDrinkSurcharge)));
+                var charge=text(item.comboDrinkChargeText);
+                if(!charge&&amount>0)charge=(credit>0&&credit<=5?'\u98f2\u6599\u52a0\u8cfc$':'\u88dc\u5dee\u50f9$')+amount;
+                return [label,charge].filter(Boolean).join('\uff0f');
             },
             getCartItemMealDrinkText:function(item,idx){
                 try{
@@ -3721,6 +3733,8 @@
                     return (name.indexOf('\u5957\u9910')!==-1||name.indexOf('\u62fc\u76e4')!==-1);
                 }
                 if(!isMain(item))return '';
+                // 有明確獨立飲料列時，主餐不重複顯示同一杯飲料。
+                if(this.findCartComboDrinkSibling(item,idx))return '';
                 var size=text(item.size||item['\u5bb9\u91cf']);
                 var temp=text(item.temp||item['\u6eab\u5ea6']);
                 var drink='';
@@ -6744,7 +6758,10 @@
                 }.bind(this));
                 this.enrichPhoneCartItemsFromNote();
                 var beforeCollapseCart=JSON.parse(JSON.stringify(this.cart||[]));
-                this.collapseCartComboPairs();
+                var hasStructuredComboDrinkRows=(this.cart||[]).some(function(it){
+                    return !!(it&&it.isComboDrink&&String(it.comboGroupId||'').trim()&&Number(it.comboDrinkFullPrice)>0&&Number(it.comboDrinkCredit)>0);
+                });
+                if(!hasStructuredComboDrinkRows)this.collapseCartComboPairs();
                 if((!this.cart||!this.cart.length)&&beforeCollapseCart.length)this.cart=beforeCollapseCart;
                 this.editPickupDate=(latest&&latest.pickupDate)||normalized.pickupDate||'';
                 this.editPickupTime=(latest&&latest.pickupTime)||normalized.pickupTime||'';
