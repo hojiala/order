@@ -1568,7 +1568,17 @@
                 var menu=Array.isArray(this.menu)?this.menu:[];
                 var match=null;
                 for(var i=0;i<menu.length;i++){
-                    if(this.isMenuNameEquivalent(menu[i]&&menu[i].name,itemName)){match=menu[i];break;}
+                    if(this.normalizeMenuNameForMatch(menu[i]&&menu[i].name)===name){match=menu[i];break;}
+                }
+                if(!match){
+                    for(var f=0;f<menu.length;f++){
+                        if(!this.isMenuNameEquivalent(menu[f]&&menu[f].name,itemName))continue;
+                        if(!match)match=menu[f];
+                        if((menu[f].optionGroups||[]).some(function(group){return String(group&&group.pricing||'')==='mealUpgrade';})){
+                            match=menu[f];
+                            break;
+                        }
+                    }
                 }
                 if(!match)return null;
                 var groups=Array.isArray(match.optionGroups)?match.optionGroups:[];
@@ -2436,6 +2446,10 @@
                             var size=text(drink.size||drink['容量']);
                             var temp=text(drink.temp||drink['溫度']);
                             var drinkName=stripCup(text(drink.name||drink['品項']));
+                            // 此飲料列稍後會被折疊移除，金額必須同步併入套餐卡片。
+                            main.itemTotal=num(main.itemTotal)+num(drink.itemTotal);
+                            main.isCombo=true;
+                            if(drink.comboDrinkDiscount5)main.comboDrinkDiscount5=true;
                             if(!main.size&&size)main.size=size;
                             if(!main.temp&&temp)main.temp=temp;
                             if(!main.comboDrinkSurcharge){
@@ -2462,6 +2476,7 @@
                         }
                         var mainByGroup={};
                         var mainBySig={};
+                        var discountMainUsed=[];
                         list.forEach(function(item){
                             if(!isMain(item))return;
                             var gid=text(item.comboGroupId);
@@ -2470,13 +2485,22 @@
                             if(sig&&!mainBySig[sig])mainBySig[sig]=item;
                         });
                         var filtered=[];
-                        list.forEach(function(item){
+                        list.forEach(function(item,itemIdx){
                             if(!isDrink(item)){filtered.push(item);return;}
                             var gid=text(item.comboGroupId);
                             var sig=sigOfDrink(item);
                             var meta=[item.note,item['備註'],item.comboDrinkLabel,item.comboDrinkChargeText,item.comboDrinkText,item.mealDrink].map(text).join(' ');
                             var explicitComboDrink=!!item.isComboDrink||/(?:套餐飲料|搭配飲料折\s*5\s*元|飲料加購|補差價)/.test(meta);
                             var main=(gid&&mainByGroup[gid])||(!gid&&explicitComboDrink&&sig&&mainBySig[sig])||null;
+                            if(!main&&!gid&&/(?:搭配飲料折\s*5\s*元|飲料加購)/.test(meta)){
+                                for(var p=itemIdx-1;p>=0;p--){
+                                    var candidate=list[p];
+                                    if(isDrink(candidate)||discountMainUsed.indexOf(candidate)!==-1)continue;
+                                    main=candidate;
+                                    discountMainUsed.push(candidate);
+                                    break;
+                                }
+                            }
                             if(main){
                                 ensureMainFromDrink(main,item);
                                 return;
@@ -6139,9 +6163,22 @@
                 var menuItem=null;
                 for(var i=0;i<this.menu.length;i++){if(this.menu[i].id===cartItem.id){menuItem=this.menu[i];break;}}
                 if(!menuItem&&cartItem&&cartItem.name){
+                    var exactName=this.normalizeMenuNameForMatch(cartItem.name);
                     for(var j=0;j<this.menu.length;j++){
-                        if(this.isMenuNameEquivalent(this.menu[j].name,cartItem.name)){menuItem=this.menu[j];break;}
+                        if(this.normalizeMenuNameForMatch(this.menu[j]&&this.menu[j].name)===exactName){menuItem=this.menu[j];break;}
                     }
+                    var fuzzyItem=null;
+                    var needsDrinkGroup=!!String(cartItem.comboDrinkText||cartItem.mealDrink||'').trim()||!!cartItem.comboDrinkDiscount5;
+                    for(var k=0;!menuItem&&k<this.menu.length;k++){
+                        var candidate=this.menu[k];
+                        if(!this.isMenuNameEquivalent(candidate&&candidate.name,cartItem.name))continue;
+                        if(!fuzzyItem)fuzzyItem=candidate;
+                        if(needsDrinkGroup&&(candidate.optionGroups||[]).some(function(group){return String(group&&group.pricing||'')==='mealUpgrade';})){
+                            fuzzyItem=candidate;
+                            break;
+                        }
+                    }
+                    if(!menuItem)menuItem=fuzzyItem;
                 }
                 if(!menuItem){this.toast("⚠ 找不到此餐點");return;}
                 this.activeItem=menuItem;
@@ -6166,6 +6203,32 @@
                         if(g.groupName===sel.groupName)og[gi]=sel.idx;
                     });
                 });
+                // 電話套餐折疊後以 comboDrinkText 保存飲料；開啟視窗時還原正確飲料，
+                // 避免回到預設錫蘭奶茶後被誤套用。
+                var comboRestoreText=String(cartItem.comboDrinkText||cartItem.mealDrink||'').trim();
+                if(comboRestoreText){
+                    var restoreParts=comboRestoreText.split(/[\/／,，、]/).map(function(v){return String(v||'').trim();}).filter(Boolean);
+                    var restoreSize=String(cartItem.size||'').trim();
+                    var restoreDrink='';
+                    restoreParts.forEach(function(part){
+                        if(!restoreSize&&/^(?:大杯|中杯|小杯)$/.test(part)){restoreSize=part;return;}
+                        if(/^(?:去冰|少冰|微冰|正常冰|冰|溫|熱|常溫)$/.test(part))return;
+                        if(/^(?:補差價|飲料加購)\s*\$?\s*\d+$/.test(part)||/(?:套餐飲料|搭配飲料折\s*5\s*元)/.test(part))return;
+                        if(!restoreDrink&&/(?:茶|咖啡|豆漿|可可|果汁|飲料)/.test(part))restoreDrink=part;
+                    });
+                    var self=this;
+                    (menuItem.optionGroups||[]).forEach(function(g,gi){
+                        if(!g||String(g.pricing||'')!=='mealUpgrade'||!restoreDrink)return;
+                        var fallback=-1,matched=-1;
+                        (g.choices||[]).forEach(function(choice,ci){
+                            var parsed=self.splitDrinkName(choice&&choice.name);
+                            if(!self.isMenuNameEquivalent(parsed.base,restoreDrink))return;
+                            if(fallback<0)fallback=ci;
+                            if((!restoreSize||parsed.size===restoreSize)&&matched<0)matched=ci;
+                        });
+                        if(matched>=0||fallback>=0)og[gi]=matched>=0?matched:fallback;
+                    });
+                }
                 this.tempOG=og;
                 this.initTempComboSizes(menuItem, cartItem);
             },
