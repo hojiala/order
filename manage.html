@@ -1223,11 +1223,11 @@
                             <p class="text-slate-500 text-xs mt-1">可用變數：{storeName}、{reason}、{time}、{sourcePage}、{orderId}</p>
                         </div>
                         <div class="flex flex-wrap gap-2">
-                            <button @click="saveTelegramNotifyConfig" :disabled="telegramConfigSaving"
+                            <button @click="saveTelegramNotifyConfig" :disabled="telegramConfigSaving || telegramConfigTesting"
                                 class="bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white font-bold px-4 py-2 rounded-lg text-sm transition">
                                 {{ telegramConfigSaving ? '保存中...' : '保存到 Worker' }}
                             </button>
-                            <button @click="testTelegramNotify" :disabled="telegramConfigTesting"
+                            <button @click="testTelegramNotify" :disabled="telegramConfigSaving || telegramConfigTesting"
                                 class="bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-slate-100 font-bold px-4 py-2 rounded-lg text-sm transition border border-slate-600">
                                 {{ telegramConfigTesting ? '測試中...' : '傳送測試' }}
                             </button>
@@ -4589,9 +4589,9 @@ window._doCountUp = function() {
                         throw err;
                     });
             },
-            writeSettingsPrimary: function(settingsPatch, firebaseFallback) {
+            writeSettingsPrimary: function(settingsPatch, firebaseFallback, writeOptions) {
                 var self = this;
-                return writeSettingsToPocketBase(settingsPatch, this.pocketBaseManageOptions())
+                return writeSettingsToPocketBase(settingsPatch, this.pocketBaseManageOptions(writeOptions))
                     .then(function(result) {
                         if (result && result.ok) {
                             Object.assign(self.settings, settingsPatch);
@@ -4647,16 +4647,30 @@ window._doCountUp = function() {
                     return data;
                 });
             },
+            withManageTimeout: function(promise, timeoutMs, message) {
+                var timer = null;
+                var timeout = new Promise(function(resolve, reject) {
+                    timer = setTimeout(function() { reject(new Error(message || '操作逾時')); }, timeoutMs);
+                });
+                return Promise.race([Promise.resolve(promise), timeout]).then(function(value) {
+                    clearTimeout(timer);
+                    return value;
+                }, function(err) {
+                    clearTimeout(timer);
+                    throw err;
+                });
+            },
             telegramWorkerFetch: function(endpoint, body) {
                 var self = this;
                 if (!auth.currentUser) return Promise.reject(new Error('請先重新登入管理後台'));
-                return auth.currentUser.getIdToken().then(function(idToken) {
+                var request = auth.currentUser.getIdToken().then(function(idToken) {
                     return fetch(endpoint, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + idToken },
                         body: JSON.stringify(body)
                     });
                 }).then(self.parseWorkerJsonResponse);
+                return self.withManageTimeout(request, 20000, 'Worker 回應逾時（若 Telegram 已收到，代表送出成功）');
             },
             saveTelegramNotifyConfig: function() {
                 var self = this;
@@ -4686,7 +4700,10 @@ window._doCountUp = function() {
                         self.settings.telegramFallbackNotifyEndpoint = publicPatch.telegramFallbackNotifyEndpoint;
                         self.settings.telegramFallbackMessageTemplate = publicPatch.telegramFallbackMessageTemplate;
                         return self.writeSettingsPrimary(publicPatch, function() {
-                            return update(ref(db, 'settings'), publicPatch);
+                            return self.withManageTimeout(update(ref(db, 'settings'), publicPatch), 10000, 'Firebase 備援設定寫入逾時');
+                        }, {
+                            timeoutMs: 10000,
+                            secureTimeoutMs: 10000
                         }).then(function() {
                             rememberPublicSettings({ settings: self.settings || {} }, publicPatch);
                             return data;
