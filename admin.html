@@ -152,7 +152,7 @@
                                         <div class="font-bold text-lg">
                                             <span class="text-red-600 mr-2">{{ item.qty }}x</span>{{ getItemDisplayName(item) }}
                                         </div>
-                                        <div class="text-red-500 font-bold ml-2 flex-shrink-0">${{ getDisplayLineTotal(item) }}</div>
+                                        <div class="text-red-500 font-bold ml-2 flex-shrink-0">${{ getDisplayLineTotal(item, order) }}</div>
                                     </div>
                                     <!-- 選項群組（容量、溫度、套餐飲料）-->
                                     <div v-if="getDisplayEggDoneness(item, order)" class="text-sm text-orange-700 font-bold mt-1">
@@ -1166,6 +1166,8 @@
                     if (/\u4e0d\u52a0\u86cb/.test(noteText)) return '';
                     const isComboLike = this.isComboLikeForEggDisplay(item);
                     const paidEgg = this.hasPaidEggSignal(item, order);
+                    const menuSupportsEgg = !!this.getMenuDefaultEggDoneness(item);
+                    if (!menuSupportsEgg && !paidEgg) return '';
                     const explicit = this.extractEggDonenessFromText(item && (item.eggDoneness || item['\u86cb\u719f\u6210\u5ea6'] || item.egg || ''));
                     if (explicit && (isComboLike || paidEgg || /\u86cb/.test(noteText))) return explicit;
                     const selectedEgg = this.explicitEggFromSelections(item, order, isComboLike);
@@ -1199,7 +1201,6 @@
                     });
                 },
                 getDisplayComboDrinkAddons(item, order) {
-                    if (this.isComboMainLineForDisplay(item) && this.findComboDrinkSiblingForDisplay(item, order)) return [];
                     const out = [];
                     const seen = new Set();
                     const push = (name, price) => {
@@ -1228,6 +1229,7 @@
                         }
                     };
                     collect(item);
+                    if (this.isComboMainLineForDisplay(item)) collect(this.findComboDrinkSiblingForDisplay(item, order));
                     out.sort((a, b) => {
                         const orderMap = { '\u52a0\u7cd6': 1, '\u52a0\u5976': 2 };
                         return (orderMap[a.name] || 99) - (orderMap[b.name] || 99);
@@ -1440,7 +1442,12 @@
                     return operational ? '' : note;
                 },
                 getDisplayOrderItems(order) {
-                    return (order && Array.isArray(order.items)) ? order.items : [];
+                    const items = (order && Array.isArray(order.items)) ? order.items : [];
+                    return items.filter((item) => {
+                        if (!this.isComboDrinkLineForDisplay(item)) return true;
+                        return !items.some((main) => this.isComboMainLineForDisplay(main)
+                            && this.findComboDrinkSiblingForDisplay(main, order) === item);
+                    });
                 },
                 getDisplayComboDrinkMeta(item) {
                     if (!this.isComboDrinkLineForDisplay(item)) return '';
@@ -1517,6 +1524,7 @@
                 },
                 findComboDrinkSiblingForDisplay(item, order) {
                     const items = (order && Array.isArray(order.items)) ? order.items : [];
+                    if (!this.isComboMainLineForDisplay(item)) return null;
                     const selfIndex = items.indexOf(item);
                     const comboId = String((item && item.comboGroupId) || '').trim();
                     let first = null;
@@ -1558,15 +1566,25 @@
                     const qty = Number(item && (item.qty !== undefined ? item.qty : (item['\u6578\u91cf'] !== undefined ? item['\u6578\u91cf'] : item.quantity)));
                     return Number.isFinite(qty) && qty > 0 ? qty : 1;
                 },
-                getDisplayLineTotal(item) {
+                getDisplayLineTotal(item, order) {
                     if (!item) return 0;
                     const candidates = [item.itemTotal, item.subtotal, item['\u7e3d\u50f9'], item.lineSubtotal, item.total];
+                    let line = 0;
                     for (let i = 0; i < candidates.length; i++) {
                         const v = Number(candidates[i]);
-                        if (Number.isFinite(v) && v > 0) return v;
+                        if (Number.isFinite(v) && v > 0) { line = v; break; }
                     }
-                    const unit = Number(item.price || item.unitPrice || item['\u55ae\u50f9'] || 0);
-                    return Number.isFinite(unit) && unit > 0 ? unit * this.getDisplayQty(item) : 0;
+                    if (!(line > 0)) {
+                        const unit = Number(item.price || item.unitPrice || item['\u55ae\u50f9'] || 0);
+                        line = Number.isFinite(unit) && unit > 0 ? unit * this.getDisplayQty(item) : 0;
+                    }
+                    if (order && this.isComboMainLineForDisplay(item)) {
+                        const sibling = this.findComboDrinkSiblingForDisplay(item, order);
+                        const siblingLine = sibling ? this.getDisplayLineTotal(sibling) : 0;
+                        const baseTotal = this.getDisplayBaseUnit(item) * this.getDisplayQty(item);
+                        if (siblingLine > 0 && (!(baseTotal > 0) || line <= baseTotal)) line += siblingLine;
+                    }
+                    return Math.round(line);
                 },
                 findMenuBasePriceForDisplay(name) {
                     const menu = Array.isArray(this.menuItems) ? this.menuItems : [];
@@ -1819,7 +1837,6 @@
                 },
                 getItemMealDrinkText(item, order) {
                     if (!this.isComboMainLineForDisplay(item)) return '';
-                    if (this.findComboDrinkSiblingForDisplay(item, order)) return '';
                     const state = { size: String(item.size || item['\u5bb9\u91cf'] || '').trim(), temp: String(item.temp || item['\u6eab\u5ea6'] || '').trim() };
                     let drinkName = '';
                     let upgrade = this.getComboUpgradeForDisplay(item, order);

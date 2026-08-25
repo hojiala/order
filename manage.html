@@ -2884,7 +2884,14 @@ window._doCountUp = function() {
                 return order.items.indexOf(item);
             },
             getDisplayDetailItems: function(order) {
-                return (order && Array.isArray(order.items)) ? order.items : [];
+                var items = (order && Array.isArray(order.items)) ? order.items : [];
+                return items.filter(function(item) {
+                    if (!this.isDetailComboDrinkLine(item)) return true;
+                    return !items.some(function(main) {
+                        return this.isDetailComboMainLine(main)
+                            && this.findComboDrinkSibling(order, main, items.indexOf(main)) === item;
+                    }.bind(this));
+                }.bind(this));
             },
             getDetailComboDrinkMeta: function(item) {
                 if (!this.isDetailComboDrinkLine(item)) return '';
@@ -3143,7 +3150,12 @@ window._doCountUp = function() {
                 if (this.isDetailComboMainLine(item)) {
                     var baseUnit = this.getDetailBaseUnit(item, order, index);
                     var comboLine = this.getDetailLineTotal(item);
-                    if (this.findComboDrinkSibling(order, item, index)) {
+                    var comboSibling = this.findComboDrinkSibling(order, item, index);
+                    if (comboSibling) {
+                        var siblingLine = this.getDetailLineTotal(comboSibling);
+                        if (comboLine > 0 && siblingLine > 0 && (!(baseUnit > 0) || comboLine <= baseUnit * qty)) {
+                            return Math.round(comboLine + siblingLine);
+                        }
                         if (comboLine > 0) return Math.round(comboLine);
                         if (baseUnit > 0) return Math.round(baseUnit * qty);
                     }
@@ -3254,7 +3266,6 @@ window._doCountUp = function() {
                 if (!this.isDetailComboMainLine(item)) return '';
                 var order = this.viewingOrder || null;
                 var index = order && Array.isArray(order.items) ? order.items.indexOf(item) : -1;
-                if (this.findComboDrinkSibling(order, item, index)) return '';
                 var state = {
                     size: String(item.size || item['\u5bb9\u91cf'] || '').trim(),
                     temp: String(item.temp || item['\u6eab\u5ea6'] || '').trim()
@@ -3584,6 +3595,8 @@ window._doCountUp = function() {
                 if (/\u4e0d\u52a0\u86cb/.test(noteText)) return '';
                 var isComboLike = this.isDetailComboLikeForEgg(item);
                 var paidEgg = this.hasDetailPaidEggSignal(item, order, index);
+                var menuSupportsEgg = !!this.getDetailMenuDefaultEggDoneness(item);
+                if (!menuSupportsEgg && !paidEgg) return '';
                 var explicit = this.extractEggDonenessFromText(item && (item.eggDoneness || item['\u86cb\u719f\u6210\u5ea6'] || item.egg || ''));
                 if (explicit && (isComboLike || paidEgg || /\u86cb/.test(noteText))) return explicit;
                 var selectedEgg = this.explicitDetailEggFromSelections(item, order, index, isComboLike);
@@ -3606,7 +3619,6 @@ window._doCountUp = function() {
                 return this.getDetailMenuDefaultEggDoneness(item);
             },
             getDetailComboDrinkAddons: function(item, order, index) {
-                if (this.isDetailComboMainLine(item) && this.findComboDrinkSibling(order, item, index)) return [];
                 var out = [];
                 var seen = new Set();
                 var push = function(name, price) {
@@ -3636,6 +3648,7 @@ window._doCountUp = function() {
                     }
                 };
                 collect(item);
+                if (this.isDetailComboMainLine(item)) collect(this.findComboDrinkSibling(order, item, index));
                 out.sort(function(a, b) {
                     var orderMap = { '\u52a0\u7cd6': 1, '\u52a0\u5976': 2 };
                     return (orderMap[a.name] || 99) - (orderMap[b.name] || 99);
