@@ -1383,7 +1383,7 @@
                     const looksLikeDrink = nameLooksDrink || (!hasMealHint && hasSizeOrTemp);
                     if (hasMealHint && !nameLooksDrink && !item.isComboDrink) return false;
                     return !!item.isComboDrink
-                        || /\u5957\u9910\u98f2\u6599|\u642d\u914d\u98f2\u6599\u6298\s*5\s*\u5143|\u98f2\u6599\u52a0\u8cfc|\u88dc\u5dee\u50f9/.test(meta)
+                        || (looksLikeDrink && /\u5957\u9910\u98f2\u6599|\u642d\u914d\u98f2\u6599\u6298\s*5\s*\u5143|\u98f2\u6599\u52a0\u8cfc|\u88dc\u5dee\u50f9/.test(meta))
                         || (!!String(item.comboGroupId || '').trim() && !String(item.mealDrink || item.comboDrinkText || '').trim() && looksLikeDrink);
                 },
                 isComboMainLineForDisplay(item) {
@@ -1568,6 +1568,15 @@
                 },
                 getDisplayLineTotal(item, order) {
                     if (!item) return 0;
+                    if (this.isComboDrinkLineForDisplay(item)) {
+                        const full = Number(item.comboDrinkFullPrice);
+                        const credit = Number(item.comboDrinkCredit);
+                        const surcharge = Number(item.comboDrinkSurcharge);
+                        if (Number.isFinite(full) && full > 0 && Number.isFinite(credit) && credit >= 0) {
+                            const payable = credit >= full ? 0 : (Number.isFinite(surcharge) && surcharge >= 0 ? surcharge : Math.max(0, full - credit));
+                            return Math.round(payable * this.getDisplayQty(item));
+                        }
+                    }
                     const candidates = [item.itemTotal, item.subtotal, item['\u7e3d\u50f9'], item.lineSubtotal, item.total];
                     let line = 0;
                     for (let i = 0; i < candidates.length; i++) {
@@ -1658,6 +1667,8 @@
                     let ruleCredit = discount5Rule ? 5 : (numberedMealRule ? 30 : Number(menuMetaRule.baseValue || 0));
                     const collectRuleFull = (owner) => {
                         if (!owner) return 0;
+                        const fullCandidate = Number(owner.comboDrinkFullPrice || 0);
+                        if (Number.isFinite(fullCandidate) && fullCandidate > 0) return fullCandidate;
                         const ownerSels = Array.isArray(owner.optionGroupSelections) ? owner.optionGroupSelections : [];
                         for (let si = 0; si < ownerSels.length; si++) {
                             const sel = ownerSels[si] || {};
@@ -1666,8 +1677,6 @@
                                 if (Number.isFinite(selPrice) && selPrice > 0) return selPrice;
                             }
                         }
-                        const fullCandidate = Number(owner.comboDrinkFullPrice || 0);
-                        if (Number.isFinite(fullCandidate) && fullCandidate > 0) return fullCandidate;
                         if (owner === sibling) {
                             const unit = Number(owner.basePrice || owner['\u539f\u50f9'] || (this.getDisplayUnitPrice ? this.getDisplayUnitPrice(owner) : (owner.price || owner['\u55ae\u50f9'] || 0)));
                             if (Number.isFinite(unit) && unit > 0) return unit;
@@ -1875,8 +1884,7 @@
                             const includedBase = owners.some((owner) => {
                                 const full = Number(owner && owner.comboDrinkFullPrice || 0);
                                 const credit = Number(owner && owner.comboDrinkCredit || 0);
-                                const surcharge = Number(owner && owner.comboDrinkSurcharge || 0);
-                                return Number.isFinite(full) && Number.isFinite(credit) && full > 0 && credit >= full && surcharge <= 0 && explicitAmount === full;
+                                return Number.isFinite(full) && Number.isFinite(credit) && full > 0 && credit >= full;
                             });
                             if (!includedBase) upgrade = explicitAmount;
                         }
@@ -2246,6 +2254,15 @@
                                 && Number.isFinite(Number(mapped.comboDrinkSurcharge)) && Number(mapped.comboDrinkSurcharge) > 0) {
                                 mapped.comboDrinkCredit = Math.max(0, Number(mapped.comboDrinkFullPrice) - Number(mapped.comboDrinkSurcharge));
                             }
+                            var explicitComboFull = Number(mapped.comboDrinkFullPrice || 0);
+                            var explicitComboCredit = Number(mapped.comboDrinkCredit || 0);
+                            var explicitIncludedComboDrink = Number.isFinite(explicitComboFull) && explicitComboFull > 0
+                                && Number.isFinite(explicitComboCredit) && explicitComboCredit >= explicitComboFull;
+                            if (explicitIncludedComboDrink) {
+                                mapped.comboDrinkSurcharge = 0;
+                                mapped.comboDrinkChargeText = '';
+                                mapped.comboDrinkDiscount5 = false;
+                            }
                             if (!mapped.comboDrinkDiscount5) {
                                 mapped.comboDrinkDiscount5 = (Number(mapped.comboDrinkCredit || 0) > 0 && Number(mapped.comboDrinkCredit || 0) <= 5)
                                     || (Array.isArray(mapped.optionGroupSelections) && mapped.optionGroupSelections.some((sel) => {
@@ -2268,7 +2285,7 @@
                                 if (!String(explicitMealSel.mealUpgradeChargePrefix || '').trim() && menuMetaForItem.prefix) explicitMealSel.mealUpgradeChargePrefix = menuMetaForItem.prefix;
                             }
                             // 若 mapping 沒抓到 surcharge，從 mealUpgrade 選項推算（POS confirmAdd 不會寫 comboDrinkSurcharge）
-                            if (!Number(mapped.comboDrinkSurcharge || 0) && explicitMealSel) {
+                            if (!explicitIncludedComboDrink && !Number(mapped.comboDrinkSurcharge || 0) && explicitMealSel) {
                                 var selPrice = Number(explicitMealSel.price || 0);
                                 var selBase = Number(explicitMealSel.baseValue || 0);
                                 if (selPrice > selBase) mapped.comboDrinkSurcharge = selPrice - selBase;
@@ -2276,8 +2293,13 @@
                             // 優先序：selection 明確值 > 菜單回查值 > 既有預設值 > 硬編碼
                             var desiredLabel = (explicitMealSel ? String(explicitMealSel.mealUpgradeDisplayLabel || '').trim() : '')
                                 || (menuMetaForItem && menuMetaForItem.label ? String(menuMetaForItem.label).trim() : '');
-                            var hasComboDrinkContext = !!(mapped.isCombo || mapped.isComboDrink || explicitMealSel || String(mapped.mealDrink || mapped.comboDrinkText || mapped.comboDrinkChargeText || '').trim() || String(mapped.comboGroupId || '').trim());
-                            if (desiredLabel) {
+                            var hasComboDrinkContext = !!(mapped.isCombo || mapped.isComboDrink || explicitMealSel || String(mapped.mealDrink || mapped.comboDrinkText || mapped.comboDrinkChargeText || '').trim() || String(mapped.comboGroupId || '').trim())
+                                || /(?:\u5957\u9910\u98f2\u6599|\u642d\u914d\u98f2\u6599\u6298\s*5\s*\u5143|\u98f2\u6599\u52a0\u8cfc|\u88dc\u5dee\u50f9)/.test(String(mapped.note || ''));
+                            if (!hasComboDrinkContext) {
+                                mapped.comboDrinkLabel = '';
+                                mapped.comboDrinkChargeText = '';
+                                mapped.comboDrinkDiscount5 = false;
+                            } else if (desiredLabel) {
                                 mapped.comboDrinkLabel = desiredLabel;
                             } else if (!mapped.comboDrinkLabel && hasComboDrinkContext) {
                                 mapped.comboDrinkLabel = mapped.comboDrinkDiscount5 ? '\u642d\u914d\u98f2\u6599\u62985\u5143' : '\u5957\u9910\u98f2\u6599';
@@ -2887,8 +2909,9 @@
                         const label = String((orderHint && (orderHint.sourceLabel || orderHint._integrationSourceLabel)) || '').toLowerCase();
                         const phoneLike = src === 'phone_ai' || src === 'pos_local' || sourcePath.indexOf('phone_ai/orders/') === 0 || sourceRoot.indexOf('phone_ai') === 0 || label.indexOf('phone') >= 0 || label.indexOf('\u96fb\u8a71') >= 0;
                         if (phoneLike) {
-                            const phoneTotals = [cur, inc, sum].filter(isPos);
-                            if (phoneTotals.length) return Math.max(...phoneTotals);
+                            if (isPos(cur)) return cur;
+                            if (isPos(inc)) return inc;
+                            if (isPos(sum)) return sum;
                             return 0;
                         }
                         const positives = [cur, inc, sum].filter(isPos);

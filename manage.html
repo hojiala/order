@@ -2676,8 +2676,9 @@ window._doCountUp = function() {
                 var label = String((orderHint && (orderHint.sourceLabel || orderHint._integrationSourceLabel)) || '').toLowerCase();
                 var phoneLike = src === 'phone_ai' || src === 'pos_local' || sourcePath.indexOf('phone_ai/orders/') === 0 || sourceRoot.indexOf('phone_ai') === 0 || label.indexOf('phone') >= 0 || label.indexOf('\u96fb\u8a71') >= 0;
                 if (phoneLike) {
-                    var phoneTotals = [cur, inc, sum].filter(isPos);
-                    if (phoneTotals.length) return Math.max.apply(null, phoneTotals);
+                    if (isPos(cur)) return cur;
+                    if (isPos(inc)) return inc;
+                    if (isPos(sum)) return sum;
                     return 0;
                 }
                 var positives = [cur, inc, sum].filter(isPos);
@@ -2848,7 +2849,7 @@ window._doCountUp = function() {
                 var hasComboDrinkContext = /\u5957\u9910\u98f2\u6599|\u642d\u914d\u98f2\u6599\u6298\s*5\s*\u5143|\u98f2\u6599\u52a0\u8cfc|\u88dc\u5dee\u50f9/.test(meta)
                     || !!String(item.comboGroupId || '').trim();
                 return (!!item.isComboDrink && hasComboDrinkContext)
-                    || /\u5957\u9910\u98f2\u6599|\u642d\u914d\u98f2\u6599\u6298\s*5\s*\u5143|\u98f2\u6599\u52a0\u8cfc|\u88dc\u5dee\u50f9/.test(meta)
+                    || (looksLikeDrink && /\u5957\u9910\u98f2\u6599|\u642d\u914d\u98f2\u6599\u6298\s*5\s*\u5143|\u98f2\u6599\u52a0\u8cfc|\u88dc\u5dee\u50f9/.test(meta))
                     || (!!String(item.comboGroupId || '').trim() && !String(item.mealDrink || item.comboDrinkText || '').trim() && looksLikeDrink);
             },
             isDetailComboMainLine: function(item) {
@@ -2954,6 +2955,15 @@ window._doCountUp = function() {
             },
             getDetailLineTotal: function(item) {
                 if (!item) return 0;
+                if (this.isDetailComboDrinkLine(item)) {
+                    var full = Number(item.comboDrinkFullPrice);
+                    var credit = Number(item.comboDrinkCredit);
+                    var surcharge = Number(item.comboDrinkSurcharge);
+                    if (Number.isFinite(full) && full > 0 && Number.isFinite(credit) && credit >= 0) {
+                        var payable = credit >= full ? 0 : (Number.isFinite(surcharge) && surcharge >= 0 ? surcharge : Math.max(0, full - credit));
+                        return Math.round(payable * this.getDetailItemQty(item));
+                    }
+                }
                 var candidates = [item.itemTotal, item.subtotal, item['\u7e3d\u50f9'], item.lineSubtotal, item.total];
                 for (var i = 0; i < candidates.length; i++) {
                     var n = Number(candidates[i]);
@@ -3036,6 +3046,8 @@ window._doCountUp = function() {
                 var ruleCredit = discount5Rule ? 5 : (numberedMealRule ? 30 : Number(menuMetaRule.baseValue || 0));
                 var collectRuleFull = function(row) {
                     if (!row) return 0;
+                    var fullCandidate = Number(row.comboDrinkFullPrice || 0);
+                    if (Number.isFinite(fullCandidate) && fullCandidate > 0) return fullCandidate;
                     var rowSels = Array.isArray(row.optionGroupSelections) ? row.optionGroupSelections : [];
                     for (var si = 0; si < rowSels.length; si++) {
                         var sel = rowSels[si] || {};
@@ -3044,8 +3056,6 @@ window._doCountUp = function() {
                             if (Number.isFinite(selPrice) && selPrice > 0) return selPrice;
                         }
                     }
-                    var fullCandidate = Number(row.comboDrinkFullPrice || 0);
-                    if (Number.isFinite(fullCandidate) && fullCandidate > 0) return fullCandidate;
                     if (row === sibling) {
                         var unit = Number(row.basePrice || row['\u539f\u50f9'] || (this.getDetailUnitPrice ? this.getDetailUnitPrice(row) : (row.price || row['\u55ae\u50f9'] || 0)));
                         if (Number.isFinite(unit) && unit > 0) return unit;
@@ -3315,7 +3325,7 @@ window._doCountUp = function() {
                             }
                             var full = Number(row && row.comboDrinkFullPrice || 0);
                             var credit = Number(row && row.comboDrinkCredit || 0);
-                            return Number.isFinite(full) && Number.isFinite(credit) && full > 0 && credit >= full && explicitAmount === full;
+                            return Number.isFinite(full) && Number.isFinite(credit) && full > 0 && credit >= full;
                         };
                         includedByMealBase = inspectMealBase(item) || inspectMealBase(sibling);
                         var looksLikeIncludedBaseDrink = explicitAmount > 0
@@ -4031,6 +4041,15 @@ window._doCountUp = function() {
                             && Number.isFinite(Number(mappedItem.comboDrinkSurcharge)) && Number(mappedItem.comboDrinkSurcharge) > 0) {
                             mappedItem.comboDrinkCredit = Math.max(0, Number(mappedItem.comboDrinkFullPrice) - Number(mappedItem.comboDrinkSurcharge));
                         }
+                        var explicitComboFull = Number(mappedItem.comboDrinkFullPrice || 0);
+                        var explicitComboCredit = Number(mappedItem.comboDrinkCredit || 0);
+                        var explicitIncludedComboDrink = Number.isFinite(explicitComboFull) && explicitComboFull > 0
+                            && Number.isFinite(explicitComboCredit) && explicitComboCredit >= explicitComboFull;
+                        if (explicitIncludedComboDrink) {
+                            mappedItem.comboDrinkSurcharge = 0;
+                            mappedItem.comboDrinkChargeText = '';
+                            mappedItem.comboDrinkDiscount5 = false;
+                        }
                         if (!mappedItem.comboDrinkDiscount5) {
                             mappedItem.comboDrinkDiscount5 = (Number(mappedItem.comboDrinkCredit || 0) > 0 && Number(mappedItem.comboDrinkCredit || 0) <= 5)
                                 || (Array.isArray(mappedItem.optionGroupSelections) && mappedItem.optionGroupSelections.some(function(sel) {
@@ -4052,7 +4071,7 @@ window._doCountUp = function() {
                             if (!String(explicitMealSel.mealUpgradeChargePrefix || '').trim() && menuMetaForItem.prefix) explicitMealSel.mealUpgradeChargePrefix = menuMetaForItem.prefix;
                         }
                         // 若 mapping 沒抓到 surcharge，從 mealUpgrade 選項推算
-                        if (!Number(mappedItem.comboDrinkSurcharge || 0) && explicitMealSel) {
+                        if (!explicitIncludedComboDrink && !Number(mappedItem.comboDrinkSurcharge || 0) && explicitMealSel) {
                             var selPrice = Number(explicitMealSel.price || 0);
                             var selBase = Number(explicitMealSel.baseValue || 0);
                             if (selPrice > selBase) mappedItem.comboDrinkSurcharge = selPrice - selBase;
@@ -4060,8 +4079,13 @@ window._doCountUp = function() {
                         // 優先序：selection 明確值 > 菜單回查值 > 既有預設值 > 硬編碼
                         var desiredLabel = (explicitMealSel ? String(explicitMealSel.mealUpgradeDisplayLabel || '').trim() : '')
                             || (menuMetaForItem && menuMetaForItem.label ? String(menuMetaForItem.label).trim() : '');
-                        var hasComboDrinkContext = !!(mappedItem.isCombo || mappedItem.isComboDrink || explicitMealSel || String(mappedItem.mealDrink || mappedItem.comboDrinkText || mappedItem.comboDrinkChargeText || '').trim() || String(mappedItem.comboGroupId || '').trim());
-                        if (desiredLabel) {
+                        var hasComboDrinkContext = !!(mappedItem.isCombo || mappedItem.isComboDrink || explicitMealSel || String(mappedItem.mealDrink || mappedItem.comboDrinkText || mappedItem.comboDrinkChargeText || '').trim() || String(mappedItem.comboGroupId || '').trim())
+                            || /(?:\u5957\u9910\u98f2\u6599|\u642d\u914d\u98f2\u6599\u6298\s*5\s*\u5143|\u98f2\u6599\u52a0\u8cfc|\u88dc\u5dee\u50f9)/.test(String(mappedItem.note || ''));
+                        if (!hasComboDrinkContext) {
+                            mappedItem.comboDrinkLabel = '';
+                            mappedItem.comboDrinkChargeText = '';
+                            mappedItem.comboDrinkDiscount5 = false;
+                        } else if (desiredLabel) {
                             mappedItem.comboDrinkLabel = desiredLabel;
                         } else if (!mappedItem.comboDrinkLabel && hasComboDrinkContext) {
                             mappedItem.comboDrinkLabel = mappedItem.comboDrinkDiscount5 ? '\u642d\u914d\u98f2\u6599\u62985\u5143' : '\u5957\u9910\u98f2\u6599';
