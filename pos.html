@@ -2146,7 +2146,7 @@
                         ].map(function(v){return String(v||'');}).join(' ');
                         var nameLooksDrink=/(?:咖啡|紅茶|綠茶|奶茶|鮮奶茶|豆漿|可可|拿鐵|美式|茶|飲料)/.test(String(cleanName||''));
                         var nameLooksComboMain=(String(cleanName||'').indexOf('套餐')!==-1||String(cleanName||'').indexOf('拼盤')!==-1)&&!nameLooksDrink;
-                        var comboDrinkHint=!nameLooksComboMain&&(!!src.isComboDrink||/套餐飲料|搭配飲料折\s*5\s*元|飲料加購|補差價/.test(comboMetaText));
+                        var comboDrinkHint=!nameLooksComboMain&&(!!src.isComboDrink||(!src.isCombo&&nameLooksDrink&&/套餐飲料|搭配飲料折\s*5\s*元|飲料加購|補差價/.test(comboMetaText)));
                         var unitCandidates=[src.price,src['單價'],src.unitPrice,src.basePrice,src['原價']];
                         var unit=NaN;
                         var unitAny=NaN;
@@ -2267,7 +2267,10 @@
                         var desiredLabel=(explicitMealSel?String(explicitMealSel.mealUpgradeDisplayLabel||'').trim():'')
                             ||(menuMetaForItem&&menuMetaForItem.label?String(menuMetaForItem.label).trim():'');
                         var hasComboDrinkContext=!!(mapped.isCombo||mapped.isComboDrink||explicitMealSel||String(mapped.mealDrink||mapped.comboDrinkText||mapped.comboDrinkChargeText||'').trim()||String(mapped.comboGroupId||'').trim());
-                        if(desiredLabel){
+                        // 菜單可加購飲料，不等於這一列已點套餐；清除舊版回填到單點的標題。
+                        if(!hasComboDrinkContext){
+                            mapped.comboDrinkLabel='';
+                        }else if(desiredLabel){
                             mapped.comboDrinkLabel=desiredLabel;
                         }else if(!mapped.comboDrinkLabel&&hasComboDrinkContext){
                             mapped.comboDrinkLabel=mapped.comboDrinkDiscount5?'\u642d\u914d\u98f2\u6599\u62985\u5143':'\u5957\u9910\u98f2\u6599';
@@ -2449,6 +2452,8 @@
                             // 此飲料列稍後會被折疊移除，金額必須同步併入套餐卡片。
                             main.itemTotal=num(main.itemTotal)+num(drink.itemTotal);
                             main.isCombo=true;
+                            if(!num(main.comboDrinkFullPrice))main.comboDrinkFullPrice=num(drink.comboDrinkFullPrice);
+                            if(!num(main.comboDrinkCredit))main.comboDrinkCredit=num(drink.comboDrinkCredit);
                             if(drink.comboDrinkDiscount5)main.comboDrinkDiscount5=true;
                             if(!main.size&&size)main.size=size;
                             if(!main.temp&&temp)main.temp=temp;
@@ -2476,7 +2481,6 @@
                         }
                         var mainByGroup={};
                         var mainBySig={};
-                        var discountMainUsed=[];
                         list.forEach(function(item){
                             if(!isMain(item))return;
                             var gid=text(item.comboGroupId);
@@ -2492,15 +2496,12 @@
                             var meta=[item.note,item['備註'],item.comboDrinkLabel,item.comboDrinkChargeText,item.comboDrinkText,item.mealDrink].map(text).join(' ');
                             var explicitComboDrink=!!item.isComboDrink||/(?:套餐飲料|搭配飲料折\s*5\s*元|飲料加購|補差價)/.test(meta);
                             var main=(gid&&mainByGroup[gid])||(!gid&&explicitComboDrink&&sig&&mainBySig[sig])||null;
-                            if(!main&&!gid&&/(?:搭配飲料折\s*5\s*元|飲料加購)/.test(meta)){
-                                for(var p=itemIdx-1;p>=0;p--){
-                                    var candidate=list[p];
-                                    if(isDrink(candidate)||discountMainUsed.indexOf(candidate)!==-1)continue;
-                                    main=candidate;
-                                    discountMainUsed.push(candidate);
-                                    break;
-                                }
-                            }
+                            // 舊解析器的「炒烏龍＋折5元飲料」原本就是套餐；只保留這個別名與明確套餐的相鄰配對。
+                            // 不再向前掃描任意餐點，普通蛋餅／捲餅不能因此變成套餐。
+                            var previous=list[itemIdx-1];
+                            var discountDrink=!!item.comboDrinkDiscount5||num(item.comboDrinkCredit)===5||/搭配飲料折\s*5\s*元|飲料加購/.test(meta);
+                            if(!main&&!gid&&explicitComboDrink&&discountDrink&&previous&&!text(previous.comboGroupId)&&!isDrink(previous)
+                                &&(isMain(previous)||text(previous.name||previous['品項'])==='炒烏龍'))main=previous;
                             if(main){
                                 ensureMainFromDrink(main,item);
                                 return;
@@ -2852,7 +2853,6 @@
                     var sig=comboSigFromMain(row);
                     if(sig)mainComboSigBudget[sig]=(mainComboSigBudget[sig]||0)+1;
                 });
-                var hasMainComboSig=Object.keys(mainComboSigBudget).length>0;
                 function findSibling(main,mainIdx){
                     var gid=text(main&&main.comboGroupId);
                     if(gid){
@@ -2893,7 +2893,6 @@
                                 mainComboSigBudget[dsig]-=1;
                                 return;
                             }
-                            if(!gid&&hasMainComboSig)return;
                         }
                         out.push(row);
                         return;
