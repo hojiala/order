@@ -849,7 +849,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getDatabase, ref, onValue, onChildAdded, onChildChanged, onChildRemoved, update, push, set, get, remove, query, orderByChild, limitToLast, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-    import { allocateOrderNoFromPocketBase, resetOrderNoInPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, requestLinePayViaBackend, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, readManageMenuFromPocketBase, listMenuItemsFromPocketBase, writeMenuItemToPocketBase, writeSettingsToPocketBase, rememberPublicMenuItems, rememberPublicSettings, normalizePublicSettings, subscribeOrdersRealtime } from "./pocketbase-order-writer.20260809_005.js";
+    import { allocateOrderNoFromPocketBase, resetOrderNoInPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, requestLinePayViaBackend, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, readManageMenuFromPocketBase, listMenuItemsFromPocketBase, writeMenuItemToPocketBase, writeSettingsToPocketBase, rememberPublicMenuItems, rememberPublicSettings, normalizePublicSettings, subscribeOrdersRealtime, isReservedOrderId } from "./pocketbase-order-writer.20260809_005.js?v=20260831_001";
     import { isBackofficeUser } from "./staff-auth-activation.20260818_001.js?v=20260818_001";
     const firebaseConfig = {
         apiKey:"AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -1230,12 +1230,9 @@
                 });
                 var integrationRead=get(ref(db,'integration_views/merged_orders_active')).then(function(snap){
                     var view=snap.exists()?(snap.val()||{}):{};
-                    var raw=Array.isArray(view.orders)?view.orders.slice():Object.keys(view).map(function(id){
-                        var row=view[id];
-                        return row&&typeof row==='object'?Object.assign({_readBackend:'firebase',id:id},row):null;
-                    }).filter(Boolean);
+                    var raw=Array.isArray(view.orders)?view.orders.slice():[];
                     return raw.filter(function(o){
-                        return o&&typeof o==='object'&&typeof o.id==='string'&&o.id.indexOf('online_')!==0;
+                        return o&&typeof o==='object'&&typeof o.id==='string'&&o.id.indexOf('online_')!==0&&!isReservedOrderId(o.id);
                     });
                 }).catch(function(err){
                     console.warn('Firebase integration snapshot failed:',err&&err.message?err.message:err);
@@ -3033,7 +3030,7 @@
                     var view=snap.exists()?(snap.val()||{}):{};
                     // ★ 過濾掉 `online_` 前綴的鏡像條目（不明背景服務鏡像）
                     var rawOrders=(Array.isArray(view.orders)?view.orders.slice():[]).filter(function(o){
-                        return o && typeof o==='object' && typeof o.id==='string' && o.id.indexOf('online_')!==0;
+                        return o && typeof o==='object' && typeof o.id==='string' && o.id.indexOf('online_')!==0 && !isReservedOrderId(o.id);
                     });
                     s.integrationOrdersCache=s.normalizeIncomingOrders(rawOrders).map(function(o){return s.applyStatusOverrideToOrder(o);});
                     if(s.ordersReadBackend==='firebase')s.backfillOrdersToPocketBaseBestEffort(s.integrationOrdersCache,'pos_integration_view_fallback');

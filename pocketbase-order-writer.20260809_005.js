@@ -39,6 +39,12 @@ function text(value) {
     return value === null || value === undefined ? "" : String(value);
 }
 
+var RESERVED_ORDER_IDS = { meta: true, count: true, orders: true, updatedat: true };
+
+export function isReservedOrderId(value) {
+    return RESERVED_ORDER_IDS[text(value).trim().toLowerCase()] === true;
+}
+
 function hasCjkText(value) {
     return /[\u3400-\u9fff\uf900-\ufaff]/.test(text(value));
 }
@@ -700,6 +706,9 @@ export function listOrdersFromPocketBase(options) {
         });
     }).then(function(data) {
         var rows = Array.isArray(data && data.records) ? data.records : (Array.isArray(data && data.items) ? data.items : []);
+        rows = rows.filter(function(record) {
+            return !isReservedOrderId(orderRecordIdentity(record));
+        });
         rows = dedupeOrderRecords(sortOrderRecords(filterRecordsByDateKeys(rows, options.dateKeys)));
         return {
             ok: true,
@@ -1559,15 +1568,36 @@ function menuRichnessScore(items) {
     );
 }
 
-function preferCachedMenuResult(fresh, cached) {
+export function preferCachedMenuResult(fresh, cached) {
     if (cached && cached.ok && menuLooksUsable(cached.items)) {
         if (!fresh || fresh.ok !== true || !menuLooksUsable(fresh.items)) return cached;
+        var freshAt = resultGeneratedAt(fresh);
+        var cachedAt = resultGeneratedAt(cached);
+        if (freshAt && freshAt >= cachedAt) return fresh;
         var freshStats = menuRichnessStats(fresh.items);
         var cachedStats = menuRichnessStats(cached.items);
         if (cachedStats.sortOrderCount > freshStats.sortOrderCount + 5) return cached;
         if (menuRichnessScore(cached.items) > menuRichnessScore(fresh.items) + 20) return cached;
     }
     return fresh;
+}
+
+export function filterCartToAvailableMenu(cart, menuItems) {
+    var byId = Object.create(null);
+    var byName = Object.create(null);
+    (Array.isArray(menuItems) ? menuItems : []).forEach(function(item) {
+        if (!item || item.active === false) return;
+        var id = text(item.id).trim();
+        var name = text(item.name).trim();
+        if (id) byId[id] = name;
+        if (name) byName[name] = true;
+    });
+    return (Array.isArray(cart) ? cart : []).filter(function(item) {
+        var id = text(item && item.id).trim();
+        var name = text(item && item.name).trim();
+        if (id && Object.prototype.hasOwnProperty.call(byId, id)) return !name || byId[id] === name;
+        return !!(name && byName[name]);
+    });
 }
 
 function parsePublicMenuResponse(data, options) {
@@ -2474,6 +2504,7 @@ export function backfillOrdersToPocketBase(orders, options) {
     var candidates = rows.filter(function(order) {
         if (!order || typeof order !== "object") return false;
         if (order._readBackend === "pocketbase" || order._pocketBaseRecordId) return false;
+        if (isReservedOrderId(order.id || order.sourceOrderId || order.orderId)) return false;
         var key = backfillThrottleKey(order);
         if (!key || seen[key] || wasRecentlyBackfilled(key, ttlMs)) return false;
         seen[key] = true;
@@ -2939,6 +2970,9 @@ function notifyFirebaseFallbackOnce(orderId, orderData, options, reason, firebas
 
 export function writeOrderToPocketBase(orderId, orderData, options) {
     options = options || {};
+    if (isReservedOrderId(orderId || (orderData && (orderData.id || orderData.sourceOrderId || orderData.orderId)))) {
+        return Promise.resolve({ ok: false, skipped: true, reason: "reserved_order_id" });
+    }
     var config = resolvePocketBaseConfig(options);
     if (!config.baseUrl && !config.orderEndpoint) {
         return Promise.resolve({ ok: false, skipped: true, reason: "missing_pocketbase_url" });

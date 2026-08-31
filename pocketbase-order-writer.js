@@ -38,6 +38,12 @@ function text(value) {
     return value === null || value === undefined ? "" : String(value);
 }
 
+var RESERVED_ORDER_IDS = { meta: true, count: true, orders: true, updatedat: true };
+
+export function isReservedOrderId(value) {
+    return RESERVED_ORDER_IDS[text(value).trim().toLowerCase()] === true;
+}
+
 function hasCjkText(value) {
     return /[\u3400-\u9fff\uf900-\ufaff]/.test(text(value));
 }
@@ -661,24 +667,47 @@ export function listOrdersFromPocketBase(options) {
             ? user.getIdToken()
             : Promise.reject(new Error("staff_auth_required")));
 
+    var readBody = JSON.stringify({
+        dateKeys: Array.isArray(options.dateKeys) ? options.dateKeys : [],
+        perPage: perPage,
+        maxPages: maxPages,
+        sourcePage: text(options.sourcePage),
+        openToday: options.openToday === true
+    });
+    var directReadUrl = config.baseUrl + "/api/secure/orders/read";
+    var workerReadUrl = cleanBaseUrl(config.orderEndpoint || "");
+    if (/\/api\/(?:secure\/)?orders$/i.test(workerReadUrl)) {
+        workerReadUrl = workerReadUrl.replace(/\/api\/(?:secure\/)?orders$/i, "/api/orders/read");
+    } else {
+        workerReadUrl = "";
+    }
+    var readUrls = [workerReadUrl, directReadUrl].filter(function(url, index, all) {
+        return url && all.indexOf(url) === index;
+    });
+
     return tokenPromise.then(function(idToken) {
         if (!idToken) throw new Error("staff_auth_required");
-        return requestJson(config.baseUrl + "/api/secure/orders/read", {
+        var readAt = function(url) { return requestJson(url, {
             method: "POST",
             headers: {
                 "Authorization": "Bearer " + idToken,
                 "Content-Type": "application/json"
             },
-            body: JSON.stringify({
-                dateKeys: Array.isArray(options.dateKeys) ? options.dateKeys : [],
-                perPage: perPage,
-                maxPages: maxPages,
-                sourcePage: text(options.sourcePage),
-                openToday: options.openToday === true
-            })
-        }, timeoutMs);
+            body: readBody
+        }, timeoutMs); };
+        return readAt(readUrls[0]).catch(function(workerError) {
+            var status = Number(workerError && workerError.status) || 0;
+            if (readUrls.length < 2 || (status && status !== 404 && status < 500)) throw workerError;
+            return readAt(readUrls[1]).catch(function(directError) {
+                directError.workerProxyError = workerError;
+                throw directError;
+            });
+        });
     }).then(function(data) {
         var rows = Array.isArray(data && data.records) ? data.records : (Array.isArray(data && data.items) ? data.items : []);
+        rows = rows.filter(function(record) {
+            return !isReservedOrderId(orderRecordIdentity(record));
+        });
         rows = dedupeOrderRecords(sortOrderRecords(filterRecordsByDateKeys(rows, options.dateKeys)));
         return {
             ok: true,
@@ -841,10 +870,26 @@ function unwrapValueWrapper(value) {
     return current;
 }
 
-function normalizeSettingsObject(value) {
+function normalizeSettingsBooleans(value) {
     var decoded = unwrapValueWrapper(value);
     if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) return {};
     var out = Object.assign({}, decoded);
+    function boolLike(input) {
+        var v = decodeJsonLike(input);
+        if (typeof v === "boolean") return v;
+        var raw = text(v).trim().toLowerCase();
+        if (raw === "false" || raw === "0" || raw === "no" || raw === "off") return false;
+        if (raw === "true" || raw === "1" || raw === "yes" || raw === "on") return true;
+        return v !== false && v !== 0;
+    }
+    ["isOpen", "dineinIsOpen", "dineinCartClearEnabled", "hideAllTab", "orderCooldownEnabled", "useCustomLoadingImage"].forEach(function(key) {
+        if (out[key] !== undefined) out[key] = boolLike(out[key]);
+    });
+    return out;
+}
+
+function normalizeSettingsObject(value) {
+    var out = normalizeSettingsBooleans(value);
     function listLike(input) {
         var normalized = decodeJsonLike(input);
         if (Array.isArray(normalized)) return normalized;
@@ -909,19 +954,6 @@ function normalizeSettingsObject(value) {
     delete out.staffSettings;
     delete out.adminSettings;
     delete out.authSettings;
-    // PocketBase 設定欄位以文字儲存，開關值會變成 "true"/"false" 字串；
-    // 前台用 `v.isOpen !== false` 判斷時字串 "false" 會被當成開啟，必須先轉回布林。
-    function boolLike(input) {
-        var v = decodeJsonLike(input);
-        if (typeof v === "boolean") return v;
-        var raw = text(v).trim().toLowerCase();
-        if (raw === "false" || raw === "0" || raw === "no" || raw === "off") return false;
-        if (raw === "true" || raw === "1" || raw === "yes" || raw === "on") return true;
-        return v !== false && v !== 0;
-    }
-    ["isOpen", "dineinIsOpen", "dineinCartClearEnabled", "hideAllTab", "orderCooldownEnabled", "useCustomLoadingImage"].forEach(function(key) {
-        if (out[key] !== undefined) out[key] = boolLike(out[key]);
-    });
     return out;
 }
 
@@ -1109,7 +1141,7 @@ function dedupeMenuItems(items) {
         ["subCategory", "img", "desc", "shortName", "printName", "category", "price", "station", "availableAfter"].forEach(function(field) {
             if ((merged[field] === undefined || merged[field] === null || merged[field] === "") && secondary[field] !== undefined) merged[field] = secondary[field];
         });
-        ["options", "optionGroups", "posExtras", "printStations"].forEach(function(field) {
+        ["options", "optionGroups", "posExtras", "prepItems", "printStations"].forEach(function(field) {
             if ((!Array.isArray(merged[field]) || !merged[field].length) && Array.isArray(secondary[field]) && secondary[field].length) merged[field] = secondary[field];
         });
         var primarySort = finiteNumber(primary && primary.sortOrder);
@@ -1148,7 +1180,7 @@ function menuItemFromRecord(record) {
     var item = Object.assign({}, payload);
     [
         "name", "shortName", "printName", "price", "category", "subCategory", "desc", "img",
-        "imageUrl", "image", "photo", "options", "optionGroups", "posExtras", "station",
+        "imageUrl", "image", "photo", "options", "optionGroups", "posExtras", "prepItems", "station",
         "printStations", "availableAfter", "active", "sortOrder", "sort_order", "order", "sortIndex", "__sortIndex", "createdAt", "updatedAt",
         "firebase_id", "firebaseId", "item_id", "itemId", "menu_id", "menuId"
     ].forEach(function(field) {
@@ -1196,8 +1228,9 @@ function menuItemLooksRenderable(item) {
     var hasOptions = Array.isArray(item.options) && item.options.length > 0;
     var hasOptionGroups = Array.isArray(item.optionGroups) && item.optionGroups.length > 0;
     var hasPosExtras = Array.isArray(item.posExtras) && item.posExtras.length > 0;
+    var hasPrepItems = Array.isArray(item.prepItems) && item.prepItems.length > 0;
     var hasPrintStations = Array.isArray(item.printStations) && item.printStations.length > 0;
-    if (name || category || subCategory || desc || img || station || hasPrice || hasOptions || hasOptionGroups || hasPosExtras || hasPrintStations) return true;
+    if (name || category || subCategory || desc || img || station || hasPrice || hasOptions || hasOptionGroups || hasPosExtras || hasPrepItems || hasPrintStations) return true;
     var id = text(item.id || item.item_id || item.itemId || item.menu_id || item.menuId || item.firebase_id || item.firebaseId).trim();
     if (/_(pos_extras|options|choices)_/i.test(id)) return false;
     return false;
@@ -1534,15 +1567,36 @@ function menuRichnessScore(items) {
     );
 }
 
-function preferCachedMenuResult(fresh, cached) {
+export function preferCachedMenuResult(fresh, cached) {
     if (cached && cached.ok && menuLooksUsable(cached.items)) {
         if (!fresh || fresh.ok !== true || !menuLooksUsable(fresh.items)) return cached;
+        var freshAt = resultGeneratedAt(fresh);
+        var cachedAt = resultGeneratedAt(cached);
+        if (freshAt && freshAt >= cachedAt) return fresh;
         var freshStats = menuRichnessStats(fresh.items);
         var cachedStats = menuRichnessStats(cached.items);
         if (cachedStats.sortOrderCount > freshStats.sortOrderCount + 5) return cached;
         if (menuRichnessScore(cached.items) > menuRichnessScore(fresh.items) + 20) return cached;
     }
     return fresh;
+}
+
+export function filterCartToAvailableMenu(cart, menuItems) {
+    var byId = Object.create(null);
+    var byName = Object.create(null);
+    (Array.isArray(menuItems) ? menuItems : []).forEach(function(item) {
+        if (!item || item.active === false) return;
+        var id = text(item.id).trim();
+        var name = text(item.name).trim();
+        if (id) byId[id] = name;
+        if (name) byName[name] = true;
+    });
+    return (Array.isArray(cart) ? cart : []).filter(function(item) {
+        var id = text(item && item.id).trim();
+        var name = text(item && item.name).trim();
+        if (id && Object.prototype.hasOwnProperty.call(byId, id)) return !name || byId[id] === name;
+        return !!(name && byName[name]);
+    });
 }
 
 function parsePublicMenuResponse(data, options) {
@@ -2312,6 +2366,26 @@ function writeManageRequest(kind, payload, options) {
     });
 }
 
+export function readManageSettingsFromPocketBase(options) {
+    return writeManageRequest("settings", { action: "read" }, options || {}).then(function(result) {
+        if (!result || result.ok === false || !result.settings || typeof result.settings !== "object") {
+            throw new Error((result && (result.message || result.reason)) || "PocketBase manage settings read unavailable");
+        }
+        result.settings = normalizeSettingsBooleans(result.settings);
+        return Object.assign({ ok: true, backend: "pocketbase_manage" }, result);
+    });
+}
+
+export function readManageMenuFromPocketBase(options) {
+    return writeManageRequest("menu", { action: "read" }, options || {}).then(function(result) {
+        if (!result || result.ok === false || !Array.isArray(result.items)) {
+            throw new Error((result && (result.message || result.reason)) || "PocketBase manage menu read unavailable");
+        }
+        result.items = sortMenuItems(dedupeMenuItems(result.items.map(decodeJsonLike).filter(menuItemLooksRenderable)));
+        return Object.assign({ ok: true, backend: "pocketbase_manage" }, result);
+    });
+}
+
 export function writeMenuItemToPocketBase(itemId, itemData, options) {
     options = options || {};
     var payload = {
@@ -2429,6 +2503,7 @@ export function backfillOrdersToPocketBase(orders, options) {
     var candidates = rows.filter(function(order) {
         if (!order || typeof order !== "object") return false;
         if (order._readBackend === "pocketbase" || order._pocketBaseRecordId) return false;
+        if (isReservedOrderId(order.id || order.sourceOrderId || order.orderId)) return false;
         var key = backfillThrottleKey(order);
         if (!key || seen[key] || wasRecentlyBackfilled(key, ttlMs)) return false;
         seen[key] = true;
@@ -2521,7 +2596,9 @@ export function allocateOrderNoFromPocketBase(options) {
     var resetValue = options.resetTime || settings.counterResetTime || state.resetTime;
     var maxValue = options.maxNo || settings.counterMaxNo || state.maxNo;
     var payload = {
-        source: text(options.sourcePage || options.source || "")
+        source: text(options.sourcePage || options.source || ""),
+        dineinDeviceId: text(options.dineinDeviceId || options.dinein_device_id),
+        dineinDeviceSignature: text(options.dineinDeviceSignature || options.dinein_device_signature)
     };
     if (text(resetValue)) payload.resetTime = text(resetValue);
     if (text(maxValue)) payload.maxNo = numericOrUndefined(maxValue) || 999;
@@ -2628,6 +2705,8 @@ function writeOrderToSecureEndpoint(config, orderId, orderData, options, record,
             turnstileToken: turnstileToken,
             lineIdToken: text(options.lineIdToken || options.line_id_token),
             lineSessionToken: text(options.lineSessionToken || options.line_session_token),
+            dineinDeviceId: text(options.dineinDeviceId || options.dinein_device_id),
+            dineinDeviceSignature: text(options.dineinDeviceSignature || options.dinein_device_signature),
             pushEnabled: typeof options.pushEnabled === "boolean" ? options.pushEnabled : undefined,
             updateOnly: options.allowPocketBaseUpdate === true,
             clientTs: Date.now()
@@ -2646,6 +2725,8 @@ function writeOrderToSecureEndpoint(config, orderId, orderData, options, record,
                 id: text((data && data.id) || (savedRecord && savedRecord.id) || ""),
                 record: savedRecord,
                 data: data,
+                backend: text(data && data.backend) || "pocketbase",
+                fallback: !!(data && data.fallback),
                 lineMemberSessionToken: text(data && data.lineMemberSessionToken),
                 secureEndpoint: true
             };
@@ -2680,6 +2761,26 @@ export function requestLineMember(idToken, options) {
     }, Number(options.timeoutMs || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS);
 }
 
+export function cancelOwnedOrderViaBackend(orderId, options) {
+    options = options || {};
+    var config = resolvePocketBaseConfig(options);
+    var endpoint = config.orderEndpoint ? config.orderEndpoint.replace(/\/api\/(?:secure\/)?orders$/i, "/api/orders/cancel") : "";
+    var user = options.firebaseUser;
+    if (!endpoint || !text(orderId) || !user || typeof user.getIdToken !== "function") {
+        return Promise.reject(new Error("missing_customer_cancel_endpoint_or_identity"));
+    }
+    return Promise.resolve(user.getIdToken()).then(function(idToken) {
+        return requestJson(endpoint, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": "Bearer " + idToken
+            },
+            body: JSON.stringify({ orderId: text(orderId) })
+        }, Number(options.timeoutMs || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS);
+    });
+}
+
 export function requestLineMembers(options) {
     options = options || {};
     var config = resolvePocketBaseConfig(options);
@@ -2711,11 +2812,44 @@ export function writeLinePayRequestAfterMirror(writeRequest, options) {
         attempt++;
         return Promise.resolve().then(writeRequest).catch(function(err) {
             var detail = text(err && (err.code || err.message || err));
-            if (attempt >= maxAttempts || !/permission[_-]denied|permission denied/i.test(detail)) throw err;
+            if (attempt >= maxAttempts || !/permission[_-]denied|permission denied|linepay_order_not_ready/i.test(detail)) throw err;
             return new Promise(function(resolve) { setTimeout(resolve, delayMs); }).then(run);
         });
     }
     return run();
+}
+
+export function requestLinePayViaBackend(orderId, orderDateKey, options) {
+    options = options || {};
+    var config = resolvePocketBaseConfig(options);
+    var endpoint = cleanBaseUrl(config.orderEndpoint || "").replace(
+        /\/api\/(?:secure\/)?orders$/i,
+        "/api/linepay/request"
+    );
+    var user = options.firebaseUser;
+    if (!endpoint || endpoint === config.orderEndpoint) return Promise.reject(new Error("missing_linepay_request_endpoint"));
+    if (!user || typeof user.getIdToken !== "function") return Promise.reject(new Error("firebase_auth_required"));
+    return Promise.resolve(user.getIdToken()).then(function(idToken) {
+        return writeLinePayRequestAfterMirror(function() {
+            return requestJson(endpoint, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "Authorization": "Bearer " + idToken
+                },
+                body: JSON.stringify({
+                    orderId: text(orderId),
+                    orderDateKey: text(orderDateKey),
+                    confirmBaseUrl: text(options.confirmBaseUrl || (options.settings && options.settings.linePayConfirmUrl)),
+                    returnPage: text(options.returnPage),
+                    returnDeviceId: text(options.returnDeviceId || options.deviceId)
+                })
+            }, Number(options.timeoutMs || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS);
+        }, {
+            maxAttempts: options.maxAttempts,
+            delayMs: options.delayMs
+        });
+    });
 }
 
 function deriveTelegramNotifyEndpoint(settings, options) {
@@ -2752,6 +2886,17 @@ function fallbackNotifyDateKey() {
 }
 
 function summarizeFallbackReason(reason) {
+    var statusValue = reason && (
+        reason.pocketBaseStatus !== undefined ? reason.pocketBaseStatus :
+        (reason.data && reason.data.pocketBaseStatus !== undefined ? reason.data.pocketBaseStatus :
+        (reason.body && reason.body.pocketBaseStatus !== undefined ? reason.body.pocketBaseStatus : undefined))
+    );
+    if (statusValue !== undefined && statusValue !== null && statusValue !== "") {
+        var status = Number(statusValue) || 0;
+        return status > 0
+            ? "Pi PocketBase 寫入失敗（HTTP " + status + "，Worker 已重試）"
+            : "Pi PocketBase 連線逾時（Worker 已重試）";
+    }
     var textValue = text(
         (reason && (reason.message || reason.reason)) ||
         (reason && reason.error && (reason.error.message || reason.error.reason)) ||
@@ -2824,6 +2969,9 @@ function notifyFirebaseFallbackOnce(orderId, orderData, options, reason, firebas
 
 export function writeOrderToPocketBase(orderId, orderData, options) {
     options = options || {};
+    if (isReservedOrderId(orderId || (orderData && (orderData.id || orderData.sourceOrderId || orderData.orderId)))) {
+        return Promise.resolve({ ok: false, skipped: true, reason: "reserved_order_id" });
+    }
     var config = resolvePocketBaseConfig(options);
     if (!config.baseUrl && !config.orderEndpoint) {
         return Promise.resolve({ ok: false, skipped: true, reason: "missing_pocketbase_url" });
@@ -2869,7 +3017,11 @@ export function writeOrderWithFirebaseFallback(orderId, orderData, options) {
             try {
                 console.warn("PocketBase primary write failed; public Firebase fallback disabled:", detail || "");
             } catch(e) {}
-            return Promise.reject(new Error("PocketBase order write failed; public Firebase fallback disabled"));
+            var safeDetail = /^[A-Za-z0-9_ :.-]{1,160}$/.test(text(detail).trim()) ? text(detail).trim() : "";
+            return Promise.reject(new Error(
+                "PocketBase order write failed; public Firebase fallback disabled" +
+                (safeDetail ? ": " + safeDetail : "")
+            ));
         }
         try {
             var body = reason && (reason.body || (reason.error && reason.error.body));
@@ -2893,6 +3045,24 @@ export function writeOrderWithFirebaseFallback(orderId, orderData, options) {
     return writeOrderToPocketBase(orderId, orderData, options)
         .then(function(pbResult) {
             if (pbResult && pbResult.ok) {
+                if (pbResult.backend === "firebase" || pbResult.fallback === true) {
+                    return notifyFirebaseFallbackOnce(
+                        orderId,
+                        orderData,
+                        options,
+                        { message: "PocketBase unavailable; Worker used Firebase", data: pbResult.data },
+                        pbResult.record
+                    ).then(function(notifyResult) {
+                        return {
+                            ok: true,
+                            backend: "firebase",
+                            fallback: true,
+                            pocketBase: pbResult,
+                            firebase: pbResult.record,
+                            telegramNotify: notifyResult
+                        };
+                    });
+                }
                 // PocketBase hook is the sole PB-success mirror owner; a second browser SET
                 // races the hook and is rejected by owner-only Firebase update rules.
                 return { ok: true, backend: "pocketbase", fallback: false, pocketBase: pbResult };
