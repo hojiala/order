@@ -613,6 +613,7 @@
             </div>
             <div class="px-6 py-5">
                 <p class="text-gray-800 font-bold text-base mb-1">✅ 訂單已送出！</p>
+                <p v-if="successPrintWarning" role="alert" class="text-red-700 font-bold text-sm mt-3">{{ successPrintWarning }}</p>
                 <p class="text-gray-500 text-sm mt-2">取餐時間：<span class="text-orange-500 font-bold">{{ successPickupTime }}</span></p>
                 <p class="text-gray-500 text-sm mt-1">下單時間：<span class="font-medium">{{ successOrderTime }}</span></p>
                 <p class="text-orange-600 font-black text-sm mt-3">取餐請告知手機末三碼</p>
@@ -631,7 +632,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getDatabase, ref, push, set, get, update, onValue, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-    import { writeOrderToPocketBase, writeOrderWithFirebaseFallback, requestLinePayViaBackend, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, pocketBaseRecordToOrder, requestLineMember, cancelOwnedOrderViaBackend, filterCartToAvailableMenu } from "./pocketbase-order-writer.20260818_001.js?v=20260818_001";
+    import { writeOrderToPocketBase, writeOrderWithFirebaseFallback, publicOrderPrintWarning, requestLinePayViaBackend, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, pocketBaseRecordToOrder, requestLineMember, cancelOwnedOrderViaBackend, filterCartToAvailableMenu } from "./pocketbase-order-writer.20260818_001.js?v=20260902_print_handoff_1";
 
     const enteredFromLiff = /(?:^|[?&])liff(?:=1|=true|[.&=])/i.test(location.search) || /(?:^|[?&])liff\.state=/i.test(location.search) || /\bLine\//i.test(navigator.userAgent || '');
 
@@ -761,6 +762,7 @@
                 tempDrinkAddons: [],
                 tempDrinkNote: '',
                 showSuccessModal: false,
+                successPrintWarning: '',
                 showAlertDialog: false,
                 alertDialogTitle: '',
                 alertDialogMsg: '',
@@ -1022,6 +1024,7 @@
                     return writeOrderWithFirebaseFallback(orderId, orderData, {
                         settings: self.settings,
                         sourcePage: sourcePage || 'index',
+                        printHandoffMode: 'server_queue_v1',
                         timeoutMs: 8000,
                         secureTimeoutMs: 20000,
                         firebaseUser: currentUser,
@@ -2221,6 +2224,7 @@
                         });
                     }).then(function(result) {
                         orderData._writeBackend = (result && result.backend) || 'firebase';
+                        self.successPrintWarning = payMethod === 'linepay' || numberingDeferred ? '' : publicOrderPrintWarning(result);
                         var pbRecord = result && result.pocketBase && result.pocketBase.record;
                         var pbNo = pbRecord && Number(pbRecord.order_no || pbRecord.orderNo || 0);
                         if (!numberingDeferred && !assignedNo && Number.isFinite(pbNo) && pbNo > 0) {
@@ -2232,13 +2236,7 @@
                     });
                 })
                 .then(function(assignedNo) {
-                    // ★ 非 LINE Pay 且有 print_task：寫入 print_queue 觸發 Node-RED 列印
-                    if (assignedNo && payMethod !== 'linepay' && orderData.print_task) {
-                        try {
-                            var queueData = Object.assign({}, orderData);
-                            set(ref(db, 'print_queue/' + orderId), queueData).catch(function(e) { console.warn('print_queue 寫入失敗:', e.message); });
-                        } catch(e) {}
-                    }
+                    // server_queue_v1 owns the initial kitchen handoff; the customer must not enqueue again.
                     self.saveMyOrder(orderId, orderData);
 
                     // ★ LINE Pay 付款流程（Firebase 中介，解決 HTTPS→HTTP 問題）

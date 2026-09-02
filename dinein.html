@@ -472,6 +472,7 @@
             <div class="px-6 py-5 text-center">
                 <div class="text-4xl mb-3">✅</div>
                 <p class="text-gray-800 font-black text-lg mb-1">訂單已送出！</p>
+                <p v-if="successPrintWarning" role="alert" class="text-red-700 font-bold text-sm mt-3">{{ successPrintWarning }}</p>
                 <p class="text-gray-800 font-black text-2xl mt-2">{{ deviceLabel }}</p>
                 <p class="text-orange-500 font-black text-2xl mt-2">
                     <span v-if="lastOrderNo">No.{{ fmtNo(lastOrderNo) }}</span>
@@ -558,7 +559,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
     import { getDatabase, ref, push, set, get, update, remove, onValue, query, orderByChild, equalTo, limitToLast, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
-    import { writeOrderToPocketBase, writeOrderWithFirebaseFallback, requestLinePayViaBackend, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, cancelOwnedOrderViaBackend, filterCartToAvailableMenu } from "./pocketbase-order-writer.20260818_001.js?v=20260818_001";
+    import { writeOrderToPocketBase, writeOrderWithFirebaseFallback, publicOrderPrintWarning, requestLinePayViaBackend, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, cancelOwnedOrderViaBackend, filterCartToAvailableMenu } from "./pocketbase-order-writer.20260818_001.js?v=20260902_print_handoff_1";
 
     const firebaseConfig = {
         apiKey:"AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -698,6 +699,7 @@
             // UI
             toastMsg:'', toastTimer:null,
             showOrderHistory:false, showSuccess:false,
+            successPrintWarning:'',
             lastOrderNo:0, lastPayment:'', lastOrderIdRef:null,
                 lpConfirmed:{},
             // 訂單
@@ -877,6 +879,7 @@
                     return writeOrderWithFirebaseFallback(orderId,orderData,{
                         settings:s.settings,
                         sourcePage:sourcePage||'dinein',
+                        printHandoffMode:'server_queue_v1',
                         timeoutMs:8000,
                         secureTimeoutMs:20000,
                         firebaseUser:currentUser,
@@ -1698,6 +1701,7 @@
                 var s=this;
                 if(s.settings.dineinIsOpen===false){s.toast('⚠️ 桌邊點餐目前暫停接單');return;}
                 if(s.outsideBusinessHours){s.toast(s.todayIsDayOff?'⚠️ 今日公休，無法送出訂單':'⚠️ 目前非點餐時段，無法送出訂單');return;}
+                s.successPrintWarning='';
                 // ★ 先前 LINE Pay QR 取消後留下的未付款訂單：同一購物車重送時「重用」，不再新建訂單
                 var reuse=s.pendingQRReuse;
                 if(reuse&&reuse.orderId){
@@ -1713,6 +1717,7 @@
                         var od=Object.assign({},reuse.orderData,{print_task:storeTask});
                         update(ref(db,'orders/'+reuse.dateKey+'/'+reuse.orderId),{print_task:storeTask}).catch(function(){});
                         s.writePrintQueue(reuse.orderId,od);
+                        s.successPrintWarning=publicOrderPrintWarning(null); // Legacy payment change has no server handoff acknowledgement.
                         s.lastPayment=payMethod;
                         s.showSuccess=true;
                         s.cart=[];s.orderNote='';s.currentView='menu';
@@ -1772,6 +1777,7 @@
                         return set(bucketOrderRef,orderData);
                     }).then(function(result){
                         orderData._writeBackend=(result&&result.backend)||'firebase';
+                        s.successPrintWarning=(payMethod==='linepay'||payMethod==='linepay_qr')?'':publicOrderPrintWarning(result);
                         var pbRecord=result&&result.pocketBase&&result.pocketBase.record;
                         var pbNo=pbRecord&&Number(pbRecord.order_no||pbRecord.orderNo||0);
                         if(!assignedNo&&Number.isFinite(pbNo)&&pbNo>0){
@@ -1783,10 +1789,7 @@
                     });
                 })
                 .then(function(assignedNo){
-                    // ★ 非 LINE Pay 且有 print_task：寫入 print_queue 觸發 Node-RED 列印
-                    if(assignedNo&&orderData.print_task){
-                        s.writePrintQueue(orderId,Object.assign({},orderData));
-                    }
+                    // Initial kitchen handoff belongs to server_queue_v1, not the customer browser.
                     s.lastOrderIdRef=orderId;
                     s.saveLocalOrder(orderId,orderData);
                     s.lastOrderNo=assignedNo||null;

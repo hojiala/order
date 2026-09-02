@@ -2710,6 +2710,7 @@ function writeOrderToSecureEndpoint(config, orderId, orderData, options, record,
             dineinDeviceSignature: text(options.dineinDeviceSignature || options.dinein_device_signature),
             pushEnabled: typeof options.pushEnabled === "boolean" ? options.pushEnabled : undefined,
             updateOnly: options.allowPocketBaseUpdate === true,
+            printHandoffMode: options.printHandoffMode === "server_queue_v1" ? "server_queue_v1" : undefined,
             clientTs: Date.now()
         };
         var headers = { "Content-Type": "application/json" };
@@ -3072,4 +3073,11 @@ export function writeOrderWithFirebaseFallback(orderId, orderData, options) {
         }, function(err) {
             return fallback({ ok: false, error: err, message: err && err.message ? err.message : String(err) });
         });
+}
+
+export function publicOrderPrintWarning(result) {
+    var handoff = result && result.pocketBase && result.pocketBase.data && result.pocketBase.data.printHandoff;
+    if (handoff && handoff.mode === "server_queue_v1" &&
+        ["queued", "deferred", "waiting_payment"].indexOf(handoff.status) !== -1) return "";
+    return "訂單已建立，但廚房送印尚未確認。請聯絡店員確認，勿重新下單。";
 }
