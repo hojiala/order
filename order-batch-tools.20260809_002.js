@@ -75,7 +75,7 @@
         var previous = '';
         while (id && id !== previous) {
             previous = id;
-            id = id.replace(/^(?:web_liff|phone_ai|pos_local|qr_takeout|online|qrcode|dinein|line|web|pos)_/i, '');
+            id = id.replace(/^(?:web_liff|liff|phone_ai|pos_local|qr_takeout|online|qrcode|dinein|line|web|pos)_/i, '');
         }
         return text(id);
     }
@@ -112,6 +112,27 @@
             seen[key] = true;
             return true;
         }).map(function(id) { return prefix + id; });
+    }
+
+    function preserveOriginalOrderIdentity(merged, current, incoming) {
+        if (!merged || !current || !incoming) return merged;
+        var currentId = text(current.id), incomingId = text(incoming.id);
+        var canonical = canonicalOrderId(currentId);
+        if (!canonical || currentId === incomingId || canonical !== canonicalOrderId(incomingId)) return merged;
+        // Only use an original record actually present in this merge; never invent a write target.
+        var original = currentId === canonical ? current : (incomingId === canonical ? incoming : null);
+        if (!original) return merged;
+        var out = Object.assign({}, merged);
+        ['id', 'sourceOrderId', 'orderId', 'sourceRecordPath', '_pocketBaseRecordId', '_readBackend', '_integrationReadOnly', '_integrationOriginal'].forEach(function(key) {
+            if (Object.prototype.hasOwnProperty.call(original, key)) out[key] = original[key];
+            else delete out[key];
+        });
+        if (out.integration || original.integration) {
+            out.integration = Object.assign({}, out.integration);
+            if (original.integration && original.integration.sourceRecordPath) out.integration.sourceRecordPath = original.integration.sourceRecordPath;
+            else delete out.integration.sourceRecordPath;
+        }
+        return out;
     }
 
     function paymentRank(order) {
@@ -217,6 +238,7 @@
         orderNoOf: orderNoOf,
         canonicalOrderId: canonicalOrderId,
         orderIdentityKeys: orderIdentityKeys,
+        preserveOriginalOrderIdentity: preserveOriginalOrderIdentity,
         paymentRank: paymentRank,
         uniquePrintableOrders: uniquePrintableOrders,
         selectRange: selectRange,
