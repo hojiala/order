@@ -559,7 +559,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
     import { getDatabase, ref, push, set, get, update, remove, onValue, query, orderByChild, equalTo, limitToLast, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
-    import { writeOrderToPocketBase, writeOrderWithFirebaseFallback, publicOrderPrintWarning, requestLinePayViaBackend, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, cancelOwnedOrderViaBackend, filterCartToAvailableMenu } from "./pocketbase-order-writer.20260818_001.js?v=20260902_print_handoff_1";
+    import { writeOrderToPocketBase, writeOrderWithFirebaseFallback, publicOrderPrintWarning, requestLinePayViaBackend, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, cancelOwnedOrderViaBackend, filterCartToAvailableMenu } from "./pocketbase-order-writer.20260818_001.js?v=20260902_consistency_1";
 
     const firebaseConfig = {
         apiKey:"AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -1521,10 +1521,14 @@
                     ?'此訂單已完成 LINE Pay 付款。確定取消？（將自動退款）'
                     :'確定要取消這筆訂單嗎？（將自動列印取消單至廚房）';
                 if(!confirm(msg))return;
-                cancelOwnedOrderViaBackend(order.id,{settings:s.settings,firebaseUser:auth.currentUser,timeoutMs:10000}).then(function(){
+                cancelOwnedOrderViaBackend(order.id,{settings:s.settings,firebaseUser:auth.currentUser,timeoutMs:10000}).then(function(result){
                     // LINE Pay 已付款時，只有 Pi 確認退款成功後才列印取消單。
                     if(isPaidLinePay)return s.requestCancelRefund(order);
-                    s.toast('❌ 訂單已取消，列印取消單...');
+                    var cancelled=result&&(result.cancelled||result.record);
+                    var handoff=cancelled&&cancelled.customer&&cancelled.customer.cancelPrintHandoff;
+                    s.toast(handoff&&handoff.status==='queued'?'❌ 已取消，取消通知已送入列印佇列':
+                        handoff&&handoff.status==='skipped'?'❌ 已取消，此單不需另送取消工單':
+                        '⚠️ 已取消，但取消工單尚未確認送出，請聯繫店家');
                 }).catch(function(e){s.toast('⚠️ 取消失敗：'+e.message);});
             },
             requestCancelRefund:function(order){

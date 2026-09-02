@@ -112,11 +112,12 @@ function jsonArray(value) {
 }
 
 function timestampFromRecord(record, customer) {
-    var ts = numericOrUndefined(customer && customer.timestamp);
+    var rawData = jsonObject(record && record.raw_data);
+    var ts = numericOrUndefined(customer && (customer.timestamp || customer.orderTimestamp)) || numericOrUndefined(rawData.orderTimestamp);
     if (ts) return ts;
-    var raw = text((record && (record.created || record.updated)) || "");
+    var raw = text((customer && customer.orderDateTime) || rawData.orderDateTime || (record && record.created) || "");
     var parsed = raw ? Date.parse(raw) : NaN;
-    return Number.isFinite(parsed) ? parsed : Date.now();
+    return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function padOrderNo(value) {
