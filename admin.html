@@ -512,8 +512,8 @@
                         const no = String(order.orderNo || order.serialNumber || '').trim();
                         const day = dayOf(order);
                         const sourceOrderId = window.OrderBatchTools && window.OrderBatchTools.canonicalOrderId
-                            ? window.OrderBatchTools.canonicalOrderId(order.sourceOrderId || order.orderId || '')
-                            : String(order.sourceOrderId || order.orderId || '').trim();
+                            ? window.OrderBatchTools.canonicalOrderId(order.sourceOrderId || order.orderId || (family === 'web' ? order.id : '') || '')
+                            : String(order.sourceOrderId || order.orderId || (family === 'web' ? order.id : '') || '').trim();
                         if (sourceOrderId && day && family) return ['oid', family, day, sourceOrderId].join('|');
                         const total = Number(order.total || (order.totals && order.totals.finalTotal) || 0);
                         const phone = String((order.customer && order.customer.phone) || order.phone || '').replace(/\D/g, '');
@@ -556,13 +556,17 @@
                         const fOld = freshnessOf(existing);
                         const hasFreshness = fNew > 0 && fOld > 0 && fNew !== fOld;
                         const preferOrder = hasFreshness ? fNew > fOld : score(order) > score(existing);
-                        if (!preferOrder) return;
-                        const merged = Object.assign({}, existing, order);
-                        const orderHasItems = Array.isArray(order.items) && order.items.length > 0;
-                        const useOrderItems = hasFreshness ? orderHasItems : score(order) >= score(existing);
-                        const bestItems = useOrderItems ? order.items : existing.items;
-                        if (Array.isArray(bestItems)) merged.items = bestItems.map((item) => Object.assign({}, item));
-                        bySig[sig] = this.normalizeIncomingOrder(merged);
+                        if (preferOrder) {
+                            const merged = Object.assign({}, existing, order);
+                            const orderHasItems = Array.isArray(order.items) && order.items.length > 0;
+                            const useOrderItems = hasFreshness ? orderHasItems : score(order) >= score(existing);
+                            const bestItems = useOrderItems ? order.items : existing.items;
+                            if (Array.isArray(bestItems)) merged.items = bestItems.map((item) => Object.assign({}, item));
+                            bySig[sig] = this.normalizeIncomingOrder(merged);
+                        }
+                        if (this.isLineSourceOrder(existing) || this.isLineSourceOrder(order)) {
+                            bySig[sig] = Object.assign({}, bySig[sig], { source: 'web_liff', sourceLabel: 'LINE 線上點餐', member: existing.member || order.member || '' });
+                        }
                     });
                     const sorted = Object.keys(bySig).map((key) => bySig[key])
                         .filter(o => this.getDisplayStatus(o) !== 'archived')
@@ -3091,8 +3095,8 @@
                         const no = String(order.orderNo || order.serialNumber || '').trim();
                         const day = getOrderDayKey(order);
                         const sourceOrderId = window.OrderBatchTools && window.OrderBatchTools.canonicalOrderId
-                            ? window.OrderBatchTools.canonicalOrderId(order.sourceOrderId || order.orderId || '')
-                            : String(order.sourceOrderId || order.orderId || '').trim();
+                            ? window.OrderBatchTools.canonicalOrderId(order.sourceOrderId || order.orderId || (family === 'web' ? order.id : '') || '')
+                            : String(order.sourceOrderId || order.orderId || (family === 'web' ? order.id : '') || '').trim();
                         const total = Number(order.total || (order.totals && order.totals.finalTotal) || 0);
                         const phone = String((order.customer && order.customer.phone) || order.phone || '').trim();
                         const pickup = String(order.pickupTime || order.pickupTimeLabel || '').trim();
@@ -3160,15 +3164,18 @@
                         .filter((o) => {
                             const status = this.getDisplayStatus(o);
                             if (status === 'archived') return false;
-                            const day = getOrderDayKey(o);
-                            return !day || day >= today;
+                            return true;
                         });
                     this.orders = mergedOrders;
                     const mergedNewCount = mergedOrders.filter(o => this.getDisplayStatus(o) === 'new').length;
                     if (mergedNewCount > this.previousNewCount && this.previousNewCount !== 0) this.playAlert();
                     this.previousNewCount = mergedNewCount;
                     // ★ 離線補印：檢查有流水號但未列印的訂單，重新寫入 print_queue
-                    this.requeueUnprintedOrders(mergedOrders);
+                    // 顯示昨天未封存的單，但不擴大既有自動補印的日期範圍。
+                    this.requeueUnprintedOrders(mergedOrders.filter((o) => {
+                        const day = getOrderDayKey(o);
+                        return !day || day >= today;
+                    }));
                     this.maybeStartLinePayTransactionsListener();
                 },
                 hasVisibleLinePayOrders() {
