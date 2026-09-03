@@ -707,7 +707,7 @@
             pendingCount:0, nowMinute:0,
             // 密碼
             showPasswordDialog:false, passwordInput:'', passwordError:'',
-            devicePassword:'0000',
+            devicePasswordVerifier:'',
             // ★ 情境2 QR Code 付款
             showQRModal:false, qrAmount:0, qrOrderId:'', qrOrderDateKey:'',
             qrReuseCandidate:null, pendingQRReuse:null,
@@ -985,13 +985,27 @@
             },
             verifyPassword:function(){
                 if(!this.passwordInput){this.passwordError='請輸入密碼';return}
-                if(this.passwordInput===this.devicePassword){
+                if(!this.devicePasswordVerifier){
+                    this.passwordError='管理密碼正在同步，請稍後重試';
+                    this.loadSettings({timeoutMs:3500,forceFresh:true,ignoreCooldown:true});
+                    return;
+                }
+                if(this.passwordVerifierFor(this.passwordInput)===this.devicePasswordVerifier){
                     this.showPasswordDialog=false;this.passwordInput='';this.passwordError='';
                     this.unbind();
                 }else{
                     this.passwordError='密碼錯誤，請重試';
                     this.passwordInput='';
                 }
+            },
+            passwordVerifierFor:function(value){
+                var raw='yuangi-dinein-v1:'+String(value===undefined||value===null?'':value);
+                var hash=0x811c9dc5;
+                for(var i=0;i<raw.length;i++){
+                    hash^=raw.charCodeAt(i);
+                    hash=(hash+(hash<<1)+(hash<<4)+(hash<<7)+(hash<<8)+(hash<<24))>>>0;
+                }
+                return 'v1-'+('00000000'+hash.toString(16)).slice(-8);
             },
             // ── 初始化 ──
             initApp:function(){
@@ -1053,7 +1067,9 @@
                     s.categorySubcategories=s.normalizeCategorySubcategories(s.settings.categorySubcategories,s.settings.categories||s.categories);
                     s.settingsStationsLoaded=hasStationSettings||(prev.stations&&prev.stations.length)||false;
                     s.settingsReadBackend=backend||'pocketbase';
-                    s.devicePassword=v.dineinPassword||prev.dineinPassword||'0000';
+                    var publicControl=s.settings.mqttAnnouncementSelection||{};
+                    var nextVerifier=String(v.dineinPasswordVerifier||publicControl.dineinPasswordVerifier||'');
+                    if(/^v1-[0-9a-f]{8}$/.test(nextVerifier))s.devicePasswordVerifier=nextVerifier;
                     if(s.menu&&s.menu.length)s.refreshMenuCategoriesFromSettings();
                     // ★ 每日主題顏色：以 PocketBase 設定為主套用（Firebase 監聽為輔）
                     if(v.dailyThemes&&window.__applyDailyTheme){try{window.__applyDailyTheme(v.dailyThemes);}catch(e){}}
@@ -1085,7 +1101,7 @@
             startSettingsPrimaryRefresh:function(){
                 var s=this;
                 if(s.settingsRefreshTimer)return;
-                s.settingsRefreshTimer=setInterval(function(){s.loadSettings().then(function(){return s.loadMenu();}).catch(function(e){console.warn('settings refresh failed:',e&&e.message?e.message:e);});},300000);
+                s.settingsRefreshTimer=setInterval(function(){s.loadSettings({timeoutMs:3500,forceFresh:true,ignoreCooldown:true}).catch(function(e){console.warn('settings refresh failed:',e&&e.message?e.message:e);});},5000);
             },
             startMenuVersionPolling:function(){
                 // 版號只代表本頁已套用的菜單，不共用 localStorage，避免舊快取被誤判為最新。

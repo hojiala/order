@@ -1267,7 +1267,7 @@
                     <p class="text-slate-400 text-sm mb-4">假日爆單或訂單滿載時，開啟訊息通知顧客。指定分類的訊息會在顧客切換到該分類時彈出。</p>
 
                     <div class="space-y-3">
-                        <div v-for="(ann,ai) in settings.announcements" :key="ai"
+                        <div v-for="(ann,ai) in settings.announcements" :key="ann.id || ai"
                             class="bg-slate-700 rounded-lg p-3 border" :class="ann.active ? 'border-amber-500/50' : 'border-slate-600'">
                             <div class="flex items-center gap-3 mb-2">
                                 <!-- Toggle -->
@@ -1281,11 +1281,15 @@
                                     <option value="">🌐 全站公告（進站即顯示）</option>
                                     <option v-for="cat in (settings.categories||[])" :key="cat" :value="cat">📁 {{ cat }}</option>
                                 </select>
+                                <button @click="moveAnnouncement(ai,-1)" :disabled="ai===0" title="往上移"
+                                    class="text-slate-300 hover:text-amber-400 disabled:opacity-25 text-sm transition flex-shrink-0">↑</button>
+                                <button @click="moveAnnouncement(ai,1)" :disabled="ai===settings.announcements.length-1" title="往下移"
+                                    class="text-slate-300 hover:text-amber-400 disabled:opacity-25 text-sm transition flex-shrink-0">↓</button>
                                 <!-- Delete -->
-                                <button @click="settings.announcements.splice(ai,1)"
+                                <button @click="removeAnnouncement(ai)"
                                     class="text-slate-400 hover:text-red-400 text-sm transition flex-shrink-0">✕</button>
                             </div>
-                            <textarea v-model="ann.text" rows="2" placeholder="輸入訊息內容…"
+                            <textarea v-model="ann.text" @input="markAnnouncementsChanged" rows="2" placeholder="輸入訊息內容…"
                                 class="w-full bg-slate-600 border border-slate-500 rounded-lg px-3 py-2 text-white text-sm placeholder-slate-400 focus:outline-none focus:border-amber-500 resize-none"></textarea>
                             <div class="flex items-center gap-2 mt-1">
                                 <span class="text-xs" :class="ann.active ? 'text-amber-400' : 'text-slate-500'">{{ ann.active ? '🟢 啟用中' : '⚫ 已關閉' }}</span>
@@ -1295,7 +1299,7 @@
                         </div>
 
                         <!-- Add button -->
-                        <button @click="settings.announcements.push({text:'',active:false,category:''})"
+                        <button @click="addAnnouncement"
                             class="w-full border-2 border-dashed border-slate-600 hover:border-amber-500 rounded-lg py-3 text-slate-400 hover:text-amber-400 text-sm font-bold transition">
                             + 新增訊息
                         </button>
@@ -1460,9 +1464,9 @@
                     </div>
                     <p class="text-slate-400 text-sm mb-4">更換平板桌號時需要輸入此密碼，防止店員或顧客誤觸</p>
                     <div class="flex gap-3 items-center">
-                        <input v-model="settings.dineinPassword" type="text" placeholder="預設密碼：0000"
+                        <input v-model="settings.dineinPassword" type="text" inputmode="numeric" pattern="[0-9]*" placeholder="4 位數密碼（預設：0000）"
                             class="flex-1 bg-slate-700 border border-slate-600 rounded-lg px-4 py-2.5 text-white text-base placeholder-slate-500 focus:outline-none focus:border-amber-500 tracking-widest font-mono"
-                            maxlength="20">
+                            maxlength="4">
                         <span class="text-slate-500 text-xs">目前：<span class="text-amber-400 font-bold tracking-wider">{{ settings.dineinPassword || '0000' }}</span></span>
                     </div>
                 </div>
@@ -2102,7 +2106,7 @@ window._doCountUp = function() {
                     useCustomLoadingImage: false,
                     openTime: '06:00', closeTime: '13:15',
                     dailyHours: {},
-                    pickupDays: 3, pickupInterval: 30, linePayServerUrl: '', linePayConfirmUrl: '', lineLiffId: '', lineOfficialAccountUrl: '', pocketBaseUrl: '', pocketBaseOrdersCollection: 'orders', telegramFallbackNotifyEndpoint: '', telegramFallbackMessageTemplate: '⚠️ {storeName}\n線上點餐已切換到 Firebase 備援模式\n\n原因：{reason}\n時間：{time}\n處理方式：請用出餐後台查看新訂單', announcements: [],
+                    pickupDays: 3, pickupInterval: 30, linePayServerUrl: '', linePayConfirmUrl: '', lineLiffId: '', lineOfficialAccountUrl: '', pocketBaseUrl: '', pocketBaseOrdersCollection: 'orders', telegramFallbackNotifyEndpoint: '', telegramFallbackMessageTemplate: '⚠️ {storeName}\n線上點餐已切換到 Firebase 備援模式\n\n原因：{reason}\n時間：{time}\n處理方式：請用出餐後台查看新訂單', announcements: [], mqttAnnouncementSelection: {},
                     holidays: [],
                     weeklyDaysOff: [],
                     dailyThemes: cloneDefaultDailyThemes(),
@@ -2155,6 +2159,7 @@ window._doCountUp = function() {
                 showOptionsTemplateDD: false,
                 showPosExtrasTemplateDD: false,
                 settingsSaving: false, settingsSaved: false,
+                announcementsTouched: false,
                 allowFirebaseManageFallback: true,
                 // QR Code 管理
                 qrBaseUrl: '', qrPin: '', qrEntries: [], qrSignatures: {}, qrSignatureStatus: '',
@@ -7102,6 +7107,36 @@ window._doCountUp = function() {
                     return row;
                 });
             },
+            markAnnouncementsChanged: function() {
+                this.announcementsTouched = true;
+            },
+            passwordVerifierFor: function(value) {
+                var raw = 'yuangi-dinein-v1:' + String(value === undefined || value === null ? '' : value);
+                var hash = 0x811c9dc5;
+                for (var i = 0; i < raw.length; i++) {
+                    hash ^= raw.charCodeAt(i);
+                    hash = (hash + (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24)) >>> 0;
+                }
+                return 'v1-' + ('00000000' + hash.toString(16)).slice(-8);
+            },
+            addAnnouncement: function() {
+                if (!Array.isArray(this.settings.announcements)) this.settings.announcements = [];
+                this.settings.announcements.push({ id: 'ann_' + Date.now(), text: '', active: false, category: '' });
+                this.markAnnouncementsChanged();
+            },
+            removeAnnouncement: function(index) {
+                if (!Array.isArray(this.settings.announcements)) return;
+                this.settings.announcements.splice(index, 1);
+                this.markAnnouncementsChanged();
+            },
+            moveAnnouncement: function(index, offset) {
+                var list = this.settings.announcements || [];
+                var target = index + offset;
+                if (index < 0 || target < 0 || index >= list.length || target >= list.length) return;
+                var moved = list.splice(index, 1)[0];
+                list.splice(target, 0, moved);
+                this.markAnnouncementsChanged();
+            },
             enforceSingleGlobalAnnouncement: function(activeIndex) {
                 var list = Array.isArray(this.settings.announcements) ? this.settings.announcements : [];
                 list.forEach(function(ann, idx) {
@@ -7118,6 +7153,7 @@ window._doCountUp = function() {
                 if (ann.active && !String(ann.category || '').trim()) {
                     this.enforceSingleGlobalAnnouncement(index);
                 }
+                this.markAnnouncementsChanged();
             },
             setAnnouncementCategory: function(index, category) {
                 var list = this.settings.announcements || [];
@@ -7127,6 +7163,7 @@ window._doCountUp = function() {
                 if (ann.active && !ann.category) {
                     this.enforceSingleGlobalAnnouncement(index);
                 }
+                this.markAnnouncementsChanged();
             },
             loadSettings: function() {
                 var self = this;
@@ -7176,6 +7213,7 @@ window._doCountUp = function() {
                         telegramFallbackNotifyEndpoint: s.telegramFallbackNotifyEndpoint || s.telegramNotifyEndpoint || prev.telegramFallbackNotifyEndpoint || '',
                         telegramFallbackMessageTemplate: s.telegramFallbackMessageTemplate || prev.telegramFallbackMessageTemplate || self.defaultTelegramFallbackMessage(),
                         announcements: self.normalizeAnnouncementsForSave(s.announcements || []),
+                        mqttAnnouncementSelection: (s.mqttAnnouncementSelection && typeof s.mqttAnnouncementSelection === 'object') ? Object.assign({}, s.mqttAnnouncementSelection) : Object.assign({}, prev.mqttAnnouncementSelection || {}),
                         standardDrinks: Array.isArray(s.standardDrinks) ? s.standardDrinks : (s.standardDrinks && typeof s.standardDrinks === 'object' ? Object.values(s.standardDrinks) : (prev.standardDrinks || [])),
                         optionTemplates: (s.optionTemplates && typeof s.optionTemplates === 'object') ? s.optionTemplates : (prev.optionTemplates || {}),
                         menu_alias: s.menu_alias || s.menuAlias || prev.menu_alias || [],
@@ -7190,6 +7228,7 @@ window._doCountUp = function() {
                         qrPin: s.qrPin || s.dineinPin || '',
                         qrEntries: Array.isArray(s.qrEntries) ? s.qrEntries : []
                     };
+                    self.announcementsTouched = false;
                     self.settingsReadBackend = backend || 'pocketbase';
                     self.syncCategoryShapeFromMenu();
                     self.qrBaseUrl = self.settings.qrBaseUrl || '';
@@ -7224,6 +7263,8 @@ window._doCountUp = function() {
                         (typeof st.copies === 'boolean' || !Number.isInteger(Number(st.copies)) || Number(st.copies) < 1 || Number(st.copies) > 5);
                 });
                 if (invalidStation) { alert((invalidStation.name || '工作站') + '：列印份數請填 1–5 的整數，或留空沿用舊設定。'); return; }
+                var normalizedDineinPassword = String(self.settings.dineinPassword || '').trim();
+                if (!/^\d{4}$/.test(normalizedDineinPassword)) { alert('桌邊點餐管理密碼請輸入 4 位數字。'); return; }
                 self.settingsSaving = true; self.settingsSaved = false;
                 self.settings.announcements = self.normalizeAnnouncementsForSave(self.settings.announcements || []);
                 self.syncCategoryShapeFromMenu();
@@ -7253,7 +7294,7 @@ window._doCountUp = function() {
                     storePhone: self.settings.storePhone || '',
                     storeAddress: self.settings.storeAddress || '',
                     storeInfoExtra: self.settings.storeInfoExtra || '',
-                    dineinPassword: self.settings.dineinPassword || '0000',
+                    dineinPassword: normalizedDineinPassword,
                     linePayServerUrl: self.settings.linePayServerUrl || '',
                     linePayConfirmUrl: self.settings.linePayConfirmUrl || '',
                     lineLiffId: self.settings.lineLiffId || '',
@@ -7273,6 +7314,15 @@ window._doCountUp = function() {
                     qrPin: normalizedQrPin,
                     qrEntries: Array.isArray(self.qrEntries) ? self.qrEntries.slice() : []
                 };
+                var mqttSelection = Object.assign({}, self.settings.mqttAnnouncementSelection || {});
+                mqttSelection.dineinPasswordVerifier = self.passwordVerifierFor(normalizedDineinPassword);
+                // manage 內只要改過公告，就清除舊的 MQTT 選擇／關閉狀態；
+                // 密碼驗證值會保留，實體按鍵下一次操作仍可重新寫入 index/dinein。
+                if (self.announcementsTouched) {
+                    delete mqttSelection.index;
+                    delete mqttSelection.dinein;
+                }
+                settingsPatch.mqttAnnouncementSelection = mqttSelection;
                 self.settings.weeklyDaysOff = settingsPatch.weeklyDaysOff.slice();
                 self.writeSettingsPrimary(settingsPatch, function() { return update(ref(db, 'settings'), settingsPatch); }).then(function(result) {
                     self.qrPin = normalizedQrPin;
@@ -7286,6 +7336,7 @@ window._doCountUp = function() {
                         self.settingsSaved = true;
                         setTimeout(function() { self.settingsSaved = false; }, 3000);
                     }
+                    self.announcementsTouched = false;
                     rememberPublicSettings({ settings: self.settings || {} }, settingsPatch);
                 }).catch(function(e) {
                     alert('儲存失敗：' + e.message);
