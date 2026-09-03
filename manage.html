@@ -1266,6 +1266,29 @@
                     </div>
                     <p class="text-slate-400 text-sm mb-4">假日爆單或訂單滿載時，開啟訊息通知顧客。指定分類的訊息會在顧客切換到該分類時彈出。</p>
 
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
+                        <div v-for="target in ['index','dinein']" :key="target"
+                            class="rounded-lg border p-3"
+                            :class="announcementTargetEnabled(target) ? 'border-emerald-500/50 bg-emerald-500/10' : 'border-slate-600 bg-slate-700/60'">
+                            <div class="flex items-center justify-between gap-3">
+                                <div>
+                                    <p class="text-white text-sm font-bold">{{ target }} 公告總開關</p>
+                                    <p class="text-xs mt-1" :class="announcementTargetEnabled(target) ? 'text-emerald-300' : 'text-slate-400'">
+                                        {{ announcementTargetLabel(target) }}
+                                    </p>
+                                </div>
+                                <label class="relative inline-flex items-center cursor-pointer flex-shrink-0">
+                                    <input type="checkbox" :checked="announcementTargetEnabled(target)"
+                                        :disabled="announcementControlSaving[target]"
+                                        @change="setAnnouncementTargetEnabled(target,$event.target.checked)" class="sr-only peer">
+                                    <div class="w-10 h-5 bg-slate-500 peer-checked:bg-emerald-500 rounded-full transition-colors after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-5 peer-disabled:opacity-50"></div>
+                                </label>
+                            </div>
+                            <p v-if="announcementControlSaving[target]" class="text-cyan-300 text-xs mt-2">同步中…</p>
+                        </div>
+                    </div>
+                    <p class="text-slate-500 text-xs mb-3">上方是 index／dinein 各自的公告總開關，會與 Node-RED 同步；下方橘色開關是兩個頁面共用的公告內容啟用設定。</p>
+
                     <div class="space-y-3">
                         <div v-for="(ann,ai) in settings.announcements" :key="ann.id || ai"
                             class="bg-slate-700 rounded-lg p-3 border" :class="ann.active ? 'border-amber-500/50' : 'border-slate-600'">
@@ -1295,6 +1318,8 @@
                                 <span class="text-xs" :class="ann.active ? 'text-amber-400' : 'text-slate-500'">{{ ann.active ? '🟢 啟用中' : '⚫ 已關閉' }}</span>
                                 <span class="text-slate-500 text-xs">·</span>
                                 <span class="text-slate-500 text-xs">{{ ann.category || '全站' }}</span>
+                                <span v-if="isAnnouncementSelectedForTarget(ai,'index')" class="text-cyan-300 text-xs font-bold">· index 選用</span>
+                                <span v-if="isAnnouncementSelectedForTarget(ai,'dinein')" class="text-fuchsia-300 text-xs font-bold">· dinein 選用</span>
                             </div>
                         </div>
 
@@ -1304,7 +1329,7 @@
                             + 新增訊息
                         </button>
                     </div>
-                    <p class="text-slate-500 text-xs mt-3">💡 全站公告：顧客打開頁面時立即彈出。分類公告：顧客切換到指定分類時彈出。修改後請按「儲存設定」。</p>
+                    <p class="text-slate-500 text-xs mt-3">💡 全站公告：顧客打開頁面時立即彈出。分類公告：顧客切換到指定分類時彈出。排序會保留 index／dinein 原本選到的公告；修改後請按「儲存設定」。</p>
                 </div>
 
                 <!-- ★ 固定公休星期 -->
@@ -2048,6 +2073,7 @@ window._doCountUp = function() {
                 menuItems: [], menuLoading: true, settingsReadBackend: 'checking', menuReadBackend: 'checking', filterCat: '',
                 menuRefreshHandler: null, menuRefreshAt: 0, menuLoadPromise: null,
                 menuVersion: '', menuVersionPollTimer: null, menuVersionReadInFlight: false,
+                announcementSelectionPollTimer: null, announcementSelectionReadInFlight: false,
                 // Modal
                 showModal: false, isEditing: false, isSaving: false,
                 form: { id:null, name:'', shortName:'', price:'', category:'蛋餅、燒餅', subCategory:'', desc:'', img:'', options:[], optionGroups:[], posExtras:[], prepItems:[], station:'麵包台', printStations:['麵包台'], availableAfter:'', active:true },
@@ -2160,6 +2186,7 @@ window._doCountUp = function() {
                 showPosExtrasTemplateDD: false,
                 settingsSaving: false, settingsSaved: false,
                 announcementsTouched: false,
+                announcementControlSaving: { index: false, dinein: false },
                 allowFirebaseManageFallback: true,
                 // QR Code 管理
                 qrBaseUrl: '', qrPin: '', qrEntries: [], qrSignatures: {}, qrSignatureStatus: '',
@@ -2332,12 +2359,14 @@ window._doCountUp = function() {
             document.addEventListener('visibilitychange', this.menuRefreshHandler);
             this.checkMenuVersion();
             this.menuVersionPollTimer = setInterval(function() { self.checkMenuVersion(); }, 5000);
+            this.announcementSelectionPollTimer = setInterval(function() { self.refreshAnnouncementSelection(); }, 5000);
         },
 
         beforeUnmount: function() {
             window.removeEventListener('focus', this.menuRefreshHandler);
             document.removeEventListener('visibilitychange', this.menuRefreshHandler);
             if (this.menuVersionPollTimer) clearInterval(this.menuVersionPollTimer);
+            if (this.announcementSelectionPollTimer) clearInterval(this.announcementSelectionPollTimer);
         },
 
         watch: {
@@ -7096,8 +7125,18 @@ window._doCountUp = function() {
             },
             normalizeAnnouncementsForSave: function(list) {
                 var globalEnabled = false;
-                return (Array.isArray(list) ? list : []).map(function(ann) {
+                var legacyId = function(row, index) {
+                    var raw = String(row.text || '') + '\u0000' + String(row.category || '') + '\u0000' + index;
+                    var hash = 0x811c9dc5;
+                    for (var i = 0; i < raw.length; i++) {
+                        hash ^= raw.charCodeAt(i);
+                        hash = (hash + (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24)) >>> 0;
+                    }
+                    return 'ann_legacy_' + ('00000000' + hash.toString(16)).slice(-8);
+                };
+                return (Array.isArray(list) ? list : []).map(function(ann, index) {
                     var row = Object.assign({ text: '', active: false, category: '' }, ann || {});
+                    row.id = String(row.id || '').trim() || legacyId(row, index);
                     row.category = String(row.category || '').trim();
                     row.active = !!row.active;
                     if (row.active && !row.category) {
@@ -7105,6 +7144,115 @@ window._doCountUp = function() {
                         else globalEnabled = true;
                     }
                     return row;
+                });
+            },
+            normalizeAnnouncementSelectionForList: function(selection, list) {
+                var next = Object.assign({}, selection || {});
+                var rows = Array.isArray(list) ? list : [];
+                ['index', 'dinein'].forEach(function(target) {
+                    var idKey = target + 'Id';
+                    var hasIndex = Object.prototype.hasOwnProperty.call(next, target);
+                    var numericIndex = Number(next[target]);
+                    if (hasIndex && numericIndex < 0) {
+                        next[target] = -1;
+                        delete next[idKey];
+                        return;
+                    }
+                    var selectedId = String(next[idKey] || '').trim();
+                    if (!selectedId && hasIndex && Number.isInteger(numericIndex) && rows[numericIndex]) {
+                        selectedId = String(rows[numericIndex].id || '').trim();
+                    }
+                    if (selectedId) {
+                        var selectedIndex = rows.findIndex(function(row) { return row && String(row.id || '') === selectedId; });
+                        if (selectedIndex >= 0) {
+                            next[target] = selectedIndex;
+                            next[idKey] = selectedId;
+                            return;
+                        }
+                    }
+                    if (hasIndex) delete next[target];
+                    delete next[idKey];
+                });
+                return next;
+            },
+            announcementSelectionIndex: function(target) {
+                var selection = this.settings.mqttAnnouncementSelection || {};
+                var rows = this.settings.announcements || [];
+                var hasIndex = Object.prototype.hasOwnProperty.call(selection, target);
+                var numericIndex = Number(selection[target]);
+                if (hasIndex && numericIndex < 0) return -1;
+                var selectedId = String(selection[target + 'Id'] || '').trim();
+                if (selectedId) {
+                    var byId = rows.findIndex(function(row) { return row && String(row.id || '') === selectedId; });
+                    if (byId >= 0) return byId;
+                }
+                return hasIndex && Number.isInteger(numericIndex) && rows[numericIndex] ? numericIndex : null;
+            },
+            announcementTargetEnabled: function(target) {
+                var selection = this.settings.mqttAnnouncementSelection || {};
+                return !(Object.prototype.hasOwnProperty.call(selection, target) && Number(selection[target]) < 0);
+            },
+            announcementTargetLabel: function(target) {
+                var selection = this.settings.mqttAnnouncementSelection || {};
+                var hasSelection = Object.prototype.hasOwnProperty.call(selection, target) || !!String(selection[target + 'Id'] || '').trim();
+                if (!hasSelection) return '沿用下方啟用公告';
+                var selectedIndex = this.announcementSelectionIndex(target);
+                if (selectedIndex === -1) return '已關閉';
+                var ann = selectedIndex === null ? null : (this.settings.announcements || [])[selectedIndex];
+                if (!ann) return '選擇已失效，請按下一則';
+                var text = String(ann.text || '').replace(/\s+/g, ' ').trim();
+                if (text.length > 28) text = text.slice(0, 28) + '…';
+                return '第 ' + (selectedIndex + 1) + ' 則｜' + (ann.category || '全站') + (text ? '｜' + text : '');
+            },
+            isAnnouncementSelectedForTarget: function(index, target) {
+                var selection = this.settings.mqttAnnouncementSelection || {};
+                var hasSelection = Object.prototype.hasOwnProperty.call(selection, target) || !!String(selection[target + 'Id'] || '').trim();
+                return hasSelection && this.announcementSelectionIndex(target) === index;
+            },
+            refreshAnnouncementSelection: function() {
+                var self = this;
+                if (!self.isLoggedIn || document.visibilityState === 'hidden' || self.announcementSelectionReadInFlight || self.announcementsTouched) return Promise.resolve();
+                if (self.announcementControlSaving.index || self.announcementControlSaving.dinein) return Promise.resolve();
+                self.announcementSelectionReadInFlight = true;
+                return readSettingsFromPocketBase({ settings: self.settings || {}, timeoutMs: 5000, forceFresh: true, ignoreCooldown: true, allowDirectCollectionFallback: false, allowFirebasePublicFallback: false, firebaseUser: auth.currentUser }).then(function(result) {
+                    if (!result || !result.ok || !result.settings) return;
+                    var incoming = result.settings.mqttAnnouncementSelection;
+                    if (!incoming || typeof incoming !== 'object') incoming = {};
+                    var next = Object.assign({}, self.settings.mqttAnnouncementSelection || {});
+                    ['index', 'indexId', 'dinein', 'dineinId'].forEach(function(key) {
+                        if (Object.prototype.hasOwnProperty.call(incoming, key)) next[key] = incoming[key];
+                        else delete next[key];
+                    });
+                    if (incoming.dineinPasswordVerifier) next.dineinPasswordVerifier = incoming.dineinPasswordVerifier;
+                    self.settings.mqttAnnouncementSelection = self.normalizeAnnouncementSelectionForList(next, self.settings.announcements || []);
+                }).catch(function(error) {
+                    console.warn('manage announcement selection refresh failed:', error && error.message ? error.message : error);
+                }).finally(function() {
+                    self.announcementSelectionReadInFlight = false;
+                });
+            },
+            setAnnouncementTargetEnabled: function(target, enabled) {
+                if (target !== 'index' && target !== 'dinein') return;
+                var self = this;
+                var next = Object.assign({}, self.settings.mqttAnnouncementSelection || {});
+                if (enabled) {
+                    delete next[target];
+                    delete next[target + 'Id'];
+                } else {
+                    next[target] = -1;
+                    delete next[target + 'Id'];
+                }
+                self.settings.mqttAnnouncementSelection = next;
+                self.announcementControlSaving[target] = true;
+                self.writeSettingsPrimary({ mqttAnnouncementSelection: next }, function() {
+                    return set(ref(db, 'settings/mqttAnnouncementSelection'), next);
+                }).then(function() {
+                    rememberPublicSettings({ settings: self.settings || {} }, { mqttAnnouncementSelection: next });
+                }).catch(function(error) {
+                    alert(target + ' 公告開關同步失敗：' + (error && error.message ? error.message : error));
+                    return self.refreshAnnouncementSelection();
+                }).finally(function() {
+                    self.announcementControlSaving[target] = false;
                 });
             },
             markAnnouncementsChanged: function() {
@@ -7175,6 +7323,7 @@ window._doCountUp = function() {
                     var categorySubcategories = (s.categorySubcategories && typeof s.categorySubcategories === 'object' && Object.keys(s.categorySubcategories).length)
                         ? s.categorySubcategories
                         : (prev.categorySubcategories || {});
+                    var normalizedAnnouncements = self.normalizeAnnouncementsForSave(s.announcements || []);
                     self.settings = {
                         isOpen: s.isOpen !== false,
                         dineinIsOpen: s.dineinIsOpen !== false,
@@ -7212,8 +7361,8 @@ window._doCountUp = function() {
                         turnstileSiteKey: s.turnstileSiteKey || s.cloudflareTurnstileSiteKey || '',
                         telegramFallbackNotifyEndpoint: s.telegramFallbackNotifyEndpoint || s.telegramNotifyEndpoint || prev.telegramFallbackNotifyEndpoint || '',
                         telegramFallbackMessageTemplate: s.telegramFallbackMessageTemplate || prev.telegramFallbackMessageTemplate || self.defaultTelegramFallbackMessage(),
-                        announcements: self.normalizeAnnouncementsForSave(s.announcements || []),
-                        mqttAnnouncementSelection: (s.mqttAnnouncementSelection && typeof s.mqttAnnouncementSelection === 'object') ? Object.assign({}, s.mqttAnnouncementSelection) : Object.assign({}, prev.mqttAnnouncementSelection || {}),
+                        announcements: normalizedAnnouncements,
+                        mqttAnnouncementSelection: self.normalizeAnnouncementSelectionForList((s.mqttAnnouncementSelection && typeof s.mqttAnnouncementSelection === 'object') ? s.mqttAnnouncementSelection : (prev.mqttAnnouncementSelection || {}), normalizedAnnouncements),
                         standardDrinks: Array.isArray(s.standardDrinks) ? s.standardDrinks : (s.standardDrinks && typeof s.standardDrinks === 'object' ? Object.values(s.standardDrinks) : (prev.standardDrinks || [])),
                         optionTemplates: (s.optionTemplates && typeof s.optionTemplates === 'object') ? s.optionTemplates : (prev.optionTemplates || {}),
                         menu_alias: s.menu_alias || s.menuAlias || prev.menu_alias || [],
@@ -7316,12 +7465,8 @@ window._doCountUp = function() {
                 };
                 var mqttSelection = Object.assign({}, self.settings.mqttAnnouncementSelection || {});
                 mqttSelection.dineinPasswordVerifier = self.passwordVerifierFor(normalizedDineinPassword);
-                // manage 內只要改過公告，就清除舊的 MQTT 選擇／關閉狀態；
-                // 密碼驗證值會保留，實體按鍵下一次操作仍可重新寫入 index/dinein。
-                if (self.announcementsTouched) {
-                    delete mqttSelection.index;
-                    delete mqttSelection.dinein;
-                }
+                // 以公告固定 ID 重新計算排序後的序號，讓 Node-RED 的選擇仍指向同一則內容。
+                mqttSelection = self.normalizeAnnouncementSelectionForList(mqttSelection, self.settings.announcements || []);
                 settingsPatch.mqttAnnouncementSelection = mqttSelection;
                 self.settings.weeklyDaysOff = settingsPatch.weeklyDaysOff.slice();
                 self.writeSettingsPrimary(settingsPatch, function() { return update(ref(db, 'settings'), settingsPatch); }).then(function(result) {
