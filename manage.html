@@ -606,7 +606,7 @@
             <div class="stats-header mb-6 flex items-center justify-between">
                 <div>
                     <h2 class="text-xl font-bold text-white">{{ lineMemberOrdersMode ? 'LINE 會員訂單' : '營業統計' }}</h2>
-                    <p class="text-slate-400 text-sm mt-0.5">{{ lineMemberOrdersMode ? ('會員：' + ((lineMemberOrdersMember && lineMemberOrdersMember.display_name) || '未命名') + '（含未來訂單）') : '查看歷史訂單與營業額' }}</p>
+                    <p class="text-slate-400 text-sm mt-0.5">{{ lineMemberOrdersMode ? ('會員：' + ((lineMemberOrdersMember && lineMemberOrdersMember.display_name) || '未命名') + '（含新訂單、已完成及已取消訂單）') : '查看歷史訂單與營業額' }}</p>
                 </div>
                 <button @click="lineMemberOrdersMode ? closeLineMemberOrders() : refreshStats()" class="bg-slate-700 hover:bg-slate-600 text-slate-300 hover:text-white font-bold px-4 py-2.5 rounded-xl transition flex items-center gap-2 text-sm border border-slate-600">
                     {{ lineMemberOrdersMode ? '← 返回 LINE 會員' : '🔄 重新整理' }}
@@ -866,16 +866,16 @@
             <div v-else class="overflow-x-auto rounded-xl border border-slate-700 bg-slate-800">
                 <table class="w-full min-w-[680px] text-sm">
                     <thead class="bg-slate-700/60 text-slate-300">
-                        <tr><th class="px-3 py-2 text-left">會員</th><th class="px-3 py-2 text-left">電話</th><th class="px-3 py-2 text-right">訂單</th><th class="px-3 py-2 text-right">消費</th><th class="px-3 py-2 text-left">最後消費</th><th class="px-3 py-2 text-left">推播</th></tr>
+                        <tr><th class="px-3 py-2 text-left">會員</th><th class="px-3 py-2 text-left">電話</th><th class="px-3 py-2 text-right">全部訂單</th><th class="px-3 py-2 text-right">消費</th><th class="px-3 py-2 text-left">最後消費</th><th class="px-3 py-2 text-left">推播</th></tr>
                     </thead>
                     <tbody class="divide-y divide-slate-700">
                         <tr v-for="member in lineMembers" :key="member.id" class="text-slate-200">
                             <td class="px-3 py-2 font-bold">{{ member.display_name || '未命名' }}</td>
                             <td class="px-3 py-2">{{ member.phone || '—' }}</td>
                             <td class="px-3 py-2 text-right">
-                                <button @click="openLineMemberOrders(member)" :disabled="!member.order_count || lineMemberOrdersLoadingId===member.id"
+                                <button @click="openLineMemberOrders(member)" :disabled="lineMemberOrdersLoadingId===member.id"
                                     class="font-bold text-blue-400 enabled:hover:text-blue-300 enabled:underline disabled:text-slate-500">
-                                    {{ lineMemberOrdersLoadingId===member.id ? '讀取中…' : (member.order_count || 0) }}
+                                    {{ lineMemberOrdersLoadingId===member.id ? '讀取中…' : (member.history_order_count !== undefined ? member.history_order_count : '查看全部') }}
                                 </button>
                             </td>
                             <td class="px-3 py-2 text-right">${{ member.total_spent || 0 }}</td>
@@ -1287,7 +1287,7 @@
                             <p v-if="announcementControlSaving[target]" class="text-cyan-300 text-xs mt-2">同步中…</p>
                         </div>
                     </div>
-                    <p class="text-slate-500 text-xs mb-3">上方是 index／dinein 各自的公告總開關，會與 Node-RED 同步；下方橘色開關可同時勾選多則公告，兩個頁面與 Node-RED 共用。</p>
+                    <p class="text-slate-500 text-xs mb-3">上方是 index／dinein 各自的公告總開關，會與 Node-RED 同步；分類公告可同時勾選多則，全站公告一次只能啟用 1 則，兩個頁面與 Node-RED 共用。</p>
 
                     <div class="space-y-3">
                         <div v-for="(ann,ai) in settings.announcements" :key="ann.id || ai"
@@ -1295,11 +1295,11 @@
                             <div class="flex items-center gap-3 mb-2">
                                 <!-- Toggle -->
                                 <label class="relative inline-flex items-center cursor-pointer flex-shrink-0">
-                                    <input type="checkbox" :checked="ann.active" @change="setAnnouncementActive(ai,$event.target.checked)" class="sr-only peer">
+                                    <input type="checkbox" :checked="ann.active" @change="setAnnouncementActive(ai,$event.target.checked,$event.target)" class="sr-only peer">
                                     <div class="w-10 h-5 bg-slate-500 peer-checked:bg-amber-500 rounded-full transition-colors after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-5"></div>
                                 </label>
                                 <!-- Category selector -->
-                                <select :value="ann.category || ''" @change="setAnnouncementCategory(ai,$event.target.value)"
+                                <select :value="ann.category || ''" @change="setAnnouncementCategory(ai,$event.target.value,$event.target)"
                                     class="bg-slate-600 border border-slate-500 text-white text-xs rounded-lg px-2 py-1.5 flex-1 focus:outline-none focus:border-amber-500">
                                     <option value="">🌐 全站公告（進站即顯示）</option>
                                     <option v-for="cat in (settings.categories||[])" :key="cat" :value="cat">📁 {{ cat }}</option>
@@ -1329,7 +1329,7 @@
                             + 新增訊息
                         </button>
                     </div>
-                    <p class="text-slate-500 text-xs mt-3">💡 全站公告：顧客打開頁面時立即彈出。分類公告：顧客切換到指定分類時彈出。可同時啟用多則；修改後請按「儲存設定」。</p>
+                    <p class="text-slate-500 text-xs mt-3">💡 全站公告：顧客打開頁面時立即彈出，一次只能啟用 1 則。分類公告：顧客切換到指定分類時彈出，可同時啟用多則。修改後請按「儲存設定」。</p>
                 </div>
 
                 <!-- ★ 固定公休星期 -->
@@ -2440,7 +2440,7 @@ window._doCountUp = function() {
             },
             openLineMemberOrders: function(member) {
                 var self = this;
-                if (!member || !member.id || !member.order_count || self.lineMemberOrdersLoadingId) return;
+                if (!member || !member.id || self.lineMemberOrdersLoadingId) return;
                 self.lineMemberOrdersLoadingId = member.id;
                 self.lineMembersError = '';
                 requestLineMembers({
@@ -2453,7 +2453,7 @@ window._doCountUp = function() {
                     var rows = (Array.isArray(result && result.records) ? result.records : [])
                         .map(pocketBaseRecordToOrder)
                         .map(function(order) { return self.normalizeStatsOrder(order); })
-                        .filter(function(order) { return order && order.status !== 'cancelled' && !order.wasCancelled; });
+                        .filter(Boolean);
                     self.statsOrders = rows;
                     self.allOrdersCache = rows.slice();
                     self.statsSearch = '';
@@ -7125,6 +7125,7 @@ window._doCountUp = function() {
                 this.settings.dailyThemes = cloneDefaultDailyThemes();
             },
             normalizeAnnouncementsForSave: function(list) {
+                var globalEnabled = false;
                 var legacyId = function(row, index) {
                     var raw = String(row.text || '') + '\u0000' + String(row.category || '') + '\u0000' + index;
                     var hash = 0x811c9dc5;
@@ -7139,6 +7140,10 @@ window._doCountUp = function() {
                     row.id = String(row.id || '').trim() || legacyId(row, index);
                     row.category = String(row.category || '').trim();
                     row.active = row.active === true || row.active === 1 || row.active === '1' || String(row.active).toLowerCase() === 'true';
+                    if (row.active && !row.category) {
+                        if (globalEnabled) row.active = false;
+                        else globalEnabled = true;
+                    }
                     return row;
                 });
             },
@@ -7307,26 +7312,38 @@ window._doCountUp = function() {
                 list.splice(target, 0, moved);
                 this.markAnnouncementsChanged();
             },
-            enforceSingleGlobalAnnouncement: function(activeIndex) {
+            hasOtherActiveGlobalAnnouncement: function(activeIndex) {
                 var list = Array.isArray(this.settings.announcements) ? this.settings.announcements : [];
-                list.forEach(function(ann, idx) {
-                    if (idx !== activeIndex && ann && ann.active && !String(ann.category || '').trim()) {
-                        ann.active = false;
-                    }
+                return list.some(function(ann, idx) {
+                    return idx !== activeIndex && ann && ann.active && !String(ann.category || '').trim();
                 });
             },
-            setAnnouncementActive: function(index, checked) {
+            showSingleGlobalAnnouncementReminder: function() {
+                alert('溫馨提醒：全站公告一次只能啟用 1 則。請先關閉目前啟用的全站公告，再開啟另一則。');
+            },
+            setAnnouncementActive: function(index, checked, input) {
                 var list = this.settings.announcements || [];
                 var ann = list[index];
                 if (!ann) return;
+                if (checked && !String(ann.category || '').trim() && this.hasOtherActiveGlobalAnnouncement(index)) {
+                    if (input) input.checked = false;
+                    this.showSingleGlobalAnnouncementReminder();
+                    return;
+                }
                 ann.active = !!checked;
                 this.markAnnouncementsChanged();
             },
-            setAnnouncementCategory: function(index, category) {
+            setAnnouncementCategory: function(index, category, select) {
                 var list = this.settings.announcements || [];
                 var ann = list[index];
                 if (!ann) return;
-                ann.category = String(category || '').trim();
+                var nextCategory = String(category || '').trim();
+                if (!nextCategory && ann.active && this.hasOtherActiveGlobalAnnouncement(index)) {
+                    if (select) select.value = String(ann.category || '').trim();
+                    this.showSingleGlobalAnnouncementReminder();
+                    return;
+                }
+                ann.category = nextCategory;
                 this.markAnnouncementsChanged();
             },
             loadSettings: function() {
