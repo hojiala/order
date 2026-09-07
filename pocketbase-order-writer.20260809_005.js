@@ -2857,6 +2857,80 @@ export function requestLinePayViaBackend(orderId, orderDateKey, options) {
     });
 }
 
+export function readLinePayStatusViaBackend(orderId, options) {
+    options = options || {};
+    var id = text(orderId).trim();
+    if (!/^[A-Za-z0-9_-]{8,128}$/.test(id)) return Promise.reject(new Error("invalid_order_reference"));
+    var config = resolvePocketBaseConfig(options);
+    var endpoint = cleanBaseUrl(config.orderEndpoint || "").replace(
+        /\/api\/(?:secure\/)?orders$/i,
+        "/api/linepay/status"
+    );
+    var user = options.firebaseUser;
+    var idTokenPromise = options.firebaseIdToken
+        ? Promise.resolve(text(options.firebaseIdToken))
+        : (user && typeof user.getIdToken === "function"
+            ? Promise.resolve().then(function() { return user.getIdToken(); })
+            : Promise.reject(new Error("firebase_auth_required")));
+    var timeoutMs = Number(options.timeoutMs || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
+
+    return idTokenPromise.then(function(idToken) {
+        if (!idToken) throw new Error("firebase_auth_required");
+        var primary = endpoint && endpoint !== config.orderEndpoint
+            ? requestJson(endpoint, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "Authorization": "Bearer " + idToken
+                },
+                body: JSON.stringify({ orderId: id })
+            }, timeoutMs)
+            : Promise.reject(new Error("missing_linepay_status_endpoint"));
+        return primary.then(function(result) {
+            result = result && typeof result === "object" ? result : {};
+            if (result.found !== true) {
+                var missing = new Error("linepay_status_not_found");
+                missing.status = 503;
+                throw missing;
+            }
+            return {
+                ok: result.ok !== false,
+                found: true,
+                backend: "pocketbase",
+                status: text(result.status).trim().toLowerCase() || "unknown",
+                error: text(result.error)
+            };
+        }).catch(function(primaryError) {
+            var primaryStatus = Number(primaryError && primaryError.status) || 0;
+            var primaryMessage = text(primaryError && primaryError.message).trim();
+            if (primaryStatus >= 400 && primaryStatus < 500 && primaryMessage !== "linepay_order_not_found") {
+                throw primaryError;
+            }
+            var settings = options.settings || {};
+            var firebaseBase = cleanBaseUrl(
+                options.firebaseDatabaseUrl || settings.firebaseDatabaseUrl || configuredDefaultFirebaseDatabaseUrl()
+            );
+            if (!firebaseBase) throw primaryError;
+            var path = "/linepay_transactions/" + encodeURIComponent(id);
+            var authQuery = "?auth=" + encodeURIComponent(idToken);
+            return requestJson(firebaseBase + path + "/status.json" + authQuery, { method: "GET" }, timeoutMs)
+                .then(function(statusValue) {
+                    var status = text(statusValue).trim().toLowerCase() || "unknown";
+                    if (status !== "confirm_failed") {
+                        return { ok: true, found: status !== "unknown", backend: "firebase_fallback", status: status, error: "" };
+                    }
+                    return requestJson(firebaseBase + path + "/error.json" + authQuery, { method: "GET" }, timeoutMs)
+                        .catch(function() { return ""; })
+                        .then(function(errorValue) {
+                            return { ok: true, found: true, backend: "firebase_fallback", status: status, error: text(errorValue) };
+                        });
+                }).catch(function() {
+                    throw primaryError;
+                });
+        });
+    });
+}
+
 function deriveTelegramNotifyEndpoint(settings, options) {
     settings = settings || {};
     options = options || {};

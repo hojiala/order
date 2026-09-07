@@ -70,6 +70,7 @@ body{font-family:"Helvetica Neue",Arial,"PingFang TC","Microsoft JhengHei",sans-
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/11.3.0/firebase-app.js";
 import { getAuth, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.3.0/firebase-auth.js";
+import { readLinePayStatusViaBackend } from "./pocketbase-order-writer.20260818_001.js?v=20260907_linepay_status_1";
 
 const firebaseConfig = {
   apiKey: "AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -274,20 +275,17 @@ async function processPayment() {
     try { history.replaceState(null, '', window.location.pathname); } catch (e) {}
 
     let confirmed = false;
-    for (let i = 0; i < 30; i++) {
-      await new Promise(r => setTimeout(r, 1500));
+    for (let i = 0; i < 9; i++) {
+      if (i > 0) await new Promise(r => setTimeout(r, 6500));
       try {
-        const res = await fetch(firebaseRestUrl(dbRestUrl, `linepay_transactions/${orderId}/status`, idToken));
-        const st = await res.json();
+        const statusResult = await readLinePayStatusViaBackend(orderId, {
+          firebaseIdToken: idToken,
+          timeoutMs: 5000
+        });
+        const st = String(statusResult && statusResult.status || '').toLowerCase();
         if (st === 'confirmed') { confirmed = true; break; }
         if (st === 'confirm_failed') {
-          try {
-            const errRes = await fetch(firebaseRestUrl(dbRestUrl, `linepay_transactions/${orderId}/error`, idToken));
-            const errMsg = await errRes.json();
-            document.getElementById('errorMsg').textContent = errMsg || '付款確認失敗';
-          } catch(e) {
-            document.getElementById('errorMsg').textContent = '付款確認失敗';
-          }
+          document.getElementById('errorMsg').textContent = statusResult.error || '付款確認失敗';
           showView('error');
           return;
         }

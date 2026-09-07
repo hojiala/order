@@ -559,7 +559,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
     import { getDatabase, ref, push, set, get, update, remove, onValue, query, orderByChild, equalTo, limitToLast, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
-    import { writeOrderToPocketBase, writeOrderWithFirebaseFallback, publicOrderPrintWarning, requestLinePayViaBackend, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, cancelOwnedOrderViaBackend, filterCartToAvailableMenu } from "./pocketbase-order-writer.20260818_001.js?v=20260902_consistency_1";
+    import { writeOrderToPocketBase, writeOrderWithFirebaseFallback, publicOrderPrintWarning, requestLinePayViaBackend, readLinePayStatusViaBackend, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, cancelOwnedOrderViaBackend, filterCartToAvailableMenu } from "./pocketbase-order-writer.20260818_001.js?v=20260907_linepay_status_1";
 
     const firebaseConfig = {
         apiKey:"AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -701,7 +701,7 @@
             showOrderHistory:false, showSuccess:false,
             successPrintWarning:'',
             lastOrderNo:0, lastPayment:'', lastOrderIdRef:null,
-                lpConfirmed:{},
+                lpConfirmed:{}, linePayStatusRefreshAt:0,
             // 訂單
             myOrders:[], allOrders:[], pollTimer:null, pollErrorCount:0,
             pendingCount:0, nowMinute:0,
@@ -712,7 +712,7 @@
             showQRModal:false, qrAmount:0, qrOrderId:'', qrOrderDateKey:'',
             qrReuseCandidate:null, pendingQRReuse:null,
             qrPolling:false, qrCountdown:120, qrPaidMsg:'', qrErrorMsg:'',
-            qrPollTimer:null, qrCountdownTimer:null, qrUnsubscribe:null
+            qrPollTimer:null, qrCountdownTimer:null
         }},
         computed:{
             dineinBusinessWindow:function(){
@@ -1188,7 +1188,7 @@
                         return o.tableDevice===s.deviceId&&o.timestamp>=today.getTime()&&o.status!=='archived'
                     }).sort(function(a,b){return b.timestamp-a.timestamp});
                     if(fbOrders.length>0)s.myOrders=fbOrders;
-                    // ★ 只查詢本桌未完成 LINE Pay 訂單，避免下載整包 linepay_transactions
+                    // ★ 只查詢本桌未完成 LINE Pay 訂單，避免下載整包交易狀態資料
                     s.refreshLinePayConfirmed(fbOrders);
                     // ★ 自動更新 lastOrderNo（後台補發流水號時即時顯示）
                     if(s.lastOrderIdRef){
@@ -1334,10 +1334,19 @@
                     return isLinePay&&o.paymentStatus!=='paid'&&o.paymentStatus!=='refunded';
                 });
                 if(!targets.length){s.lpConfirmed={};return;}
+                targets=targets.filter(function(o){return !(s.qrPolling&&s.qrOrderId===o.id);});
+                if(!targets.length)return;
+                var now=Date.now();
+                if(now-Number(s.linePayStatusRefreshAt||0)<15000)return;
+                s.linePayStatusRefreshAt=now;
                 var confirmed={};
                 Promise.all(targets.map(function(o){
-                    return get(ref(db,'linepay_transactions/'+o.id+'/status')).then(function(snap){
-                        var st=snap.exists()?String(snap.val()||'').toLowerCase():'';
+                    return readLinePayStatusViaBackend(o.id,{
+                        settings:s.settings||{},
+                        firebaseUser:auth.currentUser,
+                        timeoutMs:5000
+                    }).then(function(result){
+                        var st=String(result&&result.status||'').toLowerCase();
                         if(st==='confirmed')confirmed[o.id]=true;
                     }).catch(function(){});
                 })).then(function(){
@@ -1616,21 +1625,28 @@
                     if(s.qrCountdown>0){s.qrCountdown--;}
                     else{s.stopQRPolling();s.qrErrorMsg='付款逾時，請重新操作';}
                 },1000);
-                // ★ 監聽 linepay_transactions（完全開放讀取，不受 orders 規則限制）
-                s.qrUnsubscribe=onValue(ref(db,'linepay_transactions/'+s.qrOrderId+'/status'),function(snap){
-                    var val=snap.val();
-                    if(val==='confirmed'){
+                var checkStatus=function(){
+                    if(!s.qrPolling||!s.qrOrderId)return;
+                    readLinePayStatusViaBackend(s.qrOrderId,{
+                        settings:s.settings||{},
+                        firebaseUser:auth.currentUser,
+                        timeoutMs:5000
+                    }).then(function(result){
+                        var val=String(result&&result.status||'').toLowerCase();
+                        if(val!=='confirmed')return;
                         s.stopQRPolling();
                         s.qrPaidMsg='付款成功！感謝您的消費 🎉';
                         // ★ 列印由 linepay_server confirm_worker 觸發（有完整寫入權限）
                         setTimeout(function(){s.closeQRModal(true);},2000);
-                    }
-                });
+                    }).catch(function(){});
+                };
+                checkStatus();
+                s.qrPollTimer=setInterval(checkStatus,6500);
             },
             stopQRPolling:function(){
                 var s=this;
                 s.qrPolling=false;
-                if(s.qrUnsubscribe){s.qrUnsubscribe();s.qrUnsubscribe=null;}
+                if(s.qrPollTimer){clearInterval(s.qrPollTimer);s.qrPollTimer=null;}
                 if(s.qrCountdownTimer){clearInterval(s.qrCountdownTimer);s.qrCountdownTimer=null;}
             },
             closeQRModal:function(paid){
