@@ -488,6 +488,7 @@ export function pocketBaseRecordToOrder(record) {
     record = record || {};
     var customer = jsonObject(record.customer);
     var items = jsonArray(record.items);
+    var linePayTransaction = jsonObject(record.linepay_transaction || record.linePayTransaction);
     var dateKey = text(record.date_key || record.dateKey || customer.orderDateKey || customer.pickupDate);
     var orderId = text(record.order_id || record.orderId || record.id);
     var source = text(record.source || "web");
@@ -532,6 +533,7 @@ export function pocketBaseRecordToOrder(record) {
         paymentMethod: paymentMethod,
         paymentStatus: paymentStatus,
         payment: { method: paymentMethod, status: paymentStatus },
+        linePayTransaction: linePayTransaction,
         items: items,
         total: numericOrUndefined(record.total) || 0,
         totals: { finalTotal: numericOrUndefined(record.total) || 0 },

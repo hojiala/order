@@ -347,9 +347,9 @@
 
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
-        import { getDatabase, ref, onValue, onChildAdded, onChildChanged, onChildRemoved, update, set, get, remove, query, orderByChild, limitToLast } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
+        import { getDatabase, ref, onValue, onChildAdded, onChildChanged, onChildRemoved, update, set, get, remove } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
         import { getAuth, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-        import { allocateOrderNoFromPocketBase, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, readManageMenuFromPocketBase, listMenuItemsFromPocketBase, writeOrderToPocketBase, isReservedOrderId } from "./pocketbase-order-writer.20260809_005.js?v=20260902_consistency_1";
+        import { allocateOrderNoFromPocketBase, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, readManageMenuFromPocketBase, listMenuItemsFromPocketBase, writeOrderToPocketBase, isReservedOrderId } from "./pocketbase-order-writer.20260809_005.js?v=20260907_linepay_txn_1";
         import { isBackofficeUser } from "./staff-auth-activation.20260818_001.js?v=20260818_001";
 
         // ★★★ 請貼入您相同的 Firebase 配置 ★★★
@@ -434,8 +434,6 @@
                     editPayMethod: 'store',
                     lpConfirmed: {},
                     lpStatus: {},
-                    linePayTxnUnsubs: [],
-                    linePayTxnListening: false,
                     editSaving: false,
                     assigningNos: {},
                     orderBuckets: {},
@@ -2540,17 +2538,7 @@
                             }
                         }
                         if (count > 0) { await update(ref(db), updates); console.log('✅ 歸檔 ' + count + ' 筆舊訂單'); }
-                        // 歸檔 linepay_transactions
-                        const lpSnap = await get(ref(db, 'linepay_transactions'));
-                        if (lpSnap.exists()) {
-                            const lpData = lpSnap.val(); const lpUp = {}; let lc = 0;
-                            for (const id in lpData) {
-                                const t = lpData[id]; if (!t) continue;
-                                const ts = t.timestamp || t.createdAt || t.cancelledAt || 0;
-                                if (ts && ts < cutoff) { lpUp['linepay_archive/' + id] = t; lpUp['linepay_transactions/' + id] = null; lc++; }
-                            }
-                            if (lc > 0) { await update(ref(db), lpUp); console.log('✅ 歸檔 ' + lc + ' 筆舊交易'); }
-                        }
+                        // LINE Pay 交易已由 PocketBase 保存；避免為清理舊資料下載整棵 Firebase 交易樹。
                     } catch(e) {
                         const msg = String(e && e.message || e || '');
                         if (/permission[_\s-]*denied/i.test(msg)) {
@@ -3178,50 +3166,22 @@
                         const day = getOrderDayKey(o);
                         return !day || day >= today;
                     }));
-                    this.maybeStartLinePayTransactionsListener();
+                    this.syncLinePayTransactionState();
                 },
-                hasVisibleLinePayOrders() {
-                    return (this.orders || []).some((o) => {
-                        const pm = String((o && o.paymentMethod) || '');
-                        return pm === 'linepay' || pm === 'linepay_offline' || pm === 'linepay_refund';
-                    });
-                },
-                stopLinePayTransactionsListener() {
-                    (this.linePayTxnUnsubs || []).forEach((fn) => { try { fn && fn(); } catch (_) {} });
-                    this.linePayTxnUnsubs = [];
-                    this.linePayTxnListening = false;
-                },
-                maybeStartLinePayTransactionsListener() {
-                    if (this.hasVisibleLinePayOrders()) this.startLinePayTransactionsListener();
-                    else if (this.linePayTxnListening) this.stopLinePayTransactionsListener();
-                },
-                startLinePayTransactionsListener() {
-                    if (this.linePayTxnListening) return;
-                    this.linePayTxnListening = true;
-                    const txnQ = query(ref(db, 'linepay_transactions'), limitToLast(100));
+                syncLinePayTransactionState() {
                     const _confirmed = {}, _statusMap = {};
-                    let _timer = null;
-                    const _flush = () => {
-                        this.lpConfirmed = Object.assign({}, _confirmed);
-                        this.lpStatus = Object.assign({}, _statusMap);
-                    };
-                    const _update = (snap) => {
-                        const oid = snap.key, txn = snap.val() || {}, st = txn.status || '';
-                        _statusMap[oid] = st;
-                        if (st === 'confirmed') _confirmed[oid] = true;
-                        else delete _confirmed[oid];
-                        clearTimeout(_timer);
-                        _timer = setTimeout(_flush, 150);
-                    };
-                    const u1 = onChildAdded(txnQ, _update);
-                    const u2 = onChildChanged(txnQ, _update);
-                    const u3 = onChildRemoved(txnQ, (snap) => {
-                        delete _statusMap[snap.key];
-                        delete _confirmed[snap.key];
-                        clearTimeout(_timer);
-                        _timer = setTimeout(_flush, 150);
+                    (this.orders || []).forEach((order) => {
+                        if (!order || !order.id) return;
+                        const transaction = (order.linePayTransaction && typeof order.linePayTransaction === 'object') ? order.linePayTransaction : {};
+                        const paymentStatus = String(order.paymentStatus || '').toLowerCase();
+                        let status = String(transaction.status || '').toLowerCase();
+                        if (!status && (paymentStatus === 'refunded' || order.paymentMethod === 'linepay_refund')) status = 'refunded';
+                        else if (!status && paymentStatus === 'paid') status = 'confirmed';
+                        if (status) _statusMap[order.id] = status;
+                        if (status === 'confirmed') _confirmed[order.id] = true;
                     });
-                    this.linePayTxnUnsubs = [u1, u2, u3];
+                    this.lpConfirmed = _confirmed;
+                    this.lpStatus = _statusMap;
                 },
                 resetOrderBucketListeners() {
                     (this.orderBucketUnsubs || []).forEach((fn) => { try { fn && fn(); } catch(_) {} });
@@ -3615,9 +3575,13 @@
                 },
                 getLinePayState(order) {
                     if (!order) return 'pending';
-                    const txnState = this.lpStatus[order.id] || '';
+                    const transaction = (order.linePayTransaction && typeof order.linePayTransaction === 'object') ? order.linePayTransaction : {};
+                    const txnState = String(transaction.status || this.lpStatus[order.id] || '').toLowerCase();
+                    const paymentStatus = String(order.paymentStatus || '').toLowerCase();
                     if (txnState === 'refunded') return 'refunded';
                     if (txnState === 'confirmed') return 'paid';
+                    if (paymentStatus === 'refunded' || order.paymentMethod === 'linepay_refund') return 'refunded';
+                    if (paymentStatus === 'paid') return 'paid';
                     return 'pending';
                 },
                 async requestLinePayRefund(order) {

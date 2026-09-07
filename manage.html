@@ -2085,9 +2085,9 @@ window._doCountUp = function() {
 </script>
 <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
-    import { getDatabase, ref, set, get, push, update, remove, onValue, onChildAdded, onChildChanged, onChildRemoved, query, orderByChild, equalTo, limitToLast } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
+    import { getDatabase, ref, set, get, push, update, remove, onValue } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-    import { listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, readManageSettingsFromPocketBase, readManageMenuFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, writeMenuItemToPocketBase, deleteMenuItemFromPocketBase, updateMenuSortInPocketBase, writeSettingsToPocketBase, requestLineMembers, pocketBaseRecordToOrder, isReservedOrderId } from "./pocketbase-order-writer.20260809_005.js?v=20260902_consistency_1";
+    import { listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, readManageSettingsFromPocketBase, readManageMenuFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, writeMenuItemToPocketBase, deleteMenuItemFromPocketBase, updateMenuSortInPocketBase, writeSettingsToPocketBase, requestLineMembers, pocketBaseRecordToOrder, isReservedOrderId } from "./pocketbase-order-writer.20260809_005.js?v=20260907_linepay_txn_1";
     import { isManageUser } from "./staff-auth-activation.20260818_001.js?v=20260818_001";
 
     const firebaseConfig = {
@@ -2233,8 +2233,6 @@ window._doCountUp = function() {
                 viewingPhoneFile: null,
                 lpConfirmed: {},
                 lpTxnState: {},
-                linePayTxnUnsubs: [],
-                linePayTxnListening: false,
                 reportLoading: false,
                 reportRevenueMode: 'today',
                 reportDashboard: {
@@ -2525,7 +2523,7 @@ window._doCountUp = function() {
                 if (newTab === 'menu' && this.menuRefreshHandler) this.menuRefreshHandler();
                 if (newTab === 'stats') {
                     if (this.lineMemberOrdersMode) {
-                        this.startLinePayTransactionsListener();
+                        this.syncLinePayTransactionState();
                         return;
                     }
                     this.activateStatsView();
@@ -2881,6 +2879,7 @@ window._doCountUp = function() {
                         .filter(Boolean);
                     self.statsOrders = rows;
                     self.allOrdersCache = rows.slice();
+                    self.syncLinePayTransactionState();
                     self.statsSearch = '';
                     self.statsSubTab = 'detail';
                     var dates = rows.map(function(order) { return self.getOrderDate(order); }).filter(Boolean).sort();
@@ -4676,14 +4675,16 @@ window._doCountUp = function() {
             },
             isLinePayRefunded: function(order) {
                 if (!order) return false;
-                var txnState = (this.lpTxnState && this.lpTxnState[order.id]) ? String(this.lpTxnState[order.id]).toLowerCase() : '';
+                var transaction = (order.linePayTransaction && typeof order.linePayTransaction === 'object') ? order.linePayTransaction : {};
+                var txnState = String(transaction.status || (this.lpTxnState && this.lpTxnState[order.id]) || '').toLowerCase();
                 var payStatus = order.paymentStatus ? String(order.paymentStatus).toLowerCase() : '';
-                return payStatus === 'refunded' || txnState === 'refunded';
+                return payStatus === 'refunded' || order.paymentMethod === 'linepay_refund' || txnState === 'refunded';
             },
             isLinePayPaid: function(order) {
                 if (!order) return false;
                 if (this.isLinePayRefunded(order)) return false;
-                var txnState = (this.lpTxnState && this.lpTxnState[order.id]) ? String(this.lpTxnState[order.id]).toLowerCase() : '';
+                var transaction = (order.linePayTransaction && typeof order.linePayTransaction === 'object') ? order.linePayTransaction : {};
+                var txnState = String(transaction.status || (this.lpTxnState && this.lpTxnState[order.id]) || '').toLowerCase();
                 var payStatus = order.paymentStatus ? String(order.paymentStatus).toLowerCase() : '';
                 return payStatus === 'paid' || !!(this.lpConfirmed && this.lpConfirmed[order.id]) || txnState === 'confirmed';
             },
@@ -6076,46 +6077,29 @@ window._doCountUp = function() {
             setQuickDate: function(mode) {
                 this.statsMode = mode;
                 if (this.statsSubTab === 'phoneFiles') return;
-                this.startLinePayTransactionsListener();
+                this.syncLinePayTransactionState();
                 this.loadStats();
             },
-            startLinePayTransactionsListener: function() {
+            syncLinePayTransactionState: function() {
                 var self = this;
-                if (self.linePayTxnListening) return;
-                self.linePayTxnListening = true;
-                var txnQ = query(ref(db, 'linepay_transactions'), limitToLast(200));
                 var confirmed = {};
                 var txnState = {};
-                var timer = null;
-                var flush = function() {
-                    self.lpConfirmed = Object.assign({}, confirmed);
-                    self.lpTxnState = Object.assign({}, txnState);
-                };
-                var update = function(snap) {
-                    var val = snap.val() || {};
-                    var oid = snap.key;
-                    var st = val && val.status ? String(val.status).toLowerCase() : '';
-                    if (!st) return;
-                    txnState[oid] = st;
-                    if (st === 'confirmed') confirmed[oid] = true;
-                    else delete confirmed[oid];
-                    clearTimeout(timer);
-                    timer = setTimeout(flush, 150);
-                };
-                self.linePayTxnUnsubs = [
-                    onChildAdded(txnQ, update),
-                    onChildChanged(txnQ, update),
-                    onChildRemoved(txnQ, function(snap) {
-                        delete txnState[snap.key];
-                        delete confirmed[snap.key];
-                        clearTimeout(timer);
-                        timer = setTimeout(flush, 150);
-                    })
-                ];
+                (self.allOrdersCache || self.statsOrders || []).forEach(function(order) {
+                    if (!order || !order.id) return;
+                    var transaction = (order.linePayTransaction && typeof order.linePayTransaction === 'object') ? order.linePayTransaction : {};
+                    var paymentStatus = String(order.paymentStatus || '').toLowerCase();
+                    var status = String(transaction.status || '').toLowerCase();
+                    if (!status && (paymentStatus === 'refunded' || order.paymentMethod === 'linepay_refund')) status = 'refunded';
+                    else if (!status && paymentStatus === 'paid') status = 'confirmed';
+                    if (status) txnState[order.id] = status;
+                    if (status === 'confirmed') confirmed[order.id] = true;
+                });
+                self.lpConfirmed = confirmed;
+                self.lpTxnState = txnState;
             },
             activateStatsView: function() {
                 var self = this;
-                self.startLinePayTransactionsListener();
+                self.syncLinePayTransactionState();
                 this.$nextTick(function() {
                     self.loadStats().finally(function() {
                         self.$nextTick(function() {
@@ -6136,7 +6120,7 @@ window._doCountUp = function() {
             },
             refreshStats: function() {
                 var self = this;
-                this.startLinePayTransactionsListener();
+                this.syncLinePayTransactionState();
                 this.allOrdersCache = null;
                 this.loadStats().finally(function() {
                     self.$nextTick(function() {
@@ -7109,6 +7093,7 @@ window._doCountUp = function() {
                         self.allOrdersCache = (Array.isArray(result.orders) ? result.orders : []).map(function(o) {
                             return self.applyStatusOverrideToOrder(self.normalizeStatsOrder(o));
                         });
+                        self.syncLinePayTransactionState();
                         self.doFilter();
                         return self.statsOrders;
                     }).catch(function(e) {
@@ -7432,6 +7417,7 @@ window._doCountUp = function() {
                     phoneOrders.forEach(function(o){ mergeOrderById(mergedMap, o); });
                     self.backfillStatsOrdersToPocketBase(Object.values(mergedMap));
                     self.allOrdersCache = collapseStatsByDisplaySignature(collapseMergedStatsValues(Object.values(mergedMap))).map(function(o) { return self.applyStatusOverrideToOrder(o); });
+                    self.syncLinePayTransactionState();
                     self.doFilter();
                     return self.statsOrders;
                 }).catch(function(e) {
