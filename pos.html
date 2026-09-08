@@ -432,6 +432,10 @@
         </p>
       </div>
       <div class="flex gap-2">
+        <button v-if="orderMode==='pos'" @click="openStaffPresetPicker"
+          class="h-9 rounded-full border border-amber-200 bg-amber-50 px-3 text-xs font-black text-amber-700 hover:bg-amber-100 transition active:scale-95">
+          ⭐ 常客
+        </button>
         <button v-if="orderMode==='pos'" @click="toggleVoiceOrdering" :disabled="voiceConnecting"
           :title="voiceActive ? '停止語音點餐' : '開始語音點餐'"
           class="w-9 h-9 rounded-full border flex items-center justify-center text-lg transition active:scale-90 disabled:opacity-50"
@@ -576,6 +580,44 @@
             class="py-3 rounded-xl font-bold text-sm bg-gray-200 hover:bg-gray-300 text-gray-600 transition">關閉</button>
         </template>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- 常客快速單：先選常客；同一常客有多個範本時，再於同一視窗選平日／週末等範本。 -->
+<div v-if="showStaffPresetPicker" class="fixed inset-0 z-[1100] flex items-center justify-center p-3" style="background:rgba(0,0,0,.5)" @click.self="closeStaffPresetPicker">
+  <div class="w-full max-w-2xl max-h-[88vh] overflow-y-auto rounded-2xl bg-white shadow-2xl border border-amber-100">
+    <div class="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-gray-100 bg-white px-5 py-4">
+      <div>
+        <h3 class="text-lg font-black text-gray-800">{{ selectedStaffPreset ? selectedStaffPreset.buttonLabel : '常客快速單' }}</h3>
+        <p class="mt-0.5 text-xs text-gray-400">{{ selectedStaffPreset ? '請選擇這次要套用的餐點範本' : '選擇常客後，餐點會先帶入目前訂單供您確認' }}</p>
+      </div>
+      <button @click="closeStaffPresetPicker" class="h-9 w-9 rounded-full bg-gray-100 text-xl text-gray-500 hover:bg-gray-200">×</button>
+    </div>
+    <div class="p-5">
+      <div v-if="staffPresetsLoading" class="py-12 text-center font-bold text-gray-400">讀取常客資料中…</div>
+      <div v-else-if="staffPresetsError" class="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-600">
+        <p>{{ staffPresetsError }}</p>
+        <button @click="loadStaffPresets" class="mt-3 rounded-lg bg-red-600 px-3 py-2 font-bold text-white">重新讀取</button>
+      </div>
+      <template v-else-if="selectedStaffPreset">
+        <button @click="selectedStaffPreset=null" class="mb-3 text-sm font-bold text-amber-600 hover:text-amber-700">← 返回常客列表</button>
+        <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <button v-for="template in (selectedStaffPreset.templates||[])" :key="template.id" @click="applyStaffPresetTemplate(selectedStaffPreset,template)"
+            class="rounded-xl border-2 border-amber-100 bg-amber-50 p-4 text-left hover:border-amber-400 hover:bg-amber-100 transition active:scale-[.99]">
+            <div class="flex items-center justify-between gap-2"><b class="text-lg text-amber-800">{{ template.label }}</b><span class="rounded-full bg-white px-2 py-1 text-xs font-bold text-gray-500">{{ template.orderType==='dinein' ? '內用' : '外帶' }}</span></div>
+            <p class="mt-2 text-sm leading-6 text-gray-600">{{ staffPresetTemplateSummary(template) }}</p>
+          </button>
+        </div>
+      </template>
+      <div v-else-if="activeStaffPresets.length" class="grid grid-cols-2 gap-3 sm:grid-cols-3">
+        <button v-for="preset in activeStaffPresets" :key="preset.id" @click="selectStaffPreset(preset)"
+          class="min-h-24 rounded-xl border-2 border-gray-100 bg-gray-50 p-3 text-left hover:border-amber-400 hover:bg-amber-50 transition active:scale-[.98]">
+          <b class="block text-base text-gray-800">{{ preset.buttonLabel }}</b>
+          <span class="mt-1 block text-xs text-gray-400">{{ (preset.templates||[]).length }} 個範本<span v-if="preset.customerName">・{{ preset.customerName }}</span></span>
+        </button>
+      </div>
+      <div v-else class="py-12 text-center text-sm text-gray-400">尚未建立可用的常客快速單</div>
     </div>
   </div>
 </div>
@@ -849,7 +891,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getDatabase, ref, onValue, onChildAdded, onChildChanged, onChildRemoved, update, push, set, get, remove, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-    import { allocateOrderNoFromPocketBase, resetOrderNoInPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, requestLinePayViaBackend, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, readManageMenuFromPocketBase, listMenuItemsFromPocketBase, writeMenuItemToPocketBase, writeSettingsToPocketBase, rememberPublicMenuItems, rememberPublicSettings, normalizePublicSettings, subscribeOrdersRealtime, isReservedOrderId } from "./pocketbase-order-writer.20260809_005.js?v=20260907_linepay_txn_1";
+    import { allocateOrderNoFromPocketBase, resetOrderNoInPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, requestLinePayViaBackend, queuePhoneOrderCommandViaBackend, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, readManageMenuFromPocketBase, listMenuItemsFromPocketBase, writeMenuItemToPocketBase, writeSettingsToPocketBase, requestStaffOrderPresets, rememberPublicMenuItems, rememberPublicSettings, normalizePublicSettings, subscribeOrdersRealtime, isReservedOrderId } from "./pocketbase-order-writer.20260809_005.js?v=20260908_staff_presets_1";
     import { isBackofficeUser } from "./staff-auth-activation.20260818_001.js?v=20260818_001";
     const firebaseConfig = {
         apiKey:"AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -922,6 +964,7 @@
                 menu:[],menuItems:[],menuLoading:true,filterCat:"",settings:{categories:[],stations:[{name:'湯麵',ip:'192.168.0.6'},{name:'麵包台',ip:'192.168.0.7'},{name:'飲料台',ip:'192.168.0.8'}]},settingsStationsLoaded:false,
                 activeView:"menu",editMode:false,
                 cart:[],custName:"",custPhone:"",isSubmitting:false,
+                staffPresets:[],staffPresetsLoading:false,staffPresetsError:"",showStaffPresetPicker:false,selectedStaffPreset:null,
                 voiceActive:false,voiceConnecting:false,voiceStatus:"",voiceTranscript:"",
                 posMetaExpanded:false,showStorePayChoiceModal:false,showLinePayChoiceModal:false,showCounterSettingsModal:false,showCashCalculator:false,showBackendStatus:false,posOrderNote:"",
                 counterResetTime:"00:00",counterMaxNo:999,counterLegacyValue:0,counterSaving:false,cashCalcInput:"",
@@ -951,6 +994,7 @@
             todayStr:function(){var d=new Date();return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);},
             allCategories:function(){return this.settings.categories||[];},
             filteredMenu:function(){var s=this;if(!s.filterCat){if(s.settings.hideAllTab&&s.allCategories.length){s.filterCat=s.allCategories[0];return s.menu.filter(function(i){return i.category===s.allCategories[0];});}return s.menu;}return s.menu.filter(function(i){return i.category===s.filterCat;});},
+            activeStaffPresets:function(){return (this.staffPresets||[]).filter(function(row){return row&&row.active!==false&&Array.isArray(row.templates)&&row.templates.length;});},
             cartTotal:function(){return this.cart.reduce(function(s,i){return s+(Number(i.itemTotal)||0);},0);},
             cartCount:function(){return this.cart.reduce(function(s,i){return s+i.qty;},0);},
             cashReceivedAmount:function(){return Number(this.cashCalcInput||0)||0;},
@@ -1128,6 +1172,140 @@
             window.addEventListener('pageshow',function(e){if(e.persisted)s._openTodayResumeHandler();});
         },
         methods:{
+            loadStaffPresets:function(){
+                var s=this;
+                if(s.staffPresetsLoading)return Promise.resolve(s.staffPresets);
+                s.staffPresetsLoading=true;s.staffPresetsError="";
+                return requestStaffOrderPresets({
+                    action:'read',settings:s.settings||{},firebaseUser:auth.currentUser,timeoutMs:12000,secureTimeoutMs:12000
+                }).then(function(result){
+                    s.staffPresets=Array.isArray(result&&result.records)?result.records:[];
+                    return s.staffPresets;
+                }).catch(function(err){
+                    s.staffPresets=[];
+                    s.staffPresetsError='常客資料讀取失敗：'+String(err&&err.message||err||'未知錯誤');
+                    return [];
+                }).finally(function(){s.staffPresetsLoading=false;});
+            },
+            openStaffPresetPicker:function(){
+                var s=this;
+                s.selectedStaffPreset=null;s.showStaffPresetPicker=true;
+                Promise.all([
+                    s.loadStaffPresets(),
+                    s.loadProtectedMenuDetails().catch(function(){return s.menu||[];})
+                ]).catch(function(){});
+            },
+            closeStaffPresetPicker:function(){this.showStaffPresetPicker=false;this.selectedStaffPreset=null;},
+            selectStaffPreset:function(preset){
+                var templates=Array.isArray(preset&&preset.templates)?preset.templates:[];
+                if(templates.length===1)this.applyStaffPresetTemplate(preset,templates[0]);
+                else this.selectedStaffPreset=preset;
+            },
+            staffPresetTemplateSummary:function(template){
+                var rows=(template&&Array.isArray(template.items)?template.items:[]).map(function(item){
+                    return String(item&&item.menuItemName||'餐點')+' ×'+Math.max(1,Number(item&&item.qty)||1);
+                });
+                return rows.join('、')||'尚無餐點';
+            },
+            findPresetMenuItem:function(saved){
+                var id=String(saved&&saved.menuItemId||'');
+                return (this.menu||[]).find(function(item){return item&&String(item.id||'')===id;})||null;
+            },
+            buildStaffPresetCartItem:function(saved){
+                var s=this,item=s.findPresetMenuItem(saved);
+                if(!item)throw new Error('找不到餐點「'+String(saved&&saved.menuItemName||'未知餐點')+'」');
+                if(item.active===false)throw new Error('餐點「'+String(item.name||saved.menuItemName)+'」目前已下架');
+                var basePrice=Number(item.price)||0,extra=0,selections=[],optionSelections={},comboDrinkPrintName='',mealDrinkBase='';
+                var savedSelections=saved&&saved.selections&&typeof saved.selections==='object'&&!Array.isArray(saved.selections)?saved.selections:{};
+                var addChoice=function(group,choice,index){
+                    var pricing=String(group&&group.pricing||''),choicePrice=Number(choice&&choice.price)||0,selPrintName='';
+                    if(pricing==='setPrice')basePrice=choicePrice;
+                    else if(pricing==='addDelta')extra+=choicePrice;
+                    else if(pricing==='mealUpgrade'){
+                        extra+=Math.max(0,choicePrice-(Number(group.baseValue)||0));
+                        mealDrinkBase=s.splitDrinkName(choice.name).base;
+                        selPrintName=s.getDrinkTicketNameForPrint(mealDrinkBase);
+                        if(selPrintName)comboDrinkPrintName=selPrintName;
+                    }
+                    var selection={groupName:group.groupName,idx:index,name:choice.name,price:choicePrice,pricing:pricing,baseValue:Number(group.baseValue)||0,mealUpgradeDisplayLabel:String(group.mealUpgradeDisplayLabel||'').trim(),mealUpgradeChargePrefix:String(group.mealUpgradeChargePrefix||'').trim()};
+                    if(selPrintName){selection.drinkPrintName=selPrintName;selection.comboDrinkPrintName=selPrintName;}
+                    selections.push(selection);
+                };
+                (Array.isArray(item.optionGroups)?item.optionGroups:[]).forEach(function(group,groupIndex){
+                    var choices=Array.isArray(group&&group.choices)?group.choices:[];
+                    var groupName=String(group&&group.groupName||'');
+                    var selectionKey=groupName+'\u241f'+groupIndex;
+                    var raw=Object.prototype.hasOwnProperty.call(savedSelections,selectionKey)?savedSelections[selectionKey]:savedSelections[groupName];
+                    if(group&&group.type==='checkbox'){
+                        var names=Array.isArray(raw)?raw:(raw?[raw]:[]);
+                        var picked=[];
+                        names.forEach(function(name){
+                            var index=choices.findIndex(function(choice){return String(choice&&choice.name||'')===String(name||'');});
+                            if(index<0)throw new Error('餐點「'+item.name+'」的選項「'+name+'」已不存在');
+                            picked.push(String(choices[index].name||''));addChoice(group,choices[index],index);
+                        });
+                        if(picked.length)optionSelections[group.groupName]=picked.join('、');
+                        return;
+                    }
+                    var desired=String(raw||'').trim();
+                    var choiceIndex=desired?choices.findIndex(function(choice){return String(choice&&choice.name||'')===desired;}):Math.max(0,Number(group&&group.defaultIdx)||0);
+                    if(choiceIndex<0||!choices[choiceIndex])throw new Error('餐點「'+item.name+'」的選項「'+(desired||group.groupName)+'」已不存在');
+                    optionSelections[group.groupName]=String(choices[choiceIndex].name||'');
+                    addChoice(group,choices[choiceIndex],choiceIndex);
+                });
+                var optionNames=Array.isArray(saved&&saved.optionNames)?saved.optionNames:[];
+                var options=optionNames.map(function(name){
+                    var match=(item.options||[]).find(function(row){return row&&String(row.name||'')===String(name||'');});
+                    if(!match)throw new Error('餐點「'+item.name+'」的加料「'+name+'」已不存在');
+                    return {name:match.name,price:Number(match.price)||0};
+                });
+                var posExtraNames=Array.isArray(saved&&saved.posExtraNames)?saved.posExtraNames:[];
+                var posExtras=posExtraNames.map(function(name){
+                    var match=(item.posExtras||[]).find(function(row){return row&&!s.isPosExtraSection(row)&&String(row.name||'')===String(name||'');});
+                    if(!match)throw new Error('餐點「'+item.name+'」的 POS 食材「'+name+'」已不存在');
+                    return {name:match.name,price:Number(match.price)||0};
+                });
+                extra+=options.reduce(function(total,row){return total+Number(row.price||0);},0);
+                extra+=posExtras.reduce(function(total,row){return total+Number(row.price||0);},0);
+                var drinkAddonNames=Array.isArray(saved&&saved.drinkAddonNames)?saved.drinkAddonNames:[];
+                var comboDrinkAddons=[];
+                if(drinkAddonNames.length){
+                    var drinkItem=mealDrinkBase?s.findDrinkMenuItem(mealDrinkBase):null;
+                    if(!drinkItem)throw new Error('餐點「'+item.name+'」目前找不到套餐飲料，無法套用飲料加料');
+                    comboDrinkAddons=drinkAddonNames.map(function(name){
+                        var match=(drinkItem.options||[]).find(function(row){return row&&String(row.name||'')===String(name||'');});
+                        if(!match)throw new Error('飲料「'+mealDrinkBase+'」的加料「'+name+'」已不存在');
+                        return {name:match.name,price:Number(match.price)||0};
+                    });
+                    extra+=comboDrinkAddons.reduce(function(total,row){return total+Number(row.price||0);},0);
+                }
+                var qty=Math.max(1,Math.min(99,Math.floor(Number(saved&&saved.qty)||1)));
+                return {id:item.id,name:item.name,shortName:String(item.shortName||'').trim(),printName:String(item.shortName||item.printName||'').trim(),price:Number(item.price)||0,station:item.station||s.getDefaultStationName(),printStations:Array.isArray(item.printStations)?item.printStations.slice():[],qty:qty,note:String(saved&&saved.note||''),drinkNote:String(saved&&saved.drinkNote||''),options:options,posExtras:posExtras,comboDrinkAddons:comboDrinkAddons,comboDrinkPrintName:comboDrinkPrintName,comboDrinkShortName:comboDrinkPrintName,optionGroupSelections:selections,optionSelections:optionSelections,selectedOptions:Object.assign({},optionSelections),itemTotal:(basePrice+extra)*qty};
+            },
+            applyStaffPresetTemplate:function(preset,template){
+                var s=this;
+                if(!preset||!template)return;
+                if(s.cart.length&&!confirm('目前訂單已有餐點，是否改用「'+preset.buttonLabel+'－'+template.label+'」並取代現有內容？'))return;
+                var nextCart;
+                try{
+                    var items=Array.isArray(template.items)?template.items:[];
+                    if(!items.length)throw new Error('此範本沒有餐點');
+                    nextCart=items.map(function(item){return s.buildStaffPresetCartItem(item);});
+                }catch(err){
+                    alert('無法套用常客快速單：'+String(err&&err.message||err));
+                    return;
+                }
+                s.cart=nextCart;
+                s.custName=String(preset.customerName||preset.buttonLabel||'常客');
+                s.custPhone=String(preset.phone||'');
+                s.posOrderType=template.orderType==='dinein'?'dinein':'takeout';
+                var tableLabel=String(template.tableLabel||'');
+                s.posTableLabel=s.posOrderType==='dinein'&&(s.posTables||[]).indexOf(tableLabel)>=0?tableLabel:'';
+                s.posOrderNote=String(template.orderNote||'');
+                s.posPickupDate=s.todayStr;s.posPickupTime='現場取餐';
+                s.closeStaffPresetPicker();
+                s.toast('✓ 已帶入 '+preset.buttonLabel+'－'+template.label+'，請確認後付款');
+            },
 
             knownMenuImageFallback:function(item){
                 return '';
@@ -2677,11 +2855,12 @@
                 return prefix&&id.indexOf(prefix)===0?id.slice(prefix.length):id;
             },
             queuePhoneOrderCommand:function(order,action,extra){
+                var s=this;
                 var original=(order&&order._integrationOriginal)||{};
                 var sourceOrderId=this.resolvePhoneCommandSourceOrderId(order);
                 if(!sourceOrderId)return Promise.reject(new Error('找不到電話訂單來源編號'));
                 var commandId='cmd_'+Date.now()+'_'+Math.random().toString(36).slice(2,8);
-                return set(ref(db,'integration_sync/phone_order_commands/'+commandId),Object.assign({
+                var command=Object.assign({
                     commandId:commandId,
                     action:action,
                     source:'pos_ui',
@@ -2691,7 +2870,18 @@
                     sourceOrderId:sourceOrderId,
                     serialNumber:order&&order.serialNumber?String(order.serialNumber):'',
                     rawJsonPath:(original.phoneAi&&original.phoneAi.rawJsonPath)||''
-                },extra||{}));
+                },extra||{});
+                return queuePhoneOrderCommandViaBackend(command,{
+                    settings:s.settings||{},
+                    pocketBaseUrl:s.pocketBaseUrl,
+                    pocketBaseOrderEndpoint:s.settings&&s.settings.pocketBaseOrderEndpoint,
+                    firebaseUser:auth.currentUser,
+                    timeoutMs:5000
+                }).catch(function(error){
+                    console.warn('PB phone command failed; using Firebase fallback:',error&&error.message?error.message:error);
+                    return set(ref(db,'integration_sync/phone_order_commands/'+commandId),command)
+                        .then(function(){return {ok:true,backend:'firebase_fallback',commandId:commandId};});
+                });
             },
             buildPhoneCommandPayment:function(realPm,oldPm,oldPaid){
                 if(realPm==='cash')return { paymentMethod:'cash', paymentStatus:'paid' };
@@ -5627,6 +5817,7 @@
                 var s=this;
                 s.openTodayPending=true;
                 s.startMenuSettingsPrimaryRead();
+                s.loadStaffPresets();
 
                 s.ordersLoading=true;
                 s.startOrdersPrimaryRead();

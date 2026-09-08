@@ -917,6 +917,47 @@
             </div>
         </div>
 
+        <!-- ===== TAB: 常客快速單 ===== -->
+        <div v-if="activeTab === 'presets'" class="manage-tab-panel p-6">
+            <div class="flex items-center justify-between gap-3 mb-6 flex-wrap">
+                <div>
+                    <h2 class="text-xl font-bold text-white">⭐ 常客快速單</h2>
+                    <p class="text-slate-400 text-sm mt-0.5">在此建立常客與餐點範本；POS 僅負責套用並由店員確認付款送單。</p>
+                </div>
+                <div class="flex gap-2">
+                    <button @click="loadStaffPresets" :disabled="staffPresetsLoading" class="bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-white text-sm font-bold px-3 py-2 rounded-lg">{{ staffPresetsLoading ? '讀取中…' : '重新整理' }}</button>
+                    <button @click="openAddStaffPreset" class="bg-amber-500 hover:bg-amber-400 text-slate-950 text-sm font-black px-4 py-2 rounded-lg">＋ 新增常客</button>
+                </div>
+            </div>
+            <p v-if="staffPresetsError" class="rounded-lg border border-red-800 bg-red-900/30 px-3 py-2 text-sm text-red-300 mb-3">{{ staffPresetsError }}</p>
+            <div v-if="!staffPresetsLoading && !staffPresets.length" class="rounded-xl border border-slate-700 bg-slate-800 p-8 text-center text-slate-400">尚未建立常客快速單</div>
+            <div v-else class="grid grid-cols-1 xl:grid-cols-2 gap-3">
+                <article v-for="(preset,index) in staffPresets" :key="preset.id" class="rounded-xl border border-slate-700 bg-slate-800 p-4" :class="preset.active ? '' : 'opacity-55'">
+                    <div class="flex gap-3 items-start">
+                        <div class="flex flex-col gap-1 flex-shrink-0">
+                            <button @click="moveStaffPreset(index,-1)" :disabled="index===0||staffPresetsSaving" class="text-slate-400 hover:text-white disabled:opacity-20 text-xs">▲</button>
+                            <button @click="moveStaffPreset(index,1)" :disabled="index===staffPresets.length-1||staffPresetsSaving" class="text-slate-400 hover:text-white disabled:opacity-20 text-xs">▼</button>
+                        </div>
+                        <div class="flex-1 min-w-0">
+                            <div class="flex items-center gap-2 flex-wrap">
+                                <h3 class="font-black text-white text-lg">{{ preset.buttonLabel }}</h3>
+                                <span :class="preset.active ? 'bg-emerald-900/60 text-emerald-300' : 'bg-slate-700 text-slate-400'" class="text-xs font-bold px-2 py-0.5 rounded-full">{{ preset.active ? 'POS 顯示' : '已停用' }}</span>
+                            </div>
+                            <p class="text-sm text-slate-400 mt-1">{{ preset.customerName || '未填姓名' }}<span v-if="preset.phone">　☎ {{ preset.phone }}</span></p>
+                            <div class="flex flex-wrap gap-1 mt-3">
+                                <span v-for="tpl in preset.templates" :key="tpl.id" class="rounded-full bg-amber-950/60 border border-amber-800/60 text-amber-300 text-xs px-2 py-1">{{ tpl.label }}・{{ (tpl.items||[]).length }} 項</span>
+                            </div>
+                        </div>
+                        <div class="flex gap-1 flex-shrink-0">
+                            <button @click="toggleStaffPreset(preset)" :disabled="staffPresetsSaving" class="bg-slate-700 hover:bg-slate-600 text-slate-200 text-xs font-bold px-2.5 py-2 rounded-lg">{{ preset.active ? '停用' : '啟用' }}</button>
+                            <button @click="openEditStaffPreset(preset)" class="bg-blue-700 hover:bg-blue-600 text-white text-xs font-bold px-2.5 py-2 rounded-lg">編輯</button>
+                            <button @click="deleteStaffPreset(preset)" :disabled="staffPresetsSaving" class="bg-red-950/70 hover:bg-red-900 text-red-300 text-xs font-bold px-2.5 py-2 rounded-lg">刪除</button>
+                        </div>
+                    </div>
+                </article>
+            </div>
+        </div>
+
         <!-- ===== TAB: LINE 會員 ===== -->
         <div v-if="activeTab === 'members'" class="manage-tab-panel p-6">
             <div class="flex items-center justify-between gap-3 mb-6">
@@ -2060,6 +2101,68 @@
     </div>
 </div>
 
+<!-- 常客快速單編輯 -->
+<div v-if="showStaffPresetModal" class="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-3" @click.self="showStaffPresetModal=false">
+    <div class="bg-slate-800 rounded-2xl border border-slate-600 w-full max-w-4xl max-h-[94vh] overflow-y-auto shadow-2xl">
+        <div class="sticky top-0 z-10 bg-slate-800 border-b border-slate-700 px-5 py-4 flex items-center justify-between">
+            <div><h3 class="text-white text-lg font-black">{{ staffPresetForm.id ? '編輯常客快速單' : '新增常客快速單' }}</h3><p class="text-slate-400 text-xs mt-0.5">價格不會固定保存；POS 套用時依目前菜單重新計算。</p></div>
+            <button @click="showStaffPresetModal=false" class="text-slate-400 hover:text-white text-2xl">×</button>
+        </div>
+        <div class="p-5 space-y-5">
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div><label class="block text-xs font-bold text-amber-300 mb-1">POS 按鈕名稱 *</label><input v-model.trim="staffPresetForm.buttonLabel" maxlength="60" placeholder="例：阿明" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white"></div>
+                <div><label class="block text-xs font-bold text-slate-300 mb-1">顧客姓名</label><input v-model.trim="staffPresetForm.customerName" maxlength="100" placeholder="選填" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white"></div>
+                <div><label class="block text-xs font-bold text-slate-300 mb-1">電話</label><input v-model.trim="staffPresetForm.phone" maxlength="32" placeholder="選填；僅員工可見" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white"></div>
+            </div>
+            <label class="inline-flex items-center gap-2 text-sm text-slate-200"><input v-model="staffPresetForm.active" type="checkbox" class="accent-amber-500"> 在 POS 顯示</label>
+
+            <section v-for="(tpl,templateIndex) in staffPresetForm.templates" :key="tpl.id" class="rounded-xl border border-amber-800/60 bg-slate-900/45 p-4 space-y-3">
+                <div class="flex items-center gap-2 flex-wrap">
+                    <span class="text-amber-400 font-black">範本 {{ templateIndex+1 }}</span>
+                    <input v-model.trim="tpl.label" maxlength="60" placeholder="例：平日、週末" class="min-w-44 flex-1 bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white">
+                    <select v-model="tpl.orderType" class="bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white"><option value="takeout">外帶</option><option value="dinein">內用</option></select>
+                    <input v-if="tpl.orderType==='dinein'" v-model.trim="tpl.tableLabel" maxlength="60" placeholder="預設桌號（可留空）" class="w-40 bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white">
+                    <button v-if="staffPresetForm.templates.length>1" @click="removeStaffPresetTemplate(templateIndex)" class="text-red-300 hover:text-red-200 text-sm font-bold">刪除範本</button>
+                </div>
+                <input v-model.trim="tpl.orderNote" maxlength="500" placeholder="整張訂單備註（選填）" class="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm">
+
+                <div v-for="(item,itemIndex) in tpl.items" :key="item.localId" class="rounded-lg border border-slate-700 bg-slate-800 p-3 space-y-2">
+                    <div class="flex items-center gap-2 flex-wrap">
+                        <select v-model="item.menuItemId" @change="staffPresetMenuItemChanged(item)" class="min-w-64 flex-1 bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm">
+                            <option value="">選擇餐點</option>
+                            <option v-for="menuItem in menuItems" :key="menuItem.id" :value="menuItem.id">{{ menuItem.name }}{{ menuItem.active===false ? '（已下架）' : '' }}</option>
+                        </select>
+                        <label class="text-xs text-slate-400">數量 <input v-model.number="item.qty" type="number" min="1" max="99" class="w-20 ml-1 bg-slate-700 border border-slate-600 rounded-lg px-2 py-2 text-white"></label>
+                        <button @click="removeStaffPresetItem(tpl,itemIndex)" class="text-red-300 hover:text-red-200 text-sm font-bold">移除</button>
+                    </div>
+                    <template v-if="presetMenuItem(item)">
+                        <div v-for="(group,groupIndex) in (presetMenuItem(item).optionGroups||[])" :key="group.groupName+'_'+groupIndex" class="flex items-start gap-2 text-sm">
+                            <span class="w-28 flex-shrink-0 text-slate-400 pt-2">{{ group.groupName }}</span>
+                            <div v-if="group.type==='checkbox'" class="flex flex-wrap gap-2 pt-1">
+                                <label v-for="choice in (group.choices||[])" :key="choice.name" class="rounded-lg bg-slate-700 px-2 py-1.5 text-slate-200"><input v-model="item.selections[presetSelectionKey(group,groupIndex)]" :value="choice.name" type="checkbox" class="mr-1 accent-amber-500">{{ choice.name }}</label>
+                            </div>
+                            <select v-else v-model="item.selections[presetSelectionKey(group,groupIndex)]" class="flex-1 bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white"><option v-for="choice in (group.choices||[])" :key="choice.name" :value="choice.name">{{ choice.name }}</option></select>
+                        </div>
+                        <div v-if="(presetMenuItem(item).options||[]).length" class="flex items-start gap-2 text-sm"><span class="w-28 flex-shrink-0 text-slate-400 pt-2">加料</span><div class="flex flex-wrap gap-2"><label v-for="opt in presetMenuItem(item).options" :key="opt.name" class="rounded-lg bg-slate-700 px-2 py-1.5 text-slate-200"><input v-model="item.optionNames" :value="opt.name" type="checkbox" class="mr-1 accent-amber-500">{{ opt.name }}</label></div></div>
+                        <div v-if="(presetMenuItem(item).posExtras||[]).length" class="flex items-start gap-2 text-sm"><span class="w-28 flex-shrink-0 text-purple-300 pt-2">POS 食材</span><div class="flex flex-wrap gap-2"><label v-for="opt in presetMenuItem(item).posExtras.filter(function(row){return row&&!row.isSection})" :key="opt.name" class="rounded-lg bg-purple-950/60 px-2 py-1.5 text-purple-200"><input v-model="item.posExtraNames" :value="opt.name" type="checkbox" class="mr-1 accent-purple-500">{{ opt.name }}</label></div></div>
+                    </template>
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-2">
+                        <input v-model.trim="item.note" maxlength="500" placeholder="餐點備註" class="bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm">
+                        <input v-model.trim="item.drinkNote" maxlength="300" placeholder="飲料備註" class="bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm">
+                        <input :value="(item.drinkAddonNames||[]).join('、')" @input="setPresetDrinkAddonNames(item,$event.target.value)" placeholder="飲料加料，以、分隔" class="bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm">
+                    </div>
+                </div>
+                <button @click="addStaffPresetItem(tpl)" class="w-full border border-dashed border-slate-600 hover:border-amber-500 rounded-lg py-2 text-amber-300 text-sm font-bold">＋ 新增餐點</button>
+            </section>
+            <button @click="addStaffPresetTemplate" class="w-full border border-dashed border-amber-700 hover:border-amber-400 rounded-xl py-3 text-amber-300 font-bold">＋ 新增另一個範本</button>
+        </div>
+        <div class="sticky bottom-0 bg-slate-800 border-t border-slate-700 p-4 flex gap-3">
+            <button @click="showStaffPresetModal=false" class="flex-1 bg-slate-700 hover:bg-slate-600 text-white font-bold py-3 rounded-xl">取消</button>
+            <button @click="saveStaffPreset" :disabled="staffPresetsSaving" class="flex-1 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-slate-950 font-black py-3 rounded-xl">{{ staffPresetsSaving ? '儲存中…' : '儲存常客快速單' }}</button>
+        </div>
+    </div>
+</div>
+
 </div>
 
 <script>
@@ -2087,7 +2190,7 @@ window._doCountUp = function() {
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getDatabase, ref, set, get, push, update, remove, onValue } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-    import { listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, readManageSettingsFromPocketBase, readManageMenuFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, writeMenuItemToPocketBase, deleteMenuItemFromPocketBase, updateMenuSortInPocketBase, writeSettingsToPocketBase, requestLineMembers, pocketBaseRecordToOrder, isReservedOrderId } from "./pocketbase-order-writer.20260809_005.js?v=20260907_linepay_txn_1";
+    import { listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, readManageSettingsFromPocketBase, readManageMenuFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, writeMenuItemToPocketBase, deleteMenuItemFromPocketBase, updateMenuSortInPocketBase, writeSettingsToPocketBase, requestLineMembers, requestStaffOrderPresets, pocketBaseRecordToOrder, isReservedOrderId } from "./pocketbase-order-writer.20260809_005.js?v=20260908_staff_presets_1";
     import { isManageUser } from "./staff-auth-activation.20260818_001.js?v=20260818_001";
 
     const firebaseConfig = {
@@ -2187,10 +2290,13 @@ window._doCountUp = function() {
                 mobileNavOpen: false, activeTab: 'menu', menuSubTab: 'items', settingsSubTab: 'ops', tabs: [
                     { id: 'menu',      label: '菜單管理', icon: '🍽️' },
                     { id: 'stats',     label: '營業統計', icon: '📊' },
+                    { id: 'presets',   label: '常客快速單', icon: '⭐' },
                     { id: 'members',   label: 'LINE 會員', icon: '💬' },
                     { id: 'settings',  label: '店面設定', icon: '⚙️' }
                 ],
                 lineMembers: [], lineMembersLoading: false, lineMembersError: '', linePushSettingSaving: false, lineMemberOrdersLoadingId: '', lineMemberOrdersMode: false, lineMemberOrdersMember: null,
+                staffPresets: [], staffPresetsLoading: false, staffPresetsSaving: false, staffPresetsError: '', showStaffPresetModal: false,
+                staffPresetForm: { id:'', buttonLabel:'', customerName:'', phone:'', active:true, sortOrder:0, templates:[] },
                 dragIdx: null, dragOverIdx: null, dragType: null, menuOrderDirty: false, tplOrderDirty: false,
                 tplChoiceDragIdx: null, tplChoiceDragOverIdx: null,
                 posExtraDragIdx: null, posExtraDragOverIdx: null,
@@ -2531,6 +2637,10 @@ window._doCountUp = function() {
                     this.lineMemberOrdersMode = false;
                     this.lineMemberOrdersMember = null;
                     this.loadLineMembers();
+                } else if (newTab === 'presets') {
+                    this.lineMemberOrdersMode = false;
+                    this.lineMemberOrdersMember = null;
+                    this.loadStaffPresets();
                 } else {
                     this.lineMemberOrdersMode = false;
                     this.lineMemberOrdersMember = null;
@@ -2547,6 +2657,260 @@ window._doCountUp = function() {
         },
 
         methods: {
+            newStaffPresetId: function(prefix) {
+                return String(prefix || 'row') + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+            },
+            newStaffPresetTemplate: function(label) {
+                return {
+                    id: this.newStaffPresetId('tpl'),
+                    label: label || '平日',
+                    orderType: 'takeout',
+                    tableLabel: '',
+                    orderNote: '',
+                    items: []
+                };
+            },
+            newStaffPresetItem: function() {
+                return {
+                    localId: this.newStaffPresetId('item'),
+                    menuItemId: '',
+                    menuItemName: '',
+                    qty: 1,
+                    selections: {},
+                    optionNames: [],
+                    posExtraNames: [],
+                    drinkAddonNames: [],
+                    note: '',
+                    drinkNote: ''
+                };
+            },
+            presetSelectionKey: function(group, groupIndex) {
+                return String(group && group.groupName || '') + '\u241f' + Number(groupIndex || 0);
+            },
+            loadStaffPresets: function() {
+                var self = this;
+                if (self.staffPresetsLoading) return Promise.resolve(self.staffPresets);
+                self.staffPresetsLoading = true;
+                self.staffPresetsError = '';
+                return requestStaffOrderPresets(self.pocketBaseManageOptions({ action: 'read', timeoutMs: 12000, secureTimeoutMs: 12000 })).then(function(result) {
+                    self.staffPresets = Array.isArray(result && result.records) ? result.records : [];
+                    return self.staffPresets;
+                }).catch(function(err) {
+                    self.staffPresets = [];
+                    self.staffPresetsError = '常客快速單讀取失敗：' + String((err && err.message) || err || '未知錯誤');
+                    return [];
+                }).finally(function() {
+                    self.staffPresetsLoading = false;
+                });
+            },
+            prepareStaffPresetItem: function(raw) {
+                var self = this;
+                var item = Object.assign(this.newStaffPresetItem(), raw || {});
+                item.localId = this.newStaffPresetId('item');
+                item.qty = Math.max(1, Math.min(99, Math.floor(Number(item.qty) || 1)));
+                item.selections = item.selections && typeof item.selections === 'object' && !Array.isArray(item.selections) ? item.selections : {};
+                item.optionNames = Array.isArray(item.optionNames) ? item.optionNames.slice() : [];
+                item.posExtraNames = Array.isArray(item.posExtraNames) ? item.posExtraNames.slice() : [];
+                item.drinkAddonNames = Array.isArray(item.drinkAddonNames) ? item.drinkAddonNames.slice() : [];
+                var menuItem = this.presetMenuItem(item);
+                (menuItem && Array.isArray(menuItem.optionGroups) ? menuItem.optionGroups : []).forEach(function(group, groupIndex) {
+                    var groupName = String(group && group.groupName || '');
+                    if (!groupName) return;
+                    var selectionKey = self.presetSelectionKey(group, groupIndex);
+                    if (!Object.prototype.hasOwnProperty.call(item.selections, selectionKey) && Object.prototype.hasOwnProperty.call(item.selections, groupName)) item.selections[selectionKey] = item.selections[groupName];
+                    if (group.type === 'checkbox') {
+                        if (!Array.isArray(item.selections[selectionKey])) item.selections[selectionKey] = [];
+                    } else if (Array.isArray(item.selections[selectionKey])) {
+                        item.selections[selectionKey] = item.selections[selectionKey][0] || '';
+                    }
+                });
+                return item;
+            },
+            openAddStaffPreset: function() {
+                var self = this;
+                self.staffPresetsError = '';
+                return self.loadProtectedMenuDetails().catch(function() { return self.menuItems || []; }).then(function() {
+                    var template = self.newStaffPresetTemplate('平日');
+                    template.items.push(self.newStaffPresetItem());
+                    self.staffPresetForm = {
+                        id: '',
+                        buttonLabel: '',
+                        customerName: '',
+                        phone: '',
+                        active: true,
+                        sortOrder: self.staffPresets.length,
+                        templates: [template]
+                    };
+                    self.showStaffPresetModal = true;
+                });
+            },
+            openEditStaffPreset: function(preset) {
+                var self = this;
+                if (!preset) return;
+                self.staffPresetsError = '';
+                return self.loadProtectedMenuDetails().catch(function() { return self.menuItems || []; }).then(function() {
+                    var copy = JSON.parse(JSON.stringify(preset));
+                    copy.templates = (Array.isArray(copy.templates) ? copy.templates : []).map(function(template) {
+                        template.id = template.id || self.newStaffPresetId('tpl');
+                        template.orderType = template.orderType === 'dinein' ? 'dinein' : 'takeout';
+                        template.items = (Array.isArray(template.items) ? template.items : []).map(function(item) { return self.prepareStaffPresetItem(item); });
+                        return template;
+                    });
+                    if (!copy.templates.length) {
+                        var template = self.newStaffPresetTemplate('平日');
+                        template.items.push(self.newStaffPresetItem());
+                        copy.templates.push(template);
+                    }
+                    self.staffPresetForm = copy;
+                    self.showStaffPresetModal = true;
+                });
+            },
+            presetMenuItem: function(item) {
+                var id = String(item && item.menuItemId || '');
+                return (this.menuItems || []).find(function(row) { return row && String(row.id || '') === id; }) || null;
+            },
+            staffPresetMenuItemChanged: function(item) {
+                if (!item) return;
+                var menuItem = this.presetMenuItem(item);
+                item.menuItemName = String(menuItem && menuItem.name || '');
+                item.selections = {};
+                var self = this;
+                (menuItem && Array.isArray(menuItem.optionGroups) ? menuItem.optionGroups : []).forEach(function(group, groupIndex) {
+                    var choices = Array.isArray(group && group.choices) ? group.choices : [];
+                    var groupName = String(group && group.groupName || '');
+                    if (!groupName) return;
+                    item.selections[self.presetSelectionKey(group, groupIndex)] = group.type === 'checkbox'
+                        ? []
+                        : String(choices[Math.max(0, Number(group.defaultIdx) || 0)] && choices[Math.max(0, Number(group.defaultIdx) || 0)].name || '');
+                });
+                item.optionNames = [];
+                item.posExtraNames = [];
+                item.drinkAddonNames = [];
+            },
+            setPresetDrinkAddonNames: function(item, value) {
+                if (!item) return;
+                item.drinkAddonNames = String(value || '').split(/[、,，]/).map(function(name) { return name.trim(); }).filter(Boolean);
+            },
+            addStaffPresetItem: function(template) {
+                if (template && Array.isArray(template.items)) template.items.push(this.newStaffPresetItem());
+            },
+            removeStaffPresetItem: function(template, index) {
+                if (template && Array.isArray(template.items)) template.items.splice(index, 1);
+            },
+            addStaffPresetTemplate: function() {
+                var template = this.newStaffPresetTemplate('範本 ' + (this.staffPresetForm.templates.length + 1));
+                template.items.push(this.newStaffPresetItem());
+                this.staffPresetForm.templates.push(template);
+            },
+            removeStaffPresetTemplate: function(index) {
+                if (this.staffPresetForm.templates.length > 1) this.staffPresetForm.templates.splice(index, 1);
+            },
+            cleanStaffPresetForSave: function(input) {
+                var self = this;
+                var buttonLabel = String(input && input.buttonLabel || '').trim();
+                if (!buttonLabel) throw new Error('請填寫 POS 按鈕名稱');
+                var templates = Array.isArray(input && input.templates) ? input.templates : [];
+                if (!templates.length) throw new Error('至少需要一個範本');
+                return {
+                    id: String(input.id || ''),
+                    buttonLabel: buttonLabel,
+                    customerName: String(input.customerName || '').trim(),
+                    phone: String(input.phone || '').trim(),
+                    active: input.active !== false,
+                    sortOrder: Math.max(0, Math.floor(Number(input.sortOrder) || 0)),
+                    templates: templates.map(function(template, templateIndex) {
+                        var label = String(template && template.label || '').trim();
+                        var items = Array.isArray(template && template.items) ? template.items : [];
+                        if (!label) throw new Error('範本 ' + (templateIndex + 1) + ' 尚未命名');
+                        if (!items.length) throw new Error(label + ' 尚未加入餐點');
+                        return {
+                            id: String(template.id || self.newStaffPresetId('tpl')),
+                            label: label,
+                            orderType: template.orderType === 'dinein' ? 'dinein' : 'takeout',
+                            tableLabel: String(template.tableLabel || '').trim(),
+                            orderNote: String(template.orderNote || '').trim(),
+                            items: items.map(function(item, itemIndex) {
+                                var menuItem = self.presetMenuItem(item);
+                                if (!menuItem) throw new Error(label + ' 的第 ' + (itemIndex + 1) + ' 個餐點尚未選擇');
+                                return {
+                                    menuItemId: String(menuItem.id || ''),
+                                    menuItemName: String(menuItem.name || ''),
+                                    qty: Math.max(1, Math.min(99, Math.floor(Number(item.qty) || 1))),
+                                    selections: JSON.parse(JSON.stringify(item.selections || {})),
+                                    optionNames: (item.optionNames || []).slice(),
+                                    posExtraNames: (item.posExtraNames || []).slice(),
+                                    drinkAddonNames: (item.drinkAddonNames || []).slice(),
+                                    note: String(item.note || '').trim(),
+                                    drinkNote: String(item.drinkNote || '').trim()
+                                };
+                            })
+                        };
+                    })
+                };
+            },
+            saveStaffPreset: function() {
+                var self = this;
+                if (self.staffPresetsSaving) return;
+                var preset;
+                try { preset = self.cleanStaffPresetForSave(self.staffPresetForm); }
+                catch (err) { alert(String((err && err.message) || err)); return; }
+                self.staffPresetsSaving = true;
+                self.staffPresetsError = '';
+                requestStaffOrderPresets(self.pocketBaseManageOptions({ action: 'upsert', preset: preset, timeoutMs: 12000, secureTimeoutMs: 12000 })).then(function(result) {
+                    var saved = result && result.record;
+                    var index = self.staffPresets.findIndex(function(row) { return row && row.id === (saved && saved.id); });
+                    if (saved && index >= 0) self.staffPresets.splice(index, 1, saved);
+                    else if (saved) self.staffPresets.push(saved);
+                    self.showStaffPresetModal = false;
+                }).catch(function(err) {
+                    self.staffPresetsError = '常客快速單儲存失敗：' + String((err && err.message) || err || '未知錯誤');
+                    alert(self.staffPresetsError);
+                }).finally(function() {
+                    self.staffPresetsSaving = false;
+                });
+            },
+            toggleStaffPreset: function(preset) {
+                var self = this;
+                if (!preset || self.staffPresetsSaving) return;
+                self.staffPresetsSaving = true;
+                requestStaffOrderPresets(self.pocketBaseManageOptions({ action: 'upsert', preset: Object.assign({}, preset, { active: preset.active === false }), timeoutMs: 12000, secureTimeoutMs: 12000 })).then(function(result) {
+                    if (result && result.record) Object.assign(preset, result.record);
+                }).catch(function(err) {
+                    self.staffPresetsError = '常客快速單更新失敗：' + String((err && err.message) || err || '未知錯誤');
+                }).finally(function() {
+                    self.staffPresetsSaving = false;
+                });
+            },
+            deleteStaffPreset: function(preset) {
+                var self = this;
+                if (!preset || !preset.id || self.staffPresetsSaving) return;
+                if (!confirm('確定刪除「' + (preset.buttonLabel || '此常客') + '」？')) return;
+                self.staffPresetsSaving = true;
+                requestStaffOrderPresets(self.pocketBaseManageOptions({ action: 'delete', presetId: preset.id, timeoutMs: 12000, secureTimeoutMs: 12000 })).then(function() {
+                    self.staffPresets = self.staffPresets.filter(function(row) { return row && row.id !== preset.id; });
+                }).catch(function(err) {
+                    self.staffPresetsError = '常客快速單刪除失敗：' + String((err && err.message) || err || '未知錯誤');
+                }).finally(function() {
+                    self.staffPresetsSaving = false;
+                });
+            },
+            moveStaffPreset: function(index, offset) {
+                var self = this;
+                var target = Number(index) + Number(offset);
+                if (self.staffPresetsSaving || target < 0 || target >= self.staffPresets.length) return;
+                var original = self.staffPresets.slice();
+                var moved = self.staffPresets.splice(index, 1)[0];
+                self.staffPresets.splice(target, 0, moved);
+                self.staffPresetsSaving = true;
+                requestStaffOrderPresets(self.pocketBaseManageOptions({ action: 'sort', ids: self.staffPresets.map(function(row) { return row.id; }), timeoutMs: 12000, secureTimeoutMs: 12000 })).then(function(result) {
+                    if (Array.isArray(result && result.records)) self.staffPresets = result.records;
+                }).catch(function(err) {
+                    self.staffPresets = original;
+                    self.staffPresetsError = '常客快速單排序失敗：' + String((err && err.message) || err || '未知錯誤');
+                }).finally(function() {
+                    self.staffPresetsSaving = false;
+                });
+            },
             choosePhoneFiles: function() {
                 if (this.$refs.phoneFileInput) this.$refs.phoneFileInput.click();
             },

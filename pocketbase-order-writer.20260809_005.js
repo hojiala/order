@@ -2370,6 +2370,19 @@ function writeManageRequest(kind, payload, options) {
     });
 }
 
+export function requestStaffOrderPresets(options) {
+    options = options || {};
+    var action = text(options.action || "read").trim().toLowerCase() || "read";
+    var payload = { action: action };
+    if (options.preset) payload.preset = plainJson(options.preset, {});
+    if (options.presetId) payload.presetId = text(options.presetId);
+    if (Array.isArray(options.ids)) payload.ids = options.ids.map(text);
+    return writeManageRequest("presets", payload, options).then(function(result) {
+        if (!result || result.ok === false) throw new Error((result && (result.message || result.reason)) || "PocketBase staff presets unavailable");
+        return Object.assign({ ok: true, backend: "pocketbase_manage" }, result);
+    });
+}
+
 export function readManageSettingsFromPocketBase(options) {
     return writeManageRequest("settings", { action: "read" }, options || {}).then(function(result) {
         if (!result || result.ok === false || !result.settings || typeof result.settings !== "object") {
@@ -2854,6 +2867,32 @@ export function requestLinePayViaBackend(orderId, orderDateKey, options) {
             maxAttempts: options.maxAttempts,
             delayMs: options.delayMs
         });
+    });
+}
+
+export function queuePhoneOrderCommandViaBackend(command, options) {
+    options = options || {};
+    command = command && typeof command === "object" ? command : {};
+    var config = resolvePocketBaseConfig(options);
+    var endpoint = cleanBaseUrl(config.orderEndpoint || "").replace(
+        /\/api\/(?:secure\/)?orders$/i,
+        "/api/phone-order/commands"
+    );
+    var user = options.firebaseUser;
+    if (!endpoint || endpoint === config.orderEndpoint) return Promise.reject(new Error("missing_phone_command_endpoint"));
+    if (!user || typeof user.getIdToken !== "function") return Promise.reject(new Error("firebase_auth_required"));
+    return Promise.resolve(user.getIdToken()).then(function(idToken) {
+        return requestJson(endpoint, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": "Bearer " + idToken
+            },
+            body: JSON.stringify({ action: "enqueue", command: command })
+        }, Number(options.timeoutMs || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS);
+    }).then(function(result) {
+        if (!result || result.ok !== true) throw new Error(text(result && result.message) || "phone_command_enqueue_failed");
+        return result;
     });
 }
 
