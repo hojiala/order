@@ -7566,7 +7566,7 @@ window._doCountUp = function() {
                     var src = String(order.source || '').toLowerCase().trim();
                     return ['no', day, no, src].join('|');
                 };
-                // ★ 「不能讓空值覆蓋已有非空值」的合併：避免 integration_views（snapshot 過期時可能 tableLabel='', pickupMode='takeout'）
+                // ★ 「不能讓空值覆蓋已有非空值」的合併：日期桶與電話單合併時保留較完整資料。
                 //   把 phone_ai/orders 的正確值（tableLabel='9桌', pickupMode='dinein'）蓋掉
                 var preserveNonEmpty = function(merged, current, incoming) {
                     var keys = ['tableLabel', 'pickupMode', 'pickupTime', 'pickupTimeLabel', 'pickupDate', 'orderNote', 'phone'];
@@ -7732,27 +7732,6 @@ window._doCountUp = function() {
                     return Object.keys(bySig).map(function(k){ return bySig[k]; });
                 };
 
-                var integrationPromise = Promise.all([
-                        get(ref(db, 'integration_views/merged_orders_history_index')),
-                        get(ref(db, 'integration_views/merged_orders_active')),
-                        get(ref(db, 'integration_views/merged_orders_today'))
-                    ])
-                    .then(function(snaps) {
-                        var out = [];
-                        snaps.forEach(function(snap) {
-                            if (!snap.exists()) return;
-                            var view = snap.val() || {};
-                            if (Array.isArray(view.orders)) out = out.concat(view.orders.filter(function(order) {
-                                return !isReservedOrderId(order && (order.id || order.sourceOrderId || order.orderId));
-                            }));
-                        });
-                        return collapseMergedStatsValues(out);
-                    })
-                    .catch(function(e) {
-                        console.error('讀取 integration_views 統計失敗:', e);
-                        return [];
-                    });
-
                 var phonePromise = get(ref(db, 'phone_ai/orders'))
                     .then(function(snap) {
                         if (!snap.exists()) return [];
@@ -7822,15 +7801,13 @@ window._doCountUp = function() {
                     });
                 })();
 
-                return Promise.all([integrationPromise, bucketPromise, phonePromise, overridesPromise]).then(function(parts) {
-                    var integrationOrders = Array.isArray(parts[0]) ? parts[0] : [];
-                    var bucketOrders = Array.isArray(parts[1]) ? parts[1] : [];
-                    var phoneOrders = Array.isArray(parts[2]) ? parts[2] : [];
-                    self.remoteStatusOverrides = parts[3] || {};
+                return Promise.all([bucketPromise, phonePromise, overridesPromise]).then(function(parts) {
+                    var bucketOrders = Array.isArray(parts[0]) ? parts[0] : [];
+                    var phoneOrders = Array.isArray(parts[1]) ? parts[1] : [];
+                    self.remoteStatusOverrides = parts[2] || {};
                     var mergedMap = {};
-                    integrationOrders.forEach(function(o){ mergeOrderById(mergedMap, o); });
                     bucketOrders.forEach(function(o){ mergeOrderById(mergedMap, o); });
-                    // phone_ai/orders 是電話訂單的即時真相源，最後合併，避免舊 integration view 把 making 蓋回 new。
+                    // phone_ai/orders 是電話訂單的備援真相源，最後合併。
                     phoneOrders.forEach(function(o){ mergeOrderById(mergedMap, o); });
                     self.backfillStatsOrdersToPocketBase(Object.values(mergedMap));
                     self.allOrdersCache = collapseStatsByDisplaySignature(collapseMergedStatsValues(Object.values(mergedMap))).map(function(o) { return self.applyStatusOverrideToOrder(o); });

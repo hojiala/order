@@ -1410,16 +1410,6 @@
                         return [];
                     });
                 });
-                var integrationRead=get(ref(db,'integration_views/merged_orders_active')).then(function(snap){
-                    var view=snap.exists()?(snap.val()||{}):{};
-                    var raw=Array.isArray(view.orders)?view.orders.slice():[];
-                    return raw.filter(function(o){
-                        return o&&typeof o==='object'&&typeof o.id==='string'&&o.id.indexOf('online_')!==0&&!isReservedOrderId(o.id);
-                    });
-                }).catch(function(err){
-                    console.warn('Firebase integration snapshot failed:',err&&err.message?err.message:err);
-                    return [];
-                });
                 var phoneRead=get(ref(db,'phone_ai/orders')).then(function(snap){
                     var raw=snap.exists()?(snap.val()||{}):{};
                     return Object.keys(raw).filter(function(id){
@@ -1437,7 +1427,7 @@
                     console.warn('Firebase phone snapshot failed:',err&&err.message?err.message:err);
                     return [];
                 });
-                return Promise.all(bucketReads.concat([integrationRead,phoneRead])).then(function(parts){
+                return Promise.all(bucketReads.concat([phoneRead])).then(function(parts){
                     var out=[];
                     parts.forEach(function(list){
                         (Array.isArray(list)?list:[]).forEach(function(o){if(o)out.push(o);});
@@ -1563,7 +1553,7 @@
                 console.warn('PocketBase orders read failed; using Firebase fallback:',reason&&reason.message?reason.message:reason);
                 s.pbOrdersSuccessStreak=0;
                 s.ordersFallbackHoldUntil=Date.now()+60000;
-                if(s.ordersReadBackend==='firebase'&&s.integrationOrdersUnsub)return;
+                if(s.ordersReadBackend==='firebase'&&(s.orderBucketUnsubs||[]).length)return;
                 s.ordersReadBackend='firebase';
                 s.ordersLoading=true;
                 s.resetOrderBucketListeners();
@@ -3219,41 +3209,11 @@
             listenIntegratedOrders:function(){
                 var s=this;
                 s.resetIntegrationOrdersListener();
-                var integrationRef=ref(db,'integration_views/merged_orders_active');
-                s.integrationOrdersUnsub=onValue(integrationRef,function(snap){
-                    var view=snap.exists()?(snap.val()||{}):{};
-                    // ★ 過濾掉 `online_` 前綴的鏡像條目（不明背景服務鏡像）
-                    var rawOrders=(Array.isArray(view.orders)?view.orders.slice():[]).filter(function(o){
-                        return o && typeof o==='object' && typeof o.id==='string' && o.id.indexOf('online_')!==0 && !isReservedOrderId(o.id);
-                    });
-                    s.integrationOrdersCache=s.normalizeIncomingOrders(rawOrders).map(function(o){return s.applyStatusOverrideToOrder(o);});
-                    if(s.ordersReadBackend==='firebase')s.backfillOrdersToPocketBaseBestEffort(s.integrationOrdersCache,'pos_integration_view_fallback');
-                    var parsed=s.integrationOrdersCache.slice();
-                    parsed.sort(function(a,b){
-                        var w={new:1,making:2,done:3,cancelled:4};
-                        if(w[a.status]!==w[b.status])return w[a.status]-w[b.status];
-                        var aNo=a.orderNo||0,bNo=b.orderNo||0;
-                        if(aNo!==bNo)return bNo-aNo;
-                        return (b.timestamp||0)-(a.timestamp||0);
-                    });
-                    s.integrationOrdersCache=parsed;
-                    s.useIntegrationView=!!parsed.length;
-                    if(parsed.length)s.resetPhoneOrdersListener();
-                    else if(s.ordersReadBackend==='firebase')s.listenPhoneOrders();
-                    s.rebuildOnlineOrders();
-                    s.ordersLoading=false;
-                    if(s.editingOrder){
-                        var found=s.onlineOrders.find(function(o){return o.id===s.editingOrder.id;});
-                        if(found)s.editingOrder=found;
-                    }
-                },function(err){
-                    console.error('failed to read integration_views:',err&&err.message?err.message:err);
-                    s.ordersLoading=false;
-                    s.integrationOrdersCache=[];
-                    s.useIntegrationView=false;
-                    if(s.ordersReadBackend==='firebase')s.listenPhoneOrders();
-                    s.rebuildOnlineOrders();
-                });
+                s.integrationOrdersCache=[];
+                s.useIntegrationView=false;
+                if(s.ordersReadBackend==='firebase')s.listenPhoneOrders();
+                s.rebuildOnlineOrders();
+                s.ordersLoading=false;
             },
             resetPhoneOrdersListener:function(){
                 var s=this;
@@ -5508,7 +5468,7 @@
                         if(!o||!o.id)return;
                         upsertMerged(mergedMap,o);
                     });
-                    // integration_views 作為主來源，避免同一張單在本地 buckets 被重覆疊加
+                    // Firebase 備援改由日期桶與 phone_ai/orders 合併。
                     integrationList.forEach(function(o){
                         upsertMerged(mergedMap,o);
                     });

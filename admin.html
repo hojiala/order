@@ -349,7 +349,7 @@
         import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
         import { getDatabase, ref, onValue, onChildAdded, onChildChanged, onChildRemoved, update, set, get, remove } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
         import { getAuth, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-        import { allocateOrderNoFromPocketBase, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, readManageMenuFromPocketBase, listMenuItemsFromPocketBase, writeOrderToPocketBase, isReservedOrderId } from "./pocketbase-order-writer.20260809_005.js?v=20260907_linepay_txn_1";
+        import { allocateOrderNoFromPocketBase, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, readManageMenuFromPocketBase, listMenuItemsFromPocketBase, writeOrderToPocketBase, queuePhoneOrderCommandViaBackend, isReservedOrderId } from "./pocketbase-order-writer.20260809_005.js?v=20260907_phone_cmd_pb_1";
         import { isBackofficeUser } from "./staff-auth-activation.20260818_001.js?v=20260818_001";
 
         // ★★★ 請貼入您相同的 Firebase 配置 ★★★
@@ -2490,7 +2490,7 @@
                     const sourceOrderId = this.resolvePhoneCommandSourceOrderId(order);
                     if (!sourceOrderId) return Promise.reject(new Error('找不到電話訂單來源編號'));
                     const commandId = 'cmd_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-                    return set(ref(db, 'integration_sync/phone_order_commands/' + commandId), Object.assign({
+                    const command = Object.assign({
                         commandId,
                         action,
                         source: 'admin_ui',
@@ -2500,7 +2500,18 @@
                         sourceOrderId,
                         serialNumber: order && order.serialNumber ? String(order.serialNumber) : '',
                         rawJsonPath: (original.phoneAi && original.phoneAi.rawJsonPath) || ''
-                    }, extra || {}));
+                    }, extra || {});
+                    return queuePhoneOrderCommandViaBackend(command, {
+                        settings: this.settings || {},
+                        pocketBaseUrl: this.pocketBaseUrl,
+                        pocketBaseOrderEndpoint: this.settings && this.settings.pocketBaseOrderEndpoint,
+                        firebaseUser: auth.currentUser,
+                        timeoutMs: 5000
+                    }).catch((error) => {
+                        console.warn('PB phone command failed; using Firebase fallback:', error && error.message ? error.message : error);
+                        return set(ref(db, 'integration_sync/phone_order_commands/' + commandId), command)
+                            .then(() => ({ ok: true, backend: 'firebase_fallback', commandId }));
+                    });
                 },
                 resetIntegrationOrdersListener() {
                     try { this.integrationOrdersUnsub && this.integrationOrdersUnsub(); } catch(_) {}
@@ -2653,7 +2664,7 @@
                     });
                 },
                 switchToFirebaseOrdersFallback(reason) {
-                    if (this.ordersReadBackend === 'firebase' && this.integrationOrdersUnsub) return;
+                    if (this.ordersReadBackend === 'firebase' && (this.orderBucketUnsubs || []).length) return;
                     console.warn('PocketBase orders read failed; using Firebase fallback:', reason && reason.message ? reason.message : reason);
                     this.pbOrdersSuccessStreak = 0;
                     this.ordersFallbackHoldUntil = Date.now() + 60000;
@@ -2721,37 +2732,14 @@
                     setInterval(_loadAdminSettings, 300000);
                     self.startOrdersPrimaryRead();
                     return;
-                    self.listenPhoneOrders();
-                    const integrationRef = ref(db, 'integration_views/merged_orders_active');
-                    self.integrationOrdersUnsub = onValue(integrationRef, (snap) => {
-                        const view = snap.exists() ? (snap.val() || {}) : {};
-                        self.integrationOrdersCache = self.normalizeIncomingOrders((Array.isArray(view.orders) ? view.orders : []).filter((order) => !isReservedOrderId(order && (order.id || order.sourceOrderId || order.orderId))));
-                        self.useIntegrationView = !!self.integrationOrdersCache.length;
-                        self.rebuildOrdersFromBuckets();
-                    }, (err) => {
-                        console.error('❌ integration_views 監聽失敗:', err && err.message ? err.message : err);
-                        self.integrationOrdersCache = [];
-                        self.useIntegrationView = false;
-                        self.rebuildOrdersFromBuckets();
-                    });
                 },
                 listenIntegratedOrdersFallback() {
                     const self = this;
                     self.resetIntegrationOrdersListener();
+                    self.integrationOrdersCache = [];
+                    self.useIntegrationView = false;
                     self.listenPhoneOrders();
-                    const integrationRef = ref(db, 'integration_views/merged_orders_active');
-                    self.integrationOrdersUnsub = onValue(integrationRef, (snap) => {
-                        const view = snap.exists() ? (snap.val() || {}) : {};
-                        self.integrationOrdersCache = self.normalizeIncomingOrders((Array.isArray(view.orders) ? view.orders : []).filter((order) => !isReservedOrderId(order && (order.id || order.sourceOrderId || order.orderId))));
-                        self.backfillOrdersToPocketBaseBestEffort(self.integrationOrdersCache, 'admin_integration_view_fallback');
-                        self.useIntegrationView = !!self.integrationOrdersCache.length;
-                        self.rebuildOrdersFromBuckets();
-                    }, (err) => {
-                        console.error('integration_views fallback read failed:', err && err.message ? err.message : err);
-                        self.integrationOrdersCache = [];
-                        self.useIntegrationView = false;
-                        self.rebuildOrdersFromBuckets();
-                    });
+                    self.rebuildOrdersFromBuckets();
                 },
                 resetPhoneOrdersListener() {
                     try { if (this.phoneOrdersUnsub) this.phoneOrdersUnsub(); } catch (_) {}
