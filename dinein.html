@@ -1726,11 +1726,6 @@
                     s.isSubmitting=false;
                 });
             },
-            writePrintQueue:function(orderId,queueData){
-                try{
-                    set(ref(db,'print_queue/'+orderId),queueData).catch(function(e){console.warn('print_queue寫入失敗:',e.message);});
-                }catch(e){}
-            },
             // ── 送出訂單 ──
             submitOrder:function(payMethod){
                 if(!this.cart.length||this.isSubmitting)return;
@@ -1738,34 +1733,25 @@
                 if(s.settings.dineinIsOpen===false){s.toast('⚠️ 桌邊點餐目前暫停接單');return;}
                 if(s.outsideBusinessHours){s.toast(s.todayIsDayOff?'⚠️ 今日公休，無法送出訂單':'⚠️ 目前非點餐時段，無法送出訂單');return;}
                 s.successPrintWarning='';
-                // ★ 先前 LINE Pay QR 取消後留下的未付款訂單：同一購物車重送時「重用」，不再新建訂單
+                // ★ 同一購物車重試 LINE Pay 時沿用原單；改付款方式或購物車已變更時，
+                //   必須先由後端確認取消原未付款單，再走一般安全建單與列印流程。
                 var reuse=s.pendingQRReuse;
                 if(reuse&&reuse.orderId){
-                    if(reuse.cartSnapshot===JSON.stringify(s.cart)){
-                        if(payMethod==='linepay'||payMethod==='linepay_qr'){
-                            s.isSubmitting=true;
-                            s.startLinePayFlow(reuse.orderId,reuse.orderData,reuse.dateKey,payMethod);
-                            return;
-                        }
-                        // 改店內付款：訂單已存在，補寫 print_task 觸發列印後直接完成
-                        s.pendingQRReuse=null;s.qrReuseCandidate=null;
-                        var storeTask='kitchen_'+Date.now();
-                        var od=Object.assign({},reuse.orderData,{print_task:storeTask});
-                        update(ref(db,'orders/'+reuse.dateKey+'/'+reuse.orderId),{print_task:storeTask}).catch(function(){});
-                        s.writePrintQueue(reuse.orderId,od);
-                        s.successPrintWarning=publicOrderPrintWarning(null); // Legacy payment change has no server handoff acknowledgement.
-                        s.lastPayment=payMethod;
-                        s.showSuccess=true;
-                        s.cart=[];s.orderNote='';s.currentView='menu';
-                        s.saveCart();
-                        s.toast('✅ 訂單已送出，請店內付款');
+                    if(reuse.cartSnapshot===JSON.stringify(s.cart)&&(payMethod==='linepay'||payMethod==='linepay_qr')){
+                        s.isSubmitting=true;
+                        s.startLinePayFlow(reuse.orderId,reuse.orderData,reuse.dateKey,payMethod);
                         return;
                     }
-                    // 購物車已變更：把舊的未付款訂單作廢，避免殘留混淆現場人員
-                    try{
-                        cancelOwnedOrderViaBackend(reuse.orderId,{settings:s.settings,firebaseUser:auth.currentUser,timeoutMs:10000}).catch(function(){});
-                    }catch(e){}
-                    s.pendingQRReuse=null;s.qrReuseCandidate=null;
+                    s.isSubmitting=true;
+                    cancelOwnedOrderViaBackend(reuse.orderId,{settings:s.settings,firebaseUser:auth.currentUser,timeoutMs:10000}).then(function(){
+                        s.pendingQRReuse=null;s.qrReuseCandidate=null;
+                        s.isSubmitting=false;
+                        s.submitOrder(payMethod);
+                    }).catch(function(e){
+                        s.isSubmitting=false;
+                        alert('無法確認原 LINE Pay 訂單已取消，尚未建立新訂單：'+(e&&e.message?e.message:e));
+                    });
+                    return;
                 }
                 s.isSubmitting=true;
                 var now=new Date();
