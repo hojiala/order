@@ -891,7 +891,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getDatabase, ref, query, orderByKey, limitToLast, onValue, onChildAdded, onChildChanged, onChildRemoved, update, push, set, get, remove, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-    import { allocateOrderNoFromPocketBase, resetOrderNoInPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, requestLinePayViaBackend, queuePhoneOrderCommandViaBackend, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, readManageMenuFromPocketBase, listMenuItemsFromPocketBase, writeMenuItemToPocketBase, writeSettingsToPocketBase, requestStaffOrderPresets, rememberPublicMenuItems, rememberPublicSettings, normalizePublicSettings, subscribeOrdersRealtime, isReservedOrderId } from "./pocketbase-order-writer.20260809_005.js?v=20260908_staff_presets_1";
+    import { allocateOrderNoFromPocketBase, resetOrderNoInPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, requestLinePayViaBackend, queuePhoneOrderCommandViaBackend, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, readManageMenuFromPocketBase, listMenuItemsFromPocketBase, writeMenuItemToPocketBase, writeSettingsToPocketBase, requestStaffOrderPresets, rememberPublicMenuItems, rememberPublicSettings, normalizePublicSettings, subscribeOrdersRealtime, isReservedOrderId } from "./pocketbase-order-writer.20260809_005.js?v=20260910_cash_drawer_1";
     import { isBackofficeUser } from "./staff-auth-activation.20260818_001.js?v=20260818_001";
     const firebaseConfig = {
         apiKey:"AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -961,7 +961,7 @@
                 lpStatus:{},
                 lpConfirmAt:{},
                 lpQueueResent:{},
-                menu:[],menuItems:[],menuLoading:true,filterCat:"",settings:{categories:[],stations:[{name:'湯麵',ip:'192.168.0.6'},{name:'麵包台',ip:'192.168.0.7'},{name:'飲料台',ip:'192.168.0.8'}]},settingsStationsLoaded:false,
+                menu:[],menuItems:[],menuLoading:true,filterCat:"",settings:{categories:[],autoOpenCashDrawer:true,stations:[{name:'湯麵',ip:'192.168.0.6'},{name:'麵包台',ip:'192.168.0.7'},{name:'飲料台',ip:'192.168.0.8'}]},settingsStationsLoaded:false,
                 activeView:"menu",editMode:false,
                 cart:[],custName:"",custPhone:"",isSubmitting:false,
                 staffPresets:[],staffPresetsLoading:false,staffPresetsError:"",showStaffPresetPicker:false,selectedStaffPreset:null,
@@ -5085,11 +5085,15 @@
                     return s.allocateOrderNoFromFirebaseFallback('pos',{message:e&&e.message?e.message:String(e||'')});
                 });
             },
-            openCashDrawer:function(){
+            openCashDrawer:function(silent){
                 var s=this;
-                set(ref(db,"settings/openDrawer"),Date.now())
-                    .then(function(){s.toast("✅ 錢箱已開啟");})
-                    .catch(function(e){alert("開錢箱失敗："+e.message);});
+                return set(ref(db,"settings/openDrawer"),Date.now())
+                    .then(function(){if(silent!==true)s.toast("✅ 錢箱已開啟");return true;})
+                    .catch(function(e){alert("開錢箱失敗："+e.message);return false;});
+            },
+            openCashDrawerAfterCashPayment:function(alreadyCashPaid){
+                if(alreadyCashPaid||this.settings.autoOpenCashDrawer===false)return Promise.resolve(false);
+                return this.openCashDrawer(true);
             },
             doLogin:function(){
                 var s=this;
@@ -6870,6 +6874,7 @@
                             s.writeToPrintQueue(orderId,storePrintTask,o).then(function(delivery){
                                 if(!delivery||!delivery.ok)throw (delivery&&delivery.error)||new Error('列印服務無回應');
                                 if(isCash){
+                                    s.openCashDrawerAfterCashPayment(false);
                                     s.toast("✅ 現金已付款 $"+o.total+" (No."+String(o.orderNo).padStart(3,"0")+")");
                                 }else{
                                     s.toast("🧾 已建立未付款訂單 $"+o.total+" (No."+String(o.orderNo).padStart(3,"0")+")");
@@ -7228,6 +7233,7 @@
                         upd.paymentMethod='cash';
                         upd.paymentStatus='paid';
                         await s.updateOrderMirror(id,upd,targetOrder);
+                        await s.openCashDrawerAfterCashPayment(oldPm==='cash'&&oldPaid);
                         await writeEditPrintTask();
                         s.toast('✅ 已改為現金已付款，重新列印中...');
                         s.exitOnline();
