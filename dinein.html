@@ -150,7 +150,6 @@
                             📋
                             <span v-if="myOrders.length>0" class="absolute -top-1 -right-1 bg-red-500 text-white text-xs w-4 h-4 rounded-full flex items-center justify-center font-black">{{ myOrders.length }}</span>
                         </button>
-                        <button v-if="!isPhoneMode" @click="showPasswordDialog=true" class="text-gray-400 text-xs hover:text-gray-600 transition">⚙️</button>
                     </div>
                 </div>
                 <div v-if="isDineinPreparationWindow" role="status" aria-live="polite" class="bg-orange-50 border-y border-orange-200 px-4 py-2 text-center text-sm text-orange-700 font-bold">
@@ -470,26 +469,6 @@
         </div>
     </div>
 
-    <div v-if="showPasswordDialog" class="fixed inset-0 z-[999] flex items-center justify-center" style="background:rgba(0,0,0,.5)" @click.self="showPasswordDialog=false;passwordInput=''">
-        <div class="bg-white rounded-2xl shadow-2xl mx-5 overflow-hidden fade-in" style="max-width:22rem;width:100%">
-            <div class="bg-gray-800 px-5 py-3 flex items-center gap-2">
-                <span class="text-xl">🔒</span>
-                <span class="text-white font-bold text-base">需要密碼驗證</span>
-            </div>
-            <div class="px-6 py-5">
-                <p class="text-gray-500 text-sm mb-4">更換桌號需要輸入管理密碼，以避免誤觸。</p>
-                <input v-model="passwordInput" type="password" placeholder="請輸入管理密碼"
-                    class="w-full border-2 border-gray-200 rounded-xl px-4 py-3 text-base text-gray-800 placeholder-gray-400 focus:outline-none focus:border-orange-400 transition"
-                    @keyup.enter="verifyPassword">
-                <p v-if="passwordError" class="text-red-500 text-sm mt-2 font-medium">{{ passwordError }}</p>
-            </div>
-            <div class="px-5 pb-5 flex gap-2">
-                <button @click="showPasswordDialog=false;passwordInput='';passwordError=''" class="flex-1 bg-gray-200 text-gray-600 font-bold py-2.5 rounded-xl text-sm transition">取消</button>
-                <button @click="verifyPassword" class="flex-1 bg-orange-500 text-white font-bold py-2.5 rounded-xl text-sm shadow-lg transition active:scale-[.98]">確認</button>
-            </div>
-        </div>
-    </div>
-
     <div v-if="showAnnModal" class="fixed inset-0 z-[999] flex items-center justify-center" style="background:rgba(0,0,0,0.5)" @click.self="showAnnModal=false">
         <div class="bg-white rounded-2xl shadow-2xl mx-6 overflow-hidden" style="max-width:22rem;width:100%;animation:fadeInUp .25s ease">
             <div class="bg-amber-500 px-5 py-3 flex items-center gap-2">
@@ -688,9 +667,6 @@
             // 訂單
             myOrders:[], allOrders:[], pollTimer:null, pollErrorCount:0,
             pendingCount:0, nowMinute:0,
-            // 密碼
-            showPasswordDialog:false, passwordInput:'', passwordError:'',
-            devicePasswordVerifier:'',
             // ★ 情境2 QR Code 付款
             showQRModal:false, qrAmount:0, qrOrderId:'', qrOrderDateKey:'',
             qrReuseCandidate:null, pendingQRReuse:null,
@@ -964,35 +940,6 @@
                     this.pinInput='';
                 }
             },
-            unbind:function(){
-                var oldDeviceId=this.deviceId;
-                this.deviceBound=false;this.deviceId='';this.deviceLabel='';this.deviceSignature='';
-                try{localStorage.removeItem('dinein_device');if(oldDeviceId)localStorage.removeItem('dinein_sig_'+oldDeviceId);sessionStorage.removeItem('dinein_device_signature')}catch(e){}
-            },
-            verifyPassword:function(){
-                if(!this.passwordInput){this.passwordError='請輸入密碼';return}
-                if(!this.devicePasswordVerifier){
-                    this.passwordError='管理密碼正在同步，請稍後重試';
-                    this.loadSettings({timeoutMs:3500,forceFresh:true,ignoreCooldown:true});
-                    return;
-                }
-                if(this.passwordVerifierFor(this.passwordInput)===this.devicePasswordVerifier){
-                    this.showPasswordDialog=false;this.passwordInput='';this.passwordError='';
-                    this.unbind();
-                }else{
-                    this.passwordError='密碼錯誤，請重試';
-                    this.passwordInput='';
-                }
-            },
-            passwordVerifierFor:function(value){
-                var raw='yuangi-dinein-v1:'+String(value===undefined||value===null?'':value);
-                var hash=0x811c9dc5;
-                for(var i=0;i<raw.length;i++){
-                    hash^=raw.charCodeAt(i);
-                    hash=(hash+(hash<<1)+(hash<<4)+(hash<<7)+(hash<<8)+(hash<<24))>>>0;
-                }
-                return 'v1-'+('00000000'+hash.toString(16)).slice(-8);
-            },
             // ── 初始化 ──
             initApp:function(){
                 var s=this;
@@ -1053,9 +1000,6 @@
                     s.categorySubcategories=s.normalizeCategorySubcategories(s.settings.categorySubcategories,s.settings.categories||s.categories);
                     s.settingsStationsLoaded=hasStationSettings||(prev.stations&&prev.stations.length)||false;
                     s.settingsReadBackend=backend||'pocketbase';
-                    var publicControl=s.settings.mqttAnnouncementSelection||{};
-                    var nextVerifier=String(v.dineinPasswordVerifier||publicControl.dineinPasswordVerifier||'');
-                    if(/^v1-[0-9a-f]{8}$/.test(nextVerifier))s.devicePasswordVerifier=nextVerifier;
                     if(s.menu&&s.menu.length)s.refreshMenuCategoriesFromSettings();
                     // ★ 每日主題顏色：以 PocketBase 設定為主套用（Firebase 監聽為輔）
                     if(v.dailyThemes&&window.__applyDailyTheme){try{window.__applyDailyTheme(v.dailyThemes);}catch(e){}}
