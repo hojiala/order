@@ -1626,6 +1626,37 @@
                     </div>
                 </div>
 
+                <!-- ★ 固定店內平板安全註冊（不同於顧客掃碼 QR Code） -->
+                <div v-show="settingsSubTab==='tools'" :style="{order: 4}" class="bg-slate-800 rounded-xl border border-emerald-900/50 p-5">
+                    <div class="flex items-center gap-2 mb-1">
+                        <span class="text-emerald-400 text-lg">🛡️</span>
+                        <p class="font-bold text-white">店內平板安全註冊</p>
+                    </div>
+                    <p class="text-slate-400 text-sm mb-1">供 1～18 桌專用平板及自助外帶 1～4 號固定平板使用；不是「QR 碼管理」的顧客手機掃碼網址。</p>
+                    <p class="text-amber-300 text-xs mb-4">在此產生網址後，只需讓指定平板開啟一次。平板會永久保存裝置簽章，不需要在平板登入管理後台。</p>
+                    <div class="flex flex-wrap gap-2 items-center">
+                        <select v-model="tabletSetupDeviceId" @change="tabletSetupSignature='';tabletSetupStatus=''"
+                            class="bg-slate-700 border border-slate-600 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-emerald-500">
+                            <optgroup label="桌邊專用平板（內用）">
+                                <option v-for="n in 18" :key="'tablet-table-'+n" :value="'table_'+n">{{ n }} 桌專用平板</option>
+                            </optgroup>
+                            <optgroup label="公用自助外帶平板">
+                                <option v-for="n in 4" :key="'tablet-kiosk-'+n" :value="'kiosk_'+n">自助外帶 {{ n }} 號</option>
+                            </optgroup>
+                        </select>
+                        <button @click="refreshTabletSetupSignature" :disabled="tabletSetupBusy"
+                            class="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white font-bold px-4 py-2.5 rounded-lg text-sm transition">
+                            {{ tabletSetupBusy ? '產生中…' : '🔏 產生平板註冊網址' }}
+                        </button>
+                    </div>
+                    <div v-if="tabletSetupSignature" class="mt-3 flex gap-2 items-center">
+                        <input :value="getTabletSetupUrl()" readonly @click="$event.target.select()"
+                            class="flex-1 min-w-0 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2.5 text-slate-300 text-xs outline-none select-all">
+                        <button @click="copyTabletSetupUrl" class="bg-orange-500 hover:bg-orange-400 text-white font-bold px-4 py-2.5 rounded-lg text-sm whitespace-nowrap transition">📋 複製</button>
+                    </div>
+                    <p v-if="tabletSetupStatus" class="text-xs mt-3" :class="tabletSetupSignature ? 'text-emerald-400' : 'text-yellow-400'">{{ tabletSetupStatus }}</p>
+                </div>
+
                 <!-- ★ POS 內用桌號 -->
                 <div v-show="settingsSubTab==='tools'" :style="{order: 4}" class="bg-slate-800 rounded-xl border border-blue-900/50 p-5">
                     <div class="flex items-center gap-2 mb-1"><span class="text-blue-400 text-lg">🍽️</span><p class="font-bold text-white">POS 內用桌號設定</p></div>
@@ -2459,6 +2490,7 @@ window._doCountUp = function() {
                 allowFirebaseManageFallback: true,
                 // QR Code 管理
                 qrBaseUrl: '', qrPin: '', qrEntries: [], qrSignatures: {}, qrSignatureStatus: '',
+                tabletSetupDeviceId: 'table_1', tabletSetupSignature: '', tabletSetupStatus: '', tabletSetupBusy: false,
                 // Week day names
                 weekDayNames: ['日','一','二','三','四','五','六'],
                 themeDayOrder: [1,2,3,4,5,6,0]
@@ -8489,6 +8521,22 @@ window._doCountUp = function() {
                 }
                 return 'https://secure-order.yuangi168.com/api/manage/dinein-signatures';
             },
+            requestDineinSignatures: function(deviceIds) {
+                var self = this;
+                if (!auth.currentUser) return Promise.reject(new Error('請先以管理者帳號登入'));
+                return auth.currentUser.getIdToken().then(function(idToken) {
+                    return fetch(self.dineinSignatureEndpoint(), {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + idToken },
+                        body: JSON.stringify({ deviceIds: deviceIds })
+                    });
+                }).then(function(response) {
+                    return response.json().catch(function() { return {}; }).then(function(data) {
+                        if (!response.ok || !data.ok) throw new Error(data.message || 'dinein_signature_failed');
+                        return data.signatures || {};
+                    });
+                });
+            },
             refreshQrSignatures: function() {
                 var self = this;
                 var deviceIds = (Array.isArray(self.qrEntries) ? self.qrEntries : []).map(function(entry) {
@@ -8505,19 +8553,8 @@ window._doCountUp = function() {
                     return Promise.resolve({});
                 }
                 self.qrSignatureStatus = '正在產生簽章網址…';
-                return auth.currentUser.getIdToken().then(function(idToken) {
-                    return fetch(self.dineinSignatureEndpoint(), {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + idToken },
-                        body: JSON.stringify({ deviceIds: deviceIds })
-                    });
-                }).then(function(response) {
-                    return response.json().catch(function() { return {}; }).then(function(data) {
-                        if (!response.ok || !data.ok) throw new Error(data.message || 'dinein_signature_failed');
-                        return data;
-                    });
-                }).then(function(data) {
-                    self.qrSignatures = data.signatures || {};
+                return self.requestDineinSignatures(deviceIds).then(function(signatures) {
+                    self.qrSignatures = signatures;
                     self.qrSignatureStatus = '已產生 ' + Object.keys(self.qrSignatures).length + ' 組簽章網址；請重新製作並更換現場 QR Code';
                     return self.qrSignatures;
                 }).catch(function(error) {
@@ -8525,6 +8562,46 @@ window._doCountUp = function() {
                     self.qrSignatureStatus = '簽章尚未就緒：' + (error && error.message ? error.message : error);
                     return {};
                 });
+            },
+            refreshTabletSetupSignature: function() {
+                var self = this;
+                var deviceId = String(self.tabletSetupDeviceId || '');
+                self.tabletSetupSignature = '';
+                if (!/^(?:table_(?:[1-9]|1[0-8])|kiosk_[1-4])$/.test(deviceId)) {
+                    self.tabletSetupStatus = '請選擇有效的固定平板編號';
+                    return Promise.resolve('');
+                }
+                self.tabletSetupBusy = true;
+                self.tabletSetupStatus = '正在產生固定平板註冊網址…';
+                return self.requestDineinSignatures([deviceId]).then(function(signatures) {
+                    var signature = String(signatures[deviceId] || '');
+                    if (!/^[a-f0-9]{64}$/i.test(signature)) throw new Error('平板簽章格式不正確');
+                    self.tabletSetupSignature = signature;
+                    self.tabletSetupStatus = '已產生；請複製網址，並以指定平板開啟一次完成永久註冊';
+                    return signature;
+                }).catch(function(error) {
+                    self.tabletSetupStatus = '平板註冊網址尚未就緒：' + (error && error.message ? error.message : error);
+                    return '';
+                }).finally(function() {
+                    self.tabletSetupBusy = false;
+                });
+            },
+            getTabletSetupUrl: function() {
+                var signature = String(this.tabletSetupSignature || '');
+                var deviceId = String(this.tabletSetupDeviceId || '');
+                if (!/^(?:table_(?:[1-9]|1[0-8])|kiosk_[1-4])$/.test(deviceId) || !/^[a-f0-9]{64}$/i.test(signature)) return '';
+                var base = String(this.qrBaseUrl || window.location.origin || '').replace(/\/$/, '');
+                return base + '/dinein.html?deviceId=' + encodeURIComponent(deviceId) + '&setup=tablet&sig=' + encodeURIComponent(signature);
+            },
+            copyTabletSetupUrl: function() {
+                var url = this.getTabletSetupUrl();
+                if (!url) {
+                    alert('尚未取得簽章，請先按「產生平板註冊網址」');
+                    return;
+                }
+                navigator.clipboard.writeText(url).then(function() {
+                    alert('✅ 已複製固定平板註冊網址');
+                }).catch(function() { prompt('請手動複製：', url); });
             },
             getQrUrl: function(entry) {
                 var base = (this.qrBaseUrl || '').replace(/\/$/, '');

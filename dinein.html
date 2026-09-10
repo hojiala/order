@@ -76,32 +76,15 @@
 
 <div v-else-if="!deviceBound && !isPhoneMode" class="min-h-screen flex flex-col items-center justify-center p-6 w-full"
      style="background:linear-gradient(145deg,#f97316 0%,#ea580c 50%,#c2410c 100%)">
-    <div class="text-center mb-8">
+    <div class="text-center mb-6">
         <img src="./images/logo.png" class="h-16 w-auto mx-auto mb-3 object-contain" alt="logo">
         <h1 class="text-3xl font-black text-white" style="text-shadow:0 2px 8px rgba(0,0,0,.15)">元氣早午餐</h1>
-        <p class="text-orange-100 text-sm mt-1">善化中山店 · {{ isPhoneMode ? (qrOrderType==='takeout' ? '📱 掃碼外帶' : '📱 掃碼內用') : '桌邊點餐系統' }}</p>
+        <p class="text-orange-100 text-sm mt-1">善化中山店 · 店內平板點餐系統</p>
     </div>
-    <div class="w-full max-w-md">
-        <p class="text-white text-sm font-bold mb-3 opacity-90">🪑 選擇桌號</p>
-        <div class="grid grid-cols-6 gap-2 mb-6">
-            <button v-for="n in 18" :key="'t'+n" @click="selectedTable='table_'+n; selectedKiosk=''"
-                :class="selectedTable==='table_'+n ? 'bg-white text-orange-600 border-white' : 'bg-white/15 text-white border-white/30'"
-                class="border-2 rounded-xl py-3 text-base font-black transition backdrop-blur-sm"
-                style="font-family:'Noto Sans TC',sans-serif">{{ n }}桌</button>
-        </div>
-        <div class="w-12 h-0.5 bg-white/30 mx-auto mb-5"></div>
-        <p class="text-white text-sm font-bold mb-3 opacity-90">📱 或選擇自助點餐機</p>
-        <div class="grid grid-cols-4 gap-2 mb-8">
-            <button v-for="n in 4" :key="'k'+n" @click="selectedKiosk='kiosk_'+n; selectedTable=''"
-                :class="selectedKiosk==='kiosk_'+n ? 'bg-white text-orange-600 border-white' : 'bg-white/15 text-white border-white/30'"
-                class="border-2 rounded-xl py-3 text-sm font-bold transition backdrop-blur-sm"
-                style="font-family:'Noto Sans TC',sans-serif">自助{{n}}號</button>
-        </div>
-        <button @click="confirmBind" :disabled="!selectedTable && !selectedKiosk"
-            class="w-full bg-white text-orange-600 font-black text-lg py-4 rounded-2xl shadow-xl disabled:opacity-40 transition active:scale-[.98]"
-            style="font-family:'Noto Sans TC',sans-serif">
-            確認綁定
-        </button>
+    <div class="w-full max-w-md bg-white/95 rounded-2xl p-6 shadow-xl text-center">
+        <p class="text-orange-600 text-xl font-black mb-3">🛡️ 此平板尚未完成安全配對</p>
+        <p class="text-gray-700 text-sm leading-7">請由店員在管理後台進入<br><b>店面設定 → 系統工具 → 店內平板安全註冊</b><br>選擇本平板的桌號或自助外帶編號，並讓這台平板開啟產生的註冊網址一次。</p>
+        <p class="text-gray-500 text-xs leading-6 mt-4">完成後，日常只需開啟<br><b class="text-gray-700">https://order.yuangi168.com/dinein</b></p>
     </div>
 </div>
 
@@ -682,7 +665,7 @@
     createApp({
         data:function(){return{
             // 設備綁定
-            deviceBound:false, isPhoneMode:false, phoneSession:'', qrOrderType:'dinein', selectedTable:'', selectedKiosk:'',
+            deviceBound:false, isPhoneMode:false, phoneSession:'', qrOrderType:'dinein',
             showPinVerify:false, pinInput:'', pinError:'', storePin:'',
             deviceId:'', deviceLabel:'', deviceType:'', deviceSignature:'',
             // 設定
@@ -775,7 +758,8 @@
             var urlParams=new URLSearchParams(window.location.search);
             var qrTable=urlParams.get('table');
             var qrTakeout=urlParams.get('takeout');
-            var queryDeviceSignature=urlParams.get('sig')||'';
+            var queryDeviceSignature=String(urlParams.get('sig')||'').trim();
+            if(queryDeviceSignature&&!/^[a-f0-9]{64}$/i.test(queryDeviceSignature))queryDeviceSignature='';
             if(queryDeviceSignature){try{sessionStorage.setItem('dinein_device_signature',queryDeviceSignature)}catch(e){}}
             try{s.deviceSignature=queryDeviceSignature||sessionStorage.getItem('dinein_device_signature')||''}catch(e){s.deviceSignature=queryDeviceSignature}
             if(qrTable||qrTakeout){
@@ -817,21 +801,32 @@
             }
             // 恢復設備綁定（平板模式）
             // 優先檢查 URL 參數 ?deviceId=（LINE Pay 付款後返回時帶入）
-            var urlDeviceId = urlParams.get('deviceId');
-            if(urlDeviceId){
+            var urlDeviceId = String(urlParams.get('deviceId')||'').trim().toLowerCase();
+            var urlDeviceMatch = /^(table|kiosk|takeout)_([0-9]{1,3})$/.exec(urlDeviceId);
+            if(urlDeviceMatch){
                 // ★ 直接解析 deviceId 格式（table_8, kiosk_1, takeout_1）不需查 Firebase
-                var parts=urlDeviceId.split('_');
-                var dtype=parts[0]; var dnum=parts[1]||'';
+                var dtype=urlDeviceMatch[1]; var dnum=urlDeviceMatch[2];
                 if(dtype==='table'){
                     this.deviceId=urlDeviceId; this.deviceLabel=dnum+'桌'; this.deviceType='table';
                 }else if(dtype==='kiosk'){
                     this.deviceId=urlDeviceId; this.deviceLabel='自助'+dnum+'號'; this.deviceType='kiosk';
-                }else if(dtype==='takeout'){
-                    this.deviceId=urlDeviceId; this.deviceLabel='外帶'+dnum+'號'; this.deviceType='takeout';
                 }else{
-                    this.deviceId=urlDeviceId; this.deviceLabel=urlDeviceId; this.deviceType='dinein';
+                    this.deviceId=urlDeviceId; this.deviceLabel='外帶'+dnum+'號'; this.deviceType='takeout';
                 }
-                try{this.deviceSignature=this.deviceSignature||localStorage.getItem('dinein_sig_'+this.deviceId)||''}catch(e){}
+                try{this.deviceSignature=queryDeviceSignature||localStorage.getItem('dinein_sig_'+this.deviceId)||this.deviceSignature||''}catch(e){this.deviceSignature=queryDeviceSignature||this.deviceSignature||''}
+                if(dtype==='table'||dtype==='kiosk'){
+                    if(!/^[a-f0-9]{64}$/i.test(String(this.deviceSignature||'').trim())){
+                        alert('此固定平板尚未完成安全註冊，請在管理後台「店內平板安全註冊」產生網址，並以本平板開啟一次。');
+                        this.deviceSignature='';
+                        return;
+                    }
+                    if(queryDeviceSignature||urlParams.get('setup')==='tablet'){
+                        try{
+                            localStorage.setItem('dinein_sig_'+this.deviceId,this.deviceSignature);
+                            localStorage.setItem('dinein_device',JSON.stringify({deviceId:this.deviceId,deviceLabel:this.deviceLabel,deviceType:this.deviceType,deviceSignature:this.deviceSignature}));
+                        }catch(e){}
+                    }
+                }
                 this.deviceBound=true;
                 this.initApp();
             } else {
@@ -841,12 +836,14 @@
                         var d=JSON.parse(saved);
                         this.deviceId=d.deviceId;this.deviceLabel=d.deviceLabel;this.deviceType=d.deviceType;
                         try{this.deviceSignature=this.deviceSignature||d.deviceSignature||localStorage.getItem('dinein_sig_'+this.deviceId)||''}catch(e){this.deviceSignature=this.deviceSignature||d.deviceSignature||''}
-                        if(this.deviceSignature){
+                        if(/^[a-f0-9]{64}$/i.test(String(this.deviceSignature||'').trim())){
                             d.deviceSignature=this.deviceSignature;
                             try{localStorage.setItem('dinein_device',JSON.stringify(d))}catch(e){}
+                            this.deviceBound=true;
+                            this.initApp();
+                        }else{
+                            this.deviceSignature='';
                         }
-                        this.deviceBound=true;
-                        this.initApp();
                     }
                 }catch(e){}
             }
@@ -966,27 +963,6 @@
                     this.pinError='驗證碼錯誤，請重新輸入';
                     this.pinInput='';
                 }
-            },
-            confirmBind:function(){
-                if(this.selectedTable){
-                    var n=this.selectedTable.replace('table_','');
-                    this.deviceId=this.selectedTable;
-                    this.deviceLabel=n+'桌';
-                    this.deviceType='table';
-                }else if(this.selectedKiosk){
-                    var k=this.selectedKiosk.replace('kiosk_','');
-                    this.deviceId=this.selectedKiosk;
-                    this.deviceLabel='自助'+k+'號';
-                    this.deviceType='kiosk';
-                }
-                try{this.deviceSignature=this.deviceSignature||localStorage.getItem('dinein_sig_'+this.deviceId)||''}catch(e){}
-                if(!/^[a-f0-9]{64}$/i.test(String(this.deviceSignature||'').trim())){
-                    alert('此裝置尚未取得安全簽章，請先在管理後台產生並以本平板開啟對應桌號的簽章網址。');
-                    return;
-                }
-                this.deviceBound=true;
-                try{localStorage.setItem('dinein_device',JSON.stringify({deviceId:this.deviceId,deviceLabel:this.deviceLabel,deviceType:this.deviceType,deviceSignature:this.deviceSignature}))}catch(e){}
-                this.initApp();
             },
             unbind:function(){
                 var oldDeviceId=this.deviceId;
