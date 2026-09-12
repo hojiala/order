@@ -344,7 +344,7 @@
         import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
         import { getDatabase, ref, query, orderByKey, limitToLast, onValue, onChildAdded, onChildChanged, onChildRemoved, update, set, get, remove } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
         import { getAuth, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-        import { allocateOrderNoFromPocketBase, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, readManageMenuFromPocketBase, listMenuItemsFromPocketBase, writeOrderToPocketBase, queuePhoneOrderCommandViaBackend, isReservedOrderId } from "./pocketbase-order-writer.20260809_005.js?v=20260907_phone_cmd_pb_1";
+        import { allocateOrderNoFromPocketBase, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, readManageMenuFromPocketBase, listMenuItemsFromPocketBase, writeOrderToPocketBase, requestLinePayViaBackend, queuePhoneOrderCommandViaBackend, isReservedOrderId } from "./pocketbase-order-writer.20260809_005.js?v=20260907_phone_cmd_pb_1";
         import { isBackofficeUser } from "./staff-auth-activation.20260818_001.js?v=20260818_001";
 
         // ★★★ 請貼入您相同的 Firebase 配置 ★★★
@@ -645,6 +645,53 @@
             },
             methods: {
                 toast(msg) { this.toastMsg = msg; clearTimeout(this.toastTimer); this.toastTimer = setTimeout(() => { this.toastMsg = ''; }, 4000); },
+                extractLinePayUrl(data) {
+                    if (!data || typeof data !== 'object') return '';
+                    let payUrl = data.paymentUrl || data.paymentURL || data.webUrl || data.url || data.paymentPageUrl || '';
+                    if (payUrl && typeof payUrl === 'object') payUrl = payUrl.web || payUrl.app || payUrl.url || payUrl.href || '';
+                    if (!payUrl && data.payment && typeof data.payment === 'object') payUrl = data.payment.web || data.payment.url || data.payment.href || '';
+                    return String(payUrl || '').trim();
+                },
+                async startAdminLinePay(orderId, orderDateKey, confirmBase) {
+                    this.toast('⏳ 正在建立 LINE Pay 連結...');
+                    const result = await requestLinePayViaBackend(orderId, orderDateKey, {
+                        settings: this.settings,
+                        firebaseUser: auth.currentUser,
+                        confirmBaseUrl: confirmBase,
+                        returnPage: 'admin'
+                    });
+                    const immediateStatus = String(result && result.request && result.request.status || '').toLowerCase();
+                    const immediateUrl = this.extractLinePayUrl(result && result.request);
+                    if (immediateUrl && immediateStatus === 'ready') {
+                        window.location.href = immediateUrl;
+                        return;
+                    }
+                    if (['error', 'failed', 'request_failed', 'cancelled'].includes(immediateStatus)) {
+                        throw new Error(result.request.error || 'LINE Pay 建立失敗');
+                    }
+                    const payUrl = await new Promise((resolve, reject) => {
+                        let finished = false;
+                        let stopWatching = () => {};
+                        const finish = (error, url) => {
+                            if (finished) return;
+                            finished = true;
+                            clearTimeout(timer);
+                            stopWatching();
+                            error ? reject(error) : resolve(url);
+                        };
+                        const timer = setTimeout(() => finish(new Error('逾時，請確認 LINE Pay 服務正常')), 25000);
+                        stopWatching = onValue(ref(db, 'linepay_requests/' + orderId), (snap) => {
+                            if (!snap.exists()) return;
+                            const data = snap.val();
+                            const status = String(data.status || '').toLowerCase();
+                            const url = this.extractLinePayUrl(data);
+                            if (url && status === 'ready') finish(null, url);
+                            else if (['error', 'failed', 'request_failed', 'cancelled'].includes(status)) finish(new Error(data.error || 'LINE Pay 建立失敗'));
+                        }, (error) => finish(error || new Error('linepay_watch_failed')));
+                        if (finished) stopWatching();
+                    });
+                    window.location.href = payUrl;
+                },
                 getOrderRenderKey(order) {
                     if (!order || typeof order !== 'object') return 'order:empty';
                     const sourcePath = this.normalizeSourceRecordPath(order, order.id || '');
@@ -3848,6 +3895,7 @@
                 async saveOrderEdit() {
                     if (!this.editModal) return;
                     this.editSaving = true;
+                    let orderSaved = false;
                     try {
                         const id = this.editModal.id;
                         const orderForMirror = this.editModal || this.findOrderById(id) || { id, pickupDate: this.editPickupDate, timestamp: Date.now() };
@@ -3879,6 +3927,7 @@
                             : (isLinePay && origPaid) ? 'paid'
                             : (isLinePay && !origPaid) ? 'pending'
                             : '';
+                        if (isLinePay && newPayStatus === 'pending' && !confirmBase) throw new Error('LINE Pay 回傳網址尚未設定');
                         const upd = {
                             pickupDate: this.editPickupDate,
                             pickupTime: this.editPickupTime,
@@ -3891,26 +3940,18 @@
                         };
                         const updatedOrder = Object.assign({}, orderForMirror, upd, { id });
                         await this.updateOrderMirror(id, upd, updatedOrder);
+                        orderSaved = true;
                         if (isLinePay && newPayStatus === 'pending' && confirmBase) {
-                            // ★ 重新發起 LINE Pay 付款請求
-                            const { set: fbSet, ref: fbRef } = { set, ref };
-                            await fbSet(fbRef(db, `linepay_requests/${id}`), {
-                                amount: upd.items ? upd.items.reduce((s,i)=>s+(i.itemTotal||0),0) : (this.editModal.total||0),
-                                items: upd.items || [],
-                                orderDateKey: (this.editPickupDate || this.editModal.orderDateKey || this.editModal.pickupDate || ''),
-                                confirmBaseUrl: confirmBase,
-                                returnPage: 'admin',
-                                status: 'pending',
-                                createdAt: Date.now()
-                            });
-                            this.toast('✅ 儲存完成，已重新發起 LINE Pay 付款請求');
+                            const orderDateKey = this.editPickupDate || this.editModal.orderDateKey || this.editModal.pickupDate || '';
+                            this.editModal = null;
+                            await this.startAdminLinePay(id, orderDateKey, confirmBase);
                         } else {
                             await this.clearPrintTaskMirror(id, updatedOrder);
                             await this.setPrintTaskMirror(id, `kitchen_edit_${Date.now()}`, updatedOrder);
+                            this.editModal = null;
                         }
-                        this.editModal = null;
                     } catch (err) {
-                        this.toast('❌ 儲存失敗：' + err.message);
+                        this.toast((orderSaved ? '❌ 訂單已儲存，但後續處理失敗：' : '❌ 儲存失敗：') + err.message);
                     } finally {
                         this.editSaving = false;
                     }

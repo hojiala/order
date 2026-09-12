@@ -886,7 +886,8 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getDatabase, ref, query, orderByKey, limitToLast, onValue, onChildAdded, onChildChanged, onChildRemoved, update, push, set, get, remove, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-    import { allocateOrderNoFromPocketBase, resetOrderNoInPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, requestLinePayViaBackend, queuePhoneOrderCommandViaBackend, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, readManageMenuFromPocketBase, listMenuItemsFromPocketBase, writeMenuItemToPocketBase, writeSettingsToPocketBase, requestStaffOrderPresets, rememberPublicMenuItems, rememberPublicSettings, normalizePublicSettings, subscribeOrdersRealtime, isReservedOrderId } from "./pocketbase-order-writer.20260809_005.js?v=20260910_cash_drawer_1";
+    import { allocateOrderNoFromPocketBase, resetOrderNoInPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, requestLinePayViaBackend, cancelOwnedOrderViaBackend, queuePhoneOrderCommandViaBackend, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, readManageMenuFromPocketBase, listMenuItemsFromPocketBase, writeMenuItemToPocketBase, writeSettingsToPocketBase, requestStaffOrderPresets, rememberPublicMenuItems, rememberPublicSettings, normalizePublicSettings, subscribeOrdersRealtime, isReservedOrderId } from "./pocketbase-order-writer.20260809_005.js?v=20260910_cash_drawer_1";
+    import { saveLinePayCheckoutHandoff, consumeRestorableLinePayCheckout } from "./linepay-checkout-handoff.20260912_001.js";
     import { isBackofficeUser } from "./staff-auth-activation.20260818_001.js?v=20260818_001";
     const firebaseConfig = {
         apiKey:"AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -1135,6 +1136,20 @@
         created:function(){
             var s=this;
             try{
+                var restoredCheckout=consumeRestorableLinePayCheckout('pos');
+                if(restoredCheckout){
+                    s.cart=Array.isArray(restoredCheckout.cart)?restoredCheckout.cart:[];
+                    var restoredForm=restoredCheckout.form||{};
+                    s.custName=restoredForm.custName||'';
+                    s.custPhone=restoredForm.custPhone||'';
+                    s.posPickupDate=restoredForm.posPickupDate||'';
+                    s.posPickupTime=restoredForm.posPickupTime||'';
+                    s.posOrderType=restoredForm.posOrderType||'takeout';
+                    s.posTableLabel=restoredForm.posTableLabel||'';
+                    s.posOrderNote=restoredForm.posOrderNote||'';
+                }
+            }catch(e){console.error('LINE Pay 購物車恢復失敗:',e);}
+            try{
                 var savedMenuOverrides=JSON.parse(localStorage.getItem('yuangi_menu_active_overrides_v1')||'null');
                 if(savedMenuOverrides&&Date.now()-Number(savedMenuOverrides.savedAt||0)<60*1000&&savedMenuOverrides.items&&typeof savedMenuOverrides.items==='object'){
                     s.menuLocalOverrides=savedMenuOverrides.items;
@@ -1142,7 +1157,8 @@
                     localStorage.removeItem('yuangi_menu_active_overrides_v1');
                 }
             }catch(menuOverrideErr){localStorage.removeItem('yuangi_menu_active_overrides_v1');}
-            var d=new Date();s.posPickupDate=d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);
+            var d=new Date();
+            if(!s.posPickupDate)s.posPickupDate=d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);
             // 匿名使用者（index/dinein 顧客頁產生）不算 staff 登入。
             // 登出事件加 1.5 秒防抖：index/dinein 初始化時的跨分頁同步會短暫發出 null，
             // 立刻切登入畫面會造成「閃一下又自動回來」；確認真的沒有 staff 使用者才登出。
@@ -1966,7 +1982,36 @@
                             if(finished)return;
                             finished=true;clearTimeout(timer);stopWatching();s.isSubmitting=false;
                             if(error){reject(error);return;}
-                            if(clearCartOnRedirect)s.clearCart();
+                            if(clearCartOnRedirect){
+                                try{
+                                    saveLinePayCheckoutHandoff({
+                                        orderId:orderId,
+                                        returnPage:'pos',
+                                        cart:s.cart,
+                                        form:{
+                                            custName:s.custName,
+                                            custPhone:s.custPhone,
+                                            posPickupDate:s.posPickupDate,
+                                            posPickupTime:s.posPickupTime,
+                                            posOrderType:s.posOrderType,
+                                            posTableLabel:s.posTableLabel,
+                                            posOrderNote:s.posOrderNote
+                                        }
+                                    });
+                                }catch(storageError){
+                                    cancelOwnedOrderViaBackend(orderId,{
+                                        settings:s.settings,
+                                        firebaseUser:auth.currentUser,
+                                        timeoutMs:10000
+                                    }).then(function(){
+                                        reject(new Error('無法暫存購物車，付款已取消；目前購物車仍保留'));
+                                    }).catch(function(){
+                                        reject(new Error('無法暫存購物車且付款狀態待確認，請勿重複下單'));
+                                    });
+                                    return;
+                                }
+                                s.clearCart();
+                            }
                             try{localStorage.setItem('linepay_return_url',window.location.href);}catch(e){}
                             window.location.href=payUrl;
                             resolve();

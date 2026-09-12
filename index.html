@@ -628,6 +628,7 @@
     import { getDatabase, ref, push, set, get, update, onValue, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
     import { writeOrderToPocketBase, writeOrderWithFirebaseFallback, publicOrderPrintWarning, requestLinePayViaBackend, readLinePayStatusViaBackend, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, pocketBaseRecordToOrder, requestLineMember, cancelOwnedOrderViaBackend, filterCartToAvailableMenu } from "./pocketbase-order-writer.20260818_001.js?v=20260907_linepay_status_1";
+    import { saveLinePayCheckoutHandoff, consumeRestorableLinePayCheckout } from "./linepay-checkout-handoff.20260912_001.js";
 
     const enteredFromLiff = /(?:^|[?&])liff(?:=1|=true|[.&=])/i.test(location.search) || /(?:^|[?&])liff\.state=/i.test(location.search) || /\bLine\//i.test(navigator.userAgent || '');
 
@@ -889,6 +890,13 @@
                 var saved = localStorage.getItem('cart_items');
                 if (saved) this.cart = JSON.parse(saved);
             } catch(e) { this.cart = []; }
+            try {
+                var restoredCheckout = consumeRestorableLinePayCheckout('index');
+                if (restoredCheckout && Array.isArray(restoredCheckout.cart)) {
+                    this.cart = restoredCheckout.cart;
+                    localStorage.setItem('cart_items', JSON.stringify(this.cart));
+                }
+            } catch(e) { console.error('LINE Pay 購物車恢復失敗:', e); }
             // ★ 從 localStorage 讀取點餐記錄
             this.loadMyOrders();
             this.startAutoRefresh();
@@ -2286,7 +2294,7 @@
                                 if(finished) return;
                                 finished = true;
                                 stopWatching();
-                                self.showAlertModal('LINE Pay 逾時', '樹莓派無回應，請確認服務是否正常運行\n訂單已送出，請改用店內付款');
+                                self.showAlertModal('LINE Pay 狀態待確認', '暫時無法確認付款請求狀態；請勿重複下單，並請店員協助確認。');
                             }, 20000);
                             stopWatching = onValue(requestRef, function(snap) {
                                 if(finished || !snap.exists()) return;
@@ -2296,6 +2304,24 @@
                                     clearTimeout(timeout);
                                     stopWatching();
                                     self.showAlertDialog = false;
+                                    try {
+                                        saveLinePayCheckoutHandoff({
+                                            orderId: orderId,
+                                            returnPage: 'index',
+                                            cart: self.cart
+                                        });
+                                    } catch (storageError) {
+                                        cancelOwnedOrderViaBackend(orderId, {
+                                            settings: self.settings,
+                                            firebaseUser: auth.currentUser,
+                                            timeoutMs: 10000
+                                        }).then(function() {
+                                            self.showAlertModal('LINE Pay 已取消', '無法暫存購物車，因此未開啟付款頁；目前購物車仍保留。');
+                                        }).catch(function() {
+                                            self.showAlertModal('LINE Pay 狀態待確認', '無法暫存購物車，也無法確認訂單已撤回；請勿重複下單，並請店員協助確認。');
+                                        });
+                                        return;
+                                    }
                                     try{localStorage.setItem('linepay_return_url', window.location.href)}catch(e){}
                                     try{localStorage.setItem('lastOrderTime', Date.now().toString());}catch(e){}
                                     self.cart=[];try{localStorage.removeItem('cart_items')}catch(e){}
@@ -2305,7 +2331,7 @@
                                     finished = true;
                                     clearTimeout(timeout);
                                     stopWatching();
-                                    self.showAlertModal('LINE Pay 失敗', (r.error||'未知錯誤') + '\n訂單已送出，請改用店內付款');
+                                self.showAlertModal('LINE Pay 失敗', (r.error||'未知錯誤') + '\n訂單已撤回，購物車仍保留，請重試或改用店內付款');
                                 }
                             }, function(){});
                         }).catch(function(e){
