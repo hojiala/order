@@ -486,6 +486,7 @@ export function pocketBaseRecordToOrder(record) {
     record = record || {};
     var customer = jsonObject(record.customer);
     var items = jsonArray(record.items);
+    var linePayTransaction = jsonObject(record.linepay_transaction || record.linePayTransaction);
     var dateKey = text(record.date_key || record.dateKey || customer.orderDateKey || customer.pickupDate);
     var orderId = text(record.order_id || record.orderId || record.id);
     var source = text(record.source || "web");
@@ -530,6 +531,7 @@ export function pocketBaseRecordToOrder(record) {
         paymentMethod: paymentMethod,
         paymentStatus: paymentStatus,
         payment: { method: paymentMethod, status: paymentStatus },
+        linePayTransaction: linePayTransaction,
         items: items,
         total: numericOrUndefined(record.total) || 0,
         totals: { finalTotal: numericOrUndefined(record.total) || 0 },
@@ -882,7 +884,7 @@ function normalizeSettingsBooleans(value) {
         if (raw === "true" || raw === "1" || raw === "yes" || raw === "on") return true;
         return v !== false && v !== 0;
     }
-    ["isOpen", "dineinIsOpen", "dineinCartClearEnabled", "hideAllTab", "orderCooldownEnabled", "useCustomLoadingImage"].forEach(function(key) {
+    ["isOpen", "dineinIsOpen", "autoOpenCashDrawer", "dineinCartClearEnabled", "hideAllTab", "orderCooldownEnabled", "useCustomLoadingImage"].forEach(function(key) {
         if (out[key] !== undefined) out[key] = boolLike(out[key]);
     });
     return out;
@@ -2366,6 +2368,19 @@ function writeManageRequest(kind, payload, options) {
     });
 }
 
+export function requestStaffOrderPresets(options) {
+    options = options || {};
+    var action = text(options.action || "read").trim().toLowerCase() || "read";
+    var payload = { action: action };
+    if (options.preset) payload.preset = plainJson(options.preset, {});
+    if (options.presetId) payload.presetId = text(options.presetId);
+    if (Array.isArray(options.ids)) payload.ids = options.ids.map(text);
+    return writeManageRequest("presets", payload, options).then(function(result) {
+        if (!result || result.ok === false) throw new Error((result && (result.message || result.reason)) || "PocketBase staff presets unavailable");
+        return Object.assign({ ok: true, backend: "pocketbase_manage" }, result);
+    });
+}
+
 export function readManageSettingsFromPocketBase(options) {
     return writeManageRequest("settings", { action: "read" }, options || {}).then(function(result) {
         if (!result || result.ok === false || !result.settings || typeof result.settings !== "object") {
@@ -2842,12 +2857,113 @@ export function requestLinePayViaBackend(orderId, orderDateKey, options) {
                     orderDateKey: text(orderDateKey),
                     confirmBaseUrl: text(options.confirmBaseUrl || (options.settings && options.settings.linePayConfirmUrl)),
                     returnPage: text(options.returnPage),
-                    returnDeviceId: text(options.returnDeviceId || options.deviceId)
+                    returnDeviceId: text(options.returnDeviceId || options.deviceId),
+                    waitForResult: options.waitForResult === true
                 })
             }, Number(options.timeoutMs || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS);
         }, {
             maxAttempts: options.maxAttempts,
             delayMs: options.delayMs
+        });
+    });
+}
+
+export function queuePhoneOrderCommandViaBackend(command, options) {
+    options = options || {};
+    command = command && typeof command === "object" ? command : {};
+    var config = resolvePocketBaseConfig(options);
+    var endpoint = cleanBaseUrl(config.orderEndpoint || "").replace(
+        /\/api\/(?:secure\/)?orders$/i,
+        "/api/phone-order/commands"
+    );
+    var user = options.firebaseUser;
+    if (!endpoint || endpoint === config.orderEndpoint) return Promise.reject(new Error("missing_phone_command_endpoint"));
+    if (!user || typeof user.getIdToken !== "function") return Promise.reject(new Error("firebase_auth_required"));
+    return Promise.resolve(user.getIdToken()).then(function(idToken) {
+        return requestJson(endpoint, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": "Bearer " + idToken
+            },
+            body: JSON.stringify({ action: "enqueue", command: command })
+        }, Number(options.timeoutMs || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS);
+    }).then(function(result) {
+        if (!result || result.ok !== true) throw new Error(text(result && result.message) || "phone_command_enqueue_failed");
+        return result;
+    });
+}
+
+export function readLinePayStatusViaBackend(orderId, options) {
+    options = options || {};
+    var id = text(orderId).trim();
+    if (!/^[A-Za-z0-9_-]{8,128}$/.test(id)) return Promise.reject(new Error("invalid_order_reference"));
+    var config = resolvePocketBaseConfig(options);
+    var endpoint = cleanBaseUrl(config.orderEndpoint || "").replace(
+        /\/api\/(?:secure\/)?orders$/i,
+        "/api/linepay/status"
+    );
+    var user = options.firebaseUser;
+    var idTokenPromise = options.firebaseIdToken
+        ? Promise.resolve(text(options.firebaseIdToken))
+        : (user && typeof user.getIdToken === "function"
+            ? Promise.resolve().then(function() { return user.getIdToken(); })
+            : Promise.reject(new Error("firebase_auth_required")));
+    var timeoutMs = Number(options.timeoutMs || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
+
+    return idTokenPromise.then(function(idToken) {
+        if (!idToken) throw new Error("firebase_auth_required");
+        var primary = endpoint && endpoint !== config.orderEndpoint
+            ? requestJson(endpoint, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "Authorization": "Bearer " + idToken
+                },
+                body: JSON.stringify({ orderId: id })
+            }, timeoutMs)
+            : Promise.reject(new Error("missing_linepay_status_endpoint"));
+        return primary.then(function(result) {
+            result = result && typeof result === "object" ? result : {};
+            if (result.found !== true) {
+                var missing = new Error("linepay_status_not_found");
+                missing.status = 503;
+                throw missing;
+            }
+            return {
+                ok: result.ok !== false,
+                found: true,
+                backend: "pocketbase",
+                status: text(result.status).trim().toLowerCase() || "unknown",
+                error: text(result.error)
+            };
+        }).catch(function(primaryError) {
+            var primaryStatus = Number(primaryError && primaryError.status) || 0;
+            var primaryMessage = text(primaryError && primaryError.message).trim();
+            if (primaryStatus >= 400 && primaryStatus < 500 && primaryMessage !== "linepay_order_not_found") {
+                throw primaryError;
+            }
+            var settings = options.settings || {};
+            var firebaseBase = cleanBaseUrl(
+                options.firebaseDatabaseUrl || settings.firebaseDatabaseUrl || configuredDefaultFirebaseDatabaseUrl()
+            );
+            if (!firebaseBase) throw primaryError;
+            var path = "/linepay_transactions/" + encodeURIComponent(id);
+            var authQuery = "?auth=" + encodeURIComponent(idToken);
+            return requestJson(firebaseBase + path + "/status.json" + authQuery, { method: "GET" }, timeoutMs)
+                .then(function(statusValue) {
+                    var status = text(statusValue).trim().toLowerCase() || "unknown";
+                    if (status !== "confirm_failed") {
+                        return { ok: true, found: status !== "unknown", backend: "firebase_fallback", status: status, error: "" };
+                    }
+                    return requestJson(firebaseBase + path + "/error.json" + authQuery, { method: "GET" }, timeoutMs)
+                        .catch(function() { return ""; })
+                        .then(function(errorValue) {
+                            return { ok: true, found: true, backend: "firebase_fallback", status: status, error: text(errorValue) };
+                        });
+                }).catch(function() {
+                    throw primaryError;
+                });
         });
     });
 }

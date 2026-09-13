@@ -2860,7 +2860,8 @@ export function requestLinePayViaBackend(orderId, orderDateKey, options) {
                     orderDateKey: text(orderDateKey),
                     confirmBaseUrl: text(options.confirmBaseUrl || (options.settings && options.settings.linePayConfirmUrl)),
                     returnPage: text(options.returnPage),
-                    returnDeviceId: text(options.returnDeviceId || options.deviceId)
+                    returnDeviceId: text(options.returnDeviceId || options.deviceId),
+                    waitForResult: options.waitForResult === true
                 })
             }, Number(options.timeoutMs || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS);
         }, {

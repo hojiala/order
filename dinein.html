@@ -515,7 +515,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
     import { getDatabase, ref, push, set, get, update, remove, onValue, query, orderByChild, equalTo, limitToLast, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
-    import { writeOrderToPocketBase, writeOrderWithFirebaseFallback, publicOrderPrintWarning, requestLinePayViaBackend, readLinePayStatusViaBackend, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, cancelOwnedOrderViaBackend, filterCartToAvailableMenu } from "./pocketbase-order-writer.20260818_001.js?v=20260907_linepay_status_1";
+    import { writeOrderToPocketBase, writeOrderWithFirebaseFallback, publicOrderPrintWarning, requestLinePayViaBackend, readLinePayStatusViaBackend, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, cancelOwnedOrderViaBackend, filterCartToAvailableMenu } from "./pocketbase-order-writer.20260818_001.js?v=20260913_dinein_wait_1";
 
     const firebaseConfig = {
         apiKey:"AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -1637,36 +1637,26 @@
                     firebaseUser:auth.currentUser,
                     confirmBaseUrl:s.settings.linePayConfirmUrl||'',
                     returnPage:'dinein',
-                    returnDeviceId:s.deviceId||''
-                }).then(function(){
-                    s.toast('⏳ 正在建立付款連結...');
-                    var tries=0;
-                    var poll=setInterval(function(){
-                        tries++;
-                        get(ref(db,'linepay_requests/'+orderId)).then(function(snap){
-                            if(!snap.exists()) return; // 節點暫時不存在，繼續等待
-                            var r=snap.val();
-                            if(!r || !r.status) return; // status 欄位尚未寫入，繼續等待
-                            if(r.status==='ready' && r.paymentUrl){
-                                clearInterval(poll);
-                                if(payMethod==='linepay_qr'){
-                                    s.isSubmitting=false;
-                                    s.openQRModal(orderId, orderData.total, r.qrCodeUrl||r.paymentUrl, orderDateKey);
-                                }else{
-                                    try{localStorage.setItem('linepay_return_url',window.location.href)}catch(e){}
-                                    // ★ 清空購物車（付款後返回時不顯示舊購物車）
-                                    try{localStorage.removeItem('dinein_cart_'+s.deviceId);}catch(e){}
-                                    window.location.href=r.paymentUrl;
-                                }
-                            }else if(r.status==='error'){
-                                clearInterval(poll);
-                                fail('⚠️ LINE Pay 失敗：'+(r.error||'未知錯誤'));
-                            }else if(tries>=30){
-                                clearInterval(poll);
-                                fail('⚠️ LINE Pay 逾時，請重試');
-                            }
-                        }).catch(function(){});
-                    },1000);
+                    returnDeviceId:s.deviceId||'',
+                    waitForResult:true,
+                    timeoutMs:15000
+                }).then(function(result){
+                    var r=result&&result.request;
+                    if(!r || r.status!=='ready' || !r.paymentUrl){
+                        fail(r&&r.status==='error'
+                            ? '⚠️ LINE Pay 失敗：'+(r.error||'未知錯誤')
+                            : '⚠️ LINE Pay 逾時，請重試');
+                        return;
+                    }
+                    if(payMethod==='linepay_qr'){
+                        s.isSubmitting=false;
+                        s.openQRModal(orderId, orderData.total, r.qrCodeUrl||r.paymentUrl, orderDateKey);
+                    }else{
+                        try{localStorage.setItem('linepay_return_url',window.location.href)}catch(e){}
+                        // ★ 清空購物車（付款後返回時不顯示舊購物車）
+                        try{localStorage.removeItem('dinein_cart_'+s.deviceId);}catch(e){}
+                        window.location.href=r.paymentUrl;
+                    }
                 }).catch(function(e){
                     fail('⚠️ LINE Pay 連線失敗：'+e.message);
                 });
