@@ -2861,6 +2861,7 @@ export function requestLinePayViaBackend(orderId, orderDateKey, options) {
                     confirmBaseUrl: text(options.confirmBaseUrl || (options.settings && options.settings.linePayConfirmUrl)),
                     returnPage: text(options.returnPage),
                     returnDeviceId: text(options.returnDeviceId || options.deviceId),
+                    confirmUrlType: text(options.confirmUrlType).trim().toUpperCase() === "NONE" ? "NONE" : "CLIENT",
                     waitForResult: options.waitForResult === true
                 })
             }, Number(options.timeoutMs || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS);
