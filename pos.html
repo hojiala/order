@@ -195,8 +195,8 @@
           &#128203;
           <span v-if="activeOrderCount>0" class="absolute -top-1.5 -right-1.5 bg-red-500 text-white font-black rounded-full w-5 h-5 flex items-center justify-center text-xs">{{ activeOrderCount }}</span>
         </button>
-        <button @click="openCashDrawer"
-          class="text-xs px-2 py-1.5 rounded-lg font-bold bg-emerald-500 hover:bg-emerald-400 text-white transition">💰 開錢箱</button>
+        <button @click="openCashDrawer" :disabled="drawerOpening"
+          class="text-xs px-2 py-1.5 rounded-lg font-bold bg-emerald-500 hover:bg-emerald-400 text-white transition disabled:opacity-60">{{ drawerOpening ? '開啟中…' : '💰 開錢箱' }}</button>
       </div>
     </div>
     <div class="flex overflow-x-auto bg-white border-b border-gray-200 flex-shrink-0 px-2">
@@ -748,6 +748,14 @@
   <div class="bg-gray-900 text-white text-sm font-bold px-5 py-2.5 rounded-full shadow-xl whitespace-nowrap">{{ toastMsg }}</div>
 </div>
 
+<div v-if="checkoutProgress" class="fixed inset-0 z-[1001] flex items-center justify-center" style="background:rgba(0,0,0,0.45)">
+  <div class="bg-white rounded-2xl shadow-2xl px-6 py-5 text-center" style="max-width:22rem;width:calc(100% - 2rem)">
+    <div class="text-3xl mb-2 animate-pulse">💚</div>
+    <p class="font-black text-gray-900">{{ checkoutProgress }}</p>
+    <p class="text-xs text-gray-500 mt-2">請勿重複按付款；完成後會自動開啟官方 LINE Pay 頁面。</p>
+  </div>
+</div>
+
 
 
   <!-- ★ 店內付款：付款狀態選擇 -->
@@ -863,20 +871,21 @@
         <p class="text-gray-700 text-sm font-bold mb-2">請顧客出示 LINE Pay 條碼，對準掃碼器掃描：</p>
         <div class="relative">
           <input ref="barcodeInput" v-model="offlineBarcode" type="tel" maxlength="20"
-            placeholder="等待掃碼器輸入..."
+            :disabled="offlineCreating || !offlineOrderId"
+            :placeholder="offlineCreating ? '正在建立訂單…' : '等待掃碼器輸入...'"
             @keyup.enter="submitOfflinePay"
             class="w-full border-2 rounded-xl px-4 py-3 text-lg font-mono text-center focus:outline-none transition"
             :class="offlineBarcode.length >= 10 ? 'border-green-400 bg-green-50' : 'border-gray-200'"
             style="letter-spacing:0.2em">
           <span v-if="offlineBarcode.length >= 10" class="absolute right-3 top-3 text-green-500 text-xl">✓</span>
         </div>
-        <p class="text-gray-400 text-xs mt-1 text-center">{{ scannerBridgeStatus || '等待 Pi USB 掃碼器；也可直接在此欄位輸入' }}</p>
+        <p class="text-gray-400 text-xs mt-1 text-center">{{ offlineCreating ? '正在建立付款訂單，完成後即可掃碼' : (scannerBridgeStatus || '等待 Pi USB 掃碼器；也可直接在此欄位輸入') }}</p>
         <p v-if="offlineError" class="mt-2 text-red-500 text-sm text-center font-medium">{{ offlineError }}</p>
         <p v-if="offlineSuccess" class="mt-2 text-green-600 text-sm text-center font-bold">✅ {{ offlineSuccess }}</p>
       </div>
       <div class="px-5 pb-4 flex gap-2">
-        <button @click="closeOfflineModal" class="flex-1 bg-gray-200 text-gray-600 font-bold py-3 rounded-xl text-sm hover:bg-gray-300 transition">取消</button>
-        <button @click="submitOfflinePay" :disabled="offlineBarcode.length < 10 || offlineSubmitting"
+        <button @click="closeOfflineModal" :disabled="offlineCreating" class="flex-1 bg-gray-200 text-gray-600 font-bold py-3 rounded-xl text-sm hover:bg-gray-300 transition disabled:opacity-40">取消</button>
+        <button @click="submitOfflinePay" :disabled="offlineCreating || !offlineOrderId || offlineBarcode.length < 10 || offlineSubmitting"
           class="flex-1 text-white font-black py-3 rounded-xl text-sm disabled:opacity-40 transition"
           style="background:linear-gradient(135deg,#06C755,#00B900)">
           {{ offlineSubmitting ? '扣款中...' : '確認付款' }}
@@ -891,7 +900,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getDatabase, ref, query, orderByKey, limitToLast, onValue, onChildAdded, onChildChanged, onChildRemoved, update, push, set, get, remove, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-    import { allocateOrderNoFromPocketBase, resetOrderNoInPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, requestLinePayViaBackend, cancelOwnedOrderViaBackend, queuePhoneOrderCommandViaBackend, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, readManageMenuFromPocketBase, listMenuItemsFromPocketBase, writeMenuItemToPocketBase, writeSettingsToPocketBase, requestStaffOrderPresets, rememberPublicMenuItems, rememberPublicSettings, normalizePublicSettings, subscribeOrdersRealtime, isReservedOrderId } from "./pocketbase-order-writer.20260809_005.js?v=20260910_cash_drawer_1";
+    import { allocateOrderNoFromPocketBase, resetOrderNoInPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, requestLinePayViaBackend, openCashDrawerViaBackend, cancelOwnedOrderViaBackend, queuePhoneOrderCommandViaBackend, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, readManageMenuFromPocketBase, listMenuItemsFromPocketBase, writeMenuItemToPocketBase, writeSettingsToPocketBase, requestStaffOrderPresets, rememberPublicMenuItems, rememberPublicSettings, normalizePublicSettings, subscribeOrdersRealtime, isReservedOrderId } from "./pocketbase-order-writer.20260809_005.js?v=20260915_pos_recovery_1";
     import { saveLinePayCheckoutHandoff, consumeRestorableLinePayCheckout } from "./linepay-checkout-handoff.20260912_001.js";
     import { isBackofficeUser } from "./staff-auth-activation.20260818_001.js?v=20260818_001";
     const firebaseConfig = {
@@ -964,7 +973,7 @@
                 lpQueueResent:{},
                 menu:[],menuItems:[],menuLoading:true,filterCat:"",settings:{categories:[],autoOpenCashDrawer:true,stations:[{name:'湯麵',ip:'192.168.0.6'},{name:'麵包台',ip:'192.168.0.7'},{name:'飲料台',ip:'192.168.0.8'}]},settingsStationsLoaded:false,
                 activeView:"menu",editMode:false,
-                cart:[],custName:"",custPhone:"",isSubmitting:false,
+                cart:[],custName:"",custPhone:"",isSubmitting:false,checkoutProgress:"",drawerOpening:false,cancelInFlight:{},
                 staffPresets:[],staffPresetsLoading:false,staffPresetsError:"",showStaffPresetPicker:false,selectedStaffPreset:null,
                 voiceActive:false,voiceConnecting:false,voiceStatus:"",voiceTranscript:"",
                 posMetaExpanded:false,showStorePayChoiceModal:false,showLinePayChoiceModal:false,showCounterSettingsModal:false,showCashCalculator:false,showBackendStatus:false,posOrderNote:"",
@@ -984,7 +993,7 @@
                 archiveConfirm:false,resetConfirm:false,
                 linePayServerUrl:"",linePayConfirmUrl:"",pocketBaseUrl:"",pocketBaseOrdersCollection:"orders",
                 // ★ 情境3 Offline 掃碼
-                showOfflineModal:false, offlineBarcode:"", offlineAmount:0,
+                showOfflineModal:false, offlineBarcode:"", offlineAmount:0,offlineCreating:false,offlinePhoneOrder:null,
                 offlineOrderId:"", offlineOrderDateKey:"", offlineItems:[], offlineError:"", offlineSuccess:"",
                 scannerBridgeSessionId:"",scannerBridgeAuthToken:"",scannerBridgeBase:"",scannerBridgeStatus:"",scannerBridgePollTimer:null,
                 // ★ LINE Pay Online 付款連結彈窗
@@ -1977,18 +1986,21 @@
             },
             startPosLinePay:function(orderId,orderDateKey,confirmBase,clearCartOnRedirect){
                 var s=this;
+                s.checkoutProgress='正在建立 LINE Pay QR 付款頁…';
                 s.toast('⏳ 正在建立 LINE Pay 連結...');
                 return requestLinePayViaBackend(orderId,orderDateKey,{
                     settings:s.settings,
                     firebaseUser:auth.currentUser,
                     confirmBaseUrl:confirmBase,
-                    returnPage:'pos'
+                    returnPage:'pos',
+                    waitForResult:true,
+                    timeoutMs:18000
                 }).then(function(result){
                     return new Promise(function(resolve,reject){
                         var finished=false,stopWatching=function(){},timer=null;
                         var finish=function(error,payUrl){
                             if(finished)return;
-                            finished=true;clearTimeout(timer);stopWatching();s.isSubmitting=false;
+                            finished=true;clearTimeout(timer);stopWatching();s.isSubmitting=false;s.checkoutProgress='';
                             if(error){reject(error);return;}
                             if(clearCartOnRedirect){
                                 try{
@@ -2040,6 +2052,7 @@
                     });
                 }).catch(function(error){
                     s.isSubmitting=false;
+                    s.checkoutProgress='';
                     s.toast('⚠️ LINE Pay 失敗：'+(error&&error.message||error||'未知錯誤'));
                 });
             },
@@ -5136,9 +5149,29 @@
             },
             openCashDrawer:function(silent){
                 var s=this;
-                return set(ref(db,"settings/openDrawer"),Date.now())
-                    .then(function(){if(silent!==true)s.toast("✅ 錢箱已開啟");return true;})
-                    .catch(function(e){alert("開錢箱失敗："+e.message);return false;});
+                if(s.drawerOpening){if(silent!==true)s.toast('⏳ 開錢箱指令處理中，請勿連按');return Promise.resolve(false);}
+                s.drawerOpening=true;
+                if(silent!==true)s.toast('⏳ 正在送出開錢箱指令…');
+                var directFallback=function(){
+                    var direct=set(ref(db,"settings/openDrawer"),Date.now());
+                    var timeout=new Promise(function(_,reject){setTimeout(function(){reject(new Error('店內 POS 與 Firebase 連線逾時'));},6000);});
+                    return Promise.race([direct,timeout]);
+                };
+                return openCashDrawerViaBackend({
+                    settings:s.settings,
+                    pocketBaseUrl:s.pocketBaseUrl,
+                    firebaseUser:auth.currentUser,
+                    timeoutMs:7000
+                }).catch(function(e){
+                    console.warn('Cash drawer backend unavailable; using Firebase fallback:',e&&e.message?e.message:e);
+                    return directFallback();
+                }).then(function(){
+                    if(silent!==true)s.toast("✅ 開錢箱指令已送達店內");
+                    return true;
+                }).catch(function(e){
+                    alert("開錢箱失敗："+(e&&e.message?e.message:e)+"。請重新整理 POS 後再試，勿連續按按鈕。");
+                    return false;
+                }).finally(function(){s.drawerOpening=false;});
             },
             openCashDrawerAfterCashPayment:function(alreadyCashPaid){
                 if(alreadyCashPaid||this.settings.autoOpenCashDrawer===false)return Promise.resolve(false);
@@ -5917,9 +5950,12 @@
                 var s=this;
                 if(!order||!order.id)return false;
 
+                s.toast('⏳ 正在讀取訂單最新狀態…');
                 var latestOrder=Object.assign({},order);
                 try{
-                    var fullSnap=await get(ref(db,'orders/'+s.resolveOrderDateKey(order)+'/'+order.id));
+                    var latestRead=get(ref(db,'orders/'+s.resolveOrderDateKey(order)+'/'+order.id));
+                    var readTimeout=new Promise(function(_,reject){setTimeout(function(){reject(new Error('latest_order_read_timeout'));},3000);});
+                    var fullSnap=await Promise.race([latestRead,readTimeout]);
                     // PB/POS 是目前畫面的來源；Firebase 只補缺欄，不能用舊 store/unpaid 洗掉 cash/paid
                     if(fullSnap.exists())latestOrder=Object.assign({},fullSnap.val()||{},latestOrder,{id:order.id});
                 }catch(_){ }
@@ -5937,7 +5973,6 @@
 
                 var orderBase='orders/'+s.resolveOrderDateKey(latestOrder)+'/'+order.id;
                 var taskRef=ref(db,orderBase+'/print_task');
-                await remove(taskRef);
 
                 var updates={status:'cancelled',wasCancelled:true};
                 var baseItems=Array.isArray(latestOrder.items)?latestOrder.items:[];
@@ -5970,6 +6005,8 @@
                 await s.updateOrderMirror(order.id,updates,latestOrder);
                 // 取消工單用 latestOrder 列印，必須帶上剛寫入的欄位（現金退款的 paymentStatus 等）
                 Object.assign(latestOrder,updates);
+                s.onlineOrders=(s.onlineOrders||[]).map(function(o){return o&&o.id===order.id?Object.assign({},o,updates,{_remoteStatusOverride:'cancelled'}):o;});
+                if(s.editingOrder&&s.editingOrder.id===order.id)s.editingOrder=Object.assign({},s.editingOrder,updates);
 
                 if(shouldRefund){
                     var refund=await s.requestLinePayRefund(latestOrder);
@@ -5994,9 +6031,10 @@
                 latestOrder.status='cancelled';
                 var cancelTask=refundPrintTask||('cancel_'+Date.now());
                 if(!refundPrintTask){
-                    await set(taskRef,cancelTask);
+                    set(taskRef,cancelTask).catch(function(e){console.warn('取消單 Firebase 任務標記失敗:',e&&e.message?e.message:e);});
                     // ★ LINE Pay 後端未直接送印時才由 POS 補送，避免取消單印兩次
-                    s.writeToPrintQueue(order.id,cancelTask,latestOrder);
+                    var delivery=await s.writeToPrintQueue(order.id,cancelTask,latestOrder);
+                    if(!delivery||!delivery.ok)throw (delivery&&delivery.error)||new Error('取消單列印服務無回應');
                 }
                 s.toast('❌ 訂單已取消，列印取消單...');
                 if(s.editingOrder&&s.editingOrder.id===order.id)s.exitOnline();
@@ -6763,7 +6801,7 @@
                 var s=this;
                 if(!s.cart.length){s.toast("⚠️ 購物車為空");return;}
 
-                // 先建立訂單到 Firebase，再開啟掃碼 Modal
+                // 先顯示明確進度；訂單建立完成前鎖住輸入，避免慢網路看起來像按鈕沒反應。
                 s.isSubmitting=true;
                 var pickDate=s.posPickupDate||s.todayStr;
                 var pickTime=s.posPickupTime||(pickDate>s.todayStr?"":"現場取餐");
@@ -6778,6 +6816,16 @@
                     counterMaxNo:Math.max(1,Math.min(9999,Math.floor(Number(s.counterMaxNo||999)||999))),
                     timestamp:Date.now(),source:"pos",sourceLabel:"現場 POS",printSource:"POS","訂單來源":"POS",paymentMethod:"linepay"};
                 if(s.posOrderType==='dinein'&&s.posTableLabel)o.tableLabel=s.posTableLabel;
+                s.offlineOrderId='';
+                s.offlineOrderDateKey=pickDate;
+                s.offlineAmount=o.total;
+                s.offlineItems=o.items;
+                s.offlineBarcode='';
+                s.offlineError='';
+                s.offlineSuccess='';
+                s.offlinePhoneOrder=null;
+                s.offlineCreating=true;
+                s.showOfflineModal=true;
                 s.allocateNextOrderNo()
                     .then(function(counter){
                         var no=counter&&counter.ok?counter.orderNo:null;
@@ -6806,12 +6854,8 @@
                     })
                     .then(function(snap){
                         s.offlineOrderId=snap.key;
-                        s.offlineAmount=o.total;
-                        s.offlineItems=o.items;
-                        s.offlineBarcode="";
-                        s.offlineError="";
-                        s.offlineSuccess="";
-                        s.showOfflineModal=true;
+                        s.offlineOrderDateKey=o.orderDateKey||pickDate;
+                        s.offlineCreating=false;
                         // 自動 focus 輸入框等待掃碼
                         s.$nextTick(function(){
                             if(s.$refs.barcodeInput) s.$refs.barcodeInput.focus();
@@ -6819,20 +6863,24 @@
                         s.startScannerBridge();
                         // ★ 不在此列印，等掃碼付款成功後才印（由 submitOfflinePay 觸發）
                     })
-                    .catch(function(e){s.toast("❌ 建立訂單失敗："+e.message);})
-                    .finally(function(){s.isSubmitting=false;});
+                    .catch(function(e){s.offlineError="建立訂單失敗："+(e&&e.message?e.message:e);s.toast("❌ 建立訂單失敗");})
+                    .finally(function(){s.isSubmitting=false;s.offlineCreating=false;});
             },
             closeOfflineModal:function(){
+                if(this.offlineCreating)return;
+                var orderWasCreated=!!this.offlineOrderId;
                 this.stopScannerBridge();
                 this.showOfflineModal=false;
                 this.offlineBarcode="";
                 this.offlineError="";
                 this.offlineSuccess="";
                 this.offlineSubmitting=false;
-                this.clearCart();
+                this.offlinePhoneOrder=null;
+                if(orderWasCreated)this.clearCart();
             },
             submitOfflinePay:function(){
                 var s=this;
+                if(s.offlineCreating||!s.offlineOrderId){s.offlineError="付款訂單尚未建立完成，請稍候";return;}
                 var barcode=s.offlineBarcode.trim();
                 if(!barcode||barcode.length<10){s.offlineError="條碼長度不足，請重新掃描";return;}
                 if(!/^\d+$/.test(barcode)){s.offlineError="條碼格式錯誤（應為純數字）";return;}
@@ -6858,6 +6906,11 @@
                                 s.offlineSuccess="付款成功！交易編號："+r.transactionId;
                                 s.toast("✅ LINE Pay 掃碼付款成功 $"+s.offlineAmount);
                                 s.offlineSubmitting=false;
+                                if(s.offlinePhoneOrder){
+                                    s.queuePhoneOrderCommand(s.offlinePhoneOrder,'set_status',{
+                                        paymentMethod:'linepay_offline',paymentStatus:'paid',status:'done'
+                                    }).catch(function(e){console.warn('電話訂單付款狀態回寫失敗:',e&&e.message?e.message:e);});
+                                }
                                 // ★ 付款成功後才列印工單
                                 var ob='orders/'+(s.offlineOrderDateKey||s.todayStr)+'/'+s.offlineOrderId;
                                 update(ref(db,ob),{status:"making"});
@@ -6935,6 +6988,7 @@
                 if(!pickTime)pickTime="預約取餐";
                 var isLinePay=(payMethod==='linepay'||payMethod==='linepay_online');
                 var isCash=(payMethod==='cash');
+                if(isLinePay)s.checkoutProgress='正在建立 LINE Pay QR 付款頁…';
                 var confirmBase=(s.linePayConfirmUrl||'').trim();
                 if(confirmBase){
                     if(!/\/linepay-confirm\.html(\?|$)/i.test(confirmBase)){
@@ -6947,6 +7001,7 @@
                 }
                 if(isLinePay&&!confirmBase){
                     s.isSubmitting=false;
+                    s.checkoutProgress='';
                     s.toast('⚠️ 請先在設定中填入 LINE Pay 確認頁網址');
                     return;
                 }
@@ -6963,6 +7018,7 @@
                     });
                     if(dup){
                         s.isSubmitting=false;
+                        s.checkoutProgress='';
                         s.toast('⚠️ 已有相同 LINE Pay 待付款訂單，避免重複送單');
                         return;
                     }
@@ -7034,6 +7090,7 @@
                         }
                     })
                     .catch(function(e){
+                        s.checkoutProgress='';
                         alert("送出失敗："+e.message);
                         s.isSubmitting=false;
                     });
@@ -7168,25 +7225,54 @@
             },
             updateOrderMirror:function(id,fields,order){
                 var s=this;
-                var p=update(ref(db),this.buildOrderMirrorUpdates(id,fields,order));
+                var baseOrder=order||s.findOrderById(id)||{};
+                var merged=Object.assign({},baseOrder,fields,{id:id});
+                var firebaseUpdates=this.buildOrderMirrorUpdates(id,fields,order);
+                if(Object.prototype.hasOwnProperty.call(fields||{},'status')){
+                    s.statusOverrideRawKeys(merged).forEach(function(rawKey){
+                        var key=s.statusOverrideKeyFromRaw(rawKey);
+                        if(!key)return;
+                        firebaseUpdates['integration_sync/display_status_overrides/'+key]={
+                            status:fields.status,
+                            rawKey:rawKey,
+                            orderId:String(id||''),
+                            source:'pos_ui',
+                            updatedAt:Date.now()
+                        };
+                    });
+                }
+                var writeFirebase=function(){return update(ref(db),firebaseUpdates);};
                 // ★ 付款/狀態變更必須同步回 PocketBase：POS 列表與 manage 都讀 PB，
                 //   只寫 Firebase 會造成「現金已付款後仍顯示 LINE Pay 處理中/未付款」
                 var keys=Object.keys(fields||{});
                 if(keys.indexOf('paymentMethod')>=0||keys.indexOf('paymentStatus')>=0||keys.indexOf('status')>=0){
                     try{
-                        var baseOrder=order||s.findOrderById(id)||{};
-                        var merged=Object.assign({},baseOrder,fields,{id:id});
                         var src=String(merged.source||'').toLowerCase();
                         var srcPath=String((merged.integration&&merged.integration.sourceRecordPath)||merged.sourceRecordPath||'');
                         var isPhone=src==='phone_ai'||src==='pos_local'||srcPath.indexOf('phone_ai/')===0;
-                        // items 空時不推 PB，避免把 PB 記錄的 items 洗成空陣列
+                        // PB 是三個後台的主要來源；先等 PB 成功，再由 PB hook 鏡射 Firebase。
+                        // PB 失敗才走 Firebase，避免店內瀏覽器的 RTDB 連線卡住整個操作。
                         if(!isPhone&&Array.isArray(merged.items)&&merged.items.length){
-                            writeOrderToPocketBase(id,merged,{settings:s.settings,firebaseUser:auth.currentUser,sourcePage:'pos',allowPocketBaseUpdate:true})
-                                .catch(function(e){console.warn('PB 狀態同步失敗:',id,e&&e.message?e.message:e);});
+                            return writeOrderToPocketBase(id,merged,{
+                                settings:s.settings,
+                                pocketBaseUrl:s.pocketBaseUrl,
+                                pocketBaseOrdersCollection:s.pocketBaseOrdersCollection,
+                                firebaseUser:auth.currentUser,
+                                sourcePage:'pos',
+                                allowPocketBaseUpdate:true,
+                                timeoutMs:6000,
+                                secureTimeoutMs:7000
+                            }).then(function(result){
+                                if(result&&result.ok)return result;
+                                return writeFirebase();
+                            }).catch(function(e){
+                                console.warn('PB 狀態同步失敗，改走 Firebase:',id,e&&e.message?e.message:e);
+                                return writeFirebase();
+                            });
                         }
                     }catch(e){console.warn('PB 狀態同步略過:',e&&e.message?e.message:e);}
                 }
-                return p;
+                return writeFirebase();
             },
             clearPrintTaskMirror:function(id,order){
                 return update(ref(db),this.buildOrderMirrorUpdates(id,{print_task:null},order));
@@ -7368,12 +7454,32 @@
 
                     if(s.isPhoneCommandOrder(targetOrder)){
                         var phonePayment=s.buildPhoneCommandPayment(realPm,oldPm,oldPaid);
-                        await s.queuePhoneOrderCommand(targetOrder,'replace_order',s.buildPhoneEditCommandPayload(targetOrder,{
+                        var phoneEditPayload=s.buildPhoneEditCommandPayload(targetOrder,{
                             paymentMethod:phonePayment.paymentMethod,
                             paymentStatus:phonePayment.paymentStatus,
                             status:'done',
                             completedAt:new Date().toISOString()
-                        }));
+                        });
+                        if(realPm==='linepay_offline'){
+                            s.offlineOrderId=id;
+                            s.offlineOrderDateKey=s.resolveOrderDateKey(targetOrder)||s.editPickupDate||s.todayStr;
+                            s.offlineAmount=upd.total||0;
+                            s.offlineItems=upd.items||[];
+                            s.offlineBarcode='';
+                            s.offlineError='';
+                            s.offlineSuccess='';
+                            s.offlineCreating=true;
+                            s.offlinePhoneOrder=targetOrder;
+                            s.showOfflineModal=true;
+                            await s.queuePhoneOrderCommand(targetOrder,'replace_order',phoneEditPayload);
+                            s.offlineCreating=false;
+                            s.exitOnline();
+                            s.$nextTick(function(){if(s.$refs.barcodeInput)s.$refs.barcodeInput.focus();});
+                            s.startScannerBridge();
+                            s.toast('📲 請掃描顧客 LINE Pay 條碼完成付款');
+                            return;
+                        }
+                        await s.queuePhoneOrderCommand(targetOrder,'replace_order',phoneEditPayload);
                         s.toast('✅ 電話整合訂單修改命令已送出');
                         s.exitOnline();
                         return;
@@ -7406,11 +7512,13 @@
                         await remove(taskRef);
 
                         s.offlineOrderId=id;
+                        s.offlineOrderDateKey=s.resolveOrderDateKey(targetOrder)||upd.pickupDate||s.todayStr;
                         s.offlineAmount=upd.total||0;
                         s.offlineItems=upd.items||[];
                         s.offlineBarcode='';
                         s.offlineError='';
                         s.offlineSuccess='';
+                        s.offlinePhoneOrder=null;
                         s.showOfflineModal=true;
                         s.exitOnline();
                         s.$nextTick(function(){ if(s.$refs.barcodeInput) s.$refs.barcodeInput.focus(); });
@@ -7453,6 +7561,7 @@
                     s.toast('✅ 修改已儲存，重新列印中...');
                     s.exitOnline();
                 }catch(e){
+                    if(s.offlineCreating){s.offlineCreating=false;s.offlineError='建立掃碼付款失敗：'+(e&&e.message?e.message:e);}
                     alert('儲存失敗：'+e.message);
                 }finally{
                     s.isSubmitting=false;
@@ -7463,10 +7572,15 @@
                 var order=s.editingOrder&&s.editingOrder.id===id?s.editingOrder:null;
                 var targetOrder=order||s.onlineOrders.find(function(o){return o.id===id;})||null;
                 if(!targetOrder)return;
-                var remotePromise=s.writeRemoteStatusOverride(targetOrder,status).catch(function(e){
+                if(status==='cancelled'){
+                    s.cancelOrder(targetOrder);
+                    return;
+                }
+                var needsDirectOverride=s.isPhoneCommandOrder(targetOrder)||s.isIntegrationReadOnlyOrder(targetOrder);
+                var remotePromise=needsDirectOverride?s.writeRemoteStatusOverride(targetOrder,status).catch(function(e){
                     console.warn('display status override write failed',e&&e.message?e.message:e);
                     s.toast('\u26a0\ufe0f \u72c0\u614b\u540c\u6b65\u5931\u6557\uff0c\u672c\u9801\u5df2\u5148\u66f4\u65b0');
-                });
+                }):Promise.resolve();
                 if(s.editingOrder&&s.editingOrder.id===id){
                     s.editingOrder=Object.assign({},s.editingOrder,{status:status});
                 }
@@ -7492,11 +7606,6 @@
                         var m={new:'\u5df2\u9084\u539f\u70ba\u65b0\u8a02\u55ae\uff08\u4e0d\u5217\u5370\uff09',making:'\u2705 \u5df2\u63a5\u55ae\uff08\u4e0d\u5217\u5370\uff09',done:'\u2705 \u51fa\u9910\u5b8c\u6210\uff08\u4e0d\u5217\u5370\uff09',cancelled:'\u5df2\u53d6\u6d88\u986f\u793a\u72c0\u614b'};
                         s.toast(m[status]||'\u5df2\u66f4\u65b0\u72c0\u614b');
                     });
-                    return;
-                }
-                if(status==='cancelled'){
-                    var target=order||s.onlineOrders.find(function(o){return o.id===id;})||{id:id,paymentMethod:'store',paymentStatus:''};
-                    s.cancelOrderCore(target).catch(function(e){alert("\u53d6\u6d88\u8a02\u55ae\u5931\u6557\uff1a"+e.message);});
                     return;
                 }
                 Promise.all([remotePromise,s.updateOrderMirror(id,{status:status},targetOrder)])
@@ -7646,8 +7755,12 @@
             },
             cancelOrder:function(order){
                 var s=this;
+                if(!order||!order.id)return Promise.resolve(false);
+                if(s.cancelInFlight[order.id]){s.toast('⏳ 此訂單正在取消，請勿重複按');return Promise.resolve(false);}
                 if(s.isPhoneCommandOrder(order)){
                     if(!confirm("確定要取消這筆電話訂單嗎？"))return;
+                    s.cancelInFlight=Object.assign({},s.cancelInFlight,{[order.id]:true});
+                    s.toast('⏳ 正在取消電話訂單…');
                     // 立刻寫 display_status_overrides=cancelled，admin/pos/manage 三邊 UI 即時轉為「已取消」、不必等電話 Pi 回灌
                     var overridePromise=s.writeRemoteStatusOverride(order,'cancelled').catch(function(e){
                         console.warn('cancel display override write failed',e&&e.message?e.message:e);
@@ -7656,16 +7769,20 @@
                     if(s.editingOrder&&s.editingOrder.id===order.id){
                         s.editingOrder=Object.assign({},s.editingOrder,{status:'cancelled'});
                     }
-                    Promise.all([overridePromise,s.queuePhoneOrderCommand(order,'cancel_order')])
+                    return s.queuePhoneOrderCommand(order,'cancel_order')
                         .then(function(){s.toast("✅ 已送出電話訂單取消命令");if(s.editingOrder&&s.editingOrder.id===order.id)s.exitOnline();})
-                        .catch(function(e){alert("電話訂單取消失敗："+(e&&e.message?e.message:e));});
-                    return;
+                        .catch(function(e){alert("電話訂單取消失敗："+(e&&e.message?e.message:e));})
+                        .finally(function(){delete s.cancelInFlight[order.id];});
                 }
                 if(s.isIntegrationReadOnlyOrder(order)){
                     s.toast('☎️ 電話整合訂單請在電話後台取消');
-                    return;
+                    return Promise.resolve(false);
                 }
-                s.cancelOrderCore(order).catch(function(e){alert("取消訂單失敗："+e.message);});
+                s.cancelInFlight=Object.assign({},s.cancelInFlight,{[order.id]:true});
+                s.toast('⏳ 正在處理取消，請勿重複按…');
+                return s.cancelOrderCore(order)
+                    .catch(function(e){alert("取消訂單失敗："+e.message);return false;})
+                    .finally(function(){delete s.cancelInFlight[order.id];});
             },
 
             moveCartItem:function(idx,dir){var ni=idx+dir;if(ni<0||ni>=this.cart.length)return;var t=this.cart[idx];this.cart.splice(idx,1);this.cart.splice(ni,0,t);},
