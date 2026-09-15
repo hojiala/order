@@ -1405,6 +1405,7 @@
                 Object.keys(s.orderBuckets||{}).forEach(function(dateKey){
                     var bucket=s.orderBuckets[dateKey]||{};
                     Object.keys(bucket).forEach(function(id){
+                        if(isReservedOrderId(id))return;
                         var o=bucket[id];
                         if(o&&typeof o==='object')add(Object.assign({id:id,orderDateKey:dateKey,pickupDate:o.pickupDate||dateKey},o));
                     });
@@ -1418,7 +1419,7 @@
                 var bucketReads=keys.map(function(dateKey){
                     return get(ref(db,'orders/'+dateKey)).then(function(snap){
                         var bucket=snap.exists()?(snap.val()||{}):{};
-                        return Object.keys(bucket).filter(function(id){return !isMirrorKey(id);}).map(function(id){
+                        return Object.keys(bucket).filter(function(id){return !isMirrorKey(id)&&!isReservedOrderId(id);}).map(function(id){
                             var row=bucket[id];
                             if(!row||typeof row!=='object')return null;
                             return Object.assign({_readBackend:'firebase',id:id,orderDateKey:dateKey,pickupDate:row.pickupDate||dateKey,sourceRecordPath:'orders/'+dateKey+'/'+id},row);
@@ -2058,6 +2059,7 @@
                 return '';
             },
             isCurrentPhoneFallbackOrder:function(id,row){
+                if(isReservedOrderId(id))return false;
                 var today=this.todayStr;
                 if(!today){
                     var now=new Date();
@@ -5599,8 +5601,9 @@
                     // ★ 改用 child 事件：只下載變更的那一筆
                     //   ★ 過濾掉 `online_` 前綴的鏡像條目（來源未知的背景服務鏡像，會造成 POS 訂單列表重複顯示）
                     var isMirrorKey=function(k){return typeof k==='string' && k.indexOf('online_')===0;};
+                    var isIgnoredKey=function(k){return isMirrorKey(k)||isReservedOrderId(k);};
                     var u1=onChildAdded(bucketRef,function(snap){
-                        if(isMirrorKey(snap.key))return;
+                        if(isIgnoredKey(snap.key))return;
                         s.orderBuckets[dateKey][snap.key]=snap.val();
                         if(s.ordersReadBackend==='firebase')s.backfillOrdersToPocketBaseBestEffort([Object.assign({id:snap.key,orderDateKey:dateKey,pickupDate:dateKey},snap.val()||{})],'pos_bucket_fallback');
                         s._scheduleRebuild();
@@ -5611,13 +5614,13 @@
                         }
                     });
                     var u2=onChildChanged(bucketRef,function(snap){
-                        if(isMirrorKey(snap.key))return;
+                        if(isIgnoredKey(snap.key))return;
                         s.orderBuckets[dateKey][snap.key]=snap.val();
                         if(s.ordersReadBackend==='firebase')s.backfillOrdersToPocketBaseBestEffort([Object.assign({id:snap.key,orderDateKey:dateKey,pickupDate:dateKey},snap.val()||{})],'pos_bucket_fallback');
                         s._scheduleRebuild();
                     });
                     var u3=onChildRemoved(bucketRef,function(snap){
-                        if(isMirrorKey(snap.key))return;
+                        if(isIgnoredKey(snap.key))return;
                         delete s.orderBuckets[dateKey][snap.key];
                         s._scheduleRebuild();
                     });
