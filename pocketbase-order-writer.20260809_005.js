@@ -1183,7 +1183,7 @@ function menuItemFromRecord(record) {
     if (!payload || typeof payload !== "object" || Array.isArray(payload)) payload = {};
     var item = Object.assign({}, payload);
     [
-        "name", "shortName", "printName", "price", "category", "subCategory", "desc", "img",
+        "name", "shortName", "printName", "price", "category", "subCategory", "desc", "img", "spicyBadgePosition",
         "imageUrl", "image", "photo", "options", "optionGroups", "posExtras", "prepItems", "station",
         "printStations", "availableAfter", "active", "sortOrder", "sort_order", "order", "sortIndex", "__sortIndex", "createdAt", "updatedAt",
         "firebase_id", "firebaseId", "item_id", "itemId", "menu_id", "menuId"
