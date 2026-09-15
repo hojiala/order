@@ -863,7 +863,7 @@
       <div class="px-5 py-3 flex items-center gap-2" style="background:linear-gradient(135deg,#06C755,#00B900)">
         <span class="text-xl">💚</span>
         <span class="text-white font-black text-base">LINE Pay 條碼付款</span>
-        <button @click="closeOfflineModal" class="ml-auto text-white text-xl font-bold w-7 h-7 flex items-center justify-center rounded-full hover:bg-green-400 transition">✕</button>
+        <button @click="closeOfflineModal" :disabled="offlineCreating && !offlineOrderId" class="ml-auto text-white text-xl font-bold w-7 h-7 flex items-center justify-center rounded-full hover:bg-green-400 transition disabled:opacity-40">✕</button>
       </div>
       <div class="px-5 py-4">
         <p class="text-gray-500 text-sm mb-1">訂單金額</p>
@@ -871,20 +871,20 @@
         <p class="text-gray-700 text-sm font-bold mb-2">請顧客出示 LINE Pay 條碼，對準掃碼器掃描：</p>
         <div class="relative">
           <input ref="barcodeInput" v-model="offlineBarcode" type="tel" maxlength="20"
-            :disabled="offlineCreating || !offlineOrderId"
-            :placeholder="offlineCreating ? '正在建立訂單…' : '等待掃碼器輸入...'"
+            :disabled="!offlineOrderId"
+            :placeholder="!offlineOrderId ? '正在建立訂單…' : (offlineCreating ? '可先掃碼，訂單同步中…' : '等待掃碼器輸入...')"
             @keyup.enter="submitOfflinePay"
             class="w-full border-2 rounded-xl px-4 py-3 text-lg font-mono text-center focus:outline-none transition"
             :class="offlineBarcode.length >= 10 ? 'border-green-400 bg-green-50' : 'border-gray-200'"
             style="letter-spacing:0.2em">
           <span v-if="offlineBarcode.length >= 10" class="absolute right-3 top-3 text-green-500 text-xl">✓</span>
         </div>
-        <p class="text-gray-400 text-xs mt-1 text-center">{{ offlineCreating ? '正在建立付款訂單，完成後即可掃碼' : (scannerBridgeStatus || '等待 Pi USB 掃碼器；也可直接在此欄位輸入') }}</p>
+        <p class="text-gray-400 text-xs mt-1 text-center">{{ !offlineOrderId ? '正在建立付款訂單，完成後即可掃碼' : (offlineCreating ? '訂單同步中；可先掃碼，完成後再確認付款' : (scannerBridgeStatus || '等待 Pi USB 掃碼器；也可直接在此欄位輸入')) }}</p>
         <p v-if="offlineError" class="mt-2 text-red-500 text-sm text-center font-medium">{{ offlineError }}</p>
         <p v-if="offlineSuccess" class="mt-2 text-green-600 text-sm text-center font-bold">✅ {{ offlineSuccess }}</p>
       </div>
       <div class="px-5 pb-4 flex gap-2">
-        <button @click="closeOfflineModal" :disabled="offlineCreating" class="flex-1 bg-gray-200 text-gray-600 font-bold py-3 rounded-xl text-sm hover:bg-gray-300 transition disabled:opacity-40">取消</button>
+        <button @click="closeOfflineModal" :disabled="offlineCreating && !offlineOrderId" class="flex-1 bg-gray-200 text-gray-600 font-bold py-3 rounded-xl text-sm hover:bg-gray-300 transition disabled:opacity-40">取消</button>
         <button @click="submitOfflinePay" :disabled="offlineCreating || !offlineOrderId || offlineBarcode.length < 10 || offlineSubmitting"
           class="flex-1 text-white font-black py-3 rounded-xl text-sm disabled:opacity-40 transition"
           style="background:linear-gradient(135deg,#06C755,#00B900)">
@@ -2926,15 +2926,19 @@
                     serialNumber:order&&order.serialNumber?String(order.serialNumber):'',
                     rawJsonPath:(original.phoneAi&&original.phoneAi.rawJsonPath)||''
                 },extra||{});
-                return queuePhoneOrderCommandViaBackend(command,{
+                var bounded=function(promise,timeoutMs,message){
+                    var timeout=new Promise(function(_,reject){setTimeout(function(){reject(new Error(message));},timeoutMs);});
+                    return Promise.race([promise,timeout]);
+                };
+                return bounded(queuePhoneOrderCommandViaBackend(command,{
                     settings:s.settings||{},
                     pocketBaseUrl:s.pocketBaseUrl,
                     pocketBaseOrderEndpoint:s.settings&&s.settings.pocketBaseOrderEndpoint,
                     firebaseUser:auth.currentUser,
                     timeoutMs:5000
-                }).catch(function(error){
+                }),6000,'電話訂單命令服務連線逾時').catch(function(error){
                     console.warn('PB phone command failed; using Firebase fallback:',error&&error.message?error.message:error);
-                    return set(ref(db,'integration_sync/phone_order_commands/'+commandId),command)
+                    return bounded(set(ref(db,'integration_sync/phone_order_commands/'+commandId),command),5000,'電話訂單 Firebase 備援連線逾時')
                         .then(function(){return {ok:true,backend:'firebase_fallback',commandId:commandId};});
                 });
             },
@@ -6896,7 +6900,7 @@
                     .finally(function(){s.isSubmitting=false;s.offlineCreating=false;});
             },
             closeOfflineModal:function(){
-                if(this.offlineCreating)return;
+                if(this.offlineCreating&&!this.offlineOrderId)return;
                 var orderWasCreated=!!this.offlineOrderId;
                 this.stopScannerBridge();
                 this.showOfflineModal=false;
@@ -6904,6 +6908,7 @@
                 this.offlineError="";
                 this.offlineSuccess="";
                 this.offlineSubmitting=false;
+                this.offlineCreating=false;
                 this.offlinePhoneOrder=null;
                 if(orderWasCreated)this.clearCart();
             },
@@ -7500,12 +7505,22 @@
                             s.offlineCreating=true;
                             s.offlinePhoneOrder=targetOrder;
                             s.showOfflineModal=true;
-                            await s.queuePhoneOrderCommand(targetOrder,'replace_order',phoneEditPayload);
-                            s.offlineCreating=false;
                             s.exitOnline();
                             s.$nextTick(function(){if(s.$refs.barcodeInput)s.$refs.barcodeInput.focus();});
                             s.startScannerBridge();
-                            s.toast('📲 請掃描顧客 LINE Pay 條碼完成付款');
+                            try{
+                                await s.queuePhoneOrderCommand(targetOrder,'replace_order',phoneEditPayload);
+                                if(!s.showOfflineModal||s.offlineOrderId!==id)return;
+                                s.offlineCreating=false;
+                                s.toast('📲 訂單同步完成，請確認條碼後付款');
+                            }catch(syncError){
+                                if(s.showOfflineModal&&s.offlineOrderId===id){
+                                    s.offlineCreating=false;
+                                    s.offlineOrderId='';
+                                    s.stopScannerBridge();
+                                    s.offlineError='訂單同步失敗，請關閉後重試：'+(syncError&&syncError.message?syncError.message:syncError);
+                                }
+                            }
                             return;
                         }
                         await s.queuePhoneOrderCommand(targetOrder,'replace_order',phoneEditPayload);
