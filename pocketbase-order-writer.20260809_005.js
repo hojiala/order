@@ -2894,6 +2894,28 @@ export function openCashDrawerViaBackend(options) {
     });
 }
 
+export function readPosOrderStateViaBackend(orderId, orderDateKey, options) {
+    options = options || {};
+    var config = resolvePocketBaseConfig(options);
+    var endpoint = cleanBaseUrl(config.orderEndpoint || "").replace(
+        /\/api\/(?:secure\/)?orders$/i,
+        "/api/pos/order-state"
+    );
+    var user = options.firebaseUser;
+    if (!endpoint || endpoint === config.orderEndpoint) return Promise.reject(new Error("missing_pos_order_state_endpoint"));
+    if (!user || typeof user.getIdToken !== "function") return Promise.reject(new Error("firebase_auth_required"));
+    return Promise.resolve(user.getIdToken()).then(function(idToken) {
+        return requestJson(endpoint, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": "Bearer " + idToken
+            },
+            body: JSON.stringify({ orderId: text(orderId), orderDateKey: text(orderDateKey) })
+        }, Number(options.timeoutMs || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS);
+    });
+}
+
 export function queuePhoneOrderCommandViaBackend(command, options) {
     options = options || {};
     command = command && typeof command === "object" ? command : {};
