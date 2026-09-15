@@ -885,7 +885,7 @@
       </div>
       <div class="px-5 pb-4 flex gap-2">
         <button @click="closeOfflineModal" :disabled="offlineCreating && !offlineOrderId" class="flex-1 bg-gray-200 text-gray-600 font-bold py-3 rounded-xl text-sm hover:bg-gray-300 transition disabled:opacity-40">取消</button>
-        <button @click="submitOfflinePay" :disabled="offlineCreating || !offlineOrderId || offlineBarcode.length < 10 || offlineSubmitting"
+        <button @click="submitOfflinePay" :disabled="offlineCreating || !offlineOrderId || offlineBarcode.length < 10 || offlineSubmitting || !!offlineSuccess"
           class="flex-1 text-white font-black py-3 rounded-xl text-sm disabled:opacity-40 transition"
           style="background:linear-gradient(135deg,#06C755,#00B900)">
           {{ offlineSubmitting ? '扣款中...' : '確認付款' }}
@@ -993,7 +993,7 @@
                 archiveConfirm:false,resetConfirm:false,
                 linePayServerUrl:"",linePayConfirmUrl:"",pocketBaseUrl:"",pocketBaseOrdersCollection:"orders",
                 // ★ 情境3 Offline 掃碼
-                showOfflineModal:false, offlineBarcode:"", offlineAmount:0,offlineCreating:false,offlinePhoneOrder:null,
+                showOfflineModal:false, offlineBarcode:"", offlineAmount:0,offlineCreating:false,offlinePhoneOrder:null,offlinePhoneEditPayload:null,offlineSourceRecordPath:"",
                 offlineOrderId:"", offlineOrderDateKey:"", offlineItems:[], offlineError:"", offlineSuccess:"",
                 scannerBridgeSessionId:"",scannerBridgeAuthToken:"",scannerBridgeBase:"",scannerBridgeStatus:"",scannerBridgePollTimer:null,
                 // ★ LINE Pay Online 付款連結彈窗
@@ -6857,6 +6857,8 @@
                 s.offlineError='';
                 s.offlineSuccess='';
                 s.offlinePhoneOrder=null;
+                s.offlinePhoneEditPayload=null;
+                s.offlineSourceRecordPath='';
                 s.offlineCreating=true;
                 s.showOfflineModal=true;
                 s.allocateNextOrderNo()
@@ -6910,6 +6912,8 @@
                 this.offlineSubmitting=false;
                 this.offlineCreating=false;
                 this.offlinePhoneOrder=null;
+                this.offlinePhoneEditPayload=null;
+                this.offlineSourceRecordPath='';
                 if(orderWasCreated)this.clearCart();
             },
             submitOfflinePay:function(){
@@ -6921,14 +6925,16 @@
                 s.offlineSubmitting=true;
                 s.offlineError="";
                 // Firebase 中介：寫入請求 → 樹莓派 Offline Worker 處理 → 輪詢結果
-                set(ref(db,"linepay_offline_requests/"+s.offlineOrderId),{
+                var offlineRequest={
                     amount:s.offlineAmount,
                     items:s.offlineItems,
                     orderDateKey:s.offlineOrderDateKey||s.todayStr,
                     barcode:barcode,
                     status:"pending",
                     createdAt:Date.now()
-                }).then(function(){
+                };
+                if(s.offlineSourceRecordPath)offlineRequest.sourceRecordPath=s.offlineSourceRecordPath;
+                set(ref(db,"linepay_offline_requests/"+s.offlineOrderId),offlineRequest).then(function(){
                     var tries=0;
                     var poll=setInterval(function(){
                         tries++;
@@ -6937,13 +6943,23 @@
                             var r=snap.val();
                             if(r.status==="done"){
                                 clearInterval(poll);
-                                s.offlineSuccess="付款成功！交易編號："+r.transactionId;
+                                s.stopScannerBridge();
+                                s.offlineSuccess="付款成功，工單同步中…";
                                 s.toast("✅ LINE Pay 掃碼付款成功 $"+s.offlineAmount);
                                 s.offlineSubmitting=false;
                                 if(s.offlinePhoneOrder){
-                                    s.queuePhoneOrderCommand(s.offlinePhoneOrder,'set_status',{
-                                        paymentMethod:'linepay_offline',paymentStatus:'paid',status:'done'
-                                    }).catch(function(e){console.warn('電話訂單付款狀態回寫失敗:',e&&e.message?e.message:e);});
+                                    var paidPhonePayload=Object.assign({},s.offlinePhoneEditPayload||{}, {
+                                        paymentMethod:'linepay_offline',paymentStatus:'paid',status:'done',
+                                        completedAt:new Date().toISOString(),autoPrintKitchen:true
+                                    });
+                                    s.queuePhoneOrderCommand(s.offlinePhoneOrder,'replace_order',paidPhonePayload).then(function(){
+                                        s.offlineSuccess="付款成功，修改工單已送出";
+                                        setTimeout(function(){s.closeOfflineModal();},2000);
+                                    }).catch(function(e){
+                                        s.offlineError="付款已成功，但修改工單送出失敗；請勿重複付款，請由原訂單重新列印";
+                                        console.warn('電話訂單付款後工單送出失敗:',e&&e.message?e.message:e);
+                                    });
+                                    return;
                                 }
                                 // ★ 付款成功後才列印工單
                                 var ob='orders/'+(s.offlineOrderDateKey||s.todayStr)+'/'+s.offlineOrderId;
@@ -6952,7 +6968,10 @@
                                 var offPrintTask="kitchen_"+Date.now();
                                 remove(taskRef).then(function(){return set(taskRef,offPrintTask);}).then(function(){
                                     // ★ 寫入 print_queue 供 Node-RED
-                                    var offOrder=s.findOrderById(s.offlineOrderId)||{};
+                                    var offOrder=Object.assign({},s.findOrderById(s.offlineOrderId)||{}, {
+                                        paymentMethod:'linepay_offline',paymentStatus:'paid',
+                                        linePayTransactionId:r.transactionId,paymentConfirmedAt:Date.now()
+                                    });
                                     s.writeToPrintQueue(s.offlineOrderId,offPrintTask,offOrder);
                                 });
                                 setTimeout(function(){s.closeOfflineModal();},2000);
@@ -7495,6 +7514,8 @@
                             completedAt:new Date().toISOString()
                         });
                         if(realPm==='linepay_offline'){
+                            var phoneSourcePath=s.normalizeSourceRecordPath(targetOrder,id);
+                            if(!/^phone_ai\/orders\/[A-Za-z0-9_-]{1,200}$/.test(phoneSourcePath))throw new Error('找不到電話訂單來源路徑');
                             s.offlineOrderId=id;
                             s.offlineOrderDateKey=s.resolveOrderDateKey(targetOrder)||s.editPickupDate||s.todayStr;
                             s.offlineAmount=upd.total||0;
@@ -7502,25 +7523,17 @@
                             s.offlineBarcode='';
                             s.offlineError='';
                             s.offlineSuccess='';
-                            s.offlineCreating=true;
+                            s.offlineCreating=false;
                             s.offlinePhoneOrder=targetOrder;
+                            s.offlinePhoneEditPayload=Object.assign({},phoneEditPayload,{
+                                paymentMethod:'linepay_offline',paymentStatus:'paid',status:'done',autoPrintKitchen:true
+                            });
+                            s.offlineSourceRecordPath=phoneSourcePath;
                             s.showOfflineModal=true;
                             s.exitOnline();
                             s.$nextTick(function(){if(s.$refs.barcodeInput)s.$refs.barcodeInput.focus();});
                             s.startScannerBridge();
-                            try{
-                                await s.queuePhoneOrderCommand(targetOrder,'replace_order',phoneEditPayload);
-                                if(!s.showOfflineModal||s.offlineOrderId!==id)return;
-                                s.offlineCreating=false;
-                                s.toast('📲 訂單同步完成，請確認條碼後付款');
-                            }catch(syncError){
-                                if(s.showOfflineModal&&s.offlineOrderId===id){
-                                    s.offlineCreating=false;
-                                    s.offlineOrderId='';
-                                    s.stopScannerBridge();
-                                    s.offlineError='訂單同步失敗，請關閉後重試：'+(syncError&&syncError.message?syncError.message:syncError);
-                                }
-                            }
+                            s.toast('📲 請掃描顧客 LINE Pay 條碼完成付款');
                             return;
                         }
                         await s.queuePhoneOrderCommand(targetOrder,'replace_order',phoneEditPayload);
@@ -7563,6 +7576,8 @@
                         s.offlineError='';
                         s.offlineSuccess='';
                         s.offlinePhoneOrder=null;
+                        s.offlinePhoneEditPayload=null;
+                        s.offlineSourceRecordPath='';
                         s.showOfflineModal=true;
                         s.exitOnline();
                         s.$nextTick(function(){ if(s.$refs.barcodeInput) s.$refs.barcodeInput.focus(); });
