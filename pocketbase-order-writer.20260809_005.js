@@ -184,6 +184,7 @@ function customerPayload(orderData, options) {
     ) || 999;
     payload.printSource = payload.printSource || text(orderData && (orderData.printSource || orderData["訂單來源"]));
     payload.createdByUid = payload.createdByUid || text(orderData && orderData.createdByUid);
+    payload.sourceRecordPath = payload.sourceRecordPath || text(orderData && orderData.sourceRecordPath);
     if (!payload.stationMap && orderData && Array.isArray(orderData.stationMap)) payload.stationMap = orderData.stationMap;
     if (!payload.stationSettings && orderData && Array.isArray(orderData.stationSettings)) payload.stationSettings = orderData.stationSettings;
     return payload;
@@ -504,6 +505,8 @@ export function pocketBaseRecordToOrder(record) {
     var orderNo = numericOrUndefined(record.order_no || record.orderNo);
     var timestamp = timestampFromRecord(record, customer);
     var sourceRecordPath = text(customer.sourceRecordPath || customer.source_record_path);
+    var phoneSource = source.toLowerCase() === "phone_ai" || source.toLowerCase() === "pos_local";
+    if (!sourceRecordPath && phoneSource && orderId) sourceRecordPath = "phone_ai/orders/" + orderId;
     if (!sourceRecordPath && dateKey && orderId) sourceRecordPath = "orders/" + dateKey + "/" + orderId;
     var order = {
         id: orderId || text(record.id),
@@ -2861,6 +2864,7 @@ export function requestLinePayViaBackend(orderId, orderDateKey, options) {
                     confirmBaseUrl: text(options.confirmBaseUrl || (options.settings && options.settings.linePayConfirmUrl)),
                     returnPage: text(options.returnPage),
                     returnDeviceId: text(options.returnDeviceId || options.deviceId),
+                    sourceRecordPath: text(options.sourceRecordPath),
                     confirmUrlType: text(options.confirmUrlType).trim().toUpperCase() === "NONE" ? "NONE" : "CLIENT",
                     waitForResult: options.waitForResult === true
                 })

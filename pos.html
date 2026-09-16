@@ -900,7 +900,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getDatabase, ref, query, orderByKey, limitToLast, onValue, onChildAdded, onChildChanged, onChildRemoved, update, push, set, get, remove, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-    import { allocateOrderNoFromPocketBase, resetOrderNoInPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, requestLinePayViaBackend, openCashDrawerViaBackend, readPosOrderStateViaBackend, cancelOwnedOrderViaBackend, queuePhoneOrderCommandViaBackend, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, readManageMenuFromPocketBase, listMenuItemsFromPocketBase, writeMenuItemToPocketBase, writeSettingsToPocketBase, requestStaffOrderPresets, rememberPublicMenuItems, rememberPublicSettings, normalizePublicSettings, subscribeOrdersRealtime, isReservedOrderId } from "./pocketbase-order-writer.20260809_005.js?v=20260915_pos_recovery_2";
+    import { allocateOrderNoFromPocketBase, resetOrderNoInPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, requestLinePayViaBackend, openCashDrawerViaBackend, readPosOrderStateViaBackend, cancelOwnedOrderViaBackend, queuePhoneOrderCommandViaBackend, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, readManageMenuFromPocketBase, listMenuItemsFromPocketBase, writeMenuItemToPocketBase, writeSettingsToPocketBase, requestStaffOrderPresets, rememberPublicMenuItems, rememberPublicSettings, normalizePublicSettings, subscribeOrdersRealtime, isReservedOrderId } from "./pocketbase-order-writer.20260809_005.js?v=20260916_phone_linepay_refund_1";
     import { saveLinePayCheckoutHandoff, consumeRestorableLinePayCheckout } from "./linepay-checkout-handoff.20260912_001.js";
     import { isBackofficeUser } from "./staff-auth-activation.20260818_001.js?v=20260818_001";
     const firebaseConfig = {
@@ -1984,7 +1984,7 @@
                 }
                 return String(payUrl||'').trim();
             },
-            startPosLinePay:function(orderId,orderDateKey,confirmBase,clearCartOnRedirect){
+            startPosLinePay:function(orderId,orderDateKey,confirmBase,clearCartOnRedirect,sourceRecordPath){
                 var s=this;
                 s.checkoutProgress='正在建立 LINE Pay QR 付款頁…';
                 s.toast('⏳ 正在建立 LINE Pay 連結...');
@@ -1993,6 +1993,7 @@
                     firebaseUser:auth.currentUser,
                     confirmBaseUrl:confirmBase,
                     returnPage:'pos',
+                    sourceRecordPath:sourceRecordPath||'',
                     waitForResult:true,
                     timeoutMs:18000
                 }).then(function(result){
@@ -2065,6 +2066,15 @@
                 path=String(path||'').trim().replace(/^\/+/, '');
                 var phoneMatch=path.match(/^(phone_ai\/orders)\/([^\/?#]+)/);
                 if(phoneMatch&&phoneMatch[2])return 'phone_ai/orders/'+phoneMatch[2];
+                var original=(o&&o._integrationOriginal)||{};
+                var source=String(o.source||original.source||'').toLowerCase();
+                var label=String(o.sourceLabel||o._integrationSourceLabel||original.sourceLabel||'').toLowerCase();
+                var phoneLike=source==='phone_ai'||source==='pos_local'||label.indexOf('phone')!==-1||label.indexOf('電話')!==-1;
+                if(phoneLike){
+                    var sourceId=this.resolvePhoneCommandSourceOrderId?this.resolvePhoneCommandSourceOrderId(o):String(orderId||o.id||'');
+                    sourceId=String(sourceId||'').trim().split('/').pop().replace(/_繁體\.json$/,'').replace(/\.json$/,'');
+                    if(/^[A-Za-z0-9_-]{1,200}$/.test(sourceId))return 'phone_ai/orders/'+sourceId;
+                }
                 var orderMatch=path.match(/^(orders|orders_archive)\/(\d{4}-\d{2}-\d{2})\/([^\/?#]+)/);
                 if(orderMatch&&orderMatch[1]&&orderMatch[2]&&orderMatch[3]){
                     return orderMatch[1]+'/'+orderMatch[2]+'/'+orderMatch[3];
@@ -5934,7 +5944,7 @@
                     var wRes=await fetch(dbRestUrl+'/linepay_refund_requests/'+order.id+'.json'+authQ,{
                         method:'PUT',
                         headers:{'Content-Type':'application/json'},
-                        body:JSON.stringify({orderId:order.id,amount:Number(order.total||0),reason:reason,status:'pending',createdAt:Date.now(),source:'pos',orderDateKey:this.resolveOrderDateKey(order)||order.pickupDate||''})
+                        body:JSON.stringify({orderId:order.id,amount:Number(order.total||0),reason:reason,status:'pending',createdAt:Date.now(),source:'pos',orderDateKey:this.resolveOrderDateKey(order)||order.pickupDate||'',sourceRecordPath:this.normalizeSourceRecordPath(order,order.id)})
                     });
                     if(!wRes.ok)throw new Error('HTTP '+wRes.status);
                     for(var i=0;i<40;i++){
@@ -5949,6 +5959,20 @@
                     }
                 }catch(err){return{success:false,error:(err&&err.message)||'退款服務無回應'};}
                 return{success:false,error:'退款服務無回應'};
+            },
+            waitForPhoneOrderCancelled:async function(order,timeoutMs){
+                var sourcePath=this.normalizeSourceRecordPath(order,order&&order.id||'');
+                if(!/^phone_ai\/orders\/[A-Za-z0-9_-]{1,200}$/.test(sourcePath))throw new Error('找不到電話訂單來源路徑');
+                var until=Date.now()+Math.max(1000,Number(timeoutMs)||20000);
+                while(Date.now()<until){
+                    var snap=await get(ref(db,sourcePath));
+                    if(snap.exists()){
+                        var latest=snap.val()||{};
+                        if(String(latest.status||'').toLowerCase()==='cancelled'||latest.wasCancelled===true)return Object.assign({},order,latest,{id:order.id,sourceRecordPath:sourcePath});
+                    }
+                    await new Promise(function(resolve){setTimeout(resolve,500);});
+                }
+                throw new Error('電話訂單取消同步逾時，尚未送出退款；請勿重複取消');
             },
             cancelOrderCore:async function(order){
                 var s=this;
@@ -7513,9 +7537,9 @@
                             status:'done',
                             completedAt:new Date().toISOString()
                         });
+                        var phoneSourcePath=s.normalizeSourceRecordPath(targetOrder,id);
+                        if((realPm==='linepay'||realPm==='linepay_offline')&&!/^phone_ai\/orders\/[A-Za-z0-9_-]{1,200}$/.test(phoneSourcePath))throw new Error('找不到電話訂單來源路徑');
                         if(realPm==='linepay_offline'){
-                            var phoneSourcePath=s.normalizeSourceRecordPath(targetOrder,id);
-                            if(!/^phone_ai\/orders\/[A-Za-z0-9_-]{1,200}$/.test(phoneSourcePath))throw new Error('找不到電話訂單來源路徑');
                             s.offlineOrderId=id;
                             s.offlineOrderDateKey=s.resolveOrderDateKey(targetOrder)||s.editPickupDate||s.todayStr;
                             s.offlineAmount=upd.total||0;
@@ -7534,6 +7558,15 @@
                             s.$nextTick(function(){if(s.$refs.barcodeInput)s.$refs.barcodeInput.focus();});
                             s.startScannerBridge();
                             s.toast('📲 請掃描顧客 LINE Pay 條碼完成付款');
+                            return;
+                        }
+                        if(realPm==='linepay'&&!oldPaid){
+                            if(!confirmBase)throw new Error('尚未設定 LINE Pay 確認頁網址');
+                            phoneEditPayload.autoPrintKitchen=false;
+                            await s.queuePhoneOrderCommand(targetOrder,'replace_order',phoneEditPayload);
+                            var phoneOrderDateKey=s.resolveOrderDateKey(targetOrder)||s.editPickupDate||s.todayStr;
+                            s.exitOnline();
+                            s.startPosLinePay(id,phoneOrderDateKey,confirmBase,false,phoneSourcePath);
                             return;
                         }
                         await s.queuePhoneOrderCommand(targetOrder,'replace_order',phoneEditPayload);
@@ -7812,26 +7845,47 @@
                 s.writeToPrintQueue(order.id,"receipt_"+Date.now(),order);
                 s.toast("🧾 印收據中...");
             },
-            cancelOrder:function(order){
+            cancelOrder:async function(order){
                 var s=this;
                 if(!order||!order.id)return Promise.resolve(false);
                 if(s.cancelInFlight[order.id]){s.toast('⏳ 此訂單正在取消，請勿重複按');return Promise.resolve(false);}
                 if(s.isPhoneCommandOrder(order)){
-                    if(!confirm("確定要取消這筆電話訂單嗎？"))return;
+                    var phoneIsLinePay=order.paymentMethod==='linepay'||order.paymentMethod==='linepay_offline';
+                    var phoneShouldRefund=phoneIsLinePay&&s.getLinePayState(order)==='paid';
+                    var question=phoneShouldRefund
+                        ?`此電話訂單已完成 LINE Pay 付款 $${order.total||0}。\n\n確定取消並申請退款？`
+                        :'確定要取消這筆電話訂單嗎？';
+                    if(!confirm(question))return false;
                     s.cancelInFlight=Object.assign({},s.cancelInFlight,{[order.id]:true});
                     s.toast('⏳ 正在取消電話訂單…');
-                    // 立刻寫 display_status_overrides=cancelled，admin/pos/manage 三邊 UI 即時轉為「已取消」、不必等電話 Pi 回灌
-                    var overridePromise=s.writeRemoteStatusOverride(order,'cancelled').catch(function(e){
-                        console.warn('cancel display override write failed',e&&e.message?e.message:e);
-                    });
-                    s.onlineOrders=(s.onlineOrders||[]).map(function(o){return o&&o.id===order.id?Object.assign({},o,{status:'cancelled',_remoteStatusOverride:'cancelled'}):o;});
-                    if(s.editingOrder&&s.editingOrder.id===order.id){
-                        s.editingOrder=Object.assign({},s.editingOrder,{status:'cancelled'});
+                    try{
+                        await s.queuePhoneOrderCommand(order,'cancel_order',{suppressCancelPrint:phoneShouldRefund});
+                        var cancelledOrder=await s.waitForPhoneOrderCancelled(order,20000);
+                        await s.writeRemoteStatusOverride(cancelledOrder,'cancelled');
+                        var updates={status:'cancelled',wasCancelled:true,_remoteStatusOverride:'cancelled'};
+                        if(phoneShouldRefund){
+                            s.toast('⏳ 電話訂單已取消，正在向 LINE Pay 退款…');
+                            var refund=await s.requestLinePayRefund(cancelledOrder);
+                            if(!refund.success)throw new Error('訂單已取消，但退款失敗：'+(refund.error||'服務無回應'));
+                            updates.paymentStatus='refunded';
+                            updates.paymentMethod='linepay_refund';
+                            updates.refundedAt=Date.now();
+                            s.lpStatus[order.id]='refunded';
+                            delete s.lpConfirmed[order.id];
+                            s.toast('✅ 電話訂單已取消，LINE Pay 已確認退款');
+                        }else{
+                            s.toast('✅ 已取消電話訂單');
+                        }
+                        s.onlineOrders=(s.onlineOrders||[]).map(function(o){return o&&o.id===order.id?Object.assign({},o,updates):o;});
+                        if(s.editingOrder&&s.editingOrder.id===order.id)s.editingOrder=Object.assign({},s.editingOrder,updates);
+                        if(s.editingOrder&&s.editingOrder.id===order.id)s.exitOnline();
+                        return true;
+                    }catch(e){
+                        alert('電話訂單取消/退款失敗：'+(e&&e.message?e.message:e));
+                        return false;
+                    }finally{
+                        delete s.cancelInFlight[order.id];
                     }
-                    return s.queuePhoneOrderCommand(order,'cancel_order')
-                        .then(function(){s.toast("✅ 已送出電話訂單取消命令");if(s.editingOrder&&s.editingOrder.id===order.id)s.exitOnline();})
-                        .catch(function(e){alert("電話訂單取消失敗："+(e&&e.message?e.message:e));})
-                        .finally(function(){delete s.cancelInFlight[order.id];});
                 }
                 if(s.isIntegrationReadOnlyOrder(order)){
                     s.toast('☎️ 電話整合訂單請在電話後台取消');
