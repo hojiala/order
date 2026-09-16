@@ -673,9 +673,10 @@
                     <p class="text-slate-400 text-xs mt-1">{{ statsCashCount }} 筆</p>
                 </div>
                 <div class="bg-slate-800 rounded-xl border border-slate-700 p-5">
-                    <p class="text-slate-400 text-xs font-bold uppercase tracking-wider mb-1">💚 LINE Pay</p>
+                    <p class="text-slate-400 text-xs font-bold uppercase tracking-wider mb-1">💚 LINE Pay 已付清</p>
                     <p class="text-3xl font-bold text-green-400">$<span :data-countup-val="statsLinePayRevenue">{{ statsLinePayRevenue.toLocaleString() }}</span></p>
                     <p class="text-slate-400 text-xs mt-1">{{ statsLinePayCount }} 筆</p>
+                    <p v-if="statsLinePayPendingCount" class="text-blue-300 text-xs mt-1">處理中 {{ statsLinePayPendingCount }} 筆／${{ statsLinePayPendingRevenue.toLocaleString() }}（不計營業額）</p>
                 </div>
                 <div class="bg-slate-800 rounded-xl border border-slate-700 p-5">
                     <p class="text-slate-400 text-xs font-bold uppercase tracking-wider mb-2">平均客單價</p>
@@ -2581,11 +2582,11 @@ window._doCountUp = function() {
             },
             statsRevenue: function() {
                 return this.statsOrders
-                    .filter(function(o) { return o.status !== 'cancelled' && !o.wasCancelled; })
+                    .filter(this.isRevenueOrder.bind(this))
                     .reduce(function(sum, o) { return sum + (Number(this.getOrderTotalValue(o)) || 0); }.bind(this), 0);
             },
             statsAvg: function() {
-                var valid = this.statsOrders.filter(function(o) { return o.status !== 'cancelled' && !o.wasCancelled; });
+                var valid = this.statsOrders.filter(this.isRevenueOrder.bind(this));
                 if (valid.length === 0) return 0;
                 return Math.round(this.statsRevenue / valid.length);
             },
@@ -2598,24 +2599,35 @@ window._doCountUp = function() {
             },
             statsCashCount: function() {
                 return this.statsOrders.filter(function(o){
-                    return o.status !== 'cancelled' && !o.wasCancelled && o.paymentMethod !== 'linepay' && o.paymentMethod !== 'linepay_offline';
-                }).length;
+                    return this.isRevenueOrder(o) && !this.isLinePayOrder(o);
+                }.bind(this)).length;
             },
             statsCashRevenue: function() {
                 return this.statsOrders
-                    .filter(function(o){ var pm=this.getOrderPaymentMethodValue(o); return o.status !== 'cancelled' && !o.wasCancelled && pm !== 'linepay' && pm !== 'linepay_offline' && pm !== 'linepay_refund'; }.bind(this))
+                    .filter(function(o){ return this.isRevenueOrder(o) && !this.isLinePayOrder(o); }.bind(this))
                     .reduce(function(s,o){ return s + (Number(this.getOrderTotalValue(o))||0); }.bind(this), 0);
             },
             statsLinePayCount: function() {
                 return this.statsOrders.filter(function(o){
-                    var pm=this.getOrderPaymentMethodValue(o);
-                    return o.status !== 'cancelled' && !o.wasCancelled && (pm === 'linepay' || pm === 'linepay_offline' || pm === 'linepay_refund');
+                    return this.isRevenueOrder(o) && this.isLinePayOrder(o);
                 }.bind(this)).length;
             },
             statsLinePayRevenue: function() {
                 return this.statsOrders
-                    .filter(function(o){ var pm=this.getOrderPaymentMethodValue(o); return o.status !== 'cancelled' && !o.wasCancelled && (pm === 'linepay' || pm === 'linepay_offline' || pm === 'linepay_refund'); }.bind(this))
+                    .filter(function(o){ return this.isRevenueOrder(o) && this.isLinePayOrder(o); }.bind(this))
                     .reduce(function(s,o){ return s + (Number(this.getOrderTotalValue(o))||0); }.bind(this), 0);
+            },
+            statsLinePayPendingCount: function() {
+                return this.statsOrders.filter(function(o) {
+                    return o && o.status !== 'cancelled' && !o.wasCancelled && this.isLinePayOrder(o) && !this.isLinePayPaid(o) && !this.isLinePayRefunded(o);
+                }.bind(this)).length;
+            },
+            statsLinePayPendingRevenue: function() {
+                return this.statsOrders
+                    .filter(function(o) {
+                        return o && o.status !== 'cancelled' && !o.wasCancelled && this.isLinePayOrder(o) && !this.isLinePayPaid(o) && !this.isLinePayRefunded(o);
+                    }.bind(this))
+                    .reduce(function(s, o) { return s + (Number(this.getOrderTotalValue(o)) || 0); }.bind(this), 0);
             },
             statsFilteredOrders: function() {
                 var keyword = String(this.statsSearch || '').trim().toLowerCase();
@@ -3454,6 +3466,11 @@ window._doCountUp = function() {
                 if (!order) return false;
                 var pm = this.getOrderPaymentMethodValue(order);
                 return pm === 'linepay' || pm === 'linepay_offline' || pm === 'linepay_refund';
+            },
+            isRevenueOrder: function(order) {
+                if (!order || order.status === 'cancelled' || order.wasCancelled) return false;
+                if (String(this.getOrderPaymentStatusValue(order) || '').toLowerCase() === 'refunded') return false;
+                return !this.isLinePayOrder(order) || this.isLinePayPaid(order);
             },
             getOrderTotalValue: function(order) {
                 if (!order) return 0;
@@ -5190,15 +5207,15 @@ window._doCountUp = function() {
                 if (!order) return false;
                 var transaction = (order.linePayTransaction && typeof order.linePayTransaction === 'object') ? order.linePayTransaction : {};
                 var txnState = String(transaction.status || (this.lpTxnState && this.lpTxnState[order.id]) || '').toLowerCase();
-                var payStatus = order.paymentStatus ? String(order.paymentStatus).toLowerCase() : '';
-                return payStatus === 'refunded' || order.paymentMethod === 'linepay_refund' || txnState === 'refunded';
+                var payStatus = String(this.getOrderPaymentStatusValue(order) || '').toLowerCase();
+                return payStatus === 'refunded' || this.getOrderPaymentMethodValue(order) === 'linepay_refund' || txnState === 'refunded';
             },
             isLinePayPaid: function(order) {
                 if (!order) return false;
                 if (this.isLinePayRefunded(order)) return false;
                 var transaction = (order.linePayTransaction && typeof order.linePayTransaction === 'object') ? order.linePayTransaction : {};
                 var txnState = String(transaction.status || (this.lpTxnState && this.lpTxnState[order.id]) || '').toLowerCase();
-                var payStatus = order.paymentStatus ? String(order.paymentStatus).toLowerCase() : '';
+                var payStatus = String(this.getOrderPaymentStatusValue(order) || '').toLowerCase();
                 return payStatus === 'paid' || !!(this.lpConfirmed && this.lpConfirmed[order.id]) || txnState === 'confirmed';
             },
             linePayBadgeClass: function(order) {
@@ -6877,13 +6894,14 @@ window._doCountUp = function() {
                     if (dateSet.size && !dateSet.has(dateKey)) return;
                     var ts = Number(this.getOrderTimestamp(order) || 0);
                     var total = Number(this.getOrderTotalValue(order) || 0);
+                    var hasRevenue = this.isRevenueOrder(order);
                     var stamp = ts ? new Date(ts) : new Date((dateKey || this.getTodayStr()) + 'T00:00:00');
                     var hourIndex = Number(stamp.getHours());
-                    hourRevenue[hourIndex] += total;
+                    if (hasRevenue) hourRevenue[hourIndex] += total;
                     hourCounts[hourIndex] += 1;
                     if (minHour === null || hourIndex < minHour) minHour = hourIndex;
                     if (maxHour === null || hourIndex > maxHour) maxHour = hourIndex;
-                    if (dateKey) {
+                    if (dateKey && hasRevenue) {
                         if (dayRevenueMap[dateKey] === undefined) dayRevenueMap[dateKey] = 0;
                         dayRevenueMap[dateKey] += total;
                     }
