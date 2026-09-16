@@ -676,7 +676,8 @@
                     <p class="text-slate-400 text-xs font-bold uppercase tracking-wider mb-1">💚 LINE Pay 已付清</p>
                     <p class="text-3xl font-bold text-green-400">$<span :data-countup-val="statsLinePayRevenue">{{ statsLinePayRevenue.toLocaleString() }}</span></p>
                     <p class="text-slate-400 text-xs mt-1">{{ statsLinePayCount }} 筆</p>
-                    <p v-if="statsLinePayPendingCount" class="text-blue-300 text-xs mt-1">處理中 {{ statsLinePayPendingCount }} 筆／${{ statsLinePayPendingRevenue.toLocaleString() }}（不計營業額）</p>
+                    <p v-if="statsLinePayPendingCount" class="text-blue-300 text-xs mt-1">待對帳 {{ statsLinePayPendingCount }} 筆／${{ statsLinePayPendingRevenue.toLocaleString() }}（不計營業額）</p>
+                    <p v-if="statsLinePayFailedCount" class="text-red-300 text-xs mt-1">付款失敗 {{ statsLinePayFailedCount }} 筆／${{ statsLinePayFailedRevenue.toLocaleString() }}（不計營業額）</p>
                 </div>
                 <div class="bg-slate-800 rounded-xl border border-slate-700 p-5">
                     <p class="text-slate-400 text-xs font-bold uppercase tracking-wider mb-2">平均客單價</p>
@@ -2619,13 +2620,25 @@ window._doCountUp = function() {
             },
             statsLinePayPendingCount: function() {
                 return this.statsOrders.filter(function(o) {
-                    return o && o.status !== 'cancelled' && !o.wasCancelled && this.isLinePayOrder(o) && !this.isLinePayPaid(o) && !this.isLinePayRefunded(o);
+                    return this.isLinePayOrder(o) && this.getLinePayState(o) === 'pending';
                 }.bind(this)).length;
             },
             statsLinePayPendingRevenue: function() {
                 return this.statsOrders
                     .filter(function(o) {
-                        return o && o.status !== 'cancelled' && !o.wasCancelled && this.isLinePayOrder(o) && !this.isLinePayPaid(o) && !this.isLinePayRefunded(o);
+                        return this.isLinePayOrder(o) && this.getLinePayState(o) === 'pending';
+                    }.bind(this))
+                    .reduce(function(s, o) { return s + (Number(this.getOrderTotalValue(o)) || 0); }.bind(this), 0);
+            },
+            statsLinePayFailedCount: function() {
+                return this.statsOrders.filter(function(o) {
+                    return this.isLinePayOrder(o) && this.getLinePayState(o) === 'failed';
+                }.bind(this)).length;
+            },
+            statsLinePayFailedRevenue: function() {
+                return this.statsOrders
+                    .filter(function(o) {
+                        return this.isLinePayOrder(o) && this.getLinePayState(o) === 'failed';
                     }.bind(this))
                     .reduce(function(s, o) { return s + (Number(this.getOrderTotalValue(o)) || 0); }.bind(this), 0);
             },
@@ -5218,14 +5231,35 @@ window._doCountUp = function() {
                 var payStatus = String(this.getOrderPaymentStatusValue(order) || '').toLowerCase();
                 return payStatus === 'paid' || !!(this.lpConfirmed && this.lpConfirmed[order.id]) || txnState === 'confirmed';
             },
+            getLinePayState: function(order) {
+                if (!order) return 'pending';
+                if (this.isLinePayRefunded(order)) return 'refunded';
+                if (this.isLinePayPaid(order)) return 'paid';
+                var orderStatus = String(order.status || '').toLowerCase();
+                if (orderStatus === 'cancelled') return 'cancelled';
+                var transaction = (order.linePayTransaction && typeof order.linePayTransaction === 'object') ? order.linePayTransaction : {};
+                var txnState = String(transaction.status || (this.lpTxnState && this.lpTxnState[order.id]) || '').toLowerCase();
+                var payStatus = String(this.getOrderPaymentStatusValue(order) || '').toLowerCase();
+                var failures = ['unpaid', 'request_failed', 'confirm_failed', 'failed', 'error', 'cancelled', 'expired'];
+                if (failures.indexOf(payStatus) >= 0 || failures.indexOf(txnState) >= 0) return 'failed';
+                if (orderStatus === 'archived' && order.wasCancelled) return 'cancelled';
+                return 'pending';
+            },
             linePayBadgeClass: function(order) {
-                if (this.isLinePayRefunded(order)) return 'bg-purple-900/60 text-purple-300';
-                if (this.isLinePayPaid(order)) return 'bg-green-900/60 text-green-300';
+                var state = this.getLinePayState(order);
+                if (state === 'refunded') return 'bg-purple-900/60 text-purple-300';
+                if (state === 'paid') return 'bg-green-900/60 text-green-300';
+                if (state === 'cancelled') return 'bg-slate-700 text-slate-300';
+                if (state === 'failed') return 'bg-red-900/60 text-red-300';
                 return 'bg-blue-900/40 text-blue-300';
             },
             linePayBadgeText: function(order) {
-                if (this.isLinePayRefunded(order)) return '💜 LINE Pay 已退款';
-                return this.isLinePayPaid(order) ? '💚 LINE Pay 已付清' : '💚 LINE Pay 處理中';
+                var state = this.getLinePayState(order);
+                if (state === 'refunded') return '💜 LINE Pay 已退款';
+                if (state === 'paid') return '💚 LINE Pay 已付清';
+                if (state === 'cancelled') return '⚫ LINE Pay 已取消未付款';
+                if (state === 'failed') return '🔴 LINE Pay 付款失敗';
+                return '🔵 LINE Pay 待對帳';
             },
 
             // ── MENU ──
@@ -6797,7 +6831,7 @@ window._doCountUp = function() {
                     store: '店內付款',
                     instore: '店內付款',
                     linepay: 'LINE Pay',
-                    linepayoffline: 'LINE Pay 處理中',
+                    linepayoffline: 'LINE Pay 待對帳',
                     paid: '已付款',
                     unpaid: '未付款'
                 };

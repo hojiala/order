@@ -514,11 +514,12 @@
                             <div class="flex justify-between items-center mt-1 pt-1 border-t border-gray-100">
                                 <div>
                                     <template v-if="order.paymentMethod==='linepay'||order.paymentMethod==='linepay_offline'||order.paymentMethod==='linepay_refund'">
-                                        <span v-if="order.paymentStatus==='refunded'||order.paymentMethod==='linepay_refund'||lpTxnState[order.id]==='refunded'" class="text-xs font-bold text-purple-500">💜 LINE Pay 已退款</span>
-                                        <span v-else-if="(order.status==='cancelled'||order.wasCancelled)&&(order.paymentStatus==='paid'||lpConfirmed[order.id])" class="text-xs font-bold text-purple-500">💜 LINE Pay 退款處理中</span>
-                                        <span v-else-if="order.paymentStatus==='paid'||lpConfirmed[order.id]" class="text-xs font-bold text-green-600">💚 LINE Pay 已付清</span>
-                                        <span v-else-if="order.status==='cancelled'" class="text-xs font-bold text-gray-400">💰 未付款</span>
-                                        <span v-else class="text-xs font-bold text-blue-400">💚 LINE Pay 處理中</span>
+                                        <span v-if="getLinePayState(order)==='refunded'" class="text-xs font-bold text-purple-500">💜 LINE Pay 已退款</span>
+                                        <span v-else-if="getLinePayState(order)==='paid'&&(order.status==='cancelled'||order.wasCancelled)" class="text-xs font-bold text-purple-500">💜 LINE Pay 退款處理中</span>
+                                        <span v-else-if="getLinePayState(order)==='paid'" class="text-xs font-bold text-green-600">💚 LINE Pay 已付清</span>
+                                        <span v-else-if="getLinePayState(order)==='cancelled'" class="text-xs font-bold text-gray-400">⚫ LINE Pay 已取消未付款</span>
+                                        <span v-else-if="getLinePayState(order)==='failed'" class="text-xs font-bold text-red-500">🔴 LINE Pay 付款失敗</span>
+                                        <span v-else class="text-xs font-bold text-blue-400">🔵 LINE Pay 待對帳</span>
                                     </template>
                                     <template v-else>
                                         <span v-if="order.paymentStatus==='refunded'" class="text-xs font-bold text-purple-500">💸 已退款</span>
@@ -1944,17 +1945,30 @@
                     }
                 } catch(e) {}
             },
+            getLinePayState: function(order) {
+                if (!order) return 'pending';
+                var transaction = (order.linePayTransaction && typeof order.linePayTransaction === 'object') ? order.linePayTransaction : {};
+                var txnState = String(transaction.status || (this.lpTxnState && this.lpTxnState[order.id]) || '').toLowerCase();
+                var paymentStatus = String(order.paymentStatus || '').toLowerCase();
+                if (txnState === 'refunded' || paymentStatus === 'refunded' || order.paymentMethod === 'linepay_refund') return 'refunded';
+                if (txnState === 'confirmed' || paymentStatus === 'paid' || (this.lpConfirmed && this.lpConfirmed[order.id])) return 'paid';
+                var orderStatus = String(order.status || '').toLowerCase();
+                if (orderStatus === 'cancelled') return 'cancelled';
+                var failures = ['unpaid', 'request_failed', 'confirm_failed', 'failed', 'error', 'cancelled', 'expired'];
+                if (failures.indexOf(paymentStatus) >= 0 || failures.indexOf(txnState) >= 0) return 'failed';
+                if (orderStatus === 'archived' && order.wasCancelled) return 'cancelled';
+                return 'pending';
+            },
             shouldTrackOrderForRefresh: function(order) {
                 if (!order || !order.id) return false;
                 var status = String(order.status || '').toLowerCase();
                 var pm = String(order.paymentMethod || '').toLowerCase();
-                var ps = String(order.paymentStatus || '').toLowerCase();
                 var isLinePay = (pm === 'linepay' || pm === 'linepay_offline' || pm === 'linepay_refund');
                 if (status === 'new' || status === 'making') return true;
                 // 已取消但已付款的 LINE Pay 單：繼續追蹤直到退款結果同步回來
-                if (status === 'cancelled') return isLinePay && ps === 'paid';
+                if (status === 'cancelled') return isLinePay && this.getLinePayState(order) === 'paid';
                 if (status === 'archived' || status === 'done' || status === 'completed') return false;
-                return isLinePay && ps !== 'paid' && ps !== 'refunded' && ps !== 'cancelled';
+                return isLinePay && this.getLinePayState(order) === 'pending';
             },
             // ★ 嘗試從 Firebase 讀取訂單狀態更新（可能因權限失敗）
             tryRefreshOrderStatus: function() {
@@ -1984,7 +1998,7 @@
                         if (data.wasCancelled !== undefined && data.wasCancelled !== order.wasCancelled) { order.wasCancelled = data.wasCancelled; changed = true; }
                         var pm = data.paymentMethod || order.paymentMethod || '';
                         var needsLinePayCheck = (pm === 'linepay' || pm === 'linepay_offline' || pm === 'linepay_refund')
-                            && data.paymentStatus !== 'paid' && data.paymentStatus !== 'refunded';
+                            && self.getLinePayState(order) === 'pending';
                         if (needsLinePayCheck) {
                             readLinePayStatusViaBackend(order.id, {
                                 settings: self.settings || {},
