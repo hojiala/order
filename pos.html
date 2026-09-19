@@ -329,7 +329,7 @@
                       </span>
                       <span v-else
                           class="inline-block text-xs font-bold px-1.5 py-0.5 rounded-full mt-0.5 bg-blue-100 text-blue-600">
-                          🔵 LINE Pay 待對帳
+                          🔵 LINE Pay 處理中
                       </span>
                   </template>
                   <span v-else-if="order.paymentStatus==='refunded'"
@@ -866,7 +866,7 @@
   </div>
 
   <!-- ★ 情境3：LINE Pay Offline 掃碼付款 Modal -->
-  <div v-if="showOfflineModal" class="fixed inset-0 z-[999] flex items-center justify-center" style="background:rgba(0,0,0,0.6)">
+  <div v-if="showOfflineModal" class="fixed inset-0 flex items-center justify-center" style="z-index:1200;background:rgba(0,0,0,0.6)">
     <div class="bg-white rounded-2xl shadow-2xl overflow-hidden" style="max-width:22rem;width:calc(100% - 2rem)">
       <div class="px-5 py-3 flex items-center gap-2" style="background:linear-gradient(135deg,#06C755,#00B900)">
         <span class="text-xl">💚</span>
@@ -888,6 +888,7 @@
           <span v-if="offlineBarcode.length >= 10" class="absolute right-3 top-3 text-green-500 text-xl">✓</span>
         </div>
         <p class="text-gray-400 text-xs mt-1 text-center">{{ !offlineOrderId ? '正在建立付款訂單，完成後即可掃碼' : (offlineCreating ? '訂單同步中；可先掃碼，完成後再確認付款' : (scannerBridgeStatus || '等待 Pi USB 掃碼器；也可直接在此欄位輸入')) }}</p>
+        <button type="button" @click="startScannerBridge" :disabled="offlineSubmitting" class="mt-2 text-sm text-blue-700 underline">重新連接掃碼器</button>
         <p v-if="offlineError" class="mt-2 text-red-500 text-sm text-center font-medium">{{ offlineError }}</p>
         <p v-if="offlineSuccess" class="mt-2 text-green-600 text-sm text-center font-bold">✅ {{ offlineSuccess }}</p>
       </div>
@@ -6807,12 +6808,16 @@
                 try{
                     var user=auth.currentUser;
                     if(!user)throw new Error('POS 尚未登入');
-                    var idToken=await user.getIdToken();
+                    var idToken=await s.scannerBridgeToken(false);
                     if(s.scannerBridgeSessionId!==sessionId||!s.showOfflineModal)return;
                     var bases=s.scannerBridgeBases(),lastError=null;
                     for(var i=0;i<bases.length;i++){
                         try{
                             await s.scannerBridgeFetch(bases[i],'/api/pos/scanner/session',{action:'start',sessionId:sessionId},idToken,5000);
+                            if(s.scannerBridgeSessionId!==sessionId||!s.showOfflineModal){
+                                s.scannerBridgeFetch(bases[i],'/api/pos/scanner/session',{action:'stop',sessionId:sessionId},idToken,2500).catch(function(){});
+                                return;
+                            }
                             s.scannerBridgeBase=bases[i];
                             s.scannerBridgeAuthToken=idToken;
                             lastError=null;
@@ -6829,10 +6834,22 @@
                     console.warn('POS scanner bridge unavailable:',error&&error.message?error.message:error);
                 }
             },
+            scannerBridgeToken:async function(forceRefresh){
+                if(!auth.currentUser)throw new Error('POS 尚未登入');
+                var timer;
+                try{
+                    return await Promise.race([auth.currentUser.getIdToken(!!forceRefresh),new Promise(function(_,reject){
+                        timer=setTimeout(function(){reject(new Error('scanner_auth_timeout'));},5000);
+                    })]);
+                }finally{clearTimeout(timer);}
+            },
             pollScannerBridge:async function(sessionId){
                 var s=this;
                 if(!s.showOfflineModal||s.scannerBridgeSessionId!==sessionId)return;
                 try{
+                    var token=await s.scannerBridgeToken(false);
+                    if(s.scannerBridgeSessionId!==sessionId||!s.showOfflineModal)return;
+                    s.scannerBridgeAuthToken=token;
                     var data=await s.scannerBridgeFetch(s.scannerBridgeBase,'/api/pos/scanner/poll',{sessionId:sessionId},s.scannerBridgeAuthToken,5000);
                     if(s.scannerBridgeSessionId!==sessionId||!s.showOfflineModal)return;
                     if(data&&/^\d{10,20}$/.test(String(data.barcode||''))){
@@ -6844,9 +6861,21 @@
                     s.scannerBridgePollTimer=setTimeout(function(){s.pollScannerBridge(sessionId);},700);
                 }catch(error){
                     if(s.scannerBridgeSessionId!==sessionId||!s.showOfflineModal)return;
+                    if(error&&error.status===401){
+                        try{await s.scannerBridgeToken(true);}catch(_){}
+                        if(s.scannerBridgeSessionId!==sessionId||!s.showOfflineModal)return;
+                    }
                     if(error&&error.status===409){
-                        s.scannerBridgeStatus='掃碼工作階段已失效或切換；關閉後重開可重新接收';
-                        return;
+                        try{
+                            await s.scannerBridgeFetch(s.scannerBridgeBase,'/api/pos/scanner/session',{action:'resume',sessionId:sessionId},s.scannerBridgeAuthToken,5000);
+                        }catch(resumeError){
+                            if(s.scannerBridgeSessionId!==sessionId||!s.showOfflineModal)return;
+                            if(resumeError.status===409){
+                                s.scannerBridgeStatus='掃碼器正在另一個 POS 使用；請確認後按重新連接，或直接輸入';
+                                return;
+                            }
+                        }
+                        if(s.scannerBridgeSessionId!==sessionId||!s.showOfflineModal)return;
                     }
                     s.scannerBridgeStatus='Pi USB 掃碼器連線中斷，正在重試…';
                     s.scannerBridgePollTimer=setTimeout(function(){s.pollScannerBridge(sessionId);},1500);
@@ -7874,7 +7903,7 @@
                     try{
                         await s.queuePhoneOrderCommand(order,'cancel_order',{suppressCancelPrint:phoneShouldRefund});
                         var cancelledOrder=await s.waitForPhoneOrderCancelled(order,20000);
-                        await s.writeRemoteStatusOverride(cancelledOrder,'cancelled');
+                        await s.writeRemoteStatusOverride(cancelledOrder,'cancelled').catch(function(err){console.warn('cancel display override write failed',err&&err.message);});
                         var updates={status:'cancelled',wasCancelled:true,_remoteStatusOverride:'cancelled'};
                         if(phoneShouldRefund){
                             s.toast('⏳ 電話訂單已取消，正在向 LINE Pay 退款…');

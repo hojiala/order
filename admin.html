@@ -130,7 +130,7 @@
                                     </span>
                                     <span v-else
                                         class="inline-block text-xs font-bold px-2 py-0.5 rounded-full mt-1 bg-blue-100 text-blue-600">
-                                        🔵 LINE Pay 待對帳
+                                        🔵 LINE Pay 處理中
                                     </span>
                                 </template>
                                 <span v-else-if="order.paymentStatus==='refunded'"
@@ -3627,6 +3627,23 @@
                     if (orderStatus === 'archived' && order.wasCancelled) return 'cancelled';
                     return 'pending';
                 },
+                async waitForPhoneOrderCancelled(order) {
+                    const sourcePath = this.normalizeSourceRecordPath(order, order.id);
+                    if (!/^phone_ai\/orders\/[A-Za-z0-9_-]{1,200}$/.test(sourcePath)) throw new Error('找不到電話訂單來源路徑');
+                    const until = Date.now() + 20000;
+                    while (Date.now() < until) {
+                        let timer;
+                        try {
+                            const snap = await Promise.race([get(ref(db, sourcePath)), new Promise((_, reject) => {
+                                timer = setTimeout(() => reject(new Error('取消同步讀取逾時')), Math.min(4000, Math.max(1, until-Date.now())));
+                            })]);
+                            const latest = snap.exists() ? snap.val() : null;
+                            if (latest && (latest.status === 'cancelled' || latest.wasCancelled === true)) return {...order,...latest,id:order.id,sourceRecordPath:sourcePath};
+                        } finally { clearTimeout(timer); }
+                        await new Promise(resolve => setTimeout(resolve,500));
+                    }
+                    throw new Error('電話訂單取消尚未確認，未送退款；請勿重複操作');
+                },
                 async requestLinePayRefund(order) {
                     const reason = '店家取消訂單';
                     const reqRef = ref(db, `linepay_refund_requests/${order.id}`);
@@ -3662,21 +3679,34 @@
                 },
                 async cancelOrder(order) {
                     if (this.isPhoneCommandOrder(order)) {
-                        if (!confirm('確定要取消這筆電話訂單嗎？')) return;
-                        // 先寫 display_status_overrides=cancelled，admin/pos/manage 會立刻把卡片轉為「已取消」、隱藏「接單製作」按鈕，
-                        // 不必等到電話 Pi 透過 phone_ai/orders 回灌狀態。
-                        this.applyLocalStatusOverride(order, 'cancelled');
-                        const overridePromise = this.writeRemoteStatusOverride(order, 'cancelled').catch((err) => {
-                            console.warn('cancel display override write failed', err && err.message ? err.message : err);
-                        });
+                        const shouldRefund = this.getLinePayState(order) === 'paid'
+                            && ['linepay','linepay_offline'].includes(order.paymentMethod);
+                        if (this._phoneCancelInFlight && this._phoneCancelInFlight[order.id]) return;
+                        if (order.wasCancelled || ['cancelled','archived'].includes(order.status)) {
+                            this.toast('此單已取消，請先核對官方退款紀錄，勿重複申請');
+                            return;
+                        }
+                        if (!confirm(shouldRefund ? `確定取消此電話訂單並申請 LINE Pay 退款 $${order.total || 0}？` : '確定要取消這筆電話訂單嗎？')) return;
+                        this._phoneCancelInFlight = this._phoneCancelInFlight || {};
+                        this._phoneCancelInFlight[order.id] = true;
                         try {
-                            await Promise.all([
-                                overridePromise,
-                                this.queuePhoneOrderCommand(order, 'cancel_order')
-                            ]);
-                            this.toast('✅ 已送出電話訂單取消命令');
+                            await this.queuePhoneOrderCommand(order, 'cancel_order', {suppressCancelPrint:shouldRefund});
+                            const cancelledOrder = await this.waitForPhoneOrderCancelled(order);
+                            this.applyLocalStatusOverride(cancelledOrder, 'cancelled');
+                            await this.writeRemoteStatusOverride(cancelledOrder, 'cancelled').catch(err => {
+                                console.warn('cancel display override write failed', err && err.message);
+                            });
+                            if (shouldRefund) {
+                                this.toast('⏳ 訂單已取消，正在向 LINE Pay 申請退款…');
+                                const refund = await this.requestLinePayRefund(cancelledOrder);
+                                if (!refund.success) throw new Error('訂單已取消，但退款尚未成功：' + (refund.error || '請核對官方紀錄'));
+                                Object.assign(order, {status:'cancelled',wasCancelled:true,paymentMethod:'linepay_refund',paymentStatus:'refunded'});
+                                this.toast('✅ 電話訂單已取消，LINE Pay 已確認退款');
+                            } else this.toast('✅ 電話訂單已取消');
                         } catch (err) {
-                            this.toast('❌ 電話訂單取消失敗：' + (err && err.message ? err.message : err));
+                            alert('電話訂單取消／退款未完成：' + (err && err.message ? err.message : err));
+                        } finally {
+                            delete this._phoneCancelInFlight[order.id];
                         }
                         return;
                     }
