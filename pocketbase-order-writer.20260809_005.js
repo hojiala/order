@@ -2850,7 +2850,14 @@ export function requestLinePayViaBackend(orderId, orderDateKey, options) {
     var user = options.firebaseUser;
     if (!endpoint || endpoint === config.orderEndpoint) return Promise.reject(new Error("missing_linepay_request_endpoint"));
     if (!user || typeof user.getIdToken !== "function") return Promise.reject(new Error("firebase_auth_required"));
-    return Promise.resolve(user.getIdToken()).then(function(idToken) {
+    var tokenTimer;
+    var tokenPromise = Promise.race([
+        Promise.resolve().then(function() { return user.getIdToken(); }),
+        new Promise(function(resolve, reject) {
+            tokenTimer = setTimeout(function() { reject(new Error("linepay_auth_timeout")); }, 5000);
+        })
+    ]).finally(function() { clearTimeout(tokenTimer); });
+    return tokenPromise.then(function(idToken) {
         return writeLinePayRequestAfterMirror(function() {
             return requestJson(endpoint, {
                 method: "POST",
@@ -2866,7 +2873,9 @@ export function requestLinePayViaBackend(orderId, orderDateKey, options) {
                     returnDeviceId: text(options.returnDeviceId || options.deviceId),
                     sourceRecordPath: text(options.sourceRecordPath),
                     confirmUrlType: text(options.confirmUrlType).trim().toUpperCase() === "NONE" ? "NONE" : "CLIENT",
-                    waitForResult: options.waitForResult === true
+                    waitForResult: options.waitForResult === true,
+                    readOnly: options.readOnly === true,
+                    resume: options.resume === true
                 })
             }, Number(options.timeoutMs || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS);
         }, {

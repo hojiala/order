@@ -488,12 +488,12 @@
         <div class="bg-white rounded-2xl shadow-2xl overflow-hidden fade-in" style="max-width:20rem;width:calc(100% - 2rem)">
             <div class="px-5 py-3 flex items-center gap-2" style="background:linear-gradient(135deg,#06C755,#00B900)">
                 <span class="text-xl">💚</span>
-                <span class="text-white font-black text-sm">LINE Pay 掃碼付款</span>
+                <span class="text-white font-black text-sm">LINE Pay 付款</span>
                 <span class="ml-auto text-white text-sm font-bold">${{ qrAmount }}</span>
             </div>
             <div class="px-5 py-4 text-center">
-                <p class="text-gray-600 text-xs mb-3">請用手機 LINE App 掃描以下 QR Code 完成付款</p>
-                <div id="qrcode-container" class="flex justify-center mb-3">
+                <p class="text-gray-600 text-xs mb-3">{{ qrPreparing ? '正在準備同一筆訂單的付款，請勿重新下單' : '請用手機 LINE App 掃描以下 QR Code 完成付款' }}</p>
+                <div v-show="!qrPreparing" id="qrcode-container" class="flex justify-center mb-3">
                     <div id="qrcode" class="inline-block p-2 bg-white border-2 border-gray-200 rounded-xl"></div>
                 </div>
                 <div v-if="qrPolling" class="flex items-center justify-center gap-2 text-gray-500 text-xs">
@@ -501,10 +501,13 @@
                     <span>等待付款中... ({{ qrCountdown }}秒)</span>
                 </div>
                 <div v-if="qrPaidMsg" class="text-green-600 font-bold text-sm">✅ {{ qrPaidMsg }}</div>
-                <div v-if="qrErrorMsg" class="text-red-500 text-xs mt-1">{{ qrErrorMsg }}</div>
+                <div v-if="qrErrorMsg" class="text-amber-700 text-xs mt-1">{{ qrErrorMsg }}</div>
             </div>
             <div class="px-5 pb-4">
-                <button @click="cancelQRPay" :disabled="qrCancelling" class="w-full bg-gray-100 hover:bg-gray-200 disabled:opacity-60 text-gray-600 font-bold py-2.5 rounded-xl text-sm transition">
+                <button v-if="qrPreparing || (!qrPolling && !qrPaidMsg)" @click="resumeLinePayPayment" :disabled="qrRequestBusy || qrCancelling" class="w-full bg-green-600 disabled:opacity-60 text-white font-bold py-2.5 rounded-xl text-sm mb-2">
+                    {{ qrRequestBusy ? '正在查詢，請稍候…' : '繼續查詢本單付款' }}
+                </button>
+                <button @click="cancelQRPay" :disabled="qrCancelling || qrRequestBusy" class="w-full bg-gray-100 hover:bg-gray-200 disabled:opacity-60 text-gray-600 font-bold py-2.5 rounded-xl text-sm transition">
                     {{ qrCancelling ? '正在取消並撤回訂單...' : '取消付款' }}
                 </button>
             </div>
@@ -521,7 +524,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
     import { getDatabase, ref, push, set, get, update, remove, onValue, query, orderByChild, equalTo, limitToLast, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
-    import { writeOrderToPocketBase, writeOrderWithFirebaseFallback, publicOrderPrintWarning, requestLinePayViaBackend, readLinePayStatusViaBackend, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, cancelOwnedOrderViaBackend, filterCartToAvailableMenu } from "./pocketbase-order-writer.20260818_001.js?v=20260914_qr_no_redirect_1";
+    import { writeOrderToPocketBase, writeOrderWithFirebaseFallback, publicOrderPrintWarning, requestLinePayViaBackend, readLinePayStatusViaBackend, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, cancelOwnedOrderViaBackend, filterCartToAvailableMenu } from "./pocketbase-order-writer.20260818_001.js?v=20260920_payment_request_recovery_1";
 
     const firebaseConfig = {
         apiKey:"AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -669,6 +672,7 @@
             pendingCount:0, nowMinute:0,
             // ★ 情境2 QR Code 付款
             showQRModal:false, qrAmount:0, qrOrderId:'', qrOrderDateKey:'',
+            pendingLinePay:null, qrPreparing:false, qrRequestBusy:false,
             qrPolling:false, qrCancelling:false, qrCountdown:120, qrPaidMsg:'', qrErrorMsg:'',
             qrPollTimer:null, qrCountdownTimer:null
         }},
@@ -943,6 +947,7 @@
             initApp:function(){
                 var s=this;
                 s.loadCart();
+                s.restorePendingLinePay();
                 s.nowMinute=Date.now();
                 setInterval(function(){s.nowMinute=Date.now()},30000);
                 Promise.all([
@@ -1532,6 +1537,7 @@
             },
             openQRModal:function(orderId, amount, qrUrl, orderDateKey){
                 var s=this;
+                s.stopQRPolling();
                 s.qrOrderId=orderId;
                 s.qrOrderDateKey=orderDateKey||'';
                 s.qrAmount=amount;
@@ -1539,6 +1545,8 @@
                 s.qrErrorMsg='';
                 s.qrCountdown=120;
                 s.showQRModal=true;
+                s.qrPreparing=!qrUrl;
+                if(!qrUrl)return;
                 // 等 DOM 渲染後產生 QR Code
                 s.$nextTick(function(){
                     var container=document.getElementById('qrcode');
@@ -1561,30 +1569,33 @@
             },
             startQRPolling:function(){
                 var s=this;
+                s.stopQRPolling();
                 s.qrPolling=true;
+                var pollingOrderId=s.qrOrderId;
                 // 倒數計時
                 s.qrCountdownTimer=setInterval(function(){
                     if(s.qrCountdown>0){s.qrCountdown--;}
                     else{s.stopQRPolling();s.qrErrorMsg='付款結果尚未確認，請勿重複送單，請通知店員查詢';}
                 },1000);
                 var checkStatus=function(){
-                    if(!s.qrPolling||!s.qrOrderId)return;
-                    readLinePayStatusViaBackend(s.qrOrderId,{
+                    if(!s.qrPolling||s.qrOrderId!==pollingOrderId)return;
+                    readLinePayStatusViaBackend(pollingOrderId,{
                         settings:s.settings||{},
                         firebaseUser:auth.currentUser,
                         timeoutMs:5000
                     }).then(function(result){
+                        if(!s.qrPolling||s.qrOrderId!==pollingOrderId||s.qrCancelling)return;
                         var val=String(result&&result.status||'').toLowerCase();
                         if(['cancelled','confirm_failed','request_failed','failed','error'].indexOf(val)>=0){
                             s.stopQRPolling();
-                            s.cancelQRPay();
+                            s.qrErrorMsg='本筆付款未完成。請通知店員確認，或按取消付款撤回本單；勿重複付款。';
                             return;
                         }
                         if(val!=='confirmed')return;
                         s.stopQRPolling();
                         s.qrPaidMsg='付款成功！感謝您的消費 🎉';
                         // ★ 列印由 linepay_server confirm_worker 觸發（有完整寫入權限）
-                        setTimeout(function(){s.closeQRModal(true);},2000);
+                        setTimeout(function(){if(s.qrOrderId===pollingOrderId)s.closeQRModal(true);},2000);
                     }).catch(function(){});
                 };
                 checkStatus();
@@ -1601,6 +1612,7 @@
                 s.stopQRPolling();
                 s.showQRModal=false;
                 if(paid){
+                    s.clearPendingLinePay();
                     // 付款成功：清空購物車，顯示成功畫面
                     s.lastPayment='linepay_qr';
                     s.cart=[];s.orderNote='';
@@ -1623,13 +1635,14 @@
             },
             cancelQRPay:function(){
                 var s=this;
-                if(s.qrCancelling)return;
+                if(s.qrCancelling||s.qrRequestBusy)return;
                 s.stopQRPolling();
                 var orderId=s.qrOrderId;
                 if(!orderId){s.closeQRModal(false);return;}
                 s.qrCancelling=true;
                 s.qrErrorMsg='正在確認付款未完成並撤回訂單...';
                 s.cancelPendingLinePayOrder(orderId).then(function(){
+                    s.clearPendingLinePay();
                     s.closeQRModal(false);
                     s.toast('付款未完成，訂單未成立；購物車已保留，可重新付款');
                 }).catch(function(e){
@@ -1639,33 +1652,62 @@
                 });
             },
             // ── LINE Pay 請求 ──
-            startLinePayFlow:function(orderId,orderData,orderDateKey,payMethod){
+            clearPendingLinePay:function(){
+                this.pendingLinePay=null;
+                try{localStorage.removeItem('dinein_pending_linepay_'+this.deviceId);}catch(e){}
+            },
+            restorePendingLinePay:function(){
+                try{
+                    var saved=JSON.parse(localStorage.getItem('dinein_pending_linepay_'+this.deviceId)||'null');
+                    if(!saved||!saved.orderId||!saved.orderDateKey||!saved.orderData)return;
+                    this.pendingLinePay=saved;
+                    this.openQRModal(saved.orderId,saved.orderData.total,'',saved.orderDateKey);
+                    this.qrErrorMsg='上次付款尚未確認，請繼續查詢本單；不會重新建立訂單或扣款。';
+                }catch(e){}
+            },
+            resumeLinePayPayment:function(){
+                if(this.qrRequestBusy||this.qrCancelling)return;
+                if(!this.qrPreparing){this.qrCountdown=120;this.startQRPolling();return;}
+                var p=this.pendingLinePay;
+                if(p)return this.startLinePayFlow(p.orderId,p.orderData,p.orderDateKey,p.payMethod,true);
+            },
+            startLinePayFlow:function(orderId,orderData,orderDateKey,payMethod,resume){
                 var s=this;
-                var fail=function(message){
-                    s.isSubmitting=false;
-                    return s.cancelPendingLinePayOrder(orderId).then(function(){
-                        s.toast(message+'；訂單未成立，購物車已保留');
-                    }).catch(function(e){
-                        alert(message+'；且無法確認訂單已撤回，請勿重複送單並通知店員：'+(e&&e.message?e.message:e));
-                    });
-                };
+                s.pendingLinePay={orderId:orderId,orderDateKey:orderDateKey,orderData:{total:orderData.total},payMethod:payMethod};
+                try{localStorage.setItem('dinein_pending_linepay_'+s.deviceId,JSON.stringify(s.pendingLinePay));}catch(e){}
+                s.openQRModal(orderId,orderData.total,'',orderDateKey);
+                s.qrRequestBusy=true;
                 s.toast('⏳ 正在連接 LINE Pay...');
                 // Worker 從 Firebase canonical 訂單建立 queue。
-                requestLinePayViaBackend(orderId,orderDateKey,{
+                return requestLinePayViaBackend(orderId,orderDateKey,{
                     settings:s.settings,
                     firebaseUser:auth.currentUser,
                     confirmBaseUrl:s.settings.linePayConfirmUrl||'',
                     returnPage:'dinein',
                     returnDeviceId:s.deviceId||'',
                     confirmUrlType:payMethod==='linepay_qr'?'NONE':'CLIENT',
+                    resume:resume===true,
+                    maxAttempts:1,
                     waitForResult:true,
                     timeoutMs:15000
                 }).then(function(result){
+                    if(s.qrOrderId!==orderId)return;
+                    if(['cancelled','archived'].indexOf(String(result&&result.orderStatus||''))>=0||result&&result.paymentStatus==='refunded'){
+                        s.qrErrorMsg='本單已結束，請通知店員核對；不會重新開啟付款連結。';return;
+                    }
+                    if(['paid','confirmed'].indexOf(String(result&&result.paymentStatus||''))>=0){
+                        if(['linepay','linepay_offline'].indexOf(result.paymentMethod)>=0)s.closeQRModal(true);
+                        else s.qrErrorMsg='本單已使用其他方式付款，請通知店員核對；不會重新開啟 LINE Pay。';
+                        return;
+                    }
                     var r=result&&result.request;
                     if(!r || r.status!=='ready' || !r.paymentUrl){
-                        fail(r&&r.status==='error'
-                            ? '⚠️ LINE Pay 失敗：'+(r.error||'未知錯誤')
-                            : '⚠️ LINE Pay 逾時，請重試');
+                        if(!resume&&(!r||['pending','processing'].indexOf(r.status)>=0)){
+                            return s.startLinePayFlow(orderId,orderData,orderDateKey,payMethod,true);
+                        }
+                        s.qrErrorMsg=r&&r.status==='error'
+                            ? '付款請求尚未完成：'+(r.error||'請店員協助確認')+'。本單保留，請勿重新下單。'
+                            : '付款連結仍在準備或連線暫時延遲。請按「繼續查詢本單付款」，勿重新下單。';
                         return;
                     }
                     if(payMethod==='linepay_qr'){
@@ -1678,8 +1720,10 @@
                         window.location.href=r.paymentUrl;
                     }
                 }).catch(function(e){
-                    fail('⚠️ LINE Pay 連線失敗：'+e.message);
-                });
+                    if(!resume&&s.qrOrderId===orderId)return s.startLinePayFlow(orderId,orderData,orderDateKey,payMethod,true);
+                    if(s.qrOrderId===orderId)s.qrErrorMsg='暫時無法取得付款連結，本單已保留。請繼續查詢或通知店員，勿重新下單。';
+                    console.warn('LINE Pay request unresolved:',orderId,e&&e.message);
+                }).finally(function(){s.qrRequestBusy=false;s.isSubmitting=false;});
             },
             showOrderSuccess:function(payMethod){
                 var s=this;
@@ -1695,6 +1739,13 @@
             },
             // ── 送出訂單 ──
             submitOrder:function(payMethod){
+                if(this.isSubmitting)return;
+                if(this.pendingLinePay){
+                    var pending=this.pendingLinePay;
+                    this.openQRModal(pending.orderId,pending.orderData.total,'',pending.orderDateKey);
+                    this.qrErrorMsg='已有付款待確認的訂單。請繼續查詢本單，或先取消本單後再下單。';
+                    return;
+                }
                 if(!this.cart.length||this.isSubmitting)return;
                 var s=this;
                 if(s.settings.dineinIsOpen===false){s.toast('⚠️ 桌邊點餐目前暫停接單');return;}
@@ -1733,7 +1784,7 @@
                 orderData.orderDateKey=orderDateKey;
                 var orderId=push(ref(db,'orders/'+orderDateKey)).key;
                 var bucketOrderRef=ref(db,'orders/'+orderDateKey+'/'+orderId);
-                Promise.resolve(null)
+                return Promise.resolve(null)
                 .then(function(counter){
                     var assignedNo=counter&&counter.ok?counter.orderNo:null;
                     if(assignedNo){
@@ -1770,8 +1821,7 @@
 
                     // ★ LINE Pay 付款流程（情境1 手機跳轉 / 情境2 QR Code）
                     if((payMethod==='linepay'||payMethod==='linepay_qr') && s.settings.linePayConfirmUrl){
-                        s.startLinePayFlow(orderId,orderData,orderDateKey,payMethod);
-                        return;
+                        return s.startLinePayFlow(orderId,orderData,orderDateKey,payMethod);
                     }
 
                     // 一般付款：顯示成功畫面
