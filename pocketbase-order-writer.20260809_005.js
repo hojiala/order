@@ -2842,6 +2842,7 @@ export function writeLinePayRequestAfterMirror(writeRequest, options) {
 
 export function requestLinePayViaBackend(orderId, orderDateKey, options) {
     options = options || {};
+    var requestDeadline = Date.now() + (Number(options.timeoutMs || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS);
     var config = resolvePocketBaseConfig(options);
     var endpoint = cleanBaseUrl(config.orderEndpoint || "").replace(
         /\/api\/(?:secure\/)?orders$/i,
@@ -2877,7 +2878,7 @@ export function requestLinePayViaBackend(orderId, orderDateKey, options) {
                     readOnly: options.readOnly === true,
                     resume: options.resume === true
                 })
-            }, Number(options.timeoutMs || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS);
+            }, options.totalTimeout === true ? Math.max(1, requestDeadline - Date.now()) : (Number(options.timeoutMs || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS));
         }, {
             maxAttempts: options.maxAttempts,
             delayMs: options.delayMs
