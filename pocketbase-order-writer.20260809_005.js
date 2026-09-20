@@ -2987,17 +2987,24 @@ export function readLinePayStatusViaBackend(orderId, options) {
             : Promise.reject(new Error("missing_linepay_status_endpoint"));
         return primary.then(function(result) {
             result = result && typeof result === "object" ? result : {};
-            if (result.found !== true) {
+            if (result.found !== true && !(result.order && typeof result.order === "object")) {
                 var missing = new Error("linepay_status_not_found");
                 missing.status = 503;
                 throw missing;
             }
             return {
                 ok: result.ok !== false,
-                found: true,
+                found: result.found === true,
                 backend: "pocketbase",
                 status: text(result.status).trim().toLowerCase() || "unknown",
-                error: text(result.error)
+                error: text(result.error),
+                order: result.order && typeof result.order === "object" ? {
+                    status: text(result.order.status),
+                    paymentStatus: text(result.order.paymentStatus),
+                    paymentMethod: text(result.order.paymentMethod),
+                    orderNo: Number(result.order.orderNo) || 0,
+                    wasCancelled: result.order.wasCancelled === true
+                } : null
             };
         }).catch(function(primaryError) {
             var primaryStatus = Number(primaryError && primaryError.status) || 0;

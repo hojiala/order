@@ -142,7 +142,7 @@
                         <div class="text-white px-3 py-1.5 rounded-xl font-black text-sm" style="background:var(--day-theme,#f97316);">
                             {{ deviceLabel }}
                         </div>
-                        <button @click="showOrderHistory=true" class="relative bg-gray-100 hover:bg-gray-200 text-gray-600 px-2.5 py-1.5 rounded-xl text-sm font-bold transition">
+                        <button @click="openOrderHistory" class="relative bg-gray-100 hover:bg-gray-200 text-gray-600 px-2.5 py-1.5 rounded-xl text-sm font-bold transition">
                             📋
                             <span v-if="myOrders.length>0" class="absolute -top-1 -right-1 bg-red-500 text-white text-xs w-4 h-4 rounded-full flex items-center justify-center font-black">{{ myOrders.length }}</span>
                         </button>
@@ -398,6 +398,7 @@
                 <button @click="showOrderHistory=false" class="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center text-gray-400 text-lg">×</button>
             </div>
             <div class="flex-1 overflow-y-auto">
+                <p v-if="historyRefreshing || historyRefreshError" class="px-5 py-2 text-xs text-amber-700">{{ historyRefreshing ? '正在更新付款及訂單狀態…' : historyRefreshError }}</p>
                 <div v-if="myOrders.length===0" class="text-center text-gray-400 py-16">
                     <div class="text-4xl mb-2">📋</div><p class="text-sm">尚無點餐記錄</p>
                 </div>
@@ -406,7 +407,7 @@
                         <span class="text-orange-600 font-black text-sm bg-orange-50 px-2 py-0.5 rounded">No.{{ fmtNo(order.orderNo) }}</span>
                         <span class="text-xs px-2 py-0.5 rounded-full font-bold"
                               :class="{'bg-red-100 text-red-600':order.status==='new','bg-yellow-100 text-yellow-700':order.status==='making','bg-green-100 text-green-700':order.status==='done'||(order.status==='archived'&&!order.wasCancelled),'bg-gray-100 text-gray-500':order.status==='cancelled'||(order.status==='archived'&&order.wasCancelled)}">
-                            {{ order.status==='archived'?(order.wasCancelled?'⚫ 已取消':'🟢 已完成'):({new:'🔴 等待接單',making:'🟡 製作中',done:'🟢 已完成',cancelled:'⚫ 已取消'}[order.status]||order.status) }}
+                            {{ historyOrderStatus(order) }}
                         </span>
                     </div>
                     <div v-for="(item,i) in (order.items||[])" :key="i" class="text-sm text-gray-600 mb-1">
@@ -492,7 +493,7 @@
                 <span class="ml-auto text-white text-sm font-bold">${{ qrAmount }}</span>
             </div>
             <div class="px-5 py-4 text-center">
-                <p class="text-gray-600 text-xs mb-3">{{ qrPreparing ? (qrRequestBusy ? '正在連接 LINE Pay，系統會自動重試，請稍候' : '請店員協助') : '請用手機 LINE App 掃描以下 QR Code 完成付款' }}</p>
+                <p class="text-gray-600 text-xs mb-3">{{ qrPreparing ? (qrRequestBusy ? '正在連接 LINE Pay，系統會自動重試，請稍候' : qrPolling ? '正在確認原訂單付款結果，請稍候' : '請店員協助') : '請用手機 LINE App 掃描以下 QR Code 完成付款' }}</p>
                 <p class="font-bold text-sm mb-2">訂單編號：{{ pendingLinePay && pendingLinePay.orderData.orderNo ? 'No.' + pendingLinePay.orderData.orderNo : qrOrderId }}</p>
                 <p class="text-xs text-gray-500 break-all mb-2">查詢編號：{{ qrOrderId }}</p>
                 <div v-show="!qrPreparing" id="qrcode-container" class="flex justify-center mb-3">
@@ -524,7 +525,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
     import { getDatabase, ref, push, set, get, update, remove, onValue, query, orderByChild, equalTo, limitToLast, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
-    import { writeOrderToPocketBase, writeOrderWithFirebaseFallback, publicOrderPrintWarning, requestLinePayViaBackend, readLinePayStatusViaBackend, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, cancelOwnedOrderViaBackend, filterCartToAvailableMenu } from "./pocketbase-order-writer.20260818_001.js?v=20260920_payment_auto_recovery_2";
+    import { writeOrderToPocketBase, writeOrderWithFirebaseFallback, publicOrderPrintWarning, requestLinePayViaBackend, readLinePayStatusViaBackend, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, cancelOwnedOrderViaBackend, filterCartToAvailableMenu } from "./pocketbase-order-writer.20260818_001.js?v=20260920_customer_status_hours_1";
 
     const firebaseConfig = {
         apiKey:"AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -663,10 +664,10 @@
             isSubmitting:false,
             // UI
             toastMsg:'', toastTimer:null,
-            showOrderHistory:false, showSuccess:false, successTimer:null,
+            showOrderHistory:false, historyRefreshing:false, historyRefreshError:'', showSuccess:false, successTimer:null,
             successPrintWarning:'',
             lastOrderNo:0, lastPayment:'', lastOrderIdRef:null,
-                lpConfirmed:{}, linePayStatusRefreshAt:0,
+                lpConfirmed:{}, linePayStatusRefreshAt:0, historyStatusTimer:null,
             // 訂單
             myOrders:[], allOrders:[], pollTimer:null, pollErrorCount:0,
             pendingCount:0, nowMinute:0,
@@ -1109,6 +1110,11 @@
                 var s=this;
                 // ★ 先從 localStorage 載入本桌訂單記錄
                 s.loadLocalOrders();
+                s.refreshLinePayConfirmed(s.myOrders,true);
+                if(!s.historyStatusTimer)s.historyStatusTimer=setInterval(function(){
+                    if(document.visibilityState==='hidden')return;
+                    s.refreshLinePayConfirmed(s.myOrders,s.showOrderHistory);
+                },15000);
                 // ★ 嘗試從 Firebase 讀取（可能因權限失敗）
                 var dayKey=(function(){var d=new Date();return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);})();
                 onValue(query(ref(db,'orders/'+dayKey), orderByChild('tableDevice'), equalTo(s.deviceId), limitToLast(50)),function(snap){
@@ -1118,11 +1124,14 @@
                     // 本桌訂單（今日）- Firebase 有最新狀態
                     var today=new Date();today.setHours(0,0,0,0);
                     var fbOrders=all.filter(function(o){
-                        return o.tableDevice===s.deviceId&&o.timestamp>=today.getTime()&&o.status!=='archived'
+                        return o.tableDevice===s.deviceId&&o.timestamp>=today.getTime()
                     }).sort(function(a,b){return b.timestamp-a.timestamp});
-                    if(fbOrders.length>0)s.myOrders=fbOrders;
+                    // Retain local records absent from a partial mirror; overlay only incoming IDs.
+                    var merged=new Map(s.myOrders.map(function(o){return[o.id,o]}));
+                    fbOrders.forEach(function(o){merged.set(o.id,Object.assign({},merged.get(o.id)||{},o));});
+                    s.myOrders=Array.from(merged.values()).sort(function(a,b){return b.timestamp-a.timestamp});
                     // ★ 只查詢本桌未完成 LINE Pay 訂單，避免下載整包交易狀態資料
-                    s.refreshLinePayConfirmed(fbOrders);
+                    s.refreshLinePayConfirmed(s.myOrders,true);
                     // ★ 自動更新 lastOrderNo（後台補發流水號時即時顯示）
                     if(s.lastOrderIdRef){
                         var latest=all.find(function(o){return o.id===s.lastOrderIdRef});
@@ -1132,7 +1141,7 @@
                         }
                     }
                     // 同步更新 localStorage
-                    s.syncLocalOrders(fbOrders);
+                    s.syncLocalOrders(s.myOrders);
                     // 記錄進行中訂單數（estimatedWait 由 computed 自動反應）
                     var pending=all.filter(function(o){return o.status==='new'||o.status==='making'});
                     s.pendingCount=pending.length;
@@ -1150,7 +1159,7 @@
                 if(txnState==='refunded'||paymentStatus==='refunded'||order.paymentMethod==='linepay_refund')return'refunded';
                 if(txnState==='confirmed'||paymentStatus==='paid'||(this.lpConfirmed&&this.lpConfirmed[order.id]))return'paid';
                 var orderStatus=String(order.status||'').toLowerCase();
-                if(orderStatus==='cancelled')return'cancelled';
+                if(orderStatus==='cancelled'||txnState==='cancelled'||(orderStatus==='archived'&&order.wasCancelled&&paymentStatus==='unpaid'))return'cancelled';
                 var failures=['unpaid','request_failed','confirm_failed','failed','error','cancelled','expired'];
                 if(failures.indexOf(paymentStatus)>=0||failures.indexOf(txnState)>=0)return'failed';
                 if(orderStatus==='archived'&&order.wasCancelled)return'cancelled';
@@ -1173,7 +1182,7 @@
                 if(s.pollTimer)return;
                 s.pollTimer=setInterval(function(){
                     if(!s.myOrders.length)return;
-                    var targets=s.myOrders.filter(function(order){return s.isActiveOrderForPolling(order)});
+                    var targets=s.myOrders.filter(function(order){return !/^linepay/.test(order.paymentMethod||'')&&s.isActiveOrderForPolling(order)});
                     if(!targets.length){
                         clearInterval(s.pollTimer);
                         s.pollTimer=null;
@@ -1270,34 +1279,75 @@
                     localStorage.setItem(key,JSON.stringify(fbOrders));
                 }catch(e){}
             },
-            refreshLinePayConfirmed:function(orderList){
+            openOrderHistory:function(){
+                this.showOrderHistory=true;
+                return this.refreshLinePayConfirmed(this.myOrders,true);
+            },
+            historyOrderStatus:function(order){
+                if(/^linepay/.test(order.paymentMethod||'')){
+                    var state=this.getLinePayState(order);
+                    if(state==='refunded')return'💜 已退款';
+                    if(state==='cancelled')return'⚫ 已取消';
+                    if(state==='failed')return'🔴 付款未完成';
+                    if(state==='pending')return'🔵 待付款確認';
+                }
+                return order.status==='archived'?(order.wasCancelled?'⚫ 已取消':'🟢 已完成'):({new:'🔴 等待接單',making:'🟡 製作中',done:'🟢 已完成',cancelled:'⚫ 已取消'}[order.status]||order.status);
+            },
+            applyLinePaySnapshot:function(orderId,result){
                 var s=this;
+                if(!result)return;
+                var st=String(result.status||'').toLowerCase();
+                // Update the current array, not a stale object captured before a Firebase callback.
+                s.myOrders.forEach(function(o){
+                    if(o.id!==orderId)return;
+                    var previousState=s.getLinePayState(o);
+                    // The same order never starts a second transaction. Ignore late pre-refund snapshots.
+                    if(previousState==='refunded')return;
+                    if(result.order){
+                        ['status','paymentStatus','paymentMethod','wasCancelled'].forEach(function(k){
+                            if(result.order[k]!==undefined&&result.order[k]!=='')o[k]=result.order[k];
+                        });
+                        if(result.order.orderNo)o.orderNo=result.order.orderNo;
+                    }
+                    if(st&&st!=='unknown')o.linePayTransaction={status:st};
+                    if(st==='refunded'){o.paymentStatus='refunded';}
+                    else if(previousState==='paid'&&o.paymentStatus!=='refunded'&&o.paymentMethod!=='linepay_refund')o.paymentStatus='paid';
+                    // An old confirmed transaction must never downgrade a refunded order.
+                    else if(st==='confirmed'&&o.paymentStatus!=='refunded'&&o.paymentMethod!=='linepay_refund')o.paymentStatus='paid';
+                });
+                var current=s.myOrders.find(function(o){return o.id===orderId;});
+                if(current&&s.getLinePayState(current)==='paid')s.lpConfirmed[orderId]=true;
+                else if(st&&st!=='unknown')delete s.lpConfirmed[orderId];
+                s.syncLocalOrders(s.myOrders);
+            },
+            refreshLinePayConfirmed:function(orderList,force){
+                var s=this;
+                if(s.historyRefreshing)return Promise.resolve();
                 var list=Array.isArray(orderList)?orderList:(s.myOrders||[]);
                 var targets=list.filter(function(o){
                     if(!o||!o.id)return false;
                     var pm=o.paymentMethod||'';
                     var isLinePay=(pm==='linepay'||pm==='linepay_offline'||pm==='linepay_refund');
-                    return isLinePay&&s.getLinePayState(o)==='pending';
+                    return isLinePay&&(force||s.isActiveOrderForPolling(o));
                 });
-                if(!targets.length){s.lpConfirmed={};return;}
+                if(!targets.length)return Promise.resolve();
                 targets=targets.filter(function(o){return !(s.qrPolling&&s.qrOrderId===o.id);});
                 if(!targets.length)return;
                 var now=Date.now();
-                if(now-Number(s.linePayStatusRefreshAt||0)<15000)return;
+                if(!force&&now-Number(s.linePayStatusRefreshAt||0)<15000)return Promise.resolve();
                 s.linePayStatusRefreshAt=now;
-                var confirmed={};
-                Promise.all(targets.map(function(o){
+                s.historyRefreshing=true;
+                s.historyRefreshError='';
+                return Promise.all(targets.map(function(o){
                     return readLinePayStatusViaBackend(o.id,{
                         settings:s.settings||{},
                         firebaseUser:auth.currentUser,
                         timeoutMs:5000
                     }).then(function(result){
-                        var st=String(result&&result.status||'').toLowerCase();
-                        if(st==='confirmed')confirmed[o.id]=true;
-                    }).catch(function(){});
-                })).then(function(){
-                    s.lpConfirmed=confirmed;
-                });
+                        s.applyLinePaySnapshot(o.id,result);
+                        if(s.showQRModal&&s.qrOrderId===o.id&&!s.qrRequestBusy&&!s.qrCancelling)s.settleLinePayResult(o.id,result);
+                    }).catch(function(){s.historyRefreshError='部分狀態暫時無法更新，以下為上次記錄；請勿據此重複付款。';});
+                })).finally(function(){s.historyRefreshing=false;});
             },
             // ── 菜單操作 ──
             getQty:function(id){return this.cart.filter(function(i){return i.id===id}).reduce(function(s,i){return s+i.qty},0)},
@@ -1584,6 +1634,7 @@
                         timeoutMs:5000
                     }).then(function(result){
                         if(!s.qrPolling||s.qrOrderId!==pollingOrderId||s.qrCancelling)return;
+                        if(s.settleLinePayResult(pollingOrderId,result))return;
                         var val=String(result&&result.status||'').toLowerCase();
                         if(['cancelled','confirm_failed','request_failed','failed','error'].indexOf(val)>=0){
                             s.stopQRPolling();
@@ -1643,6 +1694,7 @@
                 s.cancelPendingLinePayOrder(orderId).then(function(){
                     s.clearPendingLinePay();
                     s.closeQRModal(false);
+                    s.refreshLinePayConfirmed(s.myOrders,true);
                     s.toast('付款未完成，訂單未成立；購物車已保留，可重新付款');
                 }).catch(function(e){
                     s.qrCancelling=false;
@@ -1651,7 +1703,24 @@
                 });
             },
             // ── LINE Pay 請求 ──
+            settleLinePayResult:function(orderId,result){
+                if(!result)return false;
+                this.applyLinePaySnapshot(orderId,result);
+                var current=this.myOrders.find(function(o){return o.id===orderId;});
+                var order=Object.assign({id:orderId,paymentMethod:'linepay'},result.order||{},current||{});
+                order.linePayTransaction={status:result.status||''};
+                var state=this.getLinePayState(order);
+                var closed=order.status==='cancelled'||(order.status==='archived'&&order.wasCancelled);
+                if(state==='pending'&&!closed)return false;
+                if(state==='paid'&&!closed){this.closeQRModal(true);return true;}
+                this.clearPendingLinePay();
+                this.closeQRModal(false);
+                this.showOrderHistory=true;
+                this.toast(state==='refunded'?'💜 LINE Pay 已退款':state==='paid'?'訂單已取消，退款結果確認中':state==='failed'?'本筆 LINE Pay 付款未完成，請查看訂單記錄':'本筆 LINE Pay 已取消未付款');
+                return true;
+            },
             clearPendingLinePay:function(){
+                if(this.pendingLinePay){try{localStorage.removeItem('dinein_linepay_return_'+this.pendingLinePay.orderId);}catch(e){}}
                 this.pendingLinePay=null;
                 try{localStorage.removeItem('dinein_pending_linepay_'+this.deviceId);}catch(e){}
             },
@@ -1695,6 +1764,17 @@
                 s.openQRModal(orderId,orderData.total,'',orderDateKey);
                 s.qrRequestBusy=true;
                 s.isSubmitting=true;
+                // Returning from LINE Pay is a read-only reconciliation, never reopen its old URL.
+                if(resume){
+                    var returning=false;
+                    try{returning=localStorage.getItem('dinein_linepay_return_'+orderId)==='1';}catch(e){}
+                    if(returning){
+                        s.qrRequestBusy=false;s.isSubmitting=false;
+                        s.qrPreparing=true;
+                        s.startQRPolling();
+                        return;
+                    }
+                }
                 // One initial attempt plus three retries, persisted BEFORE dispatch.
                 // After exhaustion refresh may only read the existing result once.
                 var readOnly=Number(s.pendingLinePay.attempts||0)>=4;
@@ -1721,7 +1801,12 @@
                     if(s.qrOrderId!==orderId)return;
                     if(result&&result.orderNo){s.pendingLinePay.orderData.orderNo=result.orderNo;s.savePendingLinePay();}
                     if(['cancelled','archived'].indexOf(String(result&&result.orderStatus||''))>=0||result&&result.paymentStatus==='refunded'){
-                        s.linePayNeedsAssistance();return;
+                        // Use the owner-checked PB snapshot to distinguish refund/cancellation/failure.
+                        var finalState;
+                        try{finalState=await readLinePayStatusViaBackend(orderId,{settings:s.settings,firebaseUser:auth.currentUser,timeoutMs:5000});}catch(e){}
+                        if(s.qrOrderId!==orderId)return;
+                        if(!finalState||!s.settleLinePayResult(orderId,finalState))s.linePayNeedsAssistance();
+                        return;
                     }
                     if(['paid','confirmed'].indexOf(String(result&&result.paymentStatus||''))>=0){
                         if(['linepay','linepay_offline'].indexOf(result.paymentMethod)>=0)s.closeQRModal(true);

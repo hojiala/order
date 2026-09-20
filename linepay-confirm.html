@@ -53,7 +53,7 @@ body{font-family:"Helvetica Neue",Arial,"PingFang TC","Microsoft JhengHei",sans-
   <div id="cancelled" style="display:none">
     <div class="icon">🔙</div>
     <p class="title">付款已取消</p>
-    <p class="msg">此次 LINE Pay 未完成，不會成立出餐訂單<br>請回原點餐平板重新付款或改選店內付款</p>
+    <p class="msg">本筆 LINE Pay 已取消未付款<br>請返回原點餐頁查看訂單記錄</p>
     <a class="btn cancel" id="cancelBackBtn" href="javascript:void(0)">返回</a>
   </div>
 
@@ -83,7 +83,7 @@ setTimeout(function () {
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/11.3.0/firebase-app.js";
 import { getAuth, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.3.0/firebase-auth.js";
-import { readLinePayStatusViaBackend, cancelOwnedOrderViaBackend } from "./pocketbase-order-writer.20260818_001.js?v=20260914_qr_no_redirect_1";
+import { readLinePayStatusViaBackend, cancelOwnedOrderViaBackend } from "./pocketbase-order-writer.20260818_001.js?v=20260920_customer_status_hours_1";
 import { markLinePayCheckoutOutcome, clearLinePayCheckoutHandoff } from "./linepay-checkout-handoff.20260912_001.js";
 
 const firebaseConfig = {
@@ -197,11 +197,55 @@ function getBackUrl() {
   return base + 'index.html';
 }
 
+async function reconcileDineinCancellationReturn() {
+  // Cross-device QR callbacks may not own this order. Do not mutate it or claim
+  // cancellation from the query string; let the owner page reconcile the original transaction.
+  try {
+    const token = await waitForExistingIdToken();
+    if (!token) throw new Error('owner_session_unavailable');
+    const result = await readLinePayStatusViaBackend(orderId, {firebaseUser: auth.currentUser, timeoutMs: 5000});
+    const payment = result.order || {};
+    if (result.status === 'refunded' || payment.paymentStatus === 'refunded') {
+      document.getElementById('success').querySelector('.icon').textContent = '💜';
+      document.getElementById('success').querySelector('.title').textContent = 'LINE Pay 已退款';
+      document.getElementById('success').querySelector('.msg').textContent = '請返回原點餐頁查看訂單記錄';
+      showView('success');
+    } else if (result.status === 'confirmed' || payment.paymentStatus === 'paid') {
+      if (payment.status === 'cancelled' || payment.wasCancelled) {
+        document.getElementById('success').querySelector('.icon').textContent = '⏳';
+        document.getElementById('success').querySelector('.title').textContent = '訂單已取消，退款確認中';
+        document.getElementById('success').querySelector('.msg').textContent = '尚未確認退款完成，請返回原點餐頁查看訂單記錄';
+      }
+      showView('success');
+    } else if (result.status === 'cancelled' || payment.status === 'cancelled' ||
+               (payment.status === 'archived' && payment.wasCancelled && payment.paymentStatus === 'unpaid')) {
+      showView('cancelled');
+    } else if (['confirm_failed','request_failed','failed','error'].includes(result.status) ||
+               ['confirm_failed','request_failed','failed','error'].includes(payment.paymentStatus)) {
+      document.getElementById('errorMsg').textContent = '本筆 LINE Pay 付款未完成，請返回原點餐頁查看訂單記錄，或請店員協助。';
+      showView('error');
+    } else {
+      throw new Error('cancellation_not_confirmed');
+    }
+  } catch (e) {
+    document.getElementById('success').querySelector('.icon').textContent = '⏳';
+    document.getElementById('success').querySelector('.title').textContent = '已離開 LINE Pay 付款頁';
+    document.getElementById('success').querySelector('.msg').textContent = '取消結果仍在確認中。請返回原點餐頁查看本筆訂單，勿重新下單或重複付款；若狀態未更新，請店員協助。';
+    showView('success');
+  }
+}
+
 async function processPayment() {
   if (!orderId) {
     document.getElementById('errorMsg').textContent = '缺少訂單編號';
     showView('error');
     return;
+  }
+
+  // A navigation hint only: never use the return URL as proof of a payment outcome.
+  // On the original phone, prevent refresh from opening the same payment URL again.
+  if (returnPage === 'dinein') {
+    try { localStorage.setItem('dinein_linepay_return_' + orderId, '1'); } catch (e) {}
   }
 
   // 設定返回按鈕
@@ -220,6 +264,7 @@ async function processPayment() {
 
   // ── 取消 ──
   if (action === 'cancel') {
+    if (returnPage === 'dinein') return reconcileDineinCancellationReturn();
     // dinein/phone 的付款頁可能開在另一支手機，沒有原下單裝置的 Firebase 身分；
     // 它們維持既有流程，由原裝置的狀態輪詢／取消按鈕收尾。
     if (!['index', 'pos', 'admin'].includes(returnPage)) {
