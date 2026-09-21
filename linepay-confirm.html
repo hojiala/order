@@ -63,7 +63,8 @@ body{font-family:"Helvetica Neue",Arial,"PingFang TC","Microsoft JhengHei",sans-
     <p class="title error">付款處理異常</p>
     <p class="msg" id="errorMsg"></p>
     <a class="btn cancel" id="errorBackBtn" href="javascript:void(0)">返回</a>
-  </div>
+</div>
+<p class="msg" id="returnHelp" style="display:none"></p>
 </div>
 
 <script>
@@ -145,9 +146,10 @@ function firebaseRestUrl(baseUrl, path, idToken) {
   return url.toString();
 }
 function showConfirmationPending() {
-  document.getElementById('success').querySelector('.title').textContent = '付款確認中';
+  document.getElementById('success').querySelector('.icon').textContent = '⏳';
+  document.getElementById('success').querySelector('.title').textContent = '付款結果同步中';
   document.getElementById('success').querySelector('.msg').textContent =
-    '已收到 LINE Pay 回傳，後端正在向 LINE Pay 核對；確認完成前不會標示為已付款';
+    '目前尚未取得最終結果，不代表付款失敗。系統仍會核對本筆付款，請勿重新下單或重複付款；可返回原點餐頁查看訂單記錄。';
   document.getElementById('phoneReminder').style.display = 'none';
   showView('success');
 }
@@ -171,13 +173,21 @@ function getBackUrl() {
   if (returnPage === 'admin') return base + 'admin.html';
 
   if (returnPage === 'dinein') {
-    const storedDinein = safeStorageGet('linepay_return_url');
+    // Keep the original signed phone URL across refreshes. Never turn a phone
+    // callback into a tablet pairing URL when browser storage is unavailable.
+    const storedDinein = safeStorageGet('dinein_linepay_url_' + orderId);
     if (storedDinein) {
-      safeStorageRemove('linepay_return_url');
-      return storedDinein;
+      try {
+        const original = new URL(storedDinein);
+        const table = original.searchParams.get('table');
+        const takeout = original.searchParams.get('takeout');
+        const expected = table && !takeout ? 'table_' + table : takeout && !table ? 'takeout_' + takeout : '';
+        if (original.origin === window.location.origin && original.pathname === base + 'dinein.html' &&
+            /^(table|takeout)_\d+$/.test(expected) && expected === deviceId &&
+            /^[a-f0-9]{64}$/i.test(original.searchParams.get('sig') || '')) return original.href;
+      } catch (e) {}
     }
-    if (deviceId) return base + 'dinein.html?deviceId=' + deviceId;
-    return base + 'dinein.html';
+    return '';
   }
 
   if (returnPage === 'phone') {
@@ -204,26 +214,10 @@ async function reconcileDineinCancellationReturn() {
     const token = await waitForExistingIdToken();
     if (!token) throw new Error('owner_session_unavailable');
     const result = await readLinePayStatusViaBackend(orderId, {firebaseUser: auth.currentUser, timeoutMs: 5000});
-    const payment = result.order || {};
-    if (result.status === 'refunded' || payment.paymentStatus === 'refunded') {
-      document.getElementById('success').querySelector('.icon').textContent = '💜';
-      document.getElementById('success').querySelector('.title').textContent = 'LINE Pay 已退款';
-      document.getElementById('success').querySelector('.msg').textContent = '請返回原點餐頁查看訂單記錄';
+    if (showTerminalPayment(result)) return;
+    if (paymentOutcome(result) === 'paid') {
+      clearLinePayCheckoutHandoff(orderId);
       showView('success');
-    } else if (result.status === 'confirmed' || payment.paymentStatus === 'paid') {
-      if (payment.status === 'cancelled' || payment.wasCancelled) {
-        document.getElementById('success').querySelector('.icon').textContent = '⏳';
-        document.getElementById('success').querySelector('.title').textContent = '訂單已取消，退款確認中';
-        document.getElementById('success').querySelector('.msg').textContent = '尚未確認退款完成，請返回原點餐頁查看訂單記錄';
-      }
-      showView('success');
-    } else if (result.status === 'cancelled' || payment.status === 'cancelled' ||
-               (payment.status === 'archived' && payment.wasCancelled && payment.paymentStatus === 'unpaid')) {
-      showView('cancelled');
-    } else if (['confirm_failed','request_failed','failed','error'].includes(result.status) ||
-               ['confirm_failed','request_failed','failed','error'].includes(payment.paymentStatus)) {
-      document.getElementById('errorMsg').textContent = '本筆 LINE Pay 付款未完成，請返回原點餐頁查看訂單記錄，或請店員協助。';
-      showView('error');
     } else {
       throw new Error('cancellation_not_confirmed');
     }
@@ -233,6 +227,48 @@ async function reconcileDineinCancellationReturn() {
     document.getElementById('success').querySelector('.msg').textContent = '取消結果仍在確認中。請返回原點餐頁查看本筆訂單，勿重新下單或重複付款；若狀態未更新，請店員協助。';
     showView('success');
   }
+}
+
+function paymentOutcome(result) {
+  const payment = result && result.order || {};
+  const status = String(result && result.status || '').toLowerCase();
+  if (status === 'refunded' || payment.paymentStatus === 'refunded') return 'refunded';
+  if (status === 'confirmed' || payment.paymentStatus === 'paid') {
+    return payment.status === 'cancelled' || payment.wasCancelled ? 'refund_pending' : 'paid';
+  }
+  if (status === 'cancelled') return 'cancelled';
+  if (['confirm_failed','request_failed','failed','error'].includes(status) ||
+      ['confirm_failed','request_failed','failed','error'].includes(payment.paymentStatus)) return 'failed';
+  if (payment.status === 'cancelled' || (payment.status === 'archived' && payment.wasCancelled && payment.paymentStatus === 'unpaid')) return 'cancelled';
+  return '';
+}
+function showTerminalPayment(result) {
+  const outcome = paymentOutcome(result);
+  if (!outcome || outcome === 'paid') return false;
+  if (outcome === 'cancelled') {
+    markLinePayCheckoutOutcome(orderId, 'cancelled');
+    showView('cancelled');
+  } else if (outcome === 'failed') {
+    markLinePayCheckoutOutcome(orderId, 'failed');
+    const detail = String(result.error || '');
+    document.getElementById('error').querySelector('.title').textContent = '本次付款未完成';
+    document.getElementById('errorMsg').textContent = /\b1288\b/.test(detail)
+      ? 'LINE Pay 回覆：信用卡帳戶餘額不足（1288）。請向發卡銀行確認，或改用其他付款方式。'
+      : 'LINE Pay 回覆本次付款未完成，請返回原點餐頁查看本筆訂單記錄。';
+    showView('error');
+  } else {
+    document.getElementById('success').querySelector('.icon').textContent = outcome === 'refunded' ? '💜' : '⏳';
+    document.getElementById('success').querySelector('.title').textContent = outcome === 'refunded' ? 'LINE Pay 已退款' : '訂單已取消，退款確認中';
+    document.getElementById('success').querySelector('.msg').textContent = '請返回原點餐頁查看本筆訂單記錄';
+    showView('success');
+  }
+  return true;
+}
+async function boundedFetch(url, options = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5000);
+  try { return await fetch(url, {...options, signal: controller.signal}); }
+  finally { clearTimeout(timer); }
 }
 
 async function processPayment() {
@@ -256,6 +292,11 @@ async function processPayment() {
     document.getElementById('closePosBtn').style.display = 'inline-block';
     document.getElementById('cancelBackBtn').href = 'javascript:try{window.close();}catch(e){}';
     document.getElementById('errorBackBtn').href = 'javascript:try{window.close();}catch(e){}';
+  } else if (!backUrl) {
+    ['backBtn','cancelBackBtn','errorBackBtn'].forEach(id => {document.getElementById(id).style.display = 'none';});
+    const help = document.getElementById('returnHelp');
+    help.textContent = '此瀏覽器沒有原點餐頁的安全連結。請切回原本點餐的瀏覽器查看本筆訂單記錄，勿重新下單或重複付款。訂單查詢編號：' + orderId;
+    help.style.display = 'block';
   } else {
     document.getElementById('backBtn').href = backUrl;
     document.getElementById('cancelBackBtn').href = backUrl;
@@ -295,21 +336,10 @@ async function processPayment() {
     const orderDateKey = callbackOrderDateKey;
     const _dbUrl = 'https://breakfast-ai-system-default-rtdb.asia-southeast1.firebasedatabase.app';
 
-    if (!txnId) {
-      document.getElementById('errorMsg').textContent = '付款回跳資料不完整，請聯絡店員核對';
-      showView('error');
-      return;
-    }
-
     const callbackMetadataComplete =
-      Number.isFinite(amount) && amount > 0 &&
+      !!txnId && Number.isFinite(amount) && amount > 0 &&
       /^[a-f0-9]{32}$/i.test(callbackToken) &&
       /^\d{4}-\d{2}-\d{2}$/.test(orderDateKey);
-    if (!callbackMetadataComplete) {
-      // LINE Pay 規格只保證帶回 orderId/transactionId；其餘 query 遺失時由 Pi 官方狀態查詢備援確認。
-      showConfirmationPending();
-      return;
-    }
 
     // callbackToken 是建立交易時由後端產生的一次性能力憑證；
     // Firebase 規則會同時核對交易編號、金額與日期。
@@ -319,10 +349,18 @@ async function processPayment() {
       showConfirmationPending();
       return;
     }
+    let confirmed = false;
+    // A lost callback response is not a declined payment. Read the existing
+    // transaction first, including reloads where callback metadata was removed.
+    try {
+      const existing = await readLinePayStatusViaBackend(orderId, {firebaseIdToken: idToken, timeoutMs: 5000});
+      if (showTerminalPayment(existing)) return;
+      confirmed = paymentOutcome(existing) === 'paid';
+    } catch (e) { /* Owner-checked reads may recover in the bounded polling below. */ }
     let writeOk = false;
-    for (let retry = 0; retry < 3; retry++) {
+    for (let retry = 0; !confirmed && callbackMetadataComplete && retry < 3; retry++) {
       try {
-        const wRes = await fetch(firebaseRestUrl(dbRestUrl, `linepay_confirms/${orderId}`, idToken), {
+        const wRes = await boundedFetch(firebaseRestUrl(dbRestUrl, `linepay_confirms/${orderId}`, idToken), {
           method: 'PUT',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({
@@ -344,38 +382,35 @@ async function processPayment() {
       }
     }
 
-    if (!writeOk) {
-      document.getElementById('errorMsg').textContent = '無法寫入確認請求，請聯絡店員';
-      showView('error');
-      return;
-    }
+    // Retain order identity on refresh, remove the one-time callback capability.
+    if (writeOk || confirmed) try {
+      const clean = new URLSearchParams(window.location.search);
+      ['callbackToken','amount','transactionId'].forEach(key => clean.delete(key));
+      history.replaceState(null, '', window.location.pathname + '?' + clean.toString());
+    } catch (e) {}
 
-    try { history.replaceState(null, '', window.location.pathname); } catch (e) {}
-
-    let confirmed = false;
     for (let i = 0; i < 9; i++) {
-      if (i > 0) await new Promise(r => setTimeout(r, 6500));
+      if (confirmed) break;
+      await new Promise(r => setTimeout(r, 6500));
       try {
         const statusResult = await readLinePayStatusViaBackend(orderId, {
           firebaseIdToken: idToken,
           timeoutMs: 5000
         });
-        const st = String(statusResult && statusResult.status || '').toLowerCase();
-        if (st === 'confirmed') { confirmed = true; break; }
-        if (st === 'confirm_failed' || st === 'cancelled' || st === 'request_failed') {
-          markLinePayCheckoutOutcome(orderId, 'failed');
-          document.getElementById('errorMsg').textContent = statusResult.error || '付款確認失敗';
-          showView('error');
-          return;
-        }
+        if (showTerminalPayment(statusResult)) return;
+        if (paymentOutcome(statusResult) === 'paid') { confirmed = true; break; }
       } catch(e) { /* 繼續等待 */ }
     }
 
     if (confirmed) {
       clearLinePayCheckoutHandoff(orderId);
+      document.getElementById('success').querySelector('.icon').textContent = '✅';
+      document.getElementById('success').querySelector('.title').textContent = '付款成功！';
+      document.getElementById('success').querySelector('.msg').textContent = '本筆 LINE Pay 已付清，請勿重複付款';
+      showView('success');
       try {
         const orderPath = `orders/${orderDateKey}/${orderId}`;
-        const orderRes = await fetch(firebaseRestUrl(_dbUrl, orderPath, idToken));
+        const orderRes = await boundedFetch(firebaseRestUrl(_dbUrl, orderPath, idToken));
         const orderData = await orderRes.json();
         if (orderData) {
           const dayNames = ['星期日','星期一','星期二','星期三','星期四','星期五','星期六'];
@@ -396,7 +431,7 @@ async function processPayment() {
           }
         }
       } catch(e) { console.error(e); }
-      document.getElementById('phoneReminder').style.display = 'block';
+      document.getElementById('phoneReminder').style.display = returnPage === 'dinein' ? 'none' : 'block';
       showView('success');
       if (returnPage === 'pos') {
         window.location.replace(backUrl);
@@ -409,8 +444,7 @@ async function processPayment() {
 
   } catch (e) {
     console.error('付款處理異常:', e);
-    document.getElementById('errorMsg').textContent = '系統異常：' + e.message;
-    showView('error');
+    showConfirmationPending();
   }
 }
 

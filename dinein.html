@@ -493,7 +493,7 @@
                 <span class="ml-auto text-white text-sm font-bold">${{ qrAmount }}</span>
             </div>
             <div class="px-5 py-4 text-center">
-                <p class="text-gray-600 text-xs mb-3">{{ qrPreparing ? (qrRequestBusy ? '正在連接 LINE Pay，系統會自動重試，請稍候' : qrPolling ? '正在確認原訂單付款結果，請稍候' : '請店員協助') : '請用手機 LINE App 掃描以下 QR Code 完成付款' }}</p>
+                <p class="text-gray-600 text-xs mb-3">{{ qrPreparing ? (qrRequestBusy ? '正在連接 LINE Pay，系統會自動重試，請稍候' : '付款結果同步中，不代表付款失敗') : '請用手機 LINE App 掃描以下 QR Code 完成付款' }}</p>
                 <p class="font-bold text-sm mb-2">訂單編號：{{ pendingLinePay && pendingLinePay.orderData.orderNo ? 'No.' + pendingLinePay.orderData.orderNo : qrOrderId }}</p>
                 <p class="text-xs text-gray-500 break-all mb-2">查詢編號：{{ qrOrderId }}</p>
                 <div v-show="!qrPreparing" id="qrcode-container" class="flex justify-center mb-3">
@@ -501,13 +501,14 @@
                 </div>
                 <div v-if="qrPolling" class="flex items-center justify-center gap-2 text-gray-500 text-xs">
                     <div class="w-4 h-4 border-2 border-gray-300 border-t-green-500 rounded-full" style="animation:spin .8s linear infinite"></div>
-                    <span>等待付款中... ({{ qrCountdown }}秒)</span>
+                    <span>{{ qrPreparing ? '正在更新本筆付款結果' : '等待付款中' }}... ({{ qrCountdown }}秒)</span>
                 </div>
                 <div v-if="qrPaidMsg" class="text-green-600 font-bold text-sm">✅ {{ qrPaidMsg }}</div>
                 <div v-if="qrErrorMsg" class="text-amber-700 text-xs mt-1">{{ qrErrorMsg }}</div>
             </div>
             <div class="px-5 pb-4">
                 <p v-if="qrRequestBusy" class="text-center text-sm text-gray-600 mb-2">處理中，請勿重新下單…</p>
+                <button v-if="!qrRequestBusy && !qrCancelling && qrPreparing" @click="viewPendingPayment" class="w-full bg-blue-50 text-blue-700 font-bold py-2.5 rounded-xl text-sm mb-2">返回查看本筆訂單</button>
                 <button @click="cancelQRPay" :disabled="qrCancelling || qrRequestBusy" class="w-full bg-gray-100 hover:bg-gray-200 disabled:opacity-60 text-gray-600 font-bold py-2.5 rounded-xl text-sm transition">
                     {{ qrCancelling ? '正在取消並撤回訂單...' : '取消付款' }}
                 </button>
@@ -1345,7 +1346,7 @@
                         timeoutMs:5000
                     }).then(function(result){
                         s.applyLinePaySnapshot(o.id,result);
-                        if(s.showQRModal&&s.qrOrderId===o.id&&!s.qrRequestBusy&&!s.qrCancelling)s.settleLinePayResult(o.id,result);
+                        if(s.pendingLinePay&&s.pendingLinePay.orderId===o.id&&s.qrOrderId===o.id&&!s.qrRequestBusy&&!s.qrCancelling)s.settleLinePayResult(o.id,result);
                     }).catch(function(){s.historyRefreshError='部分狀態暫時無法更新，以下為上次記錄；請勿據此重複付款。';});
                 })).finally(function(){s.historyRefreshing=false;});
             },
@@ -1729,14 +1730,20 @@
             },
             linePayNeedsAssistance:function(){
                 this.stopQRPolling();
+                this.qrPreparing=true;
                 this.qrRequestBusy=false;
                 this.isSubmitting=false;
-                this.qrErrorMsg='請店員協助。付款結果尚未確認，請出示上方訂單編號，勿重新下單或重複付款。';
+                this.qrErrorMsg='付款結果尚未確認，不代表付款失敗。系統會繼續更新本筆訂單；若 LINE Pay 已顯示成功，請勿再次付款。可返回查看本筆訂單；若持續未更新，再出示訂單編號請店員協助。';
                 if(this.pendingLinePay){
                     this.pendingLinePay.needsAssistance=true;
                     this.pendingLinePay.assistanceAt=Date.now();
                     try{this.savePendingLinePay();}catch(e){}
                 }
+            },
+            viewPendingPayment:function(){
+                this.stopQRPolling();
+                this.showQRModal=false;
+                this.openOrderHistory();
             },
             restorePendingLinePay:function(){
                 try{
@@ -1766,8 +1773,8 @@
                 s.isSubmitting=true;
                 // Returning from LINE Pay is a read-only reconciliation, never reopen its old URL.
                 if(resume){
-                    var returning=false;
-                    try{returning=localStorage.getItem('dinein_linepay_return_'+orderId)==='1';}catch(e){}
+                    var returning=!!s.pendingLinePay.redirectedAt;
+                    try{returning=returning||localStorage.getItem('dinein_linepay_return_'+orderId)==='1';}catch(e){}
                     if(returning){
                         s.qrRequestBusy=false;s.isSubmitting=false;
                         s.qrPreparing=true;
@@ -1826,7 +1833,11 @@
                         s.isSubmitting=false;
                         s.openQRModal(orderId, orderData.total, r.qrCodeUrl||r.paymentUrl, orderDateKey);
                     }else{
-                        try{localStorage.setItem('linepay_return_url',window.location.href)}catch(e){}
+                        // Order-scoped return context: preserve phone table/takeout and
+                        // signature, without changing the fixed-tablet pairing guard.
+                        s.pendingLinePay.redirectedAt=Date.now();
+                        s.savePendingLinePay();
+                        try{localStorage.setItem('dinein_linepay_url_'+orderId,window.location.href);}catch(e){}
                         // ★ 清空購物車（付款後返回時不顯示舊購物車）
                         try{localStorage.removeItem('dinein_cart_'+s.deviceId);}catch(e){}
                         window.location.href=r.paymentUrl;
@@ -2029,6 +2040,13 @@
         },
         mounted:function(){
             var s=this;
+            var refreshPaymentOnReturn=function(){
+                if(document.visibilityState==='hidden'||!s.pendingLinePay||s.qrRequestBusy||s.qrCancelling)return;
+                if(s.showQRModal&&s.pendingLinePay.redirectedAt&&!s.qrPolling){s.qrPreparing=true;s.startQRPolling();}
+                else s.refreshLinePayConfirmed(s.myOrders);
+            };
+            window.addEventListener('pageshow',refreshPaymentOnReturn);
+            document.addEventListener('visibilitychange',refreshPaymentOnReturn);
             // 初始狀態
             history.replaceState({view:'menu'},'');
             // 監聽返回鍵（安卓三角形 / 瀏覽器上一頁）
