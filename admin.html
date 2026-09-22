@@ -783,6 +783,7 @@
                     const dateKey = String(order.orderDateKey || order.pickupDate || order._sourceDateKey || '').trim();
                     if (dateKey && order.id) values.push('orders/' + dateKey + '/' + order.id);
                     const out = [];
+                    if (window.OrderBatchTools) values.push(...window.OrderBatchTools.orderIdentityKeys(order).filter(key => key.indexOf('phone:') === 0));
                     values.forEach((v) => {
                         let s = String(v || '').trim();
                         if (!s) return;
@@ -825,12 +826,14 @@
                 getDisplayStatus(order) {
                     if (!order) return 'new';
                     const status = String(order.status || 'new');
-                    if (status === 'archived' || status === 'done') return status;
+                    if (status === 'archived') return status;
                     const remote = this.getRemoteStatusOverride(order);
-                    if (status === 'cancelled' && remote !== 'archived') return status;
-                    if (remote) return remote;
                     const keys = this.statusOverrideRawKeys(order).map((raw) => this.statusOverrideKeyFromRaw(raw)).filter(Boolean);
                     const overrides = this.localStatusOverrides || {};
+                    if (remote === 'archived' || keys.some((key) => overrides[key] === 'archived')) return 'archived';
+                    if (status === 'done') return status;
+                    if (status === 'cancelled' && remote !== 'archived') return status;
+                    if (remote) return remote;
                     for (let i = 0; i < keys.length; i++) {
                         if (status === 'cancelled' && String(overrides[keys[i]]) !== 'archived') continue;
                         if (overrides[keys[i]]) return String(overrides[keys[i]]);
@@ -2852,7 +2855,7 @@
                         Object.keys(bucket).forEach((id) => {
                             const o = bucket[id];
                             if (!o || !o.status) return;
-                            if (o.status !== 'new' && o.status !== 'making' && o.status !== 'done' && o.status !== 'ready' && o.status !== 'cancelled') return;
+                            if (o.status !== 'new' && o.status !== 'making' && o.status !== 'done' && o.status !== 'ready' && o.status !== 'cancelled' && o.status !== 'archived') return;
                             const row = { id, ...o };
                             if (!map[id] || (row.timestamp || 0) > (map[id].timestamp || 0)) map[id] = row;
                         });
@@ -3001,7 +3004,7 @@
                     const statusRank = (status) => {
                         const s = String(status || '').toLowerCase();
                         if (s === 'new' || s === 'making' || s === 'done' || s === 'ready' || s === 'cancelled') return 2;
-                        if (s === 'archived') return 1;
+                        if (s === 'archived') return 3;
                         return 0;
                     };
                     const paymentRank = (order) => window.OrderBatchTools && window.OrderBatchTools.paymentRank
@@ -3025,8 +3028,10 @@
                     const mergeTwo = (current, incoming) => {
                         if (!current) return Object.assign({}, incoming);
                         if (!incoming) return Object.assign({}, current);
-                        if (isPhoneLikeForMerge(current) && isWeakPhoneShadowForMerge(incoming)) return Object.assign({}, incoming, current);
-                        if (isPhoneLikeForMerge(incoming) && isWeakPhoneShadowForMerge(current)) return Object.assign({}, current, incoming);
+                        if (current.status !== 'archived' && incoming.status !== 'archived') {
+                            if (isPhoneLikeForMerge(current) && isWeakPhoneShadowForMerge(incoming)) return Object.assign({}, incoming, current);
+                            if (isPhoneLikeForMerge(incoming) && isWeakPhoneShadowForMerge(current)) return Object.assign({}, current, incoming);
+                        }
                         const incomingLocal = isLocalSource(incoming) || !incoming._integrationReadOnly;
                         const currentLocal = isLocalSource(current) || !current._integrationReadOnly;
                         let preferIncoming = false;
@@ -3796,6 +3801,15 @@
                 async archiveCancelledOrder(order) {
                     if (!order || this.getDisplayStatus(order) !== 'cancelled') return;
                     if (!confirm('確定移除此已取消訂單？\n訂單會封存並保留在歷史紀錄。')) return;
+                    if (this.isPhoneCommandOrder(order)) {
+                        try {
+                            await this.archivePhoneOrder(order);
+                            this.toast('✅ 已從畫面移除，訂單仍保留於歷史紀錄');
+                        } catch (err) {
+                            this.toast('❌ 移除失敗：' + (err.message || err));
+                        }
+                        return;
+                    }
                     const sourcePath = this.normalizeSourceRecordPath(order, order.id);
                     const sourceMatch = sourcePath.match(/(?:^|\/)orders\/(\d{4}-\d{2}-\d{2})\/([^\/?#]+)/);
                     const d = new Date(order.timestamp || Date.now());
@@ -3839,12 +3853,39 @@
                     });
                     this.toast('✅ 已從畫面移除，訂單仍保留於歷史紀錄');
                 },
+                async archivePhoneOrder(order) {
+                    // Node-RED 已取消的單可能不在 historyTableData；結單必須直接保存後端狀態。
+                    const archived = Object.assign({}, order, { status: 'archived', wasCancelled: order.status === 'cancelled' || order.wasCancelled === true });
+                    if (this.ordersReadBackend === 'firebase') {
+                        const d = new Date(order.timestamp || Date.now());
+                        const dateKey = order.orderDateKey || order.pickupDate || (d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2));
+                        // phone_ai 是唯讀來源；使用既有歷史桶與共用覆寫完成 Firebase 備援封存。
+                        await set(ref(db, 'orders_archive/' + dateKey + '/' + order.id), archived);
+                        await this.writeRemoteStatusOverride(archived, 'archived');
+                    } else {
+                        const result = await writeOrderToPocketBase(order.id, archived, {
+                            settings: this.settings, pocketBaseUrl: this.pocketBaseUrl,
+                            firebaseUser: auth.currentUser, sourcePage: 'admin_archive',
+                            allowPocketBaseUpdate: true, timeoutMs: 8000, secureTimeoutMs: 10000
+                        });
+                        if (!result || !result.ok) throw new Error((result && (result.message || result.reason)) || 'PocketBase archive unavailable');
+                        this.writeRemoteStatusOverride(archived, 'archived').catch(err => console.warn('archive status override failed', err));
+                    }
+                    // PB 封存是完成依據；顯示覆寫僅同步舊來源，不阻塞 PB 已完成的結單。
+                    this.applyLocalStatusOverride(archived, 'archived');
+                },
                 // ★ 結單：只封存今天及過去的訂單，保留未來預約
                 async dailyClose() {
+                    // 納入舊版僅在本機隱藏、但後端仍未封存的電話單，讓再次結單能補存。
+                    const closeOrders = Array.from(new Map([
+                        ...(this.integrationOrdersCache || []).filter(o => o && this.isPhoneCommandOrder(o) && o.status !== 'archived'),
+                        ...(this.phoneOrdersCache || []).filter(o => o && this.isPhoneCommandOrder(o) && o.status !== 'archived'),
+                        ...(this.orders || []).filter(o => o && o.status !== 'archived')
+                    ].map(o => [o.id, o])).values());
                     const today = new Date();
                     const todayStr = today.getFullYear()+'-'+('0'+(today.getMonth()+1)).slice(-2)+'-'+('0'+today.getDate()).slice(-2);
                     // 找出未來訂單
-                    const futureOrders = this.orders.filter(o => {
+                    const futureOrders = closeOrders.filter(o => {
                         if (o.status === 'archived' || o.status === 'cancelled') return false;
                         var pd = o.pickupDate || '';
                         return pd > todayStr; // 預約明天以後
@@ -3857,20 +3898,10 @@
                     const phoneCmds = [];
                     const pbArchiveJobs = [];
                     const futureIds = futureOrders.map(o => o.id);
-                    this.orders.forEach(o => {
+                    closeOrders.forEach(o => {
                         if (o.status !== 'archived' && futureIds.indexOf(o.id) === -1) {
                             if (this.isPhoneCommandOrder(o)) {
-                                this.applyLocalStatusOverride(o, 'archived');
-                                phoneCmds.push(Promise.all([
-                                    this.writeRemoteStatusOverride(o, 'archived').catch(err => {
-                                        console.warn('phone archive status override failed', err && err.message ? err.message : err);
-                                        return false;
-                                    }),
-                                    this.queuePhoneOrderCommand(o, 'set_status', { status: 'archived' }).catch(err => {
-                                        console.warn('phone archive command failed', err && err.message ? err.message : err);
-                                        return false;
-                                    })
-                                ]));
+                                phoneCmds.push(this.archivePhoneOrder(o));
                                 return;
                             }
                             // ★ 已取消訂單結單後 status 也要進 archived（wasCancelled 保留取消記號），
@@ -3900,22 +3931,13 @@
                     });
                     if (!Object.keys(updates).length && !phoneCmds.length && !pbArchiveJobs.length) { this.toast("✅ 目前沒有需要結單的訂單"); return; }
                     try {
-                        if (Object.keys(updates).length) {
-                            await update(ref(db), updates);
-                        }
-                        if (pbArchiveJobs.length) {
-                            const rs = await Promise.allSettled(pbArchiveJobs);
-                            const failed = rs.filter(r => r.status !== 'fulfilled').length;
-                            if (failed > 0) throw new Error('PB 訂單結單失敗 ' + failed + ' 筆');
-                        }
-                        if (phoneCmds.length) {
-                            const rs = await Promise.allSettled(phoneCmds);
-                            const failed = rs.filter(r => r.status !== 'fulfilled').length;
-                            if (failed > 0) throw new Error('電話訂單結單命令失敗 ' + failed + ' 筆');
-                        }
+                        const jobs = pbArchiveJobs.concat(phoneCmds);
+                        if (Object.keys(updates).length) jobs.push(update(ref(db), updates));
+                        const results = await Promise.allSettled(jobs);
+                        const failed = results.filter(r => r.status !== 'fulfilled');
+                        if (failed.length) throw new Error('部分訂單封存失敗，請重試：' + (failed[0].reason.message || failed[0].reason));
                         var msg = "✅ 結單完成！辛苦了！";
                         if (futureCount > 0) msg += "\n（" + futureCount + " 筆未來預約訂單已保留）";
-                        if (phoneCmds.length > 0) msg += "\n（電話單已送出結單命令 " + phoneCmds.length + " 筆）";
                         this.toast(msg);
                     } catch (err) {
                         this.toast("❌ 結單失敗：" + (err && err.message ? err.message : err));

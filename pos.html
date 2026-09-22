@@ -2840,6 +2840,7 @@
                 var dateKey=String(order.orderDateKey||order.pickupDate||order._sourceDateKey||'').trim();
                 if(dateKey&&order.id)values.push('orders/'+dateKey+'/'+order.id);
                 var out=[];
+                if(window.OrderBatchTools)values=values.concat(window.OrderBatchTools.orderIdentityKeys(order).filter(function(key){return key.indexOf('phone:')===0;}));
                 values.forEach(function(v){
                     var s=String(v||'').trim();
                     if(!s)return;
@@ -4975,6 +4976,25 @@
                 if(top<8)top=rect.bottom+4;
                 this.menuPos={top:Math.max(8,top),right:Math.round(window.innerWidth-rect.right)};
             },
+            archivePhoneOrder:async function(order){
+                var s=this;
+                var archived=Object.assign({},order,{status:'archived',wasCancelled:order.status==='cancelled'||order.wasCancelled===true});
+                // 已取消的電話單可能已離開 Node-RED 歷史表，直接保存後端封存狀態。
+                if(s.ordersReadBackend==='firebase'){
+                    // phone_ai 是唯讀來源；歷史與共用覆寫都成功才算完成。
+                    await set(ref(db,'orders_archive/'+s.resolveOrderDateKey(order)+'/'+order.id),archived);
+                    await s.writeRemoteStatusOverride(archived,'archived');
+                }else{
+                    var result=await s.syncPocketBaseOrder(order.id,archived,'pos_archive');
+                    if(!result||!result.ok)throw new Error((result&&(result.message||result.reason||result.error&&result.error.message))||'PocketBase archive unavailable');
+                    s.writeRemoteStatusOverride(archived,'archived').catch(function(err){console.warn('archive status override failed:',err);});
+                }
+                // 只有後端成功後才更新快取，避免輪詢舊資料又把單顯示出來。
+                function mark(rows){return (rows||[]).map(function(o){return o&&o.id===order.id?Object.assign({},o,archived):o;});}
+                s.integrationOrdersCache=mark(s.integrationOrdersCache);
+                s.phoneOrdersCache=mark(s.phoneOrdersCache);
+                s.onlineOrders=mark(s.onlineOrders).filter(function(o){return o.status!=='archived';});
+            },
             doArchiveAll:async function(){
                 var s=this;
                 var today=new Date();
@@ -4995,17 +5015,7 @@
                     if(futureIds.indexOf(o.id)!==-1)return;
                     if(o.status==="archived")return;
                     if(s.isPhoneCommandOrder(o)){
-                        o.status='archived';
-                        phoneCmds.push(Promise.all([
-                            s.writeRemoteStatusOverride(o,'archived').catch(function(err){
-                                console.warn('phone archive status override failed:',err&&err.message?err.message:err);
-                                return false;
-                            }),
-                            s.queuePhoneOrderCommand(o,'set_status',{status:'archived'}).catch(function(err){
-                                console.warn('phone archive command failed:',err&&err.message?err.message:err);
-                                return false;
-                            })
-                        ]));
+                        phoneCmds.push(s.archivePhoneOrder(o));
                         return;
                     }
                     var sourcePath=String((o.integration&&o.integration.sourceRecordPath)||o.sourceRecordPath||'').trim();
@@ -5046,26 +5056,13 @@
                   });
                 if(!Object.keys(updates).length&&!phoneCmds.length&&!pbArchiveJobs.length){s.toast("✅ 目前沒有待結單訂單");return;}
                 try{
-                    if(Object.keys(updates).length){
-                        await update(ref(db),updates);
-                    }
-                    if(pbArchiveJobs.length){
-                        var pbResults=await Promise.allSettled(pbArchiveJobs);
-                        var pbFailed=pbResults.filter(function(r){return r.status!=='fulfilled';}).length;
-                        if(pbFailed>0){
-                            throw new Error("PB 訂單結單失敗 "+pbFailed+" 筆");
-                        }
-                    }
-                    if(phoneCmds.length){
-                        var cmdResults=await Promise.allSettled(phoneCmds);
-                        var failedCount=cmdResults.filter(function(r){return r.status!=='fulfilled';}).length;
-                        if(failedCount>0){
-                            throw new Error("電話訂單結單命令失敗 "+failedCount+" 筆");
-                        }
-                    }
+                    var jobs=pbArchiveJobs.concat(phoneCmds);
+                    if(Object.keys(updates).length)jobs.push(update(ref(db),updates));
+                    var results=await Promise.allSettled(jobs);
+                    var failed=results.filter(function(r){return r.status!=='fulfilled';});
+                    if(failed.length)throw new Error('部分訂單封存失敗，請重試：'+(failed[0].reason.message||failed[0].reason));
                     var msg="✅ 結單完成！辛苦了！";
                     if(futureIds.length>0)msg+="（"+futureIds.length+"筆未來預約已保留）";
-                    if(phoneCmds.length>0)msg+="（電話單已送出結單命令 "+phoneCmds.length+" 筆）";
                     s.toast(msg);
                     s.exitOnline();
                 }catch(e){alert("結單失敗："+(e&&e.message?e.message:e));}
@@ -5251,7 +5248,7 @@
                     Object.keys(bucket).forEach(function(id){
                         var o=bucket[id];
                         if(!o||!o.status)return;
-                        if(!(o.status==="new"||o.status==="making"||o.status==="done"||o.status==="cancelled"))return;
+                        if(!(o.status==="new"||o.status==="making"||o.status==="done"||o.status==="cancelled"||o.status==="archived"))return;
                         var row=Object.assign({id:id},o);
                         if(!map[id]||(row.timestamp||0)>(map[id].timestamp||0))map[id]=row;
                     });
@@ -5377,7 +5374,7 @@
                 var statusRank=function(st){
                     var s=String(st||'').toLowerCase();
                     if(s==='new'||s==='making'||s==='done'||s==='ready'||s==='cancelled')return 2;
-                    if(s==='archived')return 1;
+                    if(s==='archived')return 3;
                     return 0;
                 };
                 var paymentRank=function(order){
@@ -5401,8 +5398,10 @@
                 var mergeTwo=function(current,incoming){
                     if(!current)return Object.assign({},incoming);
                     if(!incoming)return Object.assign({},current);
-                    if(isPhoneLikeForMerge(current)&&isWeakPhoneShadowForMerge(incoming))return Object.assign({},incoming,current);
-                    if(isPhoneLikeForMerge(incoming)&&isWeakPhoneShadowForMerge(current))return Object.assign({},current,incoming);
+                    if(current.status!=='archived'&&incoming.status!=='archived'){
+                        if(isPhoneLikeForMerge(current)&&isWeakPhoneShadowForMerge(incoming))return Object.assign({},incoming,current);
+                        if(isPhoneLikeForMerge(incoming)&&isWeakPhoneShadowForMerge(current))return Object.assign({},current,incoming);
+                    }
                     var incomingLocal=isLocalSource(incoming)||!incoming._integrationReadOnly;
                     var currentLocal=isLocalSource(current)||!current._integrationReadOnly;
                     var preferIncoming=false;
