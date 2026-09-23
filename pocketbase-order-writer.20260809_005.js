@@ -2982,11 +2982,15 @@ export function readLinePayStatusViaBackend(orderId, options) {
                     "Content-Type": "application/json",
                     "Authorization": "Bearer " + idToken
                 },
-                body: JSON.stringify({ orderId: id })
+                body: JSON.stringify(Object.assign({ orderId: id }, options.inspectCheckout === true
+                    ? { inspectCheckout: true, orderDateKey: text(options.orderDateKey) } : {}))
             }, timeoutMs)
             : Promise.reject(new Error("missing_linepay_status_endpoint"));
         return primary.then(function(result) {
             result = result && typeof result === "object" ? result : {};
+            if (options.inspectCheckout === true && result.ok === true && result.checkoutMissing === true) {
+                return { ok: true, found: false, checkoutMissing: true, order: null, status: "unknown" };
+            }
             if (result.found !== true && !(result.order && typeof result.order === "object")) {
                 var missing = new Error("linepay_status_not_found");
                 missing.status = 503;
@@ -3203,10 +3207,13 @@ export function writeOrderWithFirebaseFallback(orderId, orderData, options) {
                 console.warn("PocketBase primary write failed; public Firebase fallback disabled:", detail || "");
             } catch(e) {}
             var safeDetail = /^[A-Za-z0-9_ :.-]{1,160}$/.test(text(detail).trim()) ? text(detail).trim() : "";
-            return Promise.reject(new Error(
+            var writeError = new Error(
                 "PocketBase order write failed; public Firebase fallback disabled" +
                 (safeDetail ? ": " + safeDetail : "")
-            ));
+            );
+            writeError.status = Number(reason && (reason.status || (reason.error && reason.error.status))) || 0;
+            writeError.body = reason && (reason.body || (reason.error && reason.error.body));
+            return Promise.reject(writeError);
         }
         try {
             var body = reason && (reason.body || (reason.error && reason.error.body));

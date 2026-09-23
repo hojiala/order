@@ -516,6 +516,11 @@
         </div>
     </div>
 
+    <div v-if="pendingLinePay && !showQRModal" class="fixed bottom-24 left-3 right-3 z-40 bg-amber-50 border border-amber-300 rounded-xl p-3 text-sm">
+        <p>{{ pendingLinePay.lastCreateError ? '訂單送出尚未確認，尚未開啟付款。' : '有一筆先前訂單尚待確認，請先查詢，避免重複送單。' }}</p>
+        <p v-if="pendingLinePay.lastCreateError" class="text-xs mt-1">請店員查看錯誤代碼：{{ pendingLinePay.lastCreateError }}</p>
+        <button @click="resumeLinePayPayment" :disabled="checkoutChecking || isSubmitting" class="mt-2 text-blue-700 font-bold disabled:opacity-50">{{ checkoutChecking ? '正在查詢原訂單…' : '查詢／繼續原訂單' }}</button>
+    </div>
     <div v-if="toastMsg" class="fixed bottom-24 left-1/2 z-50 pointer-events-none" style="transform:translateX(-50%)">
         <div class="bg-white/90 backdrop-blur text-gray-800 text-sm font-bold px-5 py-2.5 rounded-full shadow-lg whitespace-nowrap fade-in border border-gray-200">{{ toastMsg }}</div>
     </div>
@@ -526,7 +531,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
     import { getDatabase, ref, push, set, get, update, remove, onValue, query, orderByChild, equalTo, limitToLast, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
-    import { writeOrderToPocketBase, writeOrderWithFirebaseFallback, publicOrderPrintWarning, requestLinePayViaBackend, readLinePayStatusViaBackend, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, cancelOwnedOrderViaBackend, filterCartToAvailableMenu } from "./pocketbase-order-writer.20260818_001.js?v=20260920_customer_status_hours_1";
+    import { writeOrderToPocketBase, writeOrderWithFirebaseFallback, publicOrderPrintWarning, requestLinePayViaBackend, readLinePayStatusViaBackend, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, cancelOwnedOrderViaBackend, filterCartToAvailableMenu } from "./pocketbase-order-writer.20260818_001.js?v=20260923_checkout_recovery_1";
 
     const firebaseConfig = {
         apiKey:"AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -674,7 +679,7 @@
             pendingCount:0, nowMinute:0,
             // ★ 情境2 QR Code 付款
             showQRModal:false, qrAmount:0, qrOrderId:'', qrOrderDateKey:'',
-            pendingLinePay:null, qrPreparing:false, qrRequestBusy:false,
+            pendingLinePay:null, checkoutChecking:false, qrPreparing:false, qrRequestBusy:false,
             qrPolling:false, qrCancelling:false, qrCountdown:120, qrPaidMsg:'', qrErrorMsg:'',
             qrPollTimer:null, qrCountdownTimer:null
         }},
@@ -1756,6 +1761,7 @@
                 this.qrRequestBusy=false;
                 this.isSubmitting=false;
                 this.qrErrorMsg='目前無法確認是否付款成功。請出示訂單編號，由店員核對；請勿重新下單或再次付款。';
+                if(this.pendingLinePay&&this.pendingLinePay.lastRequestError)this.qrErrorMsg+=' 付款連線代碼：'+this.pendingLinePay.lastRequestError;
                 if(this.pendingLinePay){
                     this.pendingLinePay.needsAssistance=true;
                     this.pendingLinePay.assistanceAt=Date.now();
@@ -1767,16 +1773,86 @@
                 this.showQRModal=false;
                 this.openOrderHistory();
             },
-            restorePendingLinePay:function(){
-                try{
-                    if(!this.getPendingLinePay())return;
-                    this.isSubmitting=false;
-                    return this.resumeLinePayPayment();
-                }catch(e){}
-            },
-            resumeLinePayPayment:function(){
+            // checkout-recovery-20260923: inspect a saved checkout before showing any payment UI.
+            checkPendingLinePay:async function(){
                 var p=this.getPendingLinePay();
-                if(this.qrRequestBusy||this.qrCancelling)return;
+                if(!p||this.checkoutChecking)return false;
+                this.checkoutChecking=true;
+                var authTimer,resultTimer;
+                try{
+                    var user=await Promise.race([ensureFirebaseUser(),new Promise(function(resolve,reject){authTimer=setTimeout(function(){reject(new Error('auth_timeout'));},6000);})]);
+                    var result=await Promise.race([readLinePayStatusViaBackend(p.orderId,{settings:this.settings,firebaseUser:user,
+                        timeoutMs:10000,inspectCheckout:true,orderDateKey:p.orderDateKey}),
+                        new Promise(function(resolve,reject){resultTimer=setTimeout(function(){reject(new Error('checkout_timeout'));},15000);})]);
+                    if(this.pendingLinePay!==p)return false;
+                    // A second tab may inspect while the original create request is still in flight.
+                    if(result&&result.checkoutMissing===true&&(!p.createdAt||Date.now()-Number(p.createdAt)>120000)){
+                        this.clearPendingLinePay();this.closeQRModal(false);
+                        this.toast('先前訂單未成立，購物車已保留，可繼續點餐。');return false;
+                    }
+                    if(result&&result.order){
+                        p.orderAccepted=true;
+                        delete p.lastCreateError;
+                        if(result.order.orderNo)p.orderData.orderNo=result.order.orderNo;
+                        this.savePendingLinePay();
+                    }
+                    this.applyLinePaySnapshot(p.orderId,result);
+                    var order=Object.assign({id:p.orderId,paymentMethod:'linepay'},result&&result.order||{});
+                    order.linePayTransaction={status:result&&result.status||''};
+                    var state=this.getLinePayState(order);
+                    if(state!=='pending'||['done','completed','cancelled','archived'].indexOf(order.status)>=0){
+                        this.clearPendingLinePay();this.closeQRModal(false);
+                        this.toast(state==='paid'?'先前訂單已付款。':state==='refunded'?'先前訂單已退款。':'先前訂單已結束，可繼續點餐。');
+                        return false;
+                    }
+                    return true;
+                }catch(e){return false;}
+                finally{clearTimeout(authTimer);clearTimeout(resultTimer);this.checkoutChecking=false;}
+            },
+            restorePendingLinePay:async function(){
+                if(this.qrRequestBusy||this.qrCancelling||this.isSubmitting)return;
+                if(!await this.checkPendingLinePay())return;
+                var p=this.pendingLinePay;
+                // A new QR visit opens the menu. Only an actual recent LINE Pay return auto-polls.
+                if(p&&p.redirectedAt&&Date.now()-Number(p.redirectedAt)<2*60*60*1000){
+                    return this.startLinePayFlow(p.orderId,p.orderData,p.orderDateKey,p.payMethod,true);
+                }
+            },
+            retryPendingOrder:async function(){
+                var p=this.pendingLinePay;
+                if(!p||!p.orderPayload||p.orderAccepted)return false;
+                if(!p.createdAt||Date.now()-Number(p.createdAt)>=120000){this.toast('請先查詢原訂單結果，勿重複下單。');return false;}
+                this.isSubmitting=true;
+                try{
+                    var result=await this.writeOrderPrimary(p.orderId,p.orderPayload,'dinein');
+                    if(this.pendingLinePay!==p)return false;
+                    p.orderAccepted=true;
+                    delete p.lastCreateError;
+                    var record=result&&result.pocketBase&&result.pocketBase.record;
+                    if(record&&(record.order_no||record.orderNo))p.orderData.orderNo=Number(record.order_no||record.orderNo);
+                    this.savePendingLinePay();
+                    this.saveLocalOrder(p.orderId,Object.assign({},p.orderPayload,{orderNo:p.orderData.orderNo}));
+                    return true;
+                }catch(e){
+                    this.recordCheckoutError(e);
+                    this.toast('訂單送出尚未確認，餐點已保留。請稍後按「查詢／繼續原訂單」，勿重複下單。');
+                    return false;
+                }finally{this.isSubmitting=false;}
+            },
+            recordCheckoutError:function(error,payment){
+                var raw=String(error&&error.body&&error.body.message||error&&error.code||error&&error.message||'network_unavailable');
+                var code=raw.match(/(?:^|: )([a-z][a-z0-9_/-]{2,100})$/);
+                var safe=code?code[1]:'network_or_server_unavailable';
+                if(this.pendingLinePay){this.pendingLinePay[payment?'lastRequestError':'lastCreateError']=safe;try{this.savePendingLinePay();}catch(e){}}
+                return safe;
+            },
+            resumeLinePayPayment:async function(){
+                if(this.qrRequestBusy||this.qrCancelling||this.isSubmitting||this.checkoutChecking)return;
+                var ready=await this.checkPendingLinePay();
+                var p=this.pendingLinePay;
+                if(!p)return;
+                if(p.orderPayload&&!p.orderAccepted){if(!await this.retryPendingOrder())return;}
+                else if(!ready){this.toast('目前無法查詢原訂單，請稍後再試；請勿重複付款。');return;}
                 if(p)return this.startLinePayFlow(p.orderId,p.orderData,p.orderDateKey,p.payMethod,true);
             },
             startLinePayFlow:async function(orderId,orderData,orderDateKey,payMethod,resume){
@@ -1823,7 +1899,7 @@
                     waitForResult:true,
                     timeoutMs:20000,
                     totalTimeout:true
-                });}catch(e){result=null;}
+                });}catch(e){s.recordCheckoutError(e,true);result=null;}
                     if(s.qrOrderId!==orderId)return;
                     if(result&&result.orderNo){s.pendingLinePay.orderData.orderNo=result.orderNo;s.savePendingLinePay();}
                     if(['cancelled','archived'].indexOf(String(result&&result.orderStatus||''))>=0||result&&result.paymentStatus==='refunded'){
@@ -1841,6 +1917,7 @@
                     }
                     var r=result&&result.request;
                     if(!r || r.status!=='ready' || !r.paymentUrl){
+                        if(r&&r.error)s.recordCheckoutError(new Error(r.error),true);
                         if(!readOnly){
                             var remaining=20000-(Date.now()-attemptStartedAt);
                             if(remaining>0)await new Promise(function(resolve){setTimeout(resolve,remaining);});
@@ -1848,6 +1925,7 @@
                         }
                         continue;
                     }
+                    delete s.pendingLinePay.lastRequestError;
                     if(payMethod==='linepay_qr'){
                         s.isSubmitting=false;
                         s.openQRModal(orderId, orderData.total, r.qrCodeUrl||r.paymentUrl, orderDateKey);
@@ -1886,7 +1964,7 @@
                     var owner=this;
                     return navigator.locks.request('dinein-submit-'+this.deviceId,function(){return owner.submitOrder(payMethod,true);});
                 }
-                if(this.isSubmitting)return;
+                if(this.isSubmitting||this.checkoutChecking)return;
                 if(this.getPendingLinePay()){
                     return this.resumeLinePayPayment();
                 }
@@ -1930,7 +2008,7 @@
                 var bucketOrderRef=ref(db,'orders/'+orderDateKey+'/'+orderId);
                 // Keep the identity even if the order-write response is lost.
                 if(payMethod==='linepay'||payMethod==='linepay_qr'){
-                    s.pendingLinePay={orderId:orderId,orderDateKey:orderDateKey,orderData:{total:orderData.total},payMethod:payMethod,attempts:0,createdAt:Date.now()};
+                    s.pendingLinePay={orderId:orderId,orderDateKey:orderDateKey,orderData:{total:orderData.total},orderPayload:JSON.parse(JSON.stringify(orderData)),orderAccepted:false,payMethod:payMethod,attempts:0,createdAt:Date.now()};
                     try{s.savePendingLinePay();}catch(e){s.isSubmitting=false;s.toast('無法保存訂單編號，請店員協助；尚未送出訂單。');return;}
                 }
                 return Promise.resolve(null)
@@ -1949,6 +2027,7 @@
                     return s.writeOrderPrimary(orderId,orderData,'dinein',function(){
                         return set(bucketOrderRef,orderData);
                     }).then(function(result){
+                        if(s.pendingLinePay&&s.pendingLinePay.orderId===orderId){s.pendingLinePay.orderAccepted=true;delete s.pendingLinePay.lastCreateError;s.savePendingLinePay();}
                         orderData._writeBackend=(result&&result.backend)||'firebase';
                         s.successPrintWarning=(payMethod==='linepay'||payMethod==='linepay_qr')?'':publicOrderPrintWarning(result);
                         var pbRecord=result&&result.pocketBase&&result.pocketBase.record;
@@ -1979,7 +2058,20 @@
                     s.saveCart();
                     s.toast('✅ 訂單已送出！');
                 }).catch(function(e){
-                    if(s.pendingLinePay){return s.startLinePayFlow(orderId,orderData,orderDateKey,payMethod,true);}
+                    if(s.pendingLinePay&&s.pendingLinePay.orderId===orderId){
+                        // A create failure is not a payment failure. Never request payment for a draft.
+                        if(!s.pendingLinePay.orderAccepted){
+                            var code=s.recordCheckoutError(e);
+                            if(e&&e.body&&e.body.rejectedBeforeWrite===true){
+                                s.clearPendingLinePay();
+                                alert('訂單未成立，尚未請求 LINE Pay。餐點已保留，請重新整理菜單／掃描本桌 QR Code 後再試。錯誤代碼：'+code);return;
+                            }
+                            return s.retryPendingOrder().then(function(ok){
+                                if(ok)return s.startLinePayFlow(orderId,s.pendingLinePay.orderData,orderDateKey,payMethod);
+                            });
+                        }
+                        return s.startLinePayFlow(orderId,orderData,orderDateKey,payMethod,true);
+                    }
                     alert('送出失敗：'+e.message);
                 }).finally(function(){s.isSubmitting=false});
             },
@@ -2057,6 +2149,7 @@
             var refreshPaymentOnReturn=function(){
                 if(document.visibilityState==='hidden'||!s.getPendingLinePay()||s.qrRequestBusy||s.qrCancelling)return;
                 if(s.showQRModal&&s.pendingLinePay.redirectedAt&&!s.qrPolling){s.qrPreparing=true;s.startQRPolling();}
+                else if(!s.showQRModal)s.restorePendingLinePay();
                 else s.refreshLinePayConfirmed(s.myOrders);
             };
             window.addEventListener('pageshow',refreshPaymentOnReturn);
