@@ -493,7 +493,7 @@
                 <span class="ml-auto text-white text-sm font-bold">${{ qrAmount }}</span>
             </div>
             <div class="px-5 py-4 text-center">
-                <p class="text-gray-600 text-xs mb-3">{{ qrPreparing ? ((qrRequestBusy || qrPolling) ? '正在確認付款，請稍候，勿再次付款。' : '請店員核對付款結果') : '請用手機 LINE App 掃描以下 QR Code 完成付款' }}</p>
+                <p class="text-gray-600 text-xs mb-3">{{ mobileLinePayUrl ? (qrPolling ? '若尚未開啟 LINE Pay，請點下方按鈕；已完成付款請等候結果。' : '付款連結已準備好，請點下方按鈕開啟 LINE Pay。') : qrPreparing ? (qrRequestBusy ? '正在準備本筆付款連結…' : qrPolling ? '正在確認付款，請稍候，勿再次付款。' : '請店員核對付款結果') : '請用手機 LINE App 掃描以下 QR Code 完成付款' }}</p>
                 <p class="font-bold text-sm mb-2">訂單編號：{{ pendingLinePay && pendingLinePay.orderData.orderNo ? 'No.' + pendingLinePay.orderData.orderNo : qrOrderId }}</p>
                 <p class="text-xs text-gray-500 break-all mb-2">查詢編號：{{ qrOrderId }}</p>
                 <div v-show="!qrPreparing" id="qrcode-container" class="flex justify-center mb-3">
@@ -507,9 +507,12 @@
                 <div v-if="qrErrorMsg" class="text-amber-700 text-xs mt-1">{{ qrErrorMsg }}</div>
             </div>
             <div class="px-5 pb-4">
+                <a v-if="mobileLinePayUrl && !qrCancelling && !qrRequestBusy" :href="mobileLinePayUrl" @click="markMobileLinePayOpened" class="block w-full text-center bg-green-600 text-white font-bold py-3 rounded-xl text-sm mb-2">開啟 LINE Pay</a>
+                <a v-if="mobileLinePayWebUrl && mobileLinePayWebUrl !== mobileLinePayUrl && !qrCancelling && !qrRequestBusy" :href="mobileLinePayWebUrl" @click="markMobileLinePayOpened" class="block text-center text-blue-700 py-2 text-xs mb-2">無法開啟 App？使用 LINE Pay 網頁</a>
                 <p v-if="qrRequestBusy" class="text-center text-sm text-gray-600 mb-2">處理中，請勿重新下單…</p>
+                <button v-if="!mobileLinePayUrl && !qrRequestBusy && !qrCancelling && qrPreparing && pendingLinePay && pendingLinePay.payMethod === 'linepay'" @click="resumeLinePayPayment" :disabled="checkoutChecking" class="w-full bg-green-50 text-green-700 font-bold py-2.5 rounded-xl text-sm mb-2">{{ checkoutChecking ? '正在查詢本筆付款…' : '尚未開啟 LINE Pay？取回原付款連結' }}</button>
                 <button v-if="!qrRequestBusy && !qrCancelling && qrPreparing" @click="viewPendingPayment" class="w-full bg-blue-50 text-blue-700 font-bold py-2.5 rounded-xl text-sm mb-2">返回查看本筆訂單</button>
-                <button v-if="!qrPreparing" @click="cancelQRPay" :disabled="qrCancelling || qrRequestBusy" class="w-full bg-gray-100 hover:bg-gray-200 disabled:opacity-60 text-gray-600 font-bold py-2.5 rounded-xl text-sm transition">
+                <button v-if="!qrPreparing || (mobileLinePayUrl && pendingLinePay && !pendingLinePay.redirectedAt)" @click="cancelQRPay" :disabled="qrCancelling || qrRequestBusy" class="w-full bg-gray-100 hover:bg-gray-200 disabled:opacity-60 text-gray-600 font-bold py-2.5 rounded-xl text-sm transition">
                     {{ qrCancelling ? '正在取消並撤回訂單...' : '取消付款' }}
                 </button>
             </div>
@@ -680,6 +683,7 @@
             // ★ 情境2 QR Code 付款
             showQRModal:false, qrAmount:0, qrOrderId:'', qrOrderDateKey:'',
             pendingLinePay:null, checkoutChecking:false, qrPreparing:false, qrRequestBusy:false,
+            mobileLinePayUrl:'', mobileLinePayWebUrl:'',
             qrPolling:false, qrCancelling:false, qrCountdown:120, qrPaidMsg:'', qrErrorMsg:'',
             qrPollTimer:null, qrCountdownTimer:null
         }},
@@ -1594,6 +1598,7 @@
                 var s=this;
                 s.stopQRPolling();
                 s.qrOrderId=orderId;
+                s.mobileLinePayUrl='';s.mobileLinePayWebUrl='';
                 s.qrOrderDateKey=orderDateKey||'';
                 s.qrAmount=amount;
                 s.qrPaidMsg='';
@@ -1667,6 +1672,7 @@
                 var s=this;
                 s.stopQRPolling();
                 s.showQRModal=false;
+                s.mobileLinePayUrl='';s.mobileLinePayWebUrl='';
                 if(paid){
                     s.clearPendingLinePay();
                     // 付款成功：清空購物車，顯示成功畫面
@@ -1757,6 +1763,7 @@
             },
             linePayNeedsAssistance:function(){
                 this.stopQRPolling();
+                this.mobileLinePayUrl='';this.mobileLinePayWebUrl='';
                 this.qrPreparing=true;
                 this.qrRequestBusy=false;
                 this.isSubmitting=false;
@@ -1801,6 +1808,9 @@
                     order.linePayTransaction={status:result&&result.status||''};
                     var state=this.getLinePayState(order);
                     if(state!=='pending'||['done','completed','cancelled','archived'].indexOf(order.status)>=0){
+                        if(state==='paid'&&p.cartSnapshot===JSON.stringify({items:this.cart,note:this.orderNote||''})){
+                            this.cart=[];this.orderNote='';this.saveCart();
+                        }
                         this.clearPendingLinePay();this.closeQRModal(false);
                         this.toast(state==='paid'?'先前訂單已付款。':state==='refunded'?'先前訂單已退款。':'先前訂單已結束，可繼續點餐。');
                         return false;
@@ -1853,9 +1863,49 @@
                 if(!p)return;
                 if(p.orderPayload&&!p.orderAccepted){if(!await this.retryPendingOrder())return;}
                 else if(!ready){this.toast('目前無法查詢原訂單，請稍後再試；請勿重複付款。');return;}
-                if(p)return this.startLinePayFlow(p.orderId,p.orderData,p.orderDateKey,p.payMethod,true);
+                if(p)return this.startLinePayFlow(p.orderId,p.orderData,p.orderDateKey,p.payMethod,true,true);
             },
-            startLinePayFlow:async function(orderId,orderData,orderDateKey,payMethod,resume){
+            // mobile-linepay-launch-20260924: native links preserve the customer's tap.
+            showMobileLinePayLinks:function(request){
+                var safeUrl=function(value,app){
+                    try{
+                        var u=new URL(String(value||''));
+                        if(u.username||u.password||u.port)return '';
+                        if(app&&u.protocol==='line:'&&u.hostname==='pay'&&u.pathname.indexOf('/payment/')===0)return u.href;
+                        if(u.protocol==='https:'&&['web-pay.line.me','sandbox-web-pay.line.me'].indexOf(u.hostname)>=0)return u.href;
+                    }catch(e){}
+                    return '';
+                };
+                var web=safeUrl(request&&request.paymentUrl,false);
+                var app=safeUrl(request&&request.qrCodeUrl,true);
+                if(!web)return false;
+                this.mobileLinePayUrl=app||web;
+                this.mobileLinePayWebUrl=web;
+                this.qrPreparing=true;
+                this.pendingLinePay.paymentUrl=web;
+                this.pendingLinePay.qrCodeUrl=app||web;
+                if(!this.pendingLinePay.redirectedAt&&!this.pendingLinePay.cartSnapshot){
+                    this.pendingLinePay.cartSnapshot=JSON.stringify({items:this.cart,note:this.orderNote||''});
+                }
+                try{this.savePendingLinePay();}catch(e){}
+                return true;
+            },
+            markMobileLinePayOpened:function(event){
+                var p=this.pendingLinePay;
+                if(!p||p.orderId!==this.qrOrderId||!this.mobileLinePayUrl||this.qrCancelling||this.qrRequestBusy){
+                    if(event)event.preventDefault();return;
+                }
+                // This records an opening attempt, never proof of payment or App launch.
+                p.redirectedAt=Date.now();
+                try{
+                    this.savePendingLinePay();
+                    localStorage.setItem('dinein_linepay_url_'+p.orderId,window.location.href);
+                }catch(e){}
+                this.qrCountdown=120;
+                this.startQRPolling();
+                // Keep the cart until authoritative confirmation. Let the native anchor navigate.
+            },
+            startLinePayFlow:async function(orderId,orderData,orderDateKey,payMethod,resume,manualOpen){
                 var s=this;
                 if(s.qrRequestBusy)return;
                 var previous=s.pendingLinePay;
@@ -1866,20 +1916,25 @@
                 s.openQRModal(orderId,orderData.total,'',orderDateKey);
                 s.qrRequestBusy=true;
                 s.isSubmitting=true;
-                // Returning from LINE Pay is a read-only reconciliation, never reopen its old URL.
+                // An automatic return only reconciles. Explicit recovery can display the
+                // same transaction's links, but never automatically navigate or recreate it.
+                var returning=false;
                 if(resume){
-                    var returning=!!s.pendingLinePay.redirectedAt;
+                    returning=!!s.pendingLinePay.redirectedAt;
                     try{returning=returning||localStorage.getItem('dinein_linepay_return_'+orderId)==='1';}catch(e){}
-                    if(returning){
+                    if(returning&&!manualOpen){
                         s.qrRequestBusy=false;s.isSubmitting=false;
                         s.qrPreparing=true;
                         s.startQRPolling();
                         return;
                     }
+                    if(manualOpen&&payMethod==='linepay'&&s.showMobileLinePayLinks(s.pendingLinePay)){
+                        s.qrRequestBusy=false;s.isSubmitting=false;return;
+                    }
                 }
                 // One initial attempt plus three retries, persisted BEFORE dispatch.
                 // After exhaustion refresh may only read the existing result once.
-                var readOnly=Number(s.pendingLinePay.attempts||0)>=4;
+                var readOnly=returning||Number(s.pendingLinePay.attempts||0)>=4;
                 try{
                 do{
                 var attemptStartedAt=Date.now();
@@ -1917,6 +1972,11 @@
                     }
                     var r=result&&result.request;
                     if(!r || r.status!=='ready' || !r.paymentUrl){
+                        if(returning&&result&&result.request===null){
+                            s.linePayNeedsAssistance();
+                            s.qrErrorMsg='原筆付款連結已無法取得。請店員核對原訂單後協助撤回；勿重複送單，購物車已保留。';
+                            return;
+                        }
                         if(r&&r.error)s.recordCheckoutError(new Error(r.error),true);
                         if(!readOnly){
                             var remaining=20000-(Date.now()-attemptStartedAt);
@@ -1930,19 +1990,12 @@
                         s.isSubmitting=false;
                         s.openQRModal(orderId, orderData.total, r.qrCodeUrl||r.paymentUrl, orderDateKey);
                     }else{
-                        // Order-scoped return context: preserve phone table/takeout and
-                        // signature, without changing the fixed-tablet pairing guard.
-                        s.pendingLinePay.redirectedAt=Date.now();
-                        s.savePendingLinePay();
-                        try{localStorage.setItem('dinein_linepay_url_'+orderId,window.location.href);}catch(e){}
-                        // ★ 清空購物車（付款後返回時不顯示舊購物車）
-                        try{localStorage.removeItem('dinein_cart_'+s.deviceId);}catch(e){}
-                        window.location.href=r.paymentUrl;
+                        if(!s.showMobileLinePayLinks(r))throw new Error('invalid_linepay_payment_url');
                     }
                     return;
                 }while(!readOnly&&s.pendingLinePay&&s.pendingLinePay.attempts<4);
                 if(s.qrOrderId===orderId)s.linePayNeedsAssistance();
-                }catch(e){if(s.qrOrderId===orderId)s.linePayNeedsAssistance();}
+                }catch(e){if(s.qrOrderId===orderId){s.recordCheckoutError(e,true);s.linePayNeedsAssistance();}}
                 finally{if(s.qrOrderId===orderId||!s.qrOrderId){s.qrRequestBusy=false;s.isSubmitting=false;}}
             },
             showOrderSuccess:function(payMethod){
