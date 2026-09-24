@@ -549,6 +549,7 @@ export function pocketBaseRecordToOrder(record) {
     };
     if (customer.wasCancelled !== undefined) order.wasCancelled = customer.wasCancelled === true;
     if (customer.deviceId) order.deviceId = text(customer.deviceId);
+    if (customer.createdByUid) order.createdByUid = text(customer.createdByUid);
     var recTableDevice = text(customer.tableDevice) ||
         ((source === "dinein" || source === "qrcode" || source === "qr_takeout") ? text(customer.deviceId) : "");
     if (recTableDevice) order.tableDevice = recTableDevice;
@@ -2983,11 +2984,15 @@ export function readLinePayStatusViaBackend(orderId, options) {
                     "Authorization": "Bearer " + idToken
                 },
                 body: JSON.stringify(Object.assign({ orderId: id }, options.inspectCheckout === true
-                    ? { inspectCheckout: true, orderDateKey: text(options.orderDateKey) } : {}))
+                    ? { inspectCheckout: true, orderDateKey: text(options.orderDateKey),
+                        dineinDeviceId: text(options.dineinDeviceId), dineinDeviceSignature: text(options.dineinDeviceSignature) } : {}))
             }, timeoutMs)
             : Promise.reject(new Error("missing_linepay_status_endpoint"));
         return primary.then(function(result) {
             result = result && typeof result === "object" ? result : {};
+            if (options.inspectCheckout === true && result.ok === true && result.checkoutClosed === true) {
+                return { ok: true, checkoutClosed: true };
+            }
             if (options.inspectCheckout === true && result.ok === true && result.checkoutMissing === true) {
                 return { ok: true, found: false, checkoutMissing: true, order: null, status: "unknown" };
             }
