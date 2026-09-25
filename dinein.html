@@ -377,7 +377,7 @@
                         style="background:linear-gradient(135deg,#f97316,#ef4444)">
                         {{ isSubmitting ? '送出中...' : '💰 店內付款' }}
                     </button>
-                    <button @click="isPhoneMode ? submitOrder('linepay') : submitOrderQR()"
+                    <button @click="checkoutLinePay()"
                         :disabled="cart.length===0||isSubmitting"
                         class="py-3.5 rounded-xl font-black text-white text-sm disabled:opacity-40 transition active:scale-[.98]"
                         style="background:linear-gradient(135deg,#06C755,#00B900)">
@@ -485,6 +485,26 @@
         </div>
     </div>
 
+    <!-- inapp-linepay-guide-20260925: 第三方掃碼 App 的內建瀏覽器常無法開啟 LINE Pay（No.017、No.022）。送單前先提醒。 -->
+    <div v-if="showInAppPayGuide" class="fixed inset-0 z-[1001] flex items-center justify-center" style="background:rgba(0,0,0,0.75)">
+        <div class="bg-white rounded-2xl shadow-2xl overflow-hidden fade-in" style="max-width:20rem;width:calc(100% - 2rem)">
+            <div class="px-5 py-3 flex items-center gap-2" style="background:linear-gradient(135deg,#06C755,#00B900)">
+                <span class="text-xl">💚</span><span class="text-white font-black text-sm">LINE Pay 付款提醒</span>
+            </div>
+            <div class="px-5 py-4 text-center">
+                <p class="text-gray-800 font-bold text-sm mb-2">目前的掃碼 App 可能無法開啟 LINE Pay</p>
+                <p class="text-gray-600 text-xs mb-1">請改用<b>手機相機</b>或 <b>LINE</b> 掃描桌上 QR Code 再付款，或直接選店內付款。</p>
+                <p class="text-gray-400 text-xs">訂單尚未送出，也尚未扣款。</p>
+            </div>
+            <div class="px-5 pb-4">
+                <a v-if="inAppChromeUrl()" :href="inAppChromeUrl()" class="block w-full text-center bg-green-600 text-white font-bold py-3 rounded-xl text-sm mb-2">用 Chrome 開啟本頁</a>
+                <button @click="inAppStorePay" class="w-full text-white font-bold py-2.5 rounded-xl text-sm mb-2" style="background:linear-gradient(135deg,#f97316,#ef4444)">改用店內付款</button>
+                <button @click="continueInAppLinePay" class="w-full bg-green-50 text-green-700 font-bold py-2.5 rounded-xl text-sm mb-2">仍要使用 LINE Pay</button>
+                <button @click="showInAppPayGuide=false" class="w-full bg-gray-100 text-gray-600 font-bold py-2.5 rounded-xl text-sm">返回購物車</button>
+            </div>
+        </div>
+    </div>
+
     <div v-if="showQRModal" class="fixed inset-0 z-[1000] flex items-center justify-center" style="background:rgba(0,0,0,0.75)">
         <div class="bg-white rounded-2xl shadow-2xl overflow-hidden fade-in" style="max-width:20rem;width:calc(100% - 2rem)">
             <div class="px-5 py-3 flex items-center gap-2" style="background:linear-gradient(135deg,#06C755,#00B900)">
@@ -505,6 +525,7 @@
                 </div>
                 <div v-if="qrPaidMsg" class="text-green-600 font-bold text-sm">✅ {{ qrPaidMsg }}</div>
                 <div v-if="qrErrorMsg" class="text-amber-700 text-xs mt-1">{{ qrErrorMsg }}</div>
+                <div v-if="mobileLinePayFallback && inAppBrowser && !qrErrorMsg" class="text-amber-700 text-xs mt-1">此掃碼 App 可能無法開啟 LINE Pay。若點了仍無反應，請按「取消付款」，改用手機相機或 LINE 掃碼，或改選店內付款；尚未扣款。</div>
             </div>
             <div class="px-5 pb-4">
                 <a v-if="mobileLinePayFallback && mobileLinePayUrl && !qrCancelling && !qrRequestBusy" :href="mobileLinePayUrl" @click="markMobileLinePayOpened" class="block w-full text-center bg-green-600 text-white font-bold py-3 rounded-xl text-sm mb-2">開啟 LINE Pay</a>
@@ -535,7 +556,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
     import { getDatabase, ref, push, set, get, update, remove, onValue, query, orderByChild, equalTo, limitToLast, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
-    import { writeOrderToPocketBase, writeOrderWithFirebaseFallback, publicOrderPrintWarning, requestLinePayViaBackend, readLinePayStatusViaBackend, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, cancelOwnedOrderViaBackend, filterCartToAvailableMenu } from "./pocketbase-order-writer.20260818_001.js?v=20260924_checkout_owner_2";
+    import { writeOrderToPocketBase, writeOrderWithFirebaseFallback, publicOrderPrintWarning, requestLinePayViaBackend, readLinePayStatusViaBackend, readSettingsFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, cancelOwnedOrderViaBackend, filterCartToAvailableMenu } from "./pocketbase-order-writer.20260818_001.js?v=20260925_checkout_diag_1";
 
     const firebaseConfig = {
         apiKey:"AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI",
@@ -658,6 +679,16 @@
     createApp({
         data:function(){return{
             // 設備綁定
+            inAppBrowser:(function(ua){
+                // inapp-linepay-guide-20260925: LINE 內建瀏覽器、Chrome、Safari 可正常開啟 LINE Pay；
+                // 其他 App 的內建瀏覽器（Android WebView / iOS WKWebView）常擋住跳轉。
+                ua=String(ua||'');
+                if(/\bLine\//i.test(ua))return '';
+                if(/FBAN|FBAV|Instagram|MicroMessenger/i.test(ua))return 'social_webview';
+                if(/Android/i.test(ua)&&/; wv\)/.test(ua))return 'android_webview';
+                if(/iPhone|iPad|iPod/i.test(ua)&&!/Safari\//.test(ua)&&!/CriOS|FxiOS|EdgiOS/.test(ua))return 'ios_webview';
+                return '';
+            })(typeof navigator!=='undefined'?navigator.userAgent:''), showInAppPayGuide:false, inAppLinePayAccepted:false, inAppGuideShown:false, inAppGuideChoice:'',
             deviceBound:false, isPhoneMode:false, phoneSession:'', qrOrderType:'dinein',
             showPinVerify:false, pinInput:'', pinError:'', storePin:'',
             deviceId:'', deviceLabel:'', deviceType:'', deviceSignature:'',
@@ -1585,6 +1616,46 @@
                 });
             },
             // ── 情境2：QR Code 付款 ──
+            // checkout-diagnostics-20260925: facts only (ms after the LINE Pay tap); no UA string or personal data.
+            markCheckoutDiag:function(key){
+                var p=this.pendingLinePay;
+                if(!p)return;
+                if(!p.diag)p.diag={t0:Number(p.createdAt)||Date.now(),hiddenCount:0,fallbackTaps:0};
+                if(p.diag[key]===undefined)p.diag[key]=Math.max(0,Date.now()-Number(p.diag.t0||Date.now()));
+                try{this.savePendingLinePay();}catch(e){}
+            },
+            checkoutDiagnostics:function(){
+                var p=this.pendingLinePay,d=(p&&p.diag)||{};
+                var ua=typeof navigator!=='undefined'?String(navigator.userAgent||''):'';
+                var m=ua.match(/(Line|SamsungBrowser|EdgA|EdgiOS|CriOS|FxiOS|Firefox|OPR|Chrome)\/(\d+)/i)||ua.match(/Version\/(\d+)[\s\S]*Safari/);
+                var out={
+                    env:this.inAppBrowser||(/\bLine\//i.test(ua)?'line':'browser'),
+                    platform:/Android/i.test(ua)?'android':(/iPhone|iPad|iPod/i.test(ua)?'ios':'other'),
+                    browser:m?(m.length>2?m[1]+' '+m[2]:'Safari '+m[1]):'',
+                    hiddenCount:Number(d.hiddenCount)||0,fallbackTaps:Number(d.fallbackTaps)||0,
+                    guideShown:Number(d.guideShown)||0,guideChoice:d.guideChoice||''
+                };
+                ['readyMs','launchMs','hiddenMs','returnMs','fallbackMs','fallbackTapMs','cancelMs'].forEach(function(k){if(d[k]!==undefined)out[k]=d[k];});
+                return out;
+            },
+            checkoutLinePay:function(){
+                if(!this.cart.length||this.isSubmitting)return;
+                if(!this.isPhoneMode)return this.submitOrderQR();
+                if(this.inAppBrowser&&!this.inAppLinePayAccepted&&!this.getPendingLinePay()){this.showInAppPayGuide=true;this.inAppGuideShown=true;return;}
+                return this.submitOrder('linepay');
+            },
+            continueInAppLinePay:function(){
+                this.inAppLinePayAccepted=true;this.showInAppPayGuide=false;this.inAppGuideChoice='linepay';
+                return this.checkoutLinePay();
+            },
+            inAppStorePay:function(){
+                this.showInAppPayGuide=false;
+                return this.submitOrder('store');
+            },
+            inAppChromeUrl:function(){
+                if(this.inAppBrowser!=='android_webview'||typeof location==='undefined')return '';
+                return 'intent://'+location.host+location.pathname+location.search+'#Intent;scheme=https;package=com.android.chrome;end';
+            },
             submitOrderQR:function(){
                 var s=this;
                 if(!s.cart.length||s.isSubmitting)return;
@@ -1691,6 +1762,7 @@
             },
             cancelPendingLinePayOrder:function(orderId){
                 return cancelOwnedOrderViaBackend(orderId,{
+                    checkoutDiagnostics:this.checkoutDiagnostics(),
                     settings:this.settings,
                     firebaseUser:auth.currentUser,
                     timeoutMs:10000
@@ -1702,6 +1774,7 @@
                 s.stopQRPolling();
                 var orderId=s.qrOrderId;
                 if(!orderId){s.closeQRModal(false);return;}
+                s.markCheckoutDiag('cancelMs');
                 s.qrCancelling=true;
                 s.qrErrorMsg='正在確認付款未完成並撤回訂單...';
                 return s.cancelPendingLinePayOrder(orderId).then(function(result){
@@ -1892,6 +1965,7 @@
                 if(!web)return false;
                 this.mobileLinePayUrl=app||web;
                 this.mobileLinePayWebUrl=web;
+                this.markCheckoutDiag('readyMs');
                 this.qrPreparing=true;
                 this.pendingLinePay.paymentUrl=web;
                 this.pendingLinePay.qrCodeUrl=app||web;
@@ -1907,6 +1981,7 @@
                     if(event)event.preventDefault();return;
                 }
                 // This records an opening attempt, never proof of payment or App launch.
+                if(event&&p.diag){this.markCheckoutDiag('fallbackTapMs');p.diag.fallbackTaps=(Number(p.diag.fallbackTaps)||0)+1;}
                 p.redirectedAt=Date.now();
                 try{
                     this.savePendingLinePay();
@@ -1920,13 +1995,14 @@
                 if(!this.mobileLinePayWebUrl||this.qrRequestBusy||this.qrCancelling)return;
                 var s=this,orderId=s.qrOrderId;
                 clearTimeout(s.mobileLinePayLaunchTimer);s.mobileLinePayFallback=false;
+                this.markCheckoutDiag('launchMs');
                 this.markMobileLinePayOpened();
                 // Navigate to the official HTTPS entry; native links remain a fallback if blocked.
                 s.mobileLinePayLaunchTimer=setTimeout(function(){
                     if(s.showQRModal&&s.qrOrderId===orderId&&s.mobileLinePayUrl&&
-                        (typeof document==='undefined'||document.visibilityState==='visible'))s.mobileLinePayFallback=true;
+                        (typeof document==='undefined'||document.visibilityState==='visible')){s.mobileLinePayFallback=true;s.markCheckoutDiag('fallbackMs');}
                 },1800);
-                try{window.location.href=this.mobileLinePayWebUrl;}catch(e){s.mobileLinePayFallback=true;}
+                try{window.location.href=this.mobileLinePayWebUrl;}catch(e){s.mobileLinePayFallback=true;s.markCheckoutDiag('fallbackMs');}
             },
             startLinePayFlow:async function(orderId,orderData,orderDateKey,payMethod,resume,manualOpen){
                 var s=this;
@@ -2085,7 +2161,7 @@
                 var bucketOrderRef=ref(db,'orders/'+orderDateKey+'/'+orderId);
                 // Keep the identity even if the order-write response is lost.
                 if(payMethod==='linepay'||payMethod==='linepay_qr'){
-                    s.pendingLinePay={orderId:orderId,orderDateKey:orderDateKey,orderData:{total:orderData.total},orderPayload:JSON.parse(JSON.stringify(orderData)),orderAccepted:false,payMethod:payMethod,attempts:0,createdAt:Date.now()};
+                    s.pendingLinePay={orderId:orderId,orderDateKey:orderDateKey,orderData:{total:orderData.total},orderPayload:JSON.parse(JSON.stringify(orderData)),orderAccepted:false,payMethod:payMethod,attempts:0,createdAt:Date.now(),diag:{t0:Date.now(),hiddenCount:0,fallbackTaps:0,guideShown:s.inAppGuideShown?1:0,guideChoice:s.inAppGuideChoice||''}};
                     try{s.savePendingLinePay();}catch(e){s.isSubmitting=false;s.toast('無法保存訂單編號，請店員協助；尚未送出訂單。');return;}
                 }
                 return Promise.resolve(null)
@@ -2230,6 +2306,13 @@
                 else s.refreshLinePayConfirmed(s.myOrders);
             };
             window.addEventListener('pageshow',refreshPaymentOnReturn);
+            // checkout-diagnostics-20260925: did the page actually leave for LINE Pay after launch?
+            document.addEventListener('visibilitychange',function(){
+                var p=s.pendingLinePay;
+                if(!p||!p.diag||p.diag.launchMs===undefined)return;
+                if(document.visibilityState==='hidden'){p.diag.hiddenCount=(Number(p.diag.hiddenCount)||0)+1;s.markCheckoutDiag('hiddenMs');}
+                else if(p.diag.hiddenMs!==undefined)s.markCheckoutDiag('returnMs');
+            });
             document.addEventListener('visibilitychange',refreshPaymentOnReturn);
             // 初始狀態
             history.replaceState({view:'menu'},'');

@@ -2798,7 +2798,10 @@ export function cancelOwnedOrderViaBackend(orderId, options) {
                 "Content-Type": "application/json",
                 "Authorization": "Bearer " + idToken
             },
-            body: JSON.stringify({ orderId: text(orderId) })
+            // checkout-diagnostics-20260925: optional, whitelisted again by PocketBase.
+            body: JSON.stringify(options.checkoutDiagnostics && typeof options.checkoutDiagnostics === "object"
+                ? { orderId: text(orderId), checkoutDiagnostics: options.checkoutDiagnostics }
+                : { orderId: text(orderId) })
         }, Number(options.timeoutMs || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS);
     });
 }
