@@ -1624,6 +1624,22 @@
                 if(p.diag[key]===undefined)p.diag[key]=Math.max(0,Date.now()-Number(p.diag.t0||Date.now()));
                 try{this.savePendingLinePay();}catch(e){}
             },
+            // checkout-diagnostics-20260926: overwrite facts (latest request result, rescue outcome).
+            setCheckoutDiag:function(fields,timeKey){
+                var p=this.pendingLinePay;
+                if(!p)return;
+                if(!p.diag)p.diag={t0:Number(p.createdAt)||Date.now(),hiddenCount:0,fallbackTaps:0};
+                if(timeKey)p.diag[timeKey]=Math.max(0,Date.now()-Number(p.diag.t0||Date.now()));
+                if(fields)Object.keys(fields).forEach(function(k){p.diag[k]=fields[k];});
+                try{this.savePendingLinePay();}catch(e){}
+            },
+            diagToken:function(value){
+                return String(value===undefined||value===null?'':value).toLowerCase().replace(/[^a-z0-9_.:\/-]/g,'').slice(0,64);
+            },
+            linePayUrlHost:function(value){
+                if(!value)return 'empty';
+                try{var u=new URL(String(value));return this.diagToken(u.protocol+'//'+u.hostname)||'unknown';}catch(e){return 'unparseable';}
+            },
             checkoutDiagnostics:function(){
                 var p=this.pendingLinePay,d=(p&&p.diag)||{};
                 var ua=typeof navigator!=='undefined'?String(navigator.userAgent||''):'';
@@ -1635,7 +1651,14 @@
                     hiddenCount:Number(d.hiddenCount)||0,fallbackTaps:Number(d.fallbackTaps)||0,
                     guideShown:Number(d.guideShown)||0,guideChoice:d.guideChoice||''
                 };
-                ['readyMs','launchMs','hiddenMs','returnMs','fallbackMs','fallbackTapMs','cancelMs'].forEach(function(k){if(d[k]!==undefined)out[k]=d[k];});
+                ['readyMs','launchMs','hiddenMs','returnMs','fallbackMs','fallbackTapMs','cancelMs','acceptedMs','reqStartMs','reqEndMs','assistMs','rescueMs','qrShownMs'].forEach(function(k){if(d[k]!==undefined)out[k]=d[k];});
+                ['reqCount','rescueCount'].forEach(function(k){if(d[k]!==undefined)out[k]=Number(d[k])||0;});
+                var tok=this.diagToken;
+                // checkout-diagnostics-20260926: tablet QR and phone checkouts record different milestones.
+                if(p&&(p.payMethod==='linepay'||p.payMethod==='linepay_qr'))out.payMode=p.payMethod==='linepay_qr'?'qr':'phone';
+                ['reqResult','reqCode','reqError','urlHost','rescueResult','rescueError'].forEach(function(k){if(d[k]){var v=tok(d[k]);if(v)out[k]=v;}});
+                if(!out.reqError&&p&&p.lastRequestError){var e1=tok(p.lastRequestError);if(e1)out.reqError=e1;}
+                if(p&&p.lastCreateError){var e2=tok(p.lastCreateError);if(e2)out.createError=e2;}
                 return out;
             },
             checkoutLinePay:function(){
@@ -1840,6 +1863,7 @@
                 return this.pendingLinePay;
             },
             linePayNeedsAssistance:function(){
+                this.markCheckoutDiag('assistMs');
                 this.stopQRPolling();
                 this.mobileLinePayUrl='';this.mobileLinePayWebUrl='';
                 this.qrPreparing=true;
@@ -1922,6 +1946,7 @@
                     if(this.pendingLinePay!==p)return false;
                     p.orderAccepted=true;
                     delete p.lastCreateError;
+                    this.markCheckoutDiag('acceptedMs');
                     var record=result&&result.pocketBase&&result.pocketBase.record;
                     if(record&&(record.order_no||record.orderNo))p.orderData.orderNo=Number(record.order_no||record.orderNo);
                     this.savePendingLinePay();
@@ -2004,6 +2029,60 @@
                 },1800);
                 try{window.location.href=this.mobileLinePayWebUrl;}catch(e){s.mobileLinePayFallback=true;s.markCheckoutDiag('fallbackMs');}
             },
+            // checkout-diagnostics-20260926: what the payment-URL request actually returned.
+            noteLinePayRequestResult:function(result){
+                var p=this.pendingLinePay;
+                if(!p)return;
+                var r=result&&result.request;
+                var kind=!result?'error':(r?String(r.status||'unknown'):'none');
+                if(result&&result.timedOut)kind+='_timeout';
+                var fields={reqResult:this.diagToken(kind)};
+                if(r&&r.returnCode)fields.reqCode=this.diagToken(r.returnCode);
+                if(!result&&p.lastRequestError)fields.reqError=this.diagToken(p.lastRequestError);
+                else if(r&&r.error)fields.reqError=this.diagToken(r.error);
+                this.setCheckoutDiag(fields,'reqEndMs');
+            },
+            // linepay-url-rescue-20260926: while the main request is still waiting, read (never create)
+            // the SAME order's queued payment URL once. A lost/slow response must not hide a ready URL.
+            rescueLinePayUrl:function(orderId,orderDateKey,flow){
+                var s=this,p=s.pendingLinePay;
+                if(!flow||flow.done||flow.rescued||flow.rescuing||!p||p.orderId!==orderId||s.qrOrderId!==orderId||!s.qrRequestBusy||s.qrCancelling)return;
+                flow.rescuing=true;
+                s.setCheckoutDiag({rescueCount:(Number(p.diag&&p.diag.rescueCount)||0)+1},'rescueMs');
+                var still=function(){return !flow.done&&!flow.rescued&&s.qrOrderId===orderId&&s.qrRequestBusy&&!s.qrCancelling&&s.pendingLinePay&&s.pendingLinePay.orderId===orderId;};
+                return Promise.resolve().then(function(){
+                    return requestLinePayViaBackend(orderId,orderDateKey,{
+                        settings:s.settings,
+                        firebaseUser:auth.currentUser,
+                        confirmBaseUrl:s.settings.linePayConfirmUrl||'',
+                        returnPage:'dinein',
+                        returnDeviceId:s.deviceId||'',
+                        confirmUrlType:'CLIENT',
+                        resume:true,
+                        readOnly:true,
+                        maxAttempts:1,
+                        waitForResult:false,
+                        timeoutMs:6000,
+                        totalTimeout:true
+                    });
+                }).then(function(result){
+                    var r=result&&result.request;
+                    if(s.pendingLinePay&&s.pendingLinePay.orderId===orderId)s.setCheckoutDiag({rescueResult:s.diagToken(r?(r.status||'unknown'):'none')});
+                    if(!still()||!r||r.status!=='ready'||!r.paymentUrl)return;
+                    // Closed or already-paid orders are left to the main flow; never reopen payment for them.
+                    if(['cancelled','archived'].indexOf(String(result.orderStatus||''))>=0||['paid','confirmed','refunded'].indexOf(String(result.paymentStatus||''))>=0)return;
+                    if(!s.showMobileLinePayLinks(r)){s.setCheckoutDiag({rescueResult:'invalid_url',urlHost:s.linePayUrlHost(r.paymentUrl)});return;}
+                    flow.rescued=true;
+                    s.setCheckoutDiag({rescueResult:'launched'});
+                    delete s.pendingLinePay.lastRequestError;
+                    s.qrRequestBusy=false;s.isSubmitting=false;
+                    s.launchMobileLinePay();
+                }).catch(function(e){
+                    var raw=String(e&&e.body&&e.body.message||e&&e.code||e&&e.message||'');
+                    var m=raw.match(/(?:^|: )([a-z][a-z0-9_/-]{2,100})$/);
+                    if(s.pendingLinePay&&s.pendingLinePay.orderId===orderId)s.setCheckoutDiag({rescueResult:'error',rescueError:s.diagToken(m?m[1]:'network_or_server_unavailable')});
+                }).finally(function(){flow.rescuing=false;});
+            },
             startLinePayFlow:async function(orderId,orderData,orderDateKey,payMethod,resume,manualOpen){
                 var s=this;
                 if(s.qrRequestBusy)return;
@@ -2033,11 +2112,19 @@
                 // One initial attempt plus three retries, persisted BEFORE dispatch.
                 // After exhaustion refresh may only read the existing result once.
                 var readOnly=returning||Number(s.pendingLinePay.attempts||0)>=4;
+                var flow={done:false,rescued:false,rescuing:false,budget:2};
                 try{
                 do{
                 var attemptStartedAt=Date.now();
                 if(!readOnly)s.pendingLinePay.attempts=Number(s.pendingLinePay.attempts||0)+1;
                 s.savePendingLinePay();
+                s.markCheckoutDiag('reqStartMs');
+                s.setCheckoutDiag({reqCount:(Number(s.pendingLinePay.diag&&s.pendingLinePay.diag.reqCount)||0)+1});
+                // linepay-url-rescue-20260926: mobile only; at most two read-only look-ups per checkout.
+                if(payMethod==='linepay'&&!readOnly&&flow.budget>0){
+                    flow.budget--;
+                    setTimeout(function(){s.rescueLinePayUrl(orderId,orderDateKey,flow);},8000);
+                }
                 var result;
                 try{result=await requestLinePayViaBackend(orderId,orderDateKey,{
                     settings:s.settings,
@@ -2053,7 +2140,9 @@
                     timeoutMs:20000,
                     totalTimeout:true
                 });}catch(e){s.recordCheckoutError(e,true);result=null;}
+                    if(flow.rescued)return;
                     if(s.qrOrderId!==orderId)return;
+                    s.noteLinePayRequestResult(result);
                     if(result&&result.orderNo){s.pendingLinePay.orderData.orderNo=result.orderNo;s.savePendingLinePay();}
                     if(['cancelled','archived'].indexOf(String(result&&result.orderStatus||''))>=0||result&&result.paymentStatus==='refunded'){
                         // Use the owner-checked PB snapshot to distinguish refund/cancellation/failure.
@@ -2079,6 +2168,7 @@
                         if(!readOnly){
                             var remaining=20000-(Date.now()-attemptStartedAt);
                             if(remaining>0)await new Promise(function(resolve){setTimeout(resolve,remaining);});
+                            if(flow.rescued)return;
                             if(s.qrOrderId!==orderId)return;
                         }
                         continue;
@@ -2087,8 +2177,9 @@
                     if(payMethod==='linepay_qr'){
                         s.isSubmitting=false;
                         s.openQRModal(orderId, orderData.total, r.qrCodeUrl||r.paymentUrl, orderDateKey);
+                        s.markCheckoutDiag('qrShownMs');
                     }else{
-                        if(!s.showMobileLinePayLinks(r))throw new Error('invalid_linepay_payment_url');
+                        if(!s.showMobileLinePayLinks(r)){s.setCheckoutDiag({reqResult:'invalid_url',urlHost:s.linePayUrlHost(r.paymentUrl)});throw new Error('invalid_linepay_payment_url');}
                         s.qrRequestBusy=false;s.isSubmitting=false;
                         s.launchMobileLinePay();
                     }
@@ -2096,7 +2187,7 @@
                 }while(!readOnly&&s.pendingLinePay&&s.pendingLinePay.attempts<4);
                 if(s.qrOrderId===orderId)s.linePayNeedsAssistance();
                 }catch(e){if(s.qrOrderId===orderId){s.recordCheckoutError(e,true);s.linePayNeedsAssistance();}}
-                finally{if(s.qrOrderId===orderId||!s.qrOrderId){s.qrRequestBusy=false;s.isSubmitting=false;}}
+                finally{flow.done=true;if(s.qrOrderId===orderId||!s.qrOrderId){s.qrRequestBusy=false;s.isSubmitting=false;}}
             },
             showOrderSuccess:function(payMethod){
                 var s=this;
@@ -2180,7 +2271,7 @@
                     return s.writeOrderPrimary(orderId,orderData,'dinein',function(){
                         return set(bucketOrderRef,orderData);
                     }).then(function(result){
-                        if(s.pendingLinePay&&s.pendingLinePay.orderId===orderId){s.pendingLinePay.orderAccepted=true;delete s.pendingLinePay.lastCreateError;s.savePendingLinePay();}
+                        if(s.pendingLinePay&&s.pendingLinePay.orderId===orderId){s.pendingLinePay.orderAccepted=true;delete s.pendingLinePay.lastCreateError;s.savePendingLinePay();s.markCheckoutDiag('acceptedMs');}
                         orderData._writeBackend=(result&&result.backend)||'firebase';
                         s.successPrintWarning=(payMethod==='linepay'||payMethod==='linepay_qr')?'':publicOrderPrintWarning(result);
                         var pbRecord=result&&result.pocketBase&&result.pocketBase.record;
