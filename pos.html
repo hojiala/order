@@ -751,6 +751,27 @@
   </div>
 </div>
 
+<!-- 未印出工單（print-contention-queue-20260926）-->
+<div v-if="isLoggedIn && printJobs.length" class="fixed" style="top:8px;right:8px;z-index:950;width:min(380px,calc(100vw - 16px));">
+  <button type="button" @click="printJobsPanel=!printJobsPanel" class="w-full flex items-center justify-between gap-2 px-4 py-2.5 rounded-xl shadow-xl font-bold text-white" :class="printJobsHasFailed()?'bg-red-600 animate-pulse':'bg-amber-500'">
+    <span>&#128424;&#65039; {{ printJobs.length }} 張工單未印出</span><span class="text-xs">{{ printJobsPanel ? '收合' : '查看' }}</span>
+  </button>
+  <div v-if="printJobsPanel" class="mt-2 bg-white rounded-xl shadow-2xl border border-gray-200 overflow-y-auto divide-y" style="max-height:60vh;">
+    <div v-for="job in printJobs" :key="job.id" class="p-3 text-sm text-left">
+      <div class="flex items-center justify-between gap-2">
+        <span class="font-bold">{{ job.role_label || '工單' }}・單號 {{ job.serial_number || '—' }}</span>
+        <span class="text-xs text-gray-500">{{ printJobTime(job.created_at) }}</span>
+      </div>
+      <div class="text-gray-700 mt-0.5" style="word-break:break-all;">{{ job.summary }}</div>
+      <div class="text-xs mt-1" :class="job.status==='failed' ? 'text-red-600' : 'text-amber-600'">{{ printJobStatusText(job) }}<span v-if="job.status==='failed' && job.last_error">（{{ job.last_error }}）</span></div>
+      <div v-if="job.status!=='printing'" class="flex gap-2 mt-2">
+        <button type="button" @click="printJobAction(job,'retry')" :disabled="!!printJobsBusy[job.id]" class="flex-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white font-bold rounded-lg py-1.5">重印</button>
+        <button type="button" @click="printJobAction(job,'dismiss')" :disabled="!!printJobsBusy[job.id]" class="flex-1 bg-gray-200 hover:bg-gray-300 disabled:opacity-40 text-gray-800 font-bold rounded-lg py-1.5">忽略</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- TOAST -->
 <div v-if="toastMsg" class="fixed bottom-6 left-1/2 z-50 tw pointer-events-none">
   <div class="bg-gray-900 text-white text-sm font-bold px-5 py-2.5 rounded-full shadow-xl whitespace-nowrap">{{ toastMsg }}</div>
@@ -998,6 +1019,7 @@
                 showBatchPrint:false,batchPrintFrom:"",batchPrintTo:"",batchPrinting:false,batchPrintProgress:"",batchSummary:null,
                 activeItem:null,tempQty:1,tempNote:"",tempDrinkNote:"",tempSels:[],tempOG:{},tempPosExtras:[],tempComboSize:{},tempDrinkAddons:[],
                 toastMsg:"",toastTimer:null,lastOrderId:null,
+                printJobs:[],printJobsPanel:false,printJobsTimer:null,printJobsBusy:{},printJobsError:"",
                 activeMenu:null,menuPos:null,activeMenuOrder:null,
                 archiveConfirm:false,resetConfirm:false,
                 linePayServerUrl:"",linePayConfirmUrl:"",pocketBaseUrl:"",pocketBaseOrdersCollection:"orders",
@@ -1205,6 +1227,7 @@
             document.addEventListener('visibilitychange',s._openTodayResumeHandler);
             window.addEventListener('focus',s._openTodayResumeHandler);
             window.addEventListener('pageshow',function(e){if(e.persisted)s._openTodayResumeHandler();});
+            s.startPrintJobsWatch();
         },
         beforeUnmount:function(){this.stopScannerBridge();},
         methods:{
@@ -7941,6 +7964,73 @@
 
             moveCartItem:function(idx,dir){var ni=idx+dir;if(ni<0||ni>=this.cart.length)return;var t=this.cart[idx];this.cart.splice(idx,1);this.cart.splice(ni,0,t);},
             cartDrop:function(toIdx){var fi=this.cartDragIdx;if(fi===null||fi===toIdx)return;var it=this.cart[fi];this.cart.splice(fi,1);this.cart.splice(toIdx,0,it);this.cartDragIdx=null;},
+            // ── 未印出工單（print-contention-queue-20260926）──
+            // print_daemon 把與廠商 POS 搶印表機而印不出的工作站存進佇列；這裡每 15 秒查一次。
+            startPrintJobsWatch:function(){
+                var s=this;
+                if(s.printJobsTimer)return;
+                var tick=function(){if(document.visibilityState!=='hidden')s.refreshPrintJobs();};
+                s.printJobsTimer=setInterval(tick,15000);
+                setTimeout(tick,4000);
+            },
+            printJobsBase:function(){
+                return String(this.linePayServerUrl||'').replace(/\/+$/,'');
+            },
+            refreshPrintJobs:function(){
+                var s=this,base=s.printJobsBase();
+                if(!s.isLoggedIn||!base||!auth.currentUser||auth.currentUser.isAnonymous||s._printJobsLoading)return Promise.resolve();
+                s._printJobsLoading=true;
+                return auth.currentUser.getIdToken()
+                    .then(function(token){return fetch(base+'/api/pos/print-jobs',{headers:{'Authorization':'Bearer '+token},cache:'no-store'});})
+                    .then(function(r){
+                        if(r.status===404||r.status===503){s.printJobs=[];s.printJobsError='';return null;}
+                        if(!r.ok)throw new Error('HTTP '+r.status);
+                        return r.json();
+                    })
+                    .then(function(data){
+                        if(!data)return;
+                        var jobs=Array.isArray(data.jobs)?data.jobs:[];
+                        var failed=jobs.filter(function(j){return j&&j.status==='failed';}).length;
+                        if(failed>(s._printJobsFailedSeen||0))s.toast('⚠️ 有工單印不出來，請看右上角紅色提示');
+                        s._printJobsFailedSeen=failed;
+                        s.printJobs=jobs;s.printJobsError='';
+                        if(!jobs.length)s.printJobsPanel=false;
+                    })
+                    .catch(function(e){s.printJobsError='無法讀取列印佇列';console.warn('print-jobs:',e&&e.message?e.message:e);})
+                    .finally(function(){s._printJobsLoading=false;});
+            },
+            printJobsHasFailed:function(){
+                return this.printJobs.some(function(j){return j&&j.status==='failed';});
+            },
+            printJobTime:function(ts){
+                var d=new Date(Number(ts||0)*1000);
+                if(!ts||isNaN(d.getTime()))return '';
+                return ('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2);
+            },
+            printJobStatusText:function(job){
+                if(job.status==='pending')return '印表機忙線，自動重試中（已試 '+Number(job.attempts||0)+' 次）';
+                if(job.status==='printing')return '重印中…';
+                return '未印出，請按重印或確認後忽略';
+            },
+            printJobAction:function(job,action){
+                var s=this,base=s.printJobsBase();
+                if(!job||s.printJobsBusy[job.id])return;
+                if(action==='dismiss'&&!confirm('確定忽略這張未印出的工單？\n（請先確認廚房已知道這張單）'))return;
+                if(!base||!auth.currentUser){s.toast('⚠️ 尚未連上列印服務');return;}
+                var busy=Object.assign({},s.printJobsBusy);busy[job.id]=true;s.printJobsBusy=busy;
+                auth.currentUser.getIdToken()
+                    .then(function(token){return fetch(base+'/api/pos/print-jobs/'+encodeURIComponent(job.id)+'/'+action,{method:'POST',headers:{'Authorization':'Bearer '+token}});})
+                    .then(function(r){
+                        if(r.status===409){s.toast('這張已經處理過了');return;}
+                        if(!r.ok)throw new Error('HTTP '+r.status);
+                        s.toast(action==='retry'?'🖨️ 已送出重印':'已忽略');
+                    })
+                    .catch(function(e){s.toast('❌ 操作失敗：'+(e&&e.message?e.message:e));})
+                    .finally(function(){
+                        var b=Object.assign({},s.printJobsBusy);delete b[job.id];s.printJobsBusy=b;
+                        setTimeout(function(){s.refreshPrintJobs();},action==='retry'?2500:300);
+                    });
+            },
             toast:function(msg){
                 var s=this;s.toastMsg=msg;clearTimeout(s.toastTimer);
                 s.toastTimer=setTimeout(function(){s.toastMsg="";},2200);
