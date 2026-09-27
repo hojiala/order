@@ -5318,8 +5318,8 @@ window._doCountUp = function() {
                 var self = this;
                 var hasCurrentMenu = Array.isArray(this.menuItems) && this.menuItems.length > 0;
                 if (!hasCurrentMenu) this.menuLoading = true;
-                var apply = function(items) {
-                    var arr = Array.isArray(items) ? items.slice() : [];
+                var apply = function(items, snapshotStamp) {
+                    var arr = self.applyMenuLocalWrites(Array.isArray(items) ? items.slice() : [], snapshotStamp);
                     var previousById = {};
                     (self.menuItems || []).forEach(function(item) { if (item && item.id) previousById[item.id] = item; });
                     var byId = {};
@@ -5393,7 +5393,7 @@ window._doCountUp = function() {
                 var loadFromPrimary = function() {
                     return listMenuItemsFromPocketBase({ settings: self.settings || {}, timeoutMs: 10000, forceFresh: true, ignoreCooldown: true, disableCacheFallback: true, allowDirectCollectionFallback: false, allowFirebasePublicFallback: false }).then(function(result) {
                         if (result && result.ok && result.items && result.items.length) {
-                            apply(result.items || []);
+                            apply(result.items || [], self.menuSnapshotStamp(result));
                             self.menuReadBackend = result.backend || 'pocketbase';
                             if (self.allowFirebaseManageFallback === true && self.isLoggedIn) {
                                 self.cleanupFirebaseOrphans(result.items || []);
@@ -5590,7 +5590,101 @@ window._doCountUp = function() {
                 var idx = this.menuItems.findIndex(function(row) { return row && row.id === id; });
                 if (idx >= 0) this.menuItems.splice(idx, 1, Object.assign({}, this.menuItems[idx], item));
                 else this.menuItems.push(item);
+                this.rememberMenuLocalWrites([{ id: id, fields: item }]);
                 rememberPublicMenuItems({ settings: this.settings || {} }, this.menuItems);
+            },
+            // ★ 2026-09-27 修正「存檔後跳回舊內容、複製品消失，30~60 秒後才變回來」：
+            //   Pi 存檔只寫 dirty 戳記，公開菜單快照要等每分鐘的 cron 才重建；但 menu-version = max(built, dirty)
+            //   一存檔就變，輪詢（5 秒）或切回分頁就重讀到「還沒重建的舊快照」，把剛存的內容蓋掉。
+            //   這裡記住本頁剛寫入成功的內容：舊快照不得覆蓋；等快照確定在這次寫入之後重建
+            //   （builtAtStamp ≥ 寫入後讀到的版本戳記），或超過 3 分鐘，才交回伺服器資料。
+            menuVersionEndpoint: function() {
+                var base = String((this.settings && (this.settings.pocketBaseUrl || this.settings.pocketbaseUrl)) || 'https://pb.yuangi168.com').replace(/\/+$/, '');
+                return base + '/api/public/menu-version';
+            },
+            menuSnapshotStamp: function(result) {
+                var data = result && result.data;
+                var n = Number((data && data.builtAtStamp) || (result && result.builtAtStamp) || 0);
+                return Number.isFinite(n) && n > 0 ? n : 0;
+            },
+            rememberMenuLocalWrites: function(changes) {
+                var self = this;
+                if (!self.menuLocalWrites) self.menuLocalWrites = {};
+                var writes = self.menuLocalWrites;
+                var now = Date.now();
+                var touched = [];
+                (changes || []).forEach(function(change) {
+                    var id = change && change.id !== undefined && change.id !== null ? String(change.id) : '';
+                    if (!id) return;
+                    var prev = writes[id];
+                    var deleted = change.deleted === true;
+                    self.menuLocalWriteSeq = (Number(self.menuLocalWriteSeq) || 0) + 1;
+                    var entry = {
+                        id: id,
+                        seq: self.menuLocalWriteSeq,
+                        deleted: deleted,
+                        fields: deleted ? null : Object.assign({}, prev && !prev.deleted && prev.fields ? prev.fields : {}, change.fields || {}, { id: id }),
+                        // cron 每分鐘重建＋輪詢 5 秒，正常 70 秒內就會確認；3 分鐘後一律以伺服器為準
+                        expiresAt: now + 180000,
+                        serverStamp: 0
+                    };
+                    writes[id] = entry;
+                    touched.push({ id: id, seq: entry.seq });
+                });
+                if (!touched.length || typeof fetch !== 'function') return Promise.resolve();
+                // 寫入已經成功回應，此刻讀到的版本（dirty 戳記）一定不早於這次寫入。
+                return fetch(self.menuVersionEndpoint(), { cache: 'no-store' }).then(function(response) {
+                    if (!response.ok) throw new Error('menu_version_unavailable');
+                    return response.json();
+                }).then(function(data) {
+                    var stamp = Number(data && data.version);
+                    if (!Number.isFinite(stamp) || stamp <= 0) return;
+                    touched.forEach(function(t) {
+                        var entry = writes[t.id];
+                        if (entry && entry.seq === t.seq) entry.serverStamp = stamp;
+                    });
+                }).catch(function() {});
+            },
+            patchMenuLocalWrite: function(id, fields) {
+                var entry = this.menuLocalWrites && id !== undefined && id !== null ? this.menuLocalWrites[String(id)] : null;
+                if (entry && !entry.deleted && entry.fields) Object.assign(entry.fields, fields || {});
+            },
+            applyMenuLocalWrites: function(items, snapshotStamp) {
+                var rows = Array.isArray(items) ? items : [];
+                var writes = this.menuLocalWrites;
+                if (!writes) return rows;
+                var now = Date.now();
+                var stamp = Number(snapshotStamp) || 0;
+                var pending = {};
+                var pendingCount = 0;
+                Object.keys(writes).forEach(function(id) {
+                    var entry = writes[id];
+                    var confirmed = !!(entry && entry.serverStamp > 0 && stamp > 0 && stamp >= entry.serverStamp);
+                    if (!entry || confirmed || now >= Number(entry.expiresAt || 0)) {
+                        delete writes[id];
+                        return;
+                    }
+                    pending[id] = entry;
+                    pendingCount++;
+                });
+                if (!pendingCount) return rows;
+                var seen = {};
+                var out = [];
+                rows.forEach(function(row) {
+                    var id = row && row.id !== undefined && row.id !== null ? String(row.id) : '';
+                    var entry = id ? pending[id] : null;
+                    if (!entry) { out.push(row); return; }
+                    seen[id] = true;
+                    if (entry.deleted) return;
+                    out.push(Object.assign({}, row, entry.fields));
+                });
+                Object.keys(pending).forEach(function(id) {
+                    var entry = pending[id];
+                    // 快照還沒有的新品項（剛複製/新增）；只有排序的紀錄不補
+                    if (seen[id] || entry.deleted || !entry.fields || !String(entry.fields.name || '').trim()) return;
+                    out.push(Object.assign({}, entry.fields));
+                });
+                return out;
             },
             writeMenuItemPrimary: function(itemId, itemData, firebaseFallback, writeOptions) {
                 var self = this;
@@ -5894,6 +5988,7 @@ window._doCountUp = function() {
                 }, { action: 'availability', timeoutMs: 10000, secureTimeoutMs: 10000 }).then(function() {
                     item.active = nextActive;
                     item.updatedAt = patch.updatedAt;
+                    self.patchMenuLocalWrite(item.id, { active: nextActive, updatedAt: patch.updatedAt });
                     rememberPublicMenuItems({ settings: self.settings || {} }, self.menuItems || []);
                 }).catch(function(e) {
                     alert('上下架失敗：' + (e && e.message ? e.message : e));
@@ -5906,6 +6001,7 @@ window._doCountUp = function() {
                     return remove(ref(db, 'menu/' + item.id));
                 }).then(function() {
                     self.menuItems = self.menuItems.filter(function(row) { return row && row.id !== item.id; });
+                    self.rememberMenuLocalWrites([{ id: item.id, deleted: true }]);
                     rememberPublicMenuItems({ settings: self.settings || {} }, self.menuItems || []);
                 }).catch(function(e) {
                     alert('刪除失敗：' + (e && e.message ? e.message : e));
@@ -6038,6 +6134,7 @@ window._doCountUp = function() {
                     });
                 })
                     .then(function(result) {
+                        self.rememberMenuLocalWrites(rows.map(function(row) { return { id: row.id, fields: { sortOrder: row.sortOrder } }; }));
                         rememberPublicMenuItems({ settings: self.settings || {} }, self.menuItems || []);
                         return result;
                     })
