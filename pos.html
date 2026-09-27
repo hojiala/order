@@ -1025,7 +1025,7 @@
                 archiveConfirm:false,resetConfirm:false,
                 linePayServerUrl:"",linePayConfirmUrl:"",pocketBaseUrl:"",pocketBaseOrdersCollection:"orders",
                 // ★ 情境3 Offline 掃碼
-                showOfflineModal:false, offlineBarcode:"", offlineAmount:0,offlineCreating:false,offlinePhoneOrder:null,offlinePhoneEditPayload:null,offlineSourceRecordPath:"",
+                showOfflineModal:false, offlineBarcode:"", offlineAmount:0,offlineCreating:false,offlinePhoneOrder:null,offlinePhoneEditPayload:null,offlineSourceRecordPath:"",offlineSkipPaidPrint:false,editKitchenSig:"",
                 offlineOrderId:"", offlineOrderDateKey:"", offlineItems:[], offlineError:"", offlineSuccess:"",
                 scannerBridgeSessionId:"",scannerBridgeAuthToken:"",scannerBridgeBase:"",scannerBridgeStatus:"",scannerBridgePollTimer:null,
                 // ★ LINE Pay Online 付款連結彈窗
@@ -1992,6 +1992,7 @@
                         s.editingOrder=nextEditing;
                         if(s.orderMode!=='pos'){
                             s.cart=JSON.parse(JSON.stringify(nextEditing.items||[]));
+                            s.editKitchenSig=s.editKitchenSignature();
                         }
                     }
                     // ★ 把剛抓到的最新 items 與 total 回傳給呼叫端（修問題 4：第 1 次按修改 cart 是空的，
@@ -4981,6 +4982,39 @@
                     }).filter(Boolean).join('\n');
                 }
             },
+            // ★ paid-no-reprint-20260927：訂單已有 kitchen_ print_task＝廚房已出過工單。
+            //   事後改 LINE Pay 付款成功時不再重印；Pi linepay_server 也依同一欄位判斷。
+            hasIssuedKitchenTicket:function(order){
+                return /^kitchen_/.test(String((order&&order.print_task)||'').trim());
+            },
+            kitchenTaskTimestamp:function(task){
+                var m=/^kitchen_(?:[a-z]+_)*(\d{10,16})/i.exec(String(task||'').trim());
+                return m?Number(m[1])||0:0;
+            },
+            // 工單早於付款確認 10 秒以上＝付款前就印過（例如先未付款出單、事後才 LINE Pay），不可當成付款後漏送再補送。
+            kitchenTicketPredatesPayment:function(order){
+                var taskTs=this.kitchenTaskTimestamp(order&&order.print_task);
+                var txn=(order&&order.linePayTransaction&&typeof order.linePayTransaction==='object')?order.linePayTransaction:{};
+                var paidAt=Number((order&&order.paymentConfirmedAt)||txn.confirmedAt||(order&&this.lpConfirmAt&&this.lpConfirmAt[order.id])||0);
+                return !!(taskTs&&paidAt&&taskTs<paidAt-10000);
+            },
+            // 編輯模式中「會影響廚房」的內容：品項、做法、數量、站別、內用外帶、桌號、備註、取餐日期時間。
+            editKitchenSignature:function(){
+                var pick=function(it){
+                    it=it||{};
+                    return [it.id||'',it.name||'',Number(it.qty||it.quantity||0),Number(it.itemTotal||0),
+                        it.size||'',it.temp||'',it.note||'',it.drinkNote||'',it.mealDrink||'',it.comboDrinkText||'',
+                        it.options||[],it.optionGroupSelections||[],it.addons||[],it.posExtras||[],it.comboDrinkAddons||[],it.station||''];
+                };
+                return JSON.stringify({
+                    items:(this.cart||[]).map(pick),
+                    type:this.editOrderType||'',
+                    table:this.editOrderType==='dinein'?String(this.editTableLabel||''):'',
+                    note:String(this.editOrderNote||''),
+                    date:String(this.editPickupDate||''),
+                    time:String(this.editPickupTime||'')
+                });
+            },
             orderSig:function(items){
                 return JSON.stringify((items||[]).map(function(i){
                     return {
@@ -5297,7 +5331,7 @@
                         var c2=(s.lpConfirmAt&&s.lpConfirmAt[o.id])||(o.paymentConfirmedAt||0);
                         var inWindow=c2&&(Date.now()-c2>3000)&&(Date.now()-c2<180000);
                         var st=(s.lpStatus&&s.lpStatus[o.id])||'';
-                        if(inWindow&&(st==='confirmed'||o.paymentStatus==='paid')){
+                        if(inWindow&&(st==='confirmed'||o.paymentStatus==='paid')&&!s.kitchenTicketPredatesPayment(o)){
                             if((s.lpQueueResent[o.id]||'')!==o.print_task){
                                 s.writeToPrintQueue(o.id,o.print_task,o);
                                 s.lpQueueResent[o.id]=o.print_task;
@@ -6948,6 +6982,7 @@
                 s.offlinePhoneOrder=null;
                 s.offlinePhoneEditPayload=null;
                 s.offlineSourceRecordPath='';
+                s.offlineSkipPaidPrint=false;
                 s.offlineCreating=true;
                 s.showOfflineModal=true;
                 s.allocateNextOrderNo()
@@ -7003,6 +7038,7 @@
                 this.offlinePhoneOrder=null;
                 this.offlinePhoneEditPayload=null;
                 this.offlineSourceRecordPath='';
+                this.offlineSkipPaidPrint=false;
                 if(orderWasCreated)this.clearCart();
             },
             submitOfflinePay:function(){
@@ -7048,6 +7084,12 @@
                                         s.offlineError="付款已成功，但修改工單送出失敗；請勿重複付款，請由原訂單重新列印";
                                         console.warn('電話訂單付款後工單送出失敗:',e&&e.message?e.message:e);
                                     });
+                                    return;
+                                }
+                                if(s.offlineSkipPaidPrint){
+                                    // ★ paid-no-reprint-20260927：付款前已出過工單，付款成功不重印、不改製作狀態
+                                    s.offlineSuccess="付款成功（已出過工單，不重印）";
+                                    setTimeout(function(){s.closeOfflineModal();},2000);
                                     return;
                                 }
                                 // ★ 付款成功後才列印工單
@@ -7337,8 +7379,9 @@
                 this.editingLinePayPaid=(this.editingOrder.paymentMethod==='linepay'&&(this.editingOrder.paymentStatus==='paid'||this.lpConfirmed[this.editingOrder.id]||this.lpStatus[this.editingOrder.id]==='confirmed'));
                 this.orderMode="online";
                 this.activeMenu=null;
+                this.editKitchenSig=this.editKitchenSignature();
             },
-            exitOnline:function(){this.orderMode="pos";this.editingOrder=null;this.cart=[];this.editPickupDate="";this.editPickupTime="";this.editOrderNote="";this.editCustomerName="";this.editCustomerPhone="";this.editShowCustomer=false;this.editShowPayment=false;this.editOrderType="takeout";this.editTableLabel="";this.editingLinePayPaid=false;},
+            exitOnline:function(){this.orderMode="pos";this.editingOrder=null;this.editKitchenSig="";this.cart=[];this.editPickupDate="";this.editPickupTime="";this.editOrderNote="";this.editCustomerName="";this.editCustomerPhone="";this.editShowCustomer=false;this.editShowPayment=false;this.editOrderType="takeout";this.editTableLabel="";this.editingLinePayPaid=false;},
             resolveOrderDateKey:function(order){
                 var d=new Date((order&&order.timestamp)||Date.now());
                 return (order&&order._sourceDateKey)|| (order&&order.orderDateKey)|| (order&&order.pickupDate) || (d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2));
@@ -7594,6 +7637,10 @@
                         return editTask;
                     };
 
+                    // ★ paid-no-reprint-20260927：已出過廚房工單（平板/線上/POS 未付款單）事後改 LINE Pay，
+                    //   付款成功後不重印；內容有改才在「儲存列印」當下先印一張「修改後完整單」。
+                    var kitchenTicketIssued=s.hasIssuedKitchenTicket(targetOrder);
+                    var kitchenContentChanged=!s.editKitchenSig||s.editKitchenSignature()!==s.editKitchenSig;
                     if(s.isPhoneCommandOrder(targetOrder)){
                         var phonePayment=s.buildPhoneCommandPayment(realPm,oldPm,oldPaid);
                         var phoneEditPayload=s.buildPhoneEditCommandPayload(targetOrder,{
@@ -7613,6 +7660,7 @@
                             s.offlineError='';
                             s.offlineSuccess='';
                             s.offlineCreating=false;
+                            s.offlineSkipPaidPrint=false;
                             s.offlinePhoneOrder=targetOrder;
                             s.offlinePhoneEditPayload=Object.assign({},phoneEditPayload,{
                                 paymentMethod:'linepay_offline',paymentStatus:'paid',status:'done',autoPrintKitchen:true
@@ -7664,7 +7712,12 @@
                         upd.paymentMethod='linepay';
                         upd.paymentStatus='pending';
                         await s.updateOrderMirror(id,upd,targetOrder);
-                        await remove(taskRef);
+                        if(kitchenTicketIssued){
+                            // 保留原 print_task：付款成功後不重印；內容有改才現在印修改後完整單
+                            if(kitchenContentChanged)await writeEditPrintTask();
+                        }else{
+                            await remove(taskRef);
+                        }
 
                         s.offlineOrderId=id;
                         s.offlineOrderDateKey=s.resolveOrderDateKey(targetOrder)||upd.pickupDate||s.todayStr;
@@ -7676,6 +7729,7 @@
                         s.offlinePhoneOrder=null;
                         s.offlinePhoneEditPayload=null;
                         s.offlineSourceRecordPath='';
+                        s.offlineSkipPaidPrint=kitchenTicketIssued;
                         s.showOfflineModal=true;
                         s.exitOnline();
                         s.$nextTick(function(){ if(s.$refs.barcodeInput) s.$refs.barcodeInput.focus(); });
@@ -7699,7 +7753,12 @@
                         upd.paymentMethod='linepay';
                         upd.paymentStatus='pending';
                         await s.updateOrderMirror(id,upd,targetOrder);
-                        await remove(taskRef);
+                        if(kitchenTicketIssued){
+                            // 保留原 print_task：Pi 確認付款時看到 kitchen_ 就不重印；內容有改才現在印修改後完整單
+                            if(kitchenContentChanged)await writeEditPrintTask();
+                        }else{
+                            await remove(taskRef);
+                        }
 
                         if(!confirmBase){
                             alert('⚠️ 已改為 LINE Pay 待付款，但尚未設定 LINE Pay 確認頁網址。');

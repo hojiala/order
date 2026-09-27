@@ -431,6 +431,7 @@
                     previousNewCount: 0,
                     activeMenu: null,
                     editModal: null,
+                    editModalKitchenSig: '',
                     editPickupDate: '',
                     editPickupTime: '',
                     editOrderNote: '',
@@ -3961,6 +3962,22 @@
                     this.editPickupTime = order.pickupTime || '';
                     this.editOrderNote = order.orderNote || '';
                     this.editPayMethod = order.paymentMethod || 'store';
+                    this.editModalKitchenSig = this.editModalKitchenSignature();
+                },
+                // ★ paid-no-reprint-20260927：會影響廚房的內容（品項、做法、數量、備註、取餐日期時間）
+                editModalKitchenSignature() {
+                    const items = (this.editModal && Array.isArray(this.editModal.items)) ? this.editModal.items : [];
+                    return JSON.stringify({
+                        items: items.map((it) => {
+                            it = it || {};
+                            return [it.id || '', it.name || '', Number(it.qty || it.quantity || 0), Number(it.itemTotal || 0),
+                                it.size || '', it.temp || '', it.note || '', it.drinkNote || '', it.mealDrink || '', it.comboDrinkText || '',
+                                it.options || [], it.optionGroupSelections || [], it.addons || [], it.posExtras || [], it.comboDrinkAddons || [], it.station || ''];
+                        }),
+                        note: String(this.editOrderNote || ''),
+                        date: String(this.editPickupDate || ''),
+                        time: String(this.editPickupTime || '')
+                    });
                 },
                 async saveOrderEdit() {
                     if (!this.editModal) return;
@@ -4012,6 +4029,14 @@
                         await this.updateOrderMirror(id, upd, updatedOrder);
                         orderSaved = true;
                         if (isLinePay && newPayStatus === 'pending' && confirmBase) {
+                            // ★ paid-no-reprint-20260927：已出過廚房工單（kitchen_ print_task）的訂單，
+                            //   LINE Pay 付款成功後 Pi 不再重印；內容有改就在儲存當下先印修改後完整單。
+                            const kitchenTicketIssued = /^kitchen_/.test(String(orderForMirror.print_task || '').trim());
+                            const kitchenContentChanged = !this.editModalKitchenSig || this.editModalKitchenSignature() !== this.editModalKitchenSig;
+                            if (kitchenTicketIssued && kitchenContentChanged) {
+                                await this.clearPrintTaskMirror(id, updatedOrder);
+                                await this.setPrintTaskMirror(id, `kitchen_edit_${Date.now()}`, updatedOrder);
+                            }
                             const orderDateKey = this.editPickupDate || this.editModal.orderDateKey || this.editModal.pickupDate || '';
                             this.editModal = null;
                             await this.startAdminLinePay(id, orderDateKey, confirmBase);
