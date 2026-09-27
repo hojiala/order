@@ -5318,8 +5318,8 @@ window._doCountUp = function() {
                 var self = this;
                 var hasCurrentMenu = Array.isArray(this.menuItems) && this.menuItems.length > 0;
                 if (!hasCurrentMenu) this.menuLoading = true;
-                var apply = function(items, snapshotStamp) {
-                    var arr = self.applyMenuLocalWrites(Array.isArray(items) ? items.slice() : [], snapshotStamp);
+                var apply = function(items, snapshotStamp, liveSince) {
+                    var arr = self.applyMenuLocalWrites(Array.isArray(items) ? items.slice() : [], snapshotStamp, liveSince);
                     var previousById = {};
                     (self.menuItems || []).forEach(function(item) { if (item && item.id) previousById[item.id] = item; });
                     var byId = {};
@@ -5391,14 +5391,28 @@ window._doCountUp = function() {
                     return;
                 };
                 var loadFromPrimary = function() {
+                    // ★ 2026-09-27：同時讀 menu-version。版本比快照的 builtAtStamp 新＝有存檔還沒進快照
+                    //   （Pi 每分鐘才重建），這時後台改讀即時資料庫：重新整理頁面、換一台裝置也不會看到舊內容／舊排序。
+                    var versionRead = self.readMenuVersionStamp();
                     return listMenuItemsFromPocketBase({ settings: self.settings || {}, timeoutMs: 10000, forceFresh: true, ignoreCooldown: true, disableCacheFallback: true, allowDirectCollectionFallback: false, allowFirebasePublicFallback: false }).then(function(result) {
                         if (result && result.ok && result.items && result.items.length) {
-                            apply(result.items || [], self.menuSnapshotStamp(result));
-                            self.menuReadBackend = result.backend || 'pocketbase';
-                            if (self.allowFirebaseManageFallback === true && self.isLoggedIn) {
-                                self.cleanupFirebaseOrphans(result.items || []);
-                            }
-                            return result.items || [];
+                            var snapshotStamp = self.menuSnapshotStamp(result);
+                            return versionRead.then(function(version) {
+                                if (!(version > 0 && snapshotStamp > 0 && version > snapshotStamp)) return null;
+                                return self.readLiveMenuItems();
+                            }).then(function(live) {
+                                if (live) {
+                                    apply(live.items, 0, live.startedAt);
+                                    self.menuReadBackend = 'pocketbase_live';
+                                    return live.items;
+                                }
+                                apply(result.items || [], snapshotStamp);
+                                self.menuReadBackend = result.backend || 'pocketbase';
+                                if (self.allowFirebaseManageFallback === true && self.isLoggedIn) {
+                                    self.cleanupFirebaseOrphans(result.items || []);
+                                }
+                                return result.items || [];
+                            });
                         }
                         return finishWithoutMenu(hasCurrentMenu ? (self.menuReadBackend || 'current') : 'empty');
                     }).catch(function() {
@@ -5607,6 +5621,29 @@ window._doCountUp = function() {
                 var n = Number((data && data.builtAtStamp) || (result && result.builtAtStamp) || 0);
                 return Number.isFinite(n) && n > 0 ? n : 0;
             },
+            readMenuVersionStamp: function() {
+                if (typeof fetch !== 'function') return Promise.resolve(0);
+                return fetch(this.menuVersionEndpoint(), { cache: 'no-store' }).then(function(response) {
+                    if (!response.ok) throw new Error('menu_version_unavailable');
+                    return response.json();
+                }).then(function(data) {
+                    var n = Number(data && data.version);
+                    return Number.isFinite(n) && n > 0 ? n : 0;
+                }).catch(function() { return 0; });
+            },
+            readLiveMenuItems: function() {
+                var self = this;
+                var startedAt = Date.now();
+                return Promise.resolve().then(function() {
+                    return readManageMenuFromPocketBase(self.pocketBaseManageOptions({ timeoutMs: 12000, secureTimeoutMs: 12000, currentMenuItems: self.menuItems || [] }));
+                }).then(function(result) {
+                    if (!result || !result.ok || !Array.isArray(result.items) || !result.items.length) return null;
+                    return { items: result.items, startedAt: startedAt };
+                }).catch(function(err) {
+                    console.warn('manage live menu read failed; using snapshot:', err && err.message ? err.message : err);
+                    return null;
+                });
+            },
             rememberMenuLocalWrites: function(changes) {
                 var self = this;
                 if (!self.menuLocalWrites) self.menuLocalWrites = {};
@@ -5622,6 +5659,7 @@ window._doCountUp = function() {
                     var entry = {
                         id: id,
                         seq: self.menuLocalWriteSeq,
+                        at: now,
                         deleted: deleted,
                         fields: deleted ? null : Object.assign({}, prev && !prev.deleted && prev.fields ? prev.fields : {}, change.fields || {}, { id: id }),
                         // cron 每分鐘重建＋輪詢 5 秒，正常 70 秒內就會確認；3 分鐘後一律以伺服器為準
@@ -5631,35 +5669,35 @@ window._doCountUp = function() {
                     writes[id] = entry;
                     touched.push({ id: id, seq: entry.seq });
                 });
-                if (!touched.length || typeof fetch !== 'function') return Promise.resolve();
+                if (!touched.length) return Promise.resolve();
                 // 寫入已經成功回應，此刻讀到的版本（dirty 戳記）一定不早於這次寫入。
-                return fetch(self.menuVersionEndpoint(), { cache: 'no-store' }).then(function(response) {
-                    if (!response.ok) throw new Error('menu_version_unavailable');
-                    return response.json();
-                }).then(function(data) {
-                    var stamp = Number(data && data.version);
-                    if (!Number.isFinite(stamp) || stamp <= 0) return;
+                return self.readMenuVersionStamp().then(function(stamp) {
+                    if (!stamp) return;
                     touched.forEach(function(t) {
                         var entry = writes[t.id];
                         if (entry && entry.seq === t.seq) entry.serverStamp = stamp;
                     });
-                }).catch(function() {});
+                });
             },
             patchMenuLocalWrite: function(id, fields) {
                 var entry = this.menuLocalWrites && id !== undefined && id !== null ? this.menuLocalWrites[String(id)] : null;
                 if (entry && !entry.deleted && entry.fields) Object.assign(entry.fields, fields || {});
             },
-            applyMenuLocalWrites: function(items, snapshotStamp) {
+            applyMenuLocalWrites: function(items, snapshotStamp, liveSince) {
                 var rows = Array.isArray(items) ? items : [];
                 var writes = this.menuLocalWrites;
                 if (!writes) return rows;
                 var now = Date.now();
                 var stamp = Number(snapshotStamp) || 0;
+                var live = Number(liveSince) || 0;
                 var pending = {};
                 var pendingCount = 0;
                 Object.keys(writes).forEach(function(id) {
                     var entry = writes[id];
-                    var confirmed = !!(entry && entry.serverStamp > 0 && stamp > 0 && stamp >= entry.serverStamp);
+                    var confirmed = !!(entry && (
+                        (entry.serverStamp > 0 && stamp > 0 && stamp >= entry.serverStamp) ||
+                        (live > 0 && Number(entry.at) > 0 && Number(entry.at) <= live)
+                    ));
                     if (!entry || confirmed || now >= Number(entry.expiresAt || 0)) {
                         delete writes[id];
                         return;
