@@ -893,7 +893,7 @@
       <div class="px-5 py-3 flex items-center gap-2" style="background:linear-gradient(135deg,#06C755,#00B900)">
         <span class="text-xl">💚</span>
         <span class="text-white font-black text-base">LINE Pay 條碼付款</span>
-        <button @click="closeOfflineModal" :disabled="offlineCreating && !offlineOrderId" class="ml-auto text-white text-xl font-bold w-7 h-7 flex items-center justify-center rounded-full hover:bg-green-400 transition disabled:opacity-40">✕</button>
+        <button @click="closeOfflineModal" :disabled="(offlineCreating && !offlineOrderId) || offlineSubmitting" class="ml-auto text-white text-xl font-bold w-7 h-7 flex items-center justify-center rounded-full hover:bg-green-400 transition disabled:opacity-40">✕</button>
       </div>
       <div class="px-5 py-4">
         <p class="text-gray-500 text-sm mb-1">訂單金額</p>
@@ -915,7 +915,7 @@
         <p v-if="offlineSuccess" class="mt-2 text-green-600 text-sm text-center font-bold">✅ {{ offlineSuccess }}</p>
       </div>
       <div class="px-5 pb-4 flex gap-2">
-        <button @click="closeOfflineModal" :disabled="offlineCreating && !offlineOrderId" class="flex-1 bg-gray-200 text-gray-600 font-bold py-3 rounded-xl text-sm hover:bg-gray-300 transition disabled:opacity-40">取消</button>
+        <button @click="closeOfflineModal" :disabled="(offlineCreating && !offlineOrderId) || offlineSubmitting" class="flex-1 bg-gray-200 text-gray-600 font-bold py-3 rounded-xl text-sm hover:bg-gray-300 transition disabled:opacity-40">取消</button>
         <button @click="submitOfflinePay" :disabled="offlineCreating || !offlineOrderId || offlineBarcode.length < 10 || offlineSubmitting || !!offlineSuccess"
           class="flex-1 text-white font-black py-3 rounded-xl text-sm disabled:opacity-40 transition"
           style="background:linear-gradient(135deg,#06C755,#00B900)">
@@ -6979,6 +6979,21 @@
             selectEditPayMethod:async function(method){
                 var s=this;
                 s.editPayMethod=method;
+                if(method==='linepay'){
+                    // ★ phone-paid-no-reprint-20260927：💚 LINE Pay 也一鍵直接開啟付款（不必再按「儲存列印」）
+                    if(s.isSubmitting||!s.editingOrder||!(s.cart||[]).length)return;
+                    if(s.editingLinePayPaid){s.toast('⚠️ LINE Pay 已付清');return;}
+                    if(String(s.editingOrder.paymentStatus||'').toLowerCase()==='paid'){s.toast('⚠️ 此單已付款，未開啟 LINE Pay');return;}
+                    var savingLabel='正在儲存訂單，準備 LINE Pay…';
+                    s.checkoutProgress=savingLabel;
+                    try{
+                        await s.saveOrderEdit();
+                    }finally{
+                        // 已進入建立付款頁時，進度文字由 startPosLinePay 接手；存檔失敗／被擋下才在此收起
+                        if(s.checkoutProgress===savingLabel)s.checkoutProgress='';
+                    }
+                    return;
+                }
                 if(method!=='linepay_offline')return;
                 if(s.isSubmitting||!s.editingOrder||!(s.cart||[]).length)return;
                 // 已付款的單不可再開掃碼扣款（避免重複扣款）；只切換選項，維持原本「儲存列印」流程
@@ -7103,6 +7118,15 @@
                 if(!/^\d+$/.test(barcode)){s.offlineError="條碼格式錯誤（應為純數字）";return;}
                 s.offlineSubmitting=true;
                 s.offlineError="";
+                // ★ phone-paid-no-reprint-20260927：送出當下鎖定訂單資訊，之後視窗狀態變動也不影響列印判斷
+                var ctx={
+                    orderId:s.offlineOrderId,
+                    dateKey:s.offlineOrderDateKey||s.todayStr,
+                    amount:s.offlineAmount,
+                    phoneOrder:s.offlinePhoneOrder,
+                    phonePayload:s.offlinePhoneEditPayload,
+                    skipPaidPrint:!!s.offlineSkipPaidPrint
+                };
                 // Firebase 中介：寫入請求 → 樹莓派 Offline Worker 處理 → 輪詢結果
                 var offlineRequest={
                     amount:s.offlineAmount,
@@ -7113,51 +7137,64 @@
                     createdAt:Date.now()
                 };
                 if(s.offlineSourceRecordPath)offlineRequest.sourceRecordPath=s.offlineSourceRecordPath;
-                set(ref(db,"linepay_offline_requests/"+s.offlineOrderId),offlineRequest).then(function(){
+                set(ref(db,"linepay_offline_requests/"+ctx.orderId),offlineRequest).then(function(){
                     var tries=0;
                     var poll=setInterval(function(){
                         tries++;
-                        get(ref(db,"linepay_offline_requests/"+s.offlineOrderId)).then(function(snap){
+                        if(tries>25){
+                            clearInterval(poll);
+                            if(s.offlineSubmitting&&s.offlineOrderId===ctx.orderId){
+                                s.offlineError="等待逾時，付款結果未確認；請先確認顧客是否已扣款（已暫停自動送出）";
+                                s.offlineAutoSubmitBlocked=true;
+                                s.offlineSubmitting=false;
+                            }
+                            return;
+                        }
+                        get(ref(db,"linepay_offline_requests/"+ctx.orderId)).then(function(snap){
                             if(!snap.exists())return;
                             var r=snap.val();
                             if(r.status==="done"){
                                 clearInterval(poll);
                                 s.stopScannerBridge();
                                 s.offlineSuccess="付款成功，工單同步中…";
-                                s.toast("✅ LINE Pay 掃碼付款成功 $"+s.offlineAmount);
+                                s.toast("✅ LINE Pay 掃碼付款成功 $"+ctx.amount);
                                 s.offlineSubmitting=false;
-                                if(s.offlinePhoneOrder){
-                                    var paidPhonePayload=Object.assign({},s.offlinePhoneEditPayload||{}, {
+                                if(ctx.phoneOrder){
+                                    // ★ phone-paid-no-reprint-20260927：內容沒改只回寫已付款，不印；有改才印修改後完整單
+                                    var phonePrint=!ctx.skipPaidPrint;
+                                    var paidPhonePayload=Object.assign({},ctx.phonePayload||{}, {
                                         paymentMethod:'linepay_offline',paymentStatus:'paid',status:'done',
-                                        completedAt:new Date().toISOString(),autoPrintKitchen:true
+                                        completedAt:new Date().toISOString(),autoPrintKitchen:phonePrint
                                     });
-                                    s.queuePhoneOrderCommand(s.offlinePhoneOrder,'replace_order',paidPhonePayload).then(function(){
-                                        s.offlineSuccess="付款成功，修改工單已送出";
+                                    s.queuePhoneOrderCommand(ctx.phoneOrder,'replace_order',paidPhonePayload).then(function(){
+                                        s.offlineSuccess=phonePrint?"付款成功，修改工單已送出":"付款成功（已出過工單，不重印）";
                                         setTimeout(function(){s.closeOfflineModal();},2000);
                                     }).catch(function(e){
-                                        s.offlineError="付款已成功，但修改工單送出失敗；請勿重複付款，請由原訂單重新列印";
-                                        console.warn('電話訂單付款後工單送出失敗:',e&&e.message?e.message:e);
+                                        s.offlineError=phonePrint
+                                            ?"付款已成功，但修改工單送出失敗；請勿重複付款，請由原訂單重新列印"
+                                            :"付款已成功，但電話單付款狀態同步失敗；請勿重複付款，請稍後確認訂單狀態";
+                                        console.warn('電話訂單付款後回寫失敗:',e&&e.message?e.message:e);
                                     });
                                     return;
                                 }
-                                if(s.offlineSkipPaidPrint){
+                                if(ctx.skipPaidPrint){
                                     // ★ paid-no-reprint-20260927：付款前已出過工單，付款成功不重印、不改製作狀態
                                     s.offlineSuccess="付款成功（已出過工單，不重印）";
                                     setTimeout(function(){s.closeOfflineModal();},2000);
                                     return;
                                 }
                                 // ★ 付款成功後才列印工單
-                                var ob='orders/'+(s.offlineOrderDateKey||s.todayStr)+'/'+s.offlineOrderId;
+                                var ob='orders/'+ctx.dateKey+'/'+ctx.orderId;
                                 update(ref(db,ob),{status:"making"});
                                 var taskRef=ref(db,ob+"/print_task");
                                 var offPrintTask="kitchen_"+Date.now();
                                 remove(taskRef).then(function(){return set(taskRef,offPrintTask);}).then(function(){
                                     // ★ 寫入 print_queue 供 Node-RED
-                                    var offOrder=Object.assign({},s.findOrderById(s.offlineOrderId)||{}, {
+                                    var offOrder=Object.assign({},s.findOrderById(ctx.orderId)||{}, {
                                         paymentMethod:'linepay_offline',paymentStatus:'paid',
                                         linePayTransactionId:r.transactionId,paymentConfirmedAt:Date.now()
                                     });
-                                    s.writeToPrintQueue(s.offlineOrderId,offPrintTask,offOrder);
+                                    s.writeToPrintQueue(ctx.orderId,offPrintTask,offOrder);
                                 });
                                 setTimeout(function(){s.closeOfflineModal();},2000);
                             }else if(r.status==="error"){
@@ -7720,11 +7757,12 @@
                             s.offlineError='';
                             s.offlineSuccess='';
                             s.offlineCreating=false;
-                            s.offlineSkipPaidPrint=false;
+                            // ★ phone-paid-no-reprint-20260927：電話單通話結束時已出單；內容沒改，付款成功不重印
+                            s.offlineSkipPaidPrint=!kitchenContentChanged;
                             s.offlineAutoSubmitBlocked=false;
                             s.offlinePhoneOrder=targetOrder;
                             s.offlinePhoneEditPayload=Object.assign({},phoneEditPayload,{
-                                paymentMethod:'linepay_offline',paymentStatus:'paid',status:'done',autoPrintKitchen:true
+                                paymentMethod:'linepay_offline',paymentStatus:'paid',status:'done',autoPrintKitchen:kitchenContentChanged
                             });
                             s.offlineSourceRecordPath=phoneSourcePath;
                             s.showOfflineModal=true;
@@ -7736,7 +7774,8 @@
                         }
                         if(realPm==='linepay'&&!oldPaid){
                             if(!confirmBase)throw new Error('尚未設定 LINE Pay 確認頁網址');
-                            phoneEditPayload.autoPrintKitchen=false;
+                            // ★ phone-paid-no-reprint-20260927：Pi 付款確認後不再印電話單；內容有改就現在印修改後完整單
+                            phoneEditPayload.autoPrintKitchen=kitchenContentChanged;
                             await s.queuePhoneOrderCommand(targetOrder,'replace_order',phoneEditPayload);
                             var phoneOrderDateKey=s.resolveOrderDateKey(targetOrder)||s.editPickupDate||s.todayStr;
                             s.exitOnline();
