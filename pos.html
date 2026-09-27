@@ -556,7 +556,7 @@
         <button @click="editShowPayment=!editShowPayment" class="w-full flex items-center justify-between bg-green-50 hover:bg-green-100 border border-green-200 rounded-lg px-3 py-1.5 transition">
           <span class="text-xs font-bold text-green-700">💳 {{ {store:'⚠️ 未付款',cash:'💵 現金已付',linepay:'💚 LINE Pay',linepay_offline:'📲 掃碼'}[editPayMethod]||editPayMethod }}</span><span class="text-green-400 text-xs">{{ editShowPayment?'▲':'▼' }}</span></button>
         <div v-if="editShowPayment" class="grid grid-cols-2 gap-1.5">
-          <button v-for="pm in [{v:'store',l:'⚠️ 未付款'},{v:'cash',l:'💵 現金已付款'},{v:'linepay',l:'💚 LINE Pay'},{v:'linepay_offline',l:'📲 掃碼 LINE Pay'}]" :key="pm.v" @click="editPayMethod=pm.v" :class="editPayMethod===pm.v?'bg-green-600 text-white':'bg-gray-100 text-gray-600 hover:bg-gray-200'" class="py-2 rounded-xl font-bold text-xs transition">{{ pm.l }}</button>
+          <button v-for="pm in [{v:'store',l:'⚠️ 未付款'},{v:'cash',l:'💵 現金已付款'},{v:'linepay',l:'💚 LINE Pay'},{v:'linepay_offline',l:'📲 掃碼 LINE Pay'}]" :key="pm.v" @click="selectEditPayMethod(pm.v)" :class="editPayMethod===pm.v?'bg-green-600 text-white':'bg-gray-100 text-gray-600 hover:bg-gray-200'" class="py-2 rounded-xl font-bold text-xs transition">{{ pm.l }}</button>
         </div>
       </div>
       <!-- POS count/total -->
@@ -898,18 +898,18 @@
       <div class="px-5 py-4">
         <p class="text-gray-500 text-sm mb-1">訂單金額</p>
         <p class="text-3xl font-black text-gray-900 mb-4">${{ offlineAmount }}</p>
-        <p class="text-gray-700 text-sm font-bold mb-2">請顧客出示 LINE Pay 條碼，對準掃碼器掃描：</p>
+        <p class="text-gray-700 text-sm font-bold mb-2">請顧客出示 LINE Pay 條碼，對準掃碼器掃描（掃到後自動付款）：</p>
         <div class="relative">
           <input ref="barcodeInput" v-model="offlineBarcode" type="tel" maxlength="20"
             :disabled="!offlineOrderId"
-            :placeholder="!offlineOrderId ? '正在建立訂單…' : (offlineCreating ? '可先掃碼，訂單同步中…' : '等待掃碼器輸入...')"
+            :placeholder="!offlineOrderId ? '正在準備付款…' : (offlineCreating ? '可先掃碼，訂單同步中…' : '等待掃碼器輸入...')"
             @keyup.enter="submitOfflinePay"
             class="w-full border-2 rounded-xl px-4 py-3 text-lg font-mono text-center focus:outline-none transition"
             :class="offlineBarcode.length >= 10 ? 'border-green-400 bg-green-50' : 'border-gray-200'"
             style="letter-spacing:0.2em">
           <span v-if="offlineBarcode.length >= 10" class="absolute right-3 top-3 text-green-500 text-xl">✓</span>
         </div>
-        <p class="text-gray-400 text-xs mt-1 text-center">{{ !offlineOrderId ? '正在建立付款訂單，完成後即可掃碼' : (offlineCreating ? '訂單同步中；可先掃碼，完成後再確認付款' : (scannerBridgeStatus || '等待 Pi USB 掃碼器；也可直接在此欄位輸入')) }}</p>
+        <p class="text-gray-400 text-xs mt-1 text-center">{{ !offlineOrderId ? '正在建立付款訂單，完成後即可掃碼' : (offlineCreating ? '訂單同步中；可先掃碼，完成後再確認付款' : (scannerBridgeStatus || '等待 Pi USB 掃碼器，掃到後自動付款；也可手動輸入後按 Enter')) }}</p>
         <button type="button" @click="startScannerBridge" :disabled="offlineSubmitting" class="mt-2 text-sm text-blue-700 underline">重新連接掃碼器</button>
         <p v-if="offlineError" class="mt-2 text-red-500 text-sm text-center font-medium">{{ offlineError }}</p>
         <p v-if="offlineSuccess" class="mt-2 text-green-600 text-sm text-center font-bold">✅ {{ offlineSuccess }}</p>
@@ -1025,7 +1025,7 @@
                 archiveConfirm:false,resetConfirm:false,
                 linePayServerUrl:"",linePayConfirmUrl:"",pocketBaseUrl:"",pocketBaseOrdersCollection:"orders",
                 // ★ 情境3 Offline 掃碼
-                showOfflineModal:false, offlineBarcode:"", offlineAmount:0,offlineCreating:false,offlinePhoneOrder:null,offlinePhoneEditPayload:null,offlineSourceRecordPath:"",offlineSkipPaidPrint:false,editKitchenSig:"",
+                showOfflineModal:false, offlineBarcode:"", offlineAmount:0,offlineCreating:false,offlinePhoneOrder:null,offlinePhoneEditPayload:null,offlineSourceRecordPath:"",offlineSkipPaidPrint:false,editKitchenSig:"",offlineAutoSubmitBlocked:false,
                 offlineOrderId:"", offlineOrderDateKey:"", offlineItems:[], offlineError:"", offlineSuccess:"",
                 scannerBridgeSessionId:"",scannerBridgeAuthToken:"",scannerBridgeBase:"",scannerBridgeStatus:"",scannerBridgePollTimer:null,
                 // ★ LINE Pay Online 付款連結彈窗
@@ -6910,10 +6910,14 @@
                     var data=await s.scannerBridgeFetch(s.scannerBridgeBase,'/api/pos/scanner/poll',{sessionId:sessionId},s.scannerBridgeAuthToken,5000);
                     if(s.scannerBridgeSessionId!==sessionId||!s.showOfflineModal)return;
                     if(data&&/^\d{10,20}$/.test(String(data.barcode||''))){
-                        s.offlineBarcode=String(data.barcode);
-                        s.offlineError='';
-                        s.scannerBridgeStatus='已收到條碼，請按「確認付款」';
-                        s.$nextTick(function(){if(s.$refs.barcodeInput)s.$refs.barcodeInput.focus();});
+                        if(!s.offlineSubmitting&&!s.offlineSuccess){
+                            s.offlineBarcode=String(data.barcode);
+                            s.offlineError='';
+                            s.scannerBridgeStatus='已收到條碼';
+                            s.$nextTick(function(){if(s.$refs.barcodeInput)s.$refs.barcodeInput.focus();});
+                            // ★ scan-autosubmit-20260927：掃到條碼直接付款，不必再按「確認付款」
+                            s.maybeAutoSubmitOfflinePay();
+                        }
                     }
                     s.scannerBridgePollTimer=setTimeout(function(){s.pollScannerBridge(sessionId);},700);
                 }catch(error){
@@ -6953,6 +6957,52 @@
                         .catch(function(){});
                 }
             },
+            // ★ scan-autosubmit-20260927：條碼有效且訂單已就緒就自動付款。
+            //   上一次付款結果不明（逾時／連線失敗）時暫停自動送出，避免顧客被扣兩次，改由店員確認後手動按。
+            maybeAutoSubmitOfflinePay:function(){
+                var s=this;
+                if(!s.showOfflineModal||s.offlineSubmitting||s.offlineSuccess)return false;
+                if(!/^\d{10,20}$/.test(String(s.offlineBarcode||'').trim()))return false;
+                if(s.offlineAutoSubmitBlocked){
+                    s.scannerBridgeStatus='已收到條碼；上一筆付款結果未確認，請先確認顧客是否已扣款，再手動按「確認付款」';
+                    return false;
+                }
+                if(s.offlineCreating||!s.offlineOrderId){
+                    s.scannerBridgeStatus='已收到條碼，訂單準備好後自動付款…';
+                    return false;
+                }
+                s.scannerBridgeStatus='已收到條碼，自動付款中…';
+                s.submitOfflinePay();
+                return true;
+            },
+            // ★ scan-autosubmit-20260927：編輯單點「📲 掃碼 LINE Pay」＝立即存檔並彈出掃碼視窗（不必再按「儲存列印」）
+            selectEditPayMethod:async function(method){
+                var s=this;
+                s.editPayMethod=method;
+                if(method!=='linepay_offline')return;
+                if(s.isSubmitting||!s.editingOrder||!(s.cart||[]).length)return;
+                // 已付款的單不可再開掃碼扣款（避免重複扣款）；只切換選項，維持原本「儲存列印」流程
+                if(s.editingLinePayPaid){s.toast('⚠️ LINE Pay 已付清，不可再掃碼扣款');return;}
+                if(String(s.editingOrder.paymentStatus||'').toLowerCase()==='paid'){s.toast('⚠️ 此單已付款，未開啟掃碼');return;}
+                s.offlineOrderId='';
+                s.offlineAmount=s.cartTotal;
+                s.offlineBarcode='';
+                s.offlineError='';
+                s.offlineSuccess='';
+                s.offlineSubmitting=false;
+                s.offlineAutoSubmitBlocked=false;
+                s.offlineCreating=true;
+                s.showOfflineModal=true;
+                try{
+                    await s.saveOrderEdit();
+                }finally{
+                    // 存檔失敗或被擋下（已有錯誤提示）：收起尚未就緒的掃碼視窗
+                    if(s.showOfflineModal&&!s.offlineOrderId){
+                        s.showOfflineModal=false;
+                        s.offlineCreating=false;
+                    }
+                }
+            },
             openOfflineModal:function(){
                 var s=this;
                 if(!s.cart.length){s.toast("⚠️ 購物車為空");return;}
@@ -6983,6 +7033,7 @@
                 s.offlinePhoneEditPayload=null;
                 s.offlineSourceRecordPath='';
                 s.offlineSkipPaidPrint=false;
+                s.offlineAutoSubmitBlocked=false;
                 s.offlineCreating=true;
                 s.showOfflineModal=true;
                 s.allocateNextOrderNo()
@@ -7020,6 +7071,7 @@
                             if(s.$refs.barcodeInput) s.$refs.barcodeInput.focus();
                         });
                         s.startScannerBridge();
+                        s.maybeAutoSubmitOfflinePay();
                         // ★ 不在此列印，等掃碼付款成功後才印（由 submitOfflinePay 觸發）
                     })
                     .catch(function(e){s.offlineError="建立訂單失敗："+(e&&e.message?e.message:e);s.toast("❌ 建立訂單失敗");})
@@ -7039,10 +7091,12 @@
                 this.offlinePhoneEditPayload=null;
                 this.offlineSourceRecordPath='';
                 this.offlineSkipPaidPrint=false;
+                this.offlineAutoSubmitBlocked=false;
                 if(orderWasCreated)this.clearCart();
             },
             submitOfflinePay:function(){
                 var s=this;
+                if(s.offlineSubmitting||s.offlineSuccess)return;
                 if(s.offlineCreating||!s.offlineOrderId){s.offlineError="付款訂單尚未建立完成，請稍候";return;}
                 var barcode=s.offlineBarcode.trim();
                 if(!barcode||barcode.length<10){s.offlineError="條碼長度不足，請重新掃描";return;}
@@ -7109,18 +7163,24 @@
                             }else if(r.status==="error"){
                                 clearInterval(poll);
                                 s.offlineError=r.error||"付款失敗，請重試";
+                                if(/timeout|逾時|連線失敗|stale|worker offline/i.test(String(r.error||''))){
+                                    s.offlineAutoSubmitBlocked=true;
+                                    s.offlineError+="（付款結果未確認，已暫停自動送出）";
+                                }
                                 s.offlineBarcode="";
                                 s.offlineSubmitting=false;
                                 s.$nextTick(function(){if(s.$refs.barcodeInput)s.$refs.barcodeInput.focus();});
                             }else if(tries>=20){
                                 clearInterval(poll);
-                                s.offlineError="等待逾時，請確認樹莓派服務正常後重試";
+                                s.offlineError="等待逾時，付款結果未確認；請先確認顧客是否已扣款（已暫停自動送出）";
+                                s.offlineAutoSubmitBlocked=true;
                                 s.offlineSubmitting=false;
                             }
                         }).catch(function(){});
                     },1000);
                 }).catch(function(e){
-                    s.offlineError="寫入請求失敗："+e.message;
+                    s.offlineError="寫入請求失敗："+e.message+"（已暫停自動送出）";
+                    s.offlineAutoSubmitBlocked=true;
                     s.offlineSubmitting=false;
                 });
             },
@@ -7376,7 +7436,7 @@
                 this.editTableLabel=(latest&&latest.tableLabel)||normalized.tableLabel||'';
                 this.editShowCustomer=false;this.editShowPayment=false;
                 // ★ 偵測 LINE Pay 已付清，禁止修改餐點與金額
-                this.editingLinePayPaid=(this.editingOrder.paymentMethod==='linepay'&&(this.editingOrder.paymentStatus==='paid'||this.lpConfirmed[this.editingOrder.id]||this.lpStatus[this.editingOrder.id]==='confirmed'));
+                this.editingLinePayPaid=((this.editingOrder.paymentMethod==='linepay'||this.editingOrder.paymentMethod==='linepay_offline')&&(this.editingOrder.paymentStatus==='paid'||this.lpConfirmed[this.editingOrder.id]||this.lpStatus[this.editingOrder.id]==='confirmed'));
                 this.orderMode="online";
                 this.activeMenu=null;
                 this.editKitchenSig=this.editKitchenSignature();
@@ -7661,6 +7721,7 @@
                             s.offlineSuccess='';
                             s.offlineCreating=false;
                             s.offlineSkipPaidPrint=false;
+                            s.offlineAutoSubmitBlocked=false;
                             s.offlinePhoneOrder=targetOrder;
                             s.offlinePhoneEditPayload=Object.assign({},phoneEditPayload,{
                                 paymentMethod:'linepay_offline',paymentStatus:'paid',status:'done',autoPrintKitchen:true
@@ -7730,6 +7791,9 @@
                         s.offlinePhoneEditPayload=null;
                         s.offlineSourceRecordPath='';
                         s.offlineSkipPaidPrint=kitchenTicketIssued;
+                        s.offlineAutoSubmitBlocked=false;
+                        s.offlineSubmitting=false;
+                        s.offlineCreating=false;
                         s.showOfflineModal=true;
                         s.exitOnline();
                         s.$nextTick(function(){ if(s.$refs.barcodeInput) s.$refs.barcodeInput.focus(); });
