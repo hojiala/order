@@ -169,7 +169,7 @@
                                 <h3 class="font-bold text-gray-800 text-sm mb-1" style="line-height:1.4;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;">{{ item.name }}</h3>
                                 <p class="text-gray-400 text-xs mb-2" style="overflow:hidden;display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;">{{ item.desc }}</p>
                                 <div class="flex items-center justify-between">
-                                    <span class="text-orange-500 font-black text-base">${{ item.price }}</span>
+                                    <span class="text-orange-500 font-black text-base">${{ menuPriceInfo(item).price }}<span v-if="menuPriceInfo(item).from" style="font-size:0.8em;font-weight:700;margin-left:1px;">起</span></span>
                                     <button @click.stop="quickAddOrDetail(item)" class="plus-btn w-9 h-9 active:scale-90 rounded-full flex items-center justify-center text-white shadow-md"
                                         style="font-size:1.5rem;line-height:1;flex-shrink:0;touch-action:manipulation;background:var(--day-theme,#f97316);">+</button>
                                 </div>
@@ -205,7 +205,7 @@
                 <div class="px-5 pt-5 pb-4 border-b border-gray-100">
                     <div class="flex justify-between items-start">
                         <h2 class="text-xl font-black text-gray-900 flex-1 mr-4">{{ activeItem.name }}</h2>
-                        <span class="text-orange-500 font-black text-xl" style="white-space:nowrap;">${{ activeItem.price }}</span>
+                        <span class="text-orange-500 font-black text-xl" style="white-space:nowrap;">${{ menuPriceInfo(activeItem).price }}<span v-if="menuPriceInfo(activeItem).from" style="font-size:0.8em;font-weight:700;margin-left:1px;">起</span></span>
                     </div>
                     <p v-if="activeItem.desc" class="text-gray-400 text-sm mt-2" style="line-height:1.7;">{{ activeItem.desc }}</p>
                 </div>
@@ -1863,6 +1863,30 @@
                 this.alertDialogResolve = null;
                 this.showAlertDialog = false;
                 if (resolve) resolve(confirmed === true);
+            },
+            // ★ 菜單顯示價：套餐（含「套餐飲料升級」mealUpgrade 群組）顯示實際最低價 +「起」；單點維持原價
+            //   最低價 = 餐點價 + 各單選群組的最低加價；套餐飲料加價 = max(0, 飲料價 - 基礎值)
+            //   例：搭配飲料折5元 → 60 + (20 - 5) = $75起；1~9號（基礎值30）→ 95 + 0 = $95起
+            menuPriceInfo: function(item) {
+                var price = Number(item && item.price || 0);
+                var groups = (item && item.optionGroups) || [];
+                var isCombo = groups.some(function(g) { return g && g.type === 'radio' && g.pricing === 'mealUpgrade'; });
+                if (!isCombo) return { price: price, from: false };
+                var base = price, extra = 0, from = false;
+                groups.forEach(function(g) {
+                    if (!g || g.type !== 'radio') return;
+                    var bv = Number(g.baseValue || 0);
+                    var vals = (g.choices || []).map(function(c) {
+                        var p = Number(c && c.price || 0);
+                        return g.pricing === 'mealUpgrade' ? Math.max(0, p - bv) : p;
+                    });
+                    if (!vals.length) return;
+                    var mn = Math.min.apply(null, vals), mx = Math.max.apply(null, vals);
+                    if (g.pricing === 'setPrice') base = mn;
+                    else if (g.pricing === 'addDelta' || g.pricing === 'mealUpgrade') extra += mn;
+                    if (mx > mn) from = true;
+                });
+                return { price: base + extra, from: from };
             },
             getItemQty: function(id) {
                 return this.cart.filter(function(c) { return c.id === id; }).reduce(function(s, c) { return s + c.qty; }, 0);
