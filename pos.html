@@ -14,6 +14,7 @@
   <script>window.PB_REQUIRE_TURNSTILE = false;</script>
   <script src="https://unpkg.com/vue@3.5.40/dist/vue.global.prod.js" integrity="sha384-yjSqnKX+01fhYzLUMRlCkMrHMTdKxwYcGIk5HZ6ug+4nfJn10+F7YsKRuGR5kQac" crossorigin="anonymous"></script>
   <script src="./order-batch-tools.20260809_002.js?v=20260902_001"></script>
+  <script src="./print-jobs-alert.20260928_001.js"></script>
   <style>
     [v-cloak]{display:none}*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
     body{font-family:"Helvetica Neue",Arial,"PingFang TC","Microsoft JhengHei",sans-serif;overscroll-behavior:none}
@@ -754,7 +755,7 @@
 <!-- 未印出工單（print-contention-queue-20260926）-->
 <!-- 放在菜單區左下角：不遮住頂部按鈕（開錢箱/常客/語音）與右側結帳區；清單往上展開 -->
 <div v-if="isLoggedIn && printJobs.length" class="fixed" style="left:12px;bottom:12px;z-index:950;width:min(360px,calc(100vw - 24px));display:flex;flex-direction:column-reverse;">
-  <button type="button" @click="printJobsPanel=!printJobsPanel" class="w-full flex items-center justify-between gap-2 px-4 py-2.5 rounded-xl shadow-xl font-bold text-white" :class="printJobsHasFailed()?'bg-red-600':'bg-amber-500'">
+  <button type="button" @click="togglePrintJobsPanel()" class="w-full flex items-center justify-between gap-2 px-4 py-2.5 rounded-xl shadow-xl font-bold text-white" :class="printJobsHasFailed()?'bg-red-600':'bg-amber-500'">
     <span class="flex items-center gap-2"><span v-if="printJobsHasFailed()" class="animate-pulse" style="display:inline-block;width:10px;height:10px;border-radius:9999px;background:#fff;"></span>&#128424;&#65039; {{ printJobs.length }} 張工單未印出</span><span class="text-xs">{{ printJobsPanel ? '收合' : '查看' }}</span>
   </button>
   <div v-if="printJobsPanel" class="bg-white rounded-xl shadow-2xl border border-gray-200 overflow-y-auto divide-y" style="max-height:60vh;margin-bottom:8px;">
@@ -8132,6 +8133,12 @@
             startPrintJobsWatch:function(){
                 var s=this;
                 if(s.printJobsTimer)return;
+                // 提示音（print-jobs-alert.20260928_001.js；音效檔 ./print-alert.mp3，缺檔時用合成嗶聲）
+                if(window.YuangiPrintAlert){
+                    s._printAlert=window.YuangiPrintAlert.createPrintAlert();
+                    s._printAlert.bindUnlock(document);
+                    s._printJobWatcher=window.YuangiPrintAlert.createJobWatcher({repeatMs:30000});
+                }
                 var tick=function(){if(document.visibilityState!=='hidden')s.refreshPrintJobs();};
                 s.printJobsTimer=setInterval(tick,15000);
                 setTimeout(tick,4000);
@@ -8157,10 +8164,18 @@
                         if(failed>(s._printJobsFailedSeen||0))s.toast('⚠️ 有工單印不出來，請看左下角紅色提示');
                         s._printJobsFailedSeen=failed;
                         s.printJobs=jobs;s.printJobsError='';
+                        if(s._printJobWatcher){
+                            if(s.printJobsPanel)s._printJobWatcher.ack(jobs);
+                            if(s._printJobWatcher.update(jobs)&&s._printAlert)s._printAlert.play();
+                        }
                         if(!jobs.length)s.printJobsPanel=false;
                     })
                     .catch(function(e){s.printJobsError='無法讀取列印佇列';console.warn('print-jobs:',e&&e.message?e.message:e);})
                     .finally(function(){s._printJobsLoading=false;});
+            },
+            togglePrintJobsPanel:function(){
+                this.printJobsPanel=!this.printJobsPanel;
+                if(this.printJobsPanel&&this._printJobWatcher)this._printJobWatcher.ack(this.printJobs);
             },
             printJobsHasFailed:function(){
                 return this.printJobs.some(function(j){return j&&j.status==='failed';});
@@ -8178,6 +8193,7 @@
             printJobAction:function(job,action){
                 var s=this,base=s.printJobsBase();
                 if(!job||s.printJobsBusy[job.id])return;
+                if(s._printJobWatcher)s._printJobWatcher.ack([job]);
                 if(action==='dismiss'&&!confirm('確定忽略這張未印出的工單？\n（請先確認廚房已知道這張單）'))return;
                 if(!base||!auth.currentUser){s.toast('⚠️ 尚未連上列印服務');return;}
                 var busy=Object.assign({},s.printJobsBusy);busy[job.id]=true;s.printJobsBusy=busy;
