@@ -1324,10 +1324,43 @@
                     }
                     return '';
                 },
+                // ★ 20261002：顧客/店員明確選「不加蛋」（optionGroupSelections / optionSelections / selectedOptions）
+                hasExplicitNoEggSelection(item, order) {
+                    const sibling = this.isComboMainLineForDisplay(item) ? this.findComboDrinkSiblingForDisplay(item, order) : null;
+                    return [item, sibling].filter(Boolean).some((owner) => {
+                        const sels = Array.isArray(owner.optionGroupSelections) ? owner.optionGroupSelections : [];
+                        if (sels.some((sel) => /\u4e0d\u52a0\u86cb/.test(String(sel && (sel.name || sel.value || sel.label) || '')))) return true;
+                        return [owner.optionSelections, owner.selectedOptions].some((obj) => obj && typeof obj === 'object' && !Array.isArray(obj)
+                            && Object.keys(obj).some((k) => /\u4e0d\u52a0\u86cb/.test(String(obj[k] || ''))));
+                    });
+                },
+                // ★ 20261002：菜單「加蛋」群組預設選項若要加價（如 +全熟蛋 $15），不可在沒選蛋時當成預設顯示
+                isMenuDefaultEggPaid(item) {
+                    const menuItem = this.findMenuItemForDisplayName(item && (item.name || item['\u54c1\u9805']));
+                    const groups = Array.isArray(menuItem && menuItem.optionGroups) ? menuItem.optionGroups : [];
+                    for (let i = 0; i < groups.length; i++) {
+                        const group = groups[i] || {};
+                        const groupName = String(group.groupName || group.name || '').trim();
+                        const choices = this.getEggChoicesFromGroup(group);
+                        const hasEggGroup = groupName.indexOf('\u86cb') !== -1 || choices.some((ch) => this.extractEggDonenessFromText(ch && (ch.name || ch.value || ch.label)));
+                        if (!hasEggGroup) continue;
+                        let idx = Number(group.defaultIdx);
+                        if (!Number.isFinite(idx)) idx = Number(group.defaultIndex);
+                        if (!Number.isFinite(idx) || idx < 0 || idx >= choices.length) idx = 0;
+                        const ch = choices[idx] || {};
+                        const price = Number(ch.price);
+                        const base = Number(group.baseValue || 0);
+                        if (String(group.pricing || 'addDelta') === 'addDelta' && Number.isFinite(price) && price > 0) return true;
+                        if (Number.isFinite(price) && price > base && base >= 0 && String(group.pricing || '') !== 'setPrice') return true;
+                        return false;
+                    }
+                    return false;
+                },
                 getDisplayEggDoneness(item, order) {
                     // \u2605 \u9867\u5ba2\u9078\u300c\u4e0d\u52a0\u86cb\u300d\u2192 \u4e0d\u986f\u793a\u86cb\u719f\u6210\u5ea6
                     const noteText = String((item && (item.note || item['\u5099\u8a3b'])) || '');
                     if (/\u4e0d\u52a0\u86cb/.test(noteText)) return '';
+                    if ((typeof this.hasExplicitNoEggSelection === 'function' && this.hasExplicitNoEggSelection(item, order))) return '';
                     const isComboLike = this.isComboLikeForEggDisplay(item);
                     const paidEgg = this.hasPaidEggSignal(item, order);
                     const menuSupportsEgg = !!this.getMenuDefaultEggDoneness(item);
@@ -1351,6 +1384,7 @@
                     if (noteEgg) return noteEgg;
                     if (paidEgg) return '';
                     if (!isComboLike) return '';
+                    if ((typeof this.isMenuDefaultEggPaid === 'function' && this.isMenuDefaultEggPaid(item))) return '';
                     return this.getMenuDefaultEggDoneness(item);
                 },
                 menuItemUsesDiscount5MealTemplate(item) {
@@ -1742,6 +1776,7 @@
                 getDisplayLineTotal(item, order) {
                     if (!item) return 0;
                     if (this.isComboDrinkLineForDisplay(item)) {
+                        if ((typeof this.isPendingComboDrinkForDisplay === 'function' && this.isPendingComboDrinkForDisplay(item))) return 0;
                         const full = Number(item.comboDrinkFullPrice);
                         const credit = Number(item.comboDrinkCredit);
                         const surcharge = Number(item.comboDrinkSurcharge);
@@ -1858,10 +1893,12 @@
                     };
                     let ruleFull = Math.max(collectRuleFull(item), collectRuleFull(sibling));
                     if (!ruleFull) ruleFull = this.getMealUpgradeDrinkFullPriceForDisplay(item, order);
+                    let ruleDecided = false;
                     if (ruleCredit > 0 && ruleFull > 0) {
                         reliableUpgrade = Math.max(0, Math.round(ruleFull - ruleCredit));
                         fallbackUpgrade = 0;
                         includedBaseDrink = ruleFull <= ruleCredit;
+                        ruleDecided = true;
                     } else if (numberedMealRule && reliableUpgrade <= 30 && fallbackUpgrade <= 30) {
                         reliableUpgrade = 0;
                         fallbackUpgrade = 0;
@@ -1899,7 +1936,7 @@
                         if (line > 0 && base > 0 && qty > 0) {
                             const optionsCost = Array.isArray(item.options) ? item.options.reduce((s, o) => s + Number(o && o.price || 0), 0) : 0;
                             const extrasCost = Array.isArray(item.posExtras) ? item.posExtras.reduce((s, e) => s + Number(e && e.price || 0), 0) : 0;
-                            const lineDelta = Math.max(0, (line / qty) - base - optionsCost - extrasCost);
+                            const lineDelta = Math.max(0, (line / qty) - base - optionsCost - extrasCost - (typeof this.getNonDrinkSelectionCostForDisplay === 'function' ? this.getNonDrinkSelectionCostForDisplay(item) : 0));
                             if (lineDelta > 0 && lineDelta + 0.01 < upgrade) upgrade = lineDelta;
                         }
                         const sibling = this.findComboDrinkSiblingForDisplay(item, order);
@@ -1916,24 +1953,46 @@
                         if (line > 0 && base > 0 && qty > 0) {
                             const optionsCost = Array.isArray(item.options) ? item.options.reduce((s, o) => s + Number(o && o.price || 0), 0) : 0;
                             const extrasCost = Array.isArray(item.posExtras) ? item.posExtras.reduce((s, e) => s + Number(e && e.price || 0), 0) : 0;
-                            const lineDelta = Math.max(0, (line / qty) - base - optionsCost - extrasCost);
+                            const lineDelta = Math.max(0, (line / qty) - base - optionsCost - extrasCost - (typeof this.getNonDrinkSelectionCostForDisplay === 'function' ? this.getNonDrinkSelectionCostForDisplay(item) : 0));
                             if (lineDelta > 0 && lineDelta + 0.01 < upgrade) upgrade = lineDelta;
                         }
                     }
                     // ★ 行金額扣掉飲料升級差價的最後手段（heuristic）只在沒有任何明確訊號時才使用，
-                    //   且必須先扣掉 options（如 加熟蛋）/ posExtras（POS 食材加點）的金額，否則會把附加品價格誤算成飲料升級差價。
-                    if (upgrade <= 0) {
+                    //   且必須先扣掉 options（如 加熟蛋）/ posExtras（POS 食材加點）/ 選項群組加價（加蛋 +全熟蛋 $15）的金額，
+                    //   否則會把附加品價格誤算成飲料升級差價。
+                    // ★ 20261002：菜單規則（套餐飲料扣抵額 vs 飲料原價）已能判定時，以規則為準，不再用行金額反推。
+                    if (upgrade <= 0 && !ruleDecided) {
                         const base = this.getDisplayBaseUnit(item);
                         const line = this.getDisplayLineTotal(item);
                         const qty = this.getDisplayQty(item);
                         if (line > 0 && base > 0 && qty > 0) {
                             const optionsCost = Array.isArray(item.options) ? item.options.reduce((s, o) => s + Number(o && o.price || 0), 0) : 0;
                             const extrasCost = Array.isArray(item.posExtras) ? item.posExtras.reduce((s, e) => s + Number(e && e.price || 0), 0) : 0;
-                            const adjustedUnit = (line / qty) - optionsCost - extrasCost;
+                            const groupCost = (typeof this.getNonDrinkSelectionCostForDisplay === 'function' ? this.getNonDrinkSelectionCostForDisplay(item) : 0);
+                            const adjustedUnit = (line / qty) - optionsCost - extrasCost - groupCost;
                             upgrade = Math.max(upgrade, adjustedUnit - base);
                         }
                     }
+                    // ★ 20261002：套餐飲料「容量待確認 / 0元」時一律不計補差價（等現場確認後由修改單決定）
+                    if ([item, sibling].some((owner) => (typeof this.isPendingComboDrinkForDisplay === 'function' && this.isPendingComboDrinkForDisplay(owner)))) return 0;
                     return Math.max(0, Math.round(upgrade));
+                },
+                isPendingComboDrinkForDisplay(owner) {
+                    if (!owner || typeof owner !== 'object') return false;
+                    const note = String(owner.note || owner['\u5099\u8a3b'] || '');
+                    return /\u5bb9\u91cf\u5f85\u78ba\u8a8d/.test(note);
+                },
+                getNonDrinkSelectionCostForDisplay(item) {
+                    const sels = Array.isArray(item && item.optionGroupSelections) ? item.optionGroupSelections : [];
+                    return sels.reduce((sum, sel) => {
+                        if (!sel) return sum;
+                        const pricing = String(sel.pricing || 'addDelta');
+                        const group = String(sel.groupName || '').toLowerCase();
+                        if (pricing === 'mealUpgrade' || pricing === 'setPrice') return sum;
+                        if (group.indexOf('drink') !== -1 || group.indexOf('\u98f2\u6599') !== -1 || group.indexOf('\u5bb9\u91cf') !== -1 || group.indexOf('size') !== -1) return sum;
+                        const price = Number(sel.price);
+                        return sum + (Number.isFinite(price) && price > 0 ? price : 0);
+                    }, 0);
                 },
                 normalizeDisplayDrinkName(name, state) {
                     let text = String(name || '').trim();
@@ -2396,7 +2455,8 @@
                             }
                             var mappedNameForRole=String(mapped.name||'');
                             var mappedCategoryForRole=String(mapped.category||mapped['\u985e\u5225']||'');
-                            var mappedLooksDrink=/\u5496\u5561|\u5976\u8336|\u7d05\u8336|\u7da0\u8336|\u9bae\u8336|\u9bae\u5976|\u8c46\u6f3f|\u53ef\u53ef|\u62ff\u9435|\u7f8e\u5f0f|\u98f2\u6599|\u8336/.test(mappedNameForRole)||mappedCategoryForRole.indexOf('\u98f2')!==-1;
+                            var mappedExplicitMain=(src.isCombo===true&&!src.isComboDrink)||/\u5957\u9910|\u62fc\u76e4/.test(mappedNameForRole);
+                            var mappedLooksDrink=/\u5496\u5561|\u5976\u8336|\u7d05\u8336|\u7da0\u8336|\u9bae\u8336|\u9bae\u5976|\u8c46\u6f3f|\u53ef\u53ef|\u62ff\u9435|\u7f8e\u5f0f|\u98f2\u6599|\u8336/.test(mappedNameForRole)||(!mappedExplicitMain&&mappedCategoryForRole.indexOf('\u98f2')!==-1);
                             var mappedLooksComboMain=(!!mapped.isCombo||mappedNameForRole.indexOf('\u5957\u9910')!==-1||mappedNameForRole.indexOf('\u62fc\u76e4')!==-1)&&!mappedLooksDrink;
                             if(mappedLooksComboMain&&String(mapped.mealDrink||mapped.comboDrinkText||'').trim()){
                                 mapped.isCombo=true;
