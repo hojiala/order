@@ -3738,6 +3738,35 @@
                         this.batchPrinting = false;
                     }
                 },
+                // reprint-guard-20261003: 與 pos.html 相同——單筆補印前讀 PocketBase 最新狀態，
+                // 已取消／撤回不印；LINE Pay 未付款需確認（No.006 已撤回卻被補印的事件）。
+                async readLatestOrderForReprint(order) {
+                    try {
+                        const r = await listOrdersFromPocketBase({
+                            settings: this.settings || {}, pocketBaseUrl: this.pocketBaseUrl, pocketBaseOrdersCollection: this.pocketBaseOrdersCollection,
+                            sourcePage: 'admin', firebaseUser: auth.currentUser, dateKeys: [this.resolveOrderDateKey(order)], perPage: 500, maxPages: 2, timeoutMs: 5000
+                        });
+                        const rows = (r && r.ok && Array.isArray(r.orders)) ? r.orders : [];
+                        return rows.find((o) => o && o.id === order.id) || null;
+                    } catch (_) { return null; }
+                },
+                async reprintBlockReason(order, silent) {
+                    const latest = silent ? null : await this.readLatestOrderForReprint(order);
+                    const cur = Object.assign({}, order, latest || {});
+                    const label = 'No.' + String(cur.orderNo || '').padStart(3, '0');
+                    const st = String(cur.status || '').toLowerCase();
+                    if (st === 'cancelled' || st === 'archived' || cur.wasCancelled === true) {
+                        if (!silent) alert(label + ' 已取消／撤回，不補印工單。\n（顧客可能已改用其他付款方式重新下單，請查看最新訂單）');
+                        return 'order_cancelled';
+                    }
+                    if (silent) return '';
+                    const pm = String(cur.paymentMethod || '').toLowerCase(), ps = String(cur.paymentStatus || '').toLowerCase();
+                    const paid = ps === 'paid' || ps === 'refunded' || !!(this.lpConfirmed && this.lpConfirmed[cur.id]) || (this.lpStatus && this.lpStatus[cur.id] === 'confirmed');
+                    if ((pm === 'linepay' || pm === 'linepay_offline') && !paid) {
+                        if (!confirm(label + ' 的 LINE Pay 尚未付款完成（顧客可能還在付款，或已放棄改單）。\n\n確定仍要補印工單送廚房？')) return 'linepay_unpaid';
+                    }
+                    return '';
+                },
                 async printOrder(order, silent) {
                     if (this.isPhoneCommandOrder(order)) {
                         try {
@@ -3753,6 +3782,8 @@
                         if (!silent) this.toast('☎️ 電話整合訂單請先在電話後台補印');
                         return { ok: false, skipped: true, reason: 'integration_read_only' };
                     }
+                    const blocked = await this.reprintBlockReason(order, silent);
+                    if (blocked) return { ok: false, skipped: true, reason: blocked };
                     try {
                         const reprintTask = `kitchen_reprint_${Date.now()}`;
                         const result = await this.writeToPrintQueue(order.id, reprintTask, order);

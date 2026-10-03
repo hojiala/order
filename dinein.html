@@ -381,7 +381,7 @@
                         :disabled="cart.length===0||isSubmitting"
                         class="py-3.5 rounded-xl font-black text-white text-sm disabled:opacity-40 transition active:scale-[.98]"
                         style="background:linear-gradient(135deg,#06C755,#00B900)">
-                        {{ isSubmitting ? '送出中...' : (isPhoneMode ? '💚 LINE Pay' : '💚 LINE Pay QR') }}
+                        {{ isSubmitting ? '送出中...' : (isPhoneMode ? '💚 LINE Pay' : '💚 LINE Pay（手機掃碼）') }}
                     </button>
                 </div>
             </div>
@@ -506,14 +506,21 @@
     </div>
 
     <div v-if="showQRModal" class="fixed inset-0 z-[1000] flex items-center justify-center" style="background:rgba(0,0,0,0.75)">
-        <div class="bg-white rounded-2xl shadow-2xl overflow-hidden fade-in" style="max-width:20rem;width:calc(100% - 2rem)">
+        <div class="bg-white rounded-2xl shadow-2xl overflow-hidden fade-in" :style="{maxWidth:isPhoneMode?'20rem':'26rem',width:'calc(100% - 2rem)'}">
             <div class="px-5 py-3 flex items-center gap-2" style="background:linear-gradient(135deg,#06C755,#00B900)">
                 <span class="text-xl">💚</span>
                 <span class="text-white font-black text-sm">LINE Pay 付款</span>
                 <span class="ml-auto text-white text-sm font-bold">${{ qrAmount }}</span>
             </div>
             <div class="px-5 py-4 text-center">
-                <p class="text-gray-600 text-xs mb-3">{{ mobileLinePayUrl ? (mobileLinePayFallback ? '若未進入 LINE Pay，請點下方開啟。' : '正在開啟 LINE Pay…') : qrPreparing ? (qrRequestBusy ? '正在準備付款…' : qrPolling ? '正在確認付款結果…' : '請店員核對付款結果') : '請用手機 LINE 掃描付款' }}</p>
+                <!-- tablet-qr-store-switch-20261003: 平板 QR 要顧客拿出自己的手機掃（No.006、No.014 看到 QR 就取消），步驟放大顯示 -->
+                <div v-if="tabletQRWaiting" class="mb-3 text-left bg-green-50 border-2 border-green-300 rounded-xl px-4 py-3">
+                    <p class="text-green-800 font-black text-lg text-center mb-2">📱 請拿出您的手機掃碼付款</p>
+                    <p class="text-gray-800 text-base font-bold leading-relaxed">① 打開手機的 <span class="text-green-700">LINE</span>（或相機）</p>
+                    <p class="text-gray-800 text-base font-bold leading-relaxed">② 掃描下方 QR Code</p>
+                    <p class="text-gray-800 text-base font-bold leading-relaxed">③ 在手機上確認付款，本畫面會自動完成</p>
+                </div>
+                <p v-else class="text-gray-600 text-xs mb-3">{{ mobileLinePayUrl ? (mobileLinePayFallback ? '若未進入 LINE Pay，請點下方開啟。' : '正在開啟 LINE Pay…') : qrPreparing ? (qrRequestBusy ? '正在準備付款…' : qrPolling ? '正在確認付款結果…' : '請店員核對付款結果') : '請用手機 LINE 掃描付款' }}</p>
                 <p class="font-bold text-sm mb-2">訂單編號：{{ pendingLinePay && pendingLinePay.orderData.orderNo ? 'No.' + pendingLinePay.orderData.orderNo : qrOrderId }}</p>
                 <p v-if="qrErrorMsg" class="text-xs text-gray-500 break-all mb-2">查詢編號：{{ qrOrderId }}</p>
                 <div v-show="!qrPreparing" id="qrcode-container" class="flex justify-center mb-3">
@@ -533,6 +540,7 @@
                 <p v-if="qrRequestBusy" class="text-center text-sm text-gray-600 mb-2">處理中，請勿重新下單…</p>
                 <button v-if="!mobileLinePayUrl && !qrRequestBusy && !qrCancelling && qrPreparing && pendingLinePay && pendingLinePay.payMethod === 'linepay'" @click="resumeLinePayPayment" :disabled="checkoutChecking" class="w-full bg-green-50 text-green-700 font-bold py-2.5 rounded-xl text-sm mb-2">{{ checkoutChecking ? '正在查詢本筆付款…' : '尚未開啟 LINE Pay？取回原付款連結' }}</button>
                 <button v-if="!qrRequestBusy && !qrCancelling && qrPreparing" @click="viewPendingPayment" class="w-full bg-blue-50 text-blue-700 font-bold py-2.5 rounded-xl text-sm mb-2">返回購物車</button>
+                <button v-if="tabletStoreSwitchVisible" @click="switchQRToStorePay" :disabled="qrCancelling || qrRequestBusy || isSubmitting" class="w-full bg-orange-500 hover:bg-orange-600 disabled:opacity-60 text-white font-black py-3 rounded-xl text-base mb-2 transition">💰 沒有 LINE Pay？改用店內付款</button>
                 <button v-if="!qrRequestBusy && pendingLinePay" @click="cancelQRPay" :disabled="qrCancelling || qrRequestBusy" class="w-full bg-gray-100 hover:bg-gray-200 disabled:opacity-60 text-gray-600 font-bold py-2.5 rounded-xl text-sm transition">
                     {{ qrCancelling ? '正在取消並撤回訂單...' : '取消付款' }}
                 </button>
@@ -720,6 +728,13 @@
             qrPollTimer:null, qrCountdownTimer:null
         }},
         computed:{
+            // tablet-qr-store-switch-20261003: 平板 QR 正在等顧客用手機掃碼
+            tabletQRWaiting:function(){
+                return !this.isPhoneMode&&!this.mobileLinePayUrl&&!this.qrPreparing&&!this.qrPaidMsg;
+            },
+            tabletStoreSwitchVisible:function(){
+                return !this.isPhoneMode&&!!this.pendingLinePay&&!this.qrRequestBusy&&!this.qrPaidMsg&&!this.mobileLinePayUrl;
+            },
             dineinBusinessWindow:function(){
                 var dummy=this.nowMinute;
                 return getDineinBusinessWindow(this.settings,new Date());
@@ -1836,6 +1851,51 @@
                     s.qrErrorMsg='無法確認訂單已撤回，請勿重複送單並通知店員：'+(e&&e.message?e.message:e);
                     if(s.qrCountdown>0)s.startQRPolling();
                 });
+            },
+            // tablet-qr-store-switch-20261003: 平板 QR「改用店內付款」。
+            // 沿用既有「撤回未付款 LINE Pay」後端流程；只有後端確認這筆是「未付款而撤回」（archived）
+            // 才用同一份購物車送出店內付款單。已付款、狀態不明或撤回失敗一律不重送，避免重複扣款或重複出單。
+            switchQRToStorePay:async function(){
+                var s=this;
+                if(s.isPhoneMode||s.qrCancelling||s.qrRequestBusy||s.isSubmitting)return;
+                var orderId=s.qrOrderId;
+                if(!orderId||!s.pendingLinePay||s.pendingLinePay.orderId!==orderId)return;
+                if(typeof confirm==='function'&&!confirm('改用店內付款？\n\n這筆 LINE Pay 尚未扣款，系統會先撤回，再用相同餐點送出「店內付款」訂單，請到櫃台結帳。'))return;
+                s.stopQRPolling();
+                s.qrCancelling=true;
+                s.qrErrorMsg='正在確認 LINE Pay 尚未付款…';
+                s.setCheckoutDiag({guideChoice:'store'});
+                // 1) 顧客可能剛好已用手機付完：先查一次，已付款就直接完成，不改單
+                try{
+                    var state=await readLinePayStatusViaBackend(orderId,{settings:s.settings,firebaseUser:auth.currentUser,timeoutMs:5000});
+                    if(s.qrOrderId!==orderId)return;
+                    if(state&&s.settleLinePayResult(orderId,state))return;
+                }catch(_){}
+                if(s.qrOrderId!==orderId)return;
+                // 2) 撤回原 LINE Pay 訂單（後端會再次確認未付款）
+                s.qrErrorMsg='正在撤回 LINE Pay 訂單…';
+                var result=null,err=null;
+                try{result=await s.cancelPendingLinePayOrder(orderId);}catch(e){err=e;}
+                if(s.qrOrderId!==orderId)return;
+                var status=result&&result.ok===true&&result.cancelled?String(result.cancelled.status||''):'';
+                if(status!=='archived'){
+                    s.qrCancelling=false;
+                    if(status==='cancelled'){
+                        s.qrErrorMsg='這筆訂單狀態已變更，未自動改成店內付款。請勿重複送單，請通知店員核對。';
+                    }else{
+                        s.qrErrorMsg='無法確認 LINE Pay 已撤回，未改成店內付款。請勿重複送單，請通知店員：'+(err&&err.message?err.message:'cancel_not_confirmed');
+                        if(s.qrCountdown>0)s.startQRPolling();
+                    }
+                    return;
+                }
+                // 3) 確認是未付款撤回，才用同一份購物車改送店內付款
+                s.clearPendingLinePay();
+                s.closeQRModal(false);
+                s.showOrderHistory=false;s.currentView='cart';
+                s.refreshLinePayConfirmed(s.myOrders,true);
+                if(!s.cart.length){s.toast('原 LINE Pay 訂單已撤回；購物車是空的，請重新點餐。');return;}
+                s.toast('原 LINE Pay 訂單已撤回，改送店內付款…');
+                return s.submitOrder('store');
             },
             // ── LINE Pay 請求 ──
             settleLinePayResult:function(orderId,result){
