@@ -125,6 +125,26 @@ function safeStorageGet(key) {
 function safeStorageRemove(key) {
   try { localStorage.removeItem(key); } catch (e) {}
 }
+// dinein-stale-cart-20261005: 掃碼內用付款成功後，顧客常停在這頁就關掉 LINE 內建瀏覽器、不回點餐頁，
+// 原點餐頁沒機會清空購物車，同一支手機下次掃碼就會看到上次已付款的餐點。
+// 只在「後端確認已付款」之後執行，且只清除和這筆結帳完全相同的購物車（顧客已經在點新的餐就不動）。
+function clearPaidDineinCart(paidOrderId, deviceId) {
+  const device = String(deviceId || '').trim();
+  if (!paidOrderId || !/^(table|takeout)_\d{1,3}$/.test(device)) return false;
+  try {
+    const pending = JSON.parse(localStorage.getItem('dinein_pending_linepay_' + device) || 'null');
+    if (!pending || pending.orderId !== paidOrderId) return false;
+    const saved = localStorage.getItem('dinein_cart_' + device);
+    if (!saved) return false;
+    const candidates = [];
+    if (pending.cartSnapshot) { try { candidates.push(JSON.parse(pending.cartSnapshot).items); } catch (e) {} }
+    if (pending.orderPayload && Array.isArray(pending.orderPayload.items)) candidates.push(pending.orderPayload.items);
+    if (!candidates.some(items => Array.isArray(items) && items.length > 0 && JSON.stringify(items) === saved)) return false;
+    localStorage.removeItem('dinein_cart_' + device);
+    localStorage.removeItem('dinein_cart_ts_' + device);
+    return true;
+  } catch (e) { return false; }
+}
 function waitForExistingIdToken(timeoutMs = 5000) {
   if (auth.currentUser) return auth.currentUser.getIdToken().catch(() => '');
   return new Promise(resolve => {
@@ -224,6 +244,7 @@ async function reconcileDineinCancellationReturn() {
     if (showTerminalPayment(result)) return;
     if (paymentOutcome(result) === 'paid') {
       clearLinePayCheckoutHandoff(orderId);
+      clearPaidDineinCart(orderId, params.get('deviceId'));
       showView('success');
     } else {
       throw new Error('cancellation_not_confirmed');
@@ -432,6 +453,7 @@ async function processPayment() {
 
     if (confirmed) {
       clearLinePayCheckoutHandoff(orderId);
+      if (returnPage === 'dinein') clearPaidDineinCart(orderId, params.get('deviceId'));
       document.getElementById('success').querySelector('.icon').textContent = '✅';
       document.getElementById('success').querySelector('.title').textContent = '付款成功，訂單已送出。';
       document.getElementById('success').querySelector('.msg').textContent = '本筆 LINE Pay 已付清，請勿重複付款';

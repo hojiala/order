@@ -1561,11 +1561,47 @@
             },
             removeItem:function(idx){this.cart.splice(idx,1);this.saveCart();if(!this.cart.length)this.currentView='menu'},
             saveCart:function(){try{localStorage.setItem('dinein_cart_'+this.deviceId,JSON.stringify(this.cart));localStorage.setItem('dinein_cart_ts_'+this.deviceId,String(Date.now()))}catch(e){}},
+            // dinein-stale-cart-20261005: 掃碼手機的購物車只屬於「這一次來店」。
+            //   LINE 內建瀏覽器付款後常停在 linepay-confirm.html 就被關掉，原點餐頁沒機會清空購物車；
+            //   同一支手機下次（甚至隔幾天）再掃同一桌，上次已付款的餐點就被載回購物車。
+            //   規則：手機模式的購物車「不是今天」或「超過 2 小時沒有變動」就視為上次來店留下的，不再載入。
+            localDayKey:function(t){var d=new Date(Number(t));return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);},
+            isPhoneCartStale:function(ts,now){
+                ts=Number(ts)||0;now=Number(now)||Date.now();
+                if(!ts)return true; // 沒有時間戳：無法證明是這次來店的購物車
+                var age=now-ts;
+                if(age<-5*60*1000||age>2*60*60*1000)return true; // 最多 2 小時（和 LINE Pay 付款返回的保留時間一致）
+                return this.localDayKey(ts)!==this.localDayKey(now);
+            },
+            // 這份購物車是否正是某筆已送出結帳的餐點。只比對餐點：訂單備註沒有存進 localStorage，重新整理後一定是空的。
+            cartMatchesCheckout:function(p,cart){
+                if(!p)return false;
+                var current;
+                try{current=JSON.stringify(Array.isArray(cart)?cart:this.cart)}catch(e){return false}
+                var candidates=[];
+                if(p.cartSnapshot){try{candidates.push(JSON.parse(p.cartSnapshot).items)}catch(e){}}
+                if(p.orderPayload&&Array.isArray(p.orderPayload.items))candidates.push(p.orderPayload.items);
+                return candidates.some(function(items){return Array.isArray(items)&&items.length>0&&JSON.stringify(items)===current});
+            },
+            discardSavedCart:function(){
+                this.cart=[];this.orderNote='';
+                try{localStorage.removeItem('dinein_cart_'+this.deviceId);localStorage.removeItem('dinein_cart_ts_'+this.deviceId)}catch(e){}
+            },
             // ★ 定時清除閒置購物車（manage 店面設定「定時清除桌邊購物車」）：
             //   平板購物車殘留上一組客人的餐點時，閒置超過設定分鐘自動清空
             checkCartIdleClear:function(){
                 var s=this;
-                if(s.isPhoneMode)return; // 掃碼手機是顧客自己的裝置，不會殘留給下一組客人
+                if(s.isPhoneMode){
+                    // 掃碼手機：頁面一直開著（例如 LINE 內建瀏覽器縮小後隔天又叫回來）也不保留上次來店的購物車。
+                    if(!s.cart.length||s.pendingLinePay||s.showQRModal||s.isSubmitting||s.qrRequestBusy||s.checkoutChecking)return;
+                    var pts=0;
+                    try{pts=Number(localStorage.getItem('dinein_cart_ts_'+s.deviceId))||0}catch(e){}
+                    if(!pts||!s.isPhoneCartStale(pts,Date.now()))return; // 讀不到時間戳時不動顧客正在點的餐
+                    s.discardSavedCart();
+                    if(s.currentView==='cart'||s.currentView==='detail'){s.currentView='menu';s.activeItem=null;s.editingIdx=-1}
+                    s.toast('🧹 已清除上次留下的購物車，請重新點餐');
+                    return;
+                }
                 if(String(s.settings.dineinCartClearEnabled)!=='true')return;
                 var mins=Number(s.settings.dineinCartClearMinutes)||0;
                 if(mins<=0||!s.cart.length)return;
@@ -1580,7 +1616,16 @@
             loadCart:function(){
                 try{
                     var saved=localStorage.getItem('dinein_cart_'+this.deviceId);
-                    if(saved){this.cart=JSON.parse(saved)}
+                    if(!saved)return;
+                    var cart=JSON.parse(saved);
+                    if(!Array.isArray(cart)){this.discardSavedCart();return}
+                    // dinein-stale-cart-20261005: 手機掃碼不載入上次來店留下的購物車（平板仍由「定時清除桌邊購物車」設定處理）
+                    if(this.isPhoneMode&&cart.length){
+                        var ts=0;
+                        try{ts=Number(localStorage.getItem('dinein_cart_ts_'+this.deviceId))||0}catch(e){}
+                        if(this.isPhoneCartStale(ts,Date.now())){this.discardSavedCart();return}
+                    }
+                    this.cart=cart;
                 }catch(e){this.cart=[]}
             },
             // ── 再訂1次 ──
@@ -1864,7 +1909,7 @@
                 s.stopQRPolling();
                 s.qrCancelling=true;
                 s.qrErrorMsg='正在確認 LINE Pay 尚未付款…';
-                s.setCheckoutDiag({guideChoice:'store'});
+                s.setCheckoutDiag({guideChoice:'store'},'cancelMs'); // 記錄按下改單的時間（No.022 原本缺 cancelMs）
                 // 1) 顧客可能剛好已用手機付完：先查一次，已付款就直接完成，不改單
                 try{
                     var state=await readLinePayStatusViaBackend(orderId,{settings:s.settings,firebaseUser:auth.currentUser,timeoutMs:5000});
@@ -1936,6 +1981,12 @@
                 this.pendingLinePay=p;
                 if(!p.orderId||!p.orderData||!p.orderDateKey||(p.orderDateKey!==today&&!recent)){
                     // Only retire browser recovery state; never cancel/refund or mark the order paid.
+                    // dinein-stale-cart-20261005: 購物車若正是那筆舊結帳的餐點，一併清掉，避免舊餐點被當成新訂單再送一次。
+                    if(this.cartMatchesCheckout(p)){
+                        this.discardSavedCart();
+                        if(this.currentView==='cart'||this.currentView==='detail'){this.currentView='menu';this.activeItem=null;this.editingIdx=-1}
+                        this.toast('🧹 已清除上次結帳的餐點，請重新點餐');
+                    }
                     this.clearPendingLinePay();
                     this.closeQRModal(false);
                     this.qrRequestBusy=false;
@@ -2000,7 +2051,8 @@
                     order.linePayTransaction={status:result&&result.status||''};
                     var state=this.getLinePayState(order);
                     if(state!=='pending'||['done','completed','cancelled','archived'].indexOf(order.status)>=0){
-                        if(state==='paid'&&p.cartSnapshot===JSON.stringify({items:this.cart,note:this.orderNote||''})){
+                        // dinein-stale-cart-20261005: 只比對餐點；原本連備註一起比，有填備註的單重新整理後永遠對不上，購物車就不會清。
+                        if(state==='paid'&&this.cartMatchesCheckout(p)){
                             this.cart=[];this.orderNote='';this.saveCart();
                         }
                         this.clearPendingLinePay();this.closeQRModal(false);
