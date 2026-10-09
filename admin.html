@@ -71,6 +71,7 @@
                 <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                     
                     <div v-for="order in sortedOrders" :key="getOrderRenderKey(order)" 
+                         v-memo="[order, activeMenu === order.id, getDisplayStatus(order), getLinePayState(order), menuItems, todayStr]"
                          :data-order-identity="JSON.stringify({id:order.id,sourceOrderId:order.sourceOrderId,orderId:order.orderId,source:order.source,sourceRecordPath:order.sourceRecordPath,integrationPath:order.integration &amp;&amp; order.integration.sourceRecordPath,pickupDate:order.pickupDate,orderDateKey:order.orderDateKey,sourceDateKey:order._sourceDateKey,recordId:order._pocketBaseRecordId,readBackend:order._readBackend,status:order.status,printTask:order.print_task,numberingDeferred:order.numberingDeferred})"
                          class="bg-white rounded-xl shadow-md flex flex-col relative overflow-hidden"
                          :class="{'opacity-60': getDisplayStatus(order) === 'done'}">
@@ -708,7 +709,9 @@
                             const failed = jobs.filter(j => j && j.status === 'failed').length;
                             if (failed > (this._printJobsFailedSeen || 0)) this.toast('⚠️ 有工單印不出來，請看左下角紅色提示');
                             this._printJobsFailedSeen = failed;
-                            this.printJobs = jobs; this.printJobsError = '';
+                            // ★ 20261009 admin-click-lag：佇列內容沒變就不換新陣列，避免每 15 秒整頁重繪
+                            if (JSON.stringify(jobs) !== JSON.stringify(this.printJobs)) this.printJobs = jobs;
+                            this.printJobsError = '';
                             if (!jobs.length) this.printJobsPanel = false;
                             if (this._printJobWatcher) {
                                 if (this.printJobsPanel) this._printJobWatcher.ack(jobs);
@@ -1071,20 +1074,48 @@
                 normalizeDisplayNameForMatch(name) {
                     return String(name || '').replace(/[\s\u3000]+/g, '').replace(/[()\uFF08\uFF09\[\]\u3010\u3011\u300C\u300D\u300E\u300F]/g, '').trim();
                 },
+                // ★ 20261009 admin-click-lag：菜單查詢索引快取。
+                //   舊寫法每查一次品名就把整份菜單（經 Vue reactive proxy）重新攤平再逐筆比對，
+                //   整頁重繪一次要查上千次 → 點「+」、每 10 秒輪詢、每 15 秒查列印佇列都會卡住
+                //   主執行緒好幾秒，期間的點擊要等很久才生效，或被下一次點擊抵銷（像「要按 2~3 次」）。
+                //   改成 menuItems 換成新陣列時才重建一次索引；同一品名的查詢結果也一併快取。
+                getMenuDisplayIndex() {
+                    const current = this.menuItems; // 讀 reactive 屬性：保留「菜單更新 → 重新渲染」依賴
+                    const toRaw = (typeof Vue !== 'undefined' && Vue && typeof Vue.toRaw === 'function') ? Vue.toRaw : (v) => v;
+                    const raw = Array.isArray(current) ? toRaw(current) : [];
+                    const cached = this._menuDisplayIndex;
+                    if (cached && cached.source === raw && cached.length === raw.length) return cached;
+                    const menu = this.flattenMenuItemsForDisplay(raw);
+                    const index = {
+                        source: raw,
+                        length: raw.length,
+                        menu,
+                        names: menu.map((m) => [m && m.name, m && m['\u54c1\u9805'], m && m.itemName, m && m.title, m && m.label].map((v) => this.normalizeDisplayNameForMatch(v)).filter(Boolean)),
+                        prices: menu.map((m) => this.getDisplayMenuPriceValue(m)),
+                        itemByTarget: new Map(),
+                        drinkByTarget: new Map(),
+                        basePriceByName: null
+                    };
+                    this._menuDisplayIndex = index;
+                    return index;
+                },
                 findMenuItemForDisplayName(name) {
-                    const menu = this.flattenMenuItemsForDisplay(Array.isArray(this.menuItems) ? this.menuItems : []);
+                    const index = this.getMenuDisplayIndex();
                     const target = this.normalizeDisplayNameForMatch(name);
                     if (!target) return null;
-                    const namesOf = (m) => [m && m.name, m && m['\u54c1\u9805'], m && m.itemName, m && m.title, m && m.label].map((v) => this.normalizeDisplayNameForMatch(v)).filter(Boolean);
-                    for (let i = 0; i < menu.length; i++) {
-                        if (namesOf(menu[i]).some((candidate) => candidate === target)) return menu[i];
+                    if (index.itemByTarget.has(target)) return index.itemByTarget.get(target);
+                    const menu = index.menu;
+                    let found = null;
+                    for (let i = 0; i < menu.length && !found; i++) {
+                        if (index.names[i].some((candidate) => candidate === target)) found = menu[i];
                     }
-                    if (target.length >= 4) {
-                        for (let i = 0; i < menu.length; i++) {
-                            if (namesOf(menu[i]).some((candidate) => candidate.indexOf(target) !== -1 || target.indexOf(candidate) !== -1)) return menu[i];
+                    if (!found && target.length >= 4) {
+                        for (let i = 0; i < menu.length && !found; i++) {
+                            if (index.names[i].some((candidate) => candidate.indexOf(target) !== -1 || target.indexOf(candidate) !== -1)) found = menu[i];
                         }
                     }
-                    return null;
+                    index.itemByTarget.set(target, found);
+                    return found;
                 },
                 // ★ 從菜單查詢該餐點 mealUpgrade 群組的標題/前綴（給 AI 電話訂單等沒帶新欄位的訂單回查用）
                 getMealUpgradeMetaFromMenu(itemName) {
@@ -1112,17 +1143,20 @@
                     const normalizedName = this.normalizeDisplayDrinkName(name, {});
                     const target = this.normalizeDisplayNameForMatch(normalizedName || name);
                     if (!target) return null;
-                    const menu = this.flattenMenuItemsForDisplay(Array.isArray(this.menuItems) ? this.menuItems : []);
-                    const namesOf = (m) => [m && m.name, m && m['\u54c1\u9805'], m && m.itemName, m && m.title, m && m.label].map((v) => this.normalizeDisplayNameForMatch(v)).filter(Boolean);
-                    for (let i = 0; i < menu.length; i++) {
-                        if (this.getDisplayMenuPriceValue(menu[i]) > 0 && namesOf(menu[i]).some((candidate) => candidate === target)) return menu[i];
+                    const index = this.getMenuDisplayIndex();
+                    if (index.drinkByTarget.has(target)) return index.drinkByTarget.get(target);
+                    const menu = index.menu;
+                    let found = null;
+                    for (let i = 0; i < menu.length && !found; i++) {
+                        if (index.prices[i] > 0 && index.names[i].some((candidate) => candidate === target)) found = menu[i];
                     }
-                    if (target.length >= 2) {
-                        for (let i = 0; i < menu.length; i++) {
-                            if (this.getDisplayMenuPriceValue(menu[i]) > 0 && namesOf(menu[i]).some((candidate) => candidate.indexOf(target) !== -1 || target.indexOf(candidate) !== -1)) return menu[i];
+                    if (!found && target.length >= 2) {
+                        for (let i = 0; i < menu.length && !found; i++) {
+                            if (index.prices[i] > 0 && index.names[i].some((candidate) => candidate.indexOf(target) !== -1 || target.indexOf(candidate) !== -1)) found = menu[i];
                         }
                     }
-                    return null;
+                    index.drinkByTarget.set(target, found);
+                    return found;
                 },
                 getMealUpgradeDrinkFullPriceForDisplay(item, order) {
                     const candidates = [];
@@ -1603,11 +1637,17 @@
                 listenMenuForDisplay() {
                     const apply = (items) => {
                         const arr = Array.isArray(items) ? items.slice() : [];
+                        // ★ 20261009 admin-click-lag：菜單內容沒變（每 60 秒輪詢多半如此）就不換新陣列，
+                        //   否則每分鐘都會讓所有訂單重新正規化＋整頁重繪
+                        let signature = '';
+                        try { signature = JSON.stringify(arr); } catch (_) { signature = ''; }
+                        if (signature && signature === this._menuItemsSignature && Array.isArray(this.menuItems) && this.menuItems.length) return;
                         const flattened = this.flattenMenuItemsForDisplay(arr.reduce((acc, item) => {
                             if (item && item.id) acc[item.id] = item;
                             return acc;
                         }, {}));
                         this.menuItems = flattened.length ? flattened : arr;
+                        this._menuItemsSignature = signature;
                     };
                     const loadFirebaseOnce = () => get(ref(db, 'menu')).then((snap) => {
                         const data = snap.val() || {};
@@ -1805,16 +1845,19 @@
                     return Math.round(line);
                 },
                 findMenuBasePriceForDisplay(name) {
-                    const menu = Array.isArray(this.menuItems) ? this.menuItems : [];
-                    const target = String(name || '').trim();
-                    for (let i = 0; i < menu.length; i++) {
-                        const m = menu[i] || {};
-                        if (String(m.name || '').trim() === target) {
+                    // ★ 20261009 admin-click-lag：改查快取索引（規則同舊版：第一筆同名且售價 > 0）
+                    const index = this.getMenuDisplayIndex();
+                    if (!index.basePriceByName) {
+                        const map = new Map();
+                        index.source.forEach((row) => {
+                            const m = row || {};
+                            const key = String(m.name || '').trim();
                             const p = Number(m.price);
-                            if (Number.isFinite(p) && p > 0) return p;
-                        }
+                            if (!map.has(key) && Number.isFinite(p) && p > 0) map.set(key, p);
+                        });
+                        index.basePriceByName = map;
                     }
-                    return 0;
+                    return index.basePriceByName.get(String(name || '').trim()) || 0;
                 },
                 getDisplayBaseUnit(item) {
                     if (!item) return 0;
@@ -3367,7 +3410,15 @@
                             if (status === 'archived') return false;
                             return true;
                         });
-                    this.orders = mergedOrders;
+                    // ★ 20261009 admin-click-lag：輪詢結果跟上次一樣（且期間沒有別處改過 this.orders）就沿用舊陣列，
+                    //   避免每 10 秒把全部訂單換成新物件 → sortedOrders 重算＋整頁重繪
+                    let ordersSignature = '';
+                    try { ordersSignature = JSON.stringify(mergedOrders); } catch (_) { ordersSignature = ''; }
+                    if (!(ordersSignature && ordersSignature === this._ordersSignature && this.orders === this._ordersSignatureRef)) {
+                        this.orders = mergedOrders;
+                        this._ordersSignature = ordersSignature;
+                        this._ordersSignatureRef = this.orders;
+                    }
                     const mergedNewCount = mergedOrders.filter(o => this.getDisplayStatus(o) === 'new').length;
                     if (mergedNewCount > this.previousNewCount && this.previousNewCount !== 0) this.playAlert();
                     this.previousNewCount = mergedNewCount;
@@ -3391,8 +3442,9 @@
                         if (status) _statusMap[order.id] = status;
                         if (status === 'confirmed') _confirmed[order.id] = true;
                     });
-                    this.lpConfirmed = _confirmed;
-                    this.lpStatus = _statusMap;
+                    // ★ 20261009 admin-click-lag：內容沒變就不換新物件，避免無謂整頁重繪
+                    if (JSON.stringify(_confirmed) !== JSON.stringify(this.lpConfirmed || {})) this.lpConfirmed = _confirmed;
+                    if (JSON.stringify(_statusMap) !== JSON.stringify(this.lpStatus || {})) this.lpStatus = _statusMap;
                 },
                 resetOrderBucketListeners() {
                     (this.orderBucketUnsubs || []).forEach((fn) => { try { fn && fn(); } catch(_) {} });
