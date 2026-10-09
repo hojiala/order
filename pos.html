@@ -6864,19 +6864,23 @@
                     return data;
                 }finally{clearTimeout(timer);}
             },
-            startScannerBridge:async function(){
+            // ★ scanner-retry-20261009：attempt＝自動重試次數（按「重新連接掃碼器」時 Vue 會傳 click event → 視為 0）
+            startScannerBridge:async function(attempt,forceRefresh){
                 var s=this;
+                var tries=(typeof attempt==='number'&&attempt>0)?attempt:0;
+                var prevStatus=s.scannerBridgeStatus,prevState=s.scannerBridgeState;
                 s.stopScannerBridge();
                 var sessionId=(window.crypto&&typeof window.crypto.randomUUID==='function')
                     ?window.crypto.randomUUID().replace(/-/g,'')
                     :(Date.now().toString(36)+Math.random().toString(36).slice(2)+Math.random().toString(36).slice(2));
                 s.scannerBridgeSessionId=sessionId;
-                s.scannerBridgeStatus='正在連接 Pi USB 掃碼器…';
-                s.scannerBridgeState='connecting';
+                // 自動重試時沿用上一次的提示，避免狀態列每幾秒閃一下
+                s.scannerBridgeStatus=tries?(prevStatus||'正在重新連接 Pi USB 掃碼器…'):'正在連接 Pi USB 掃碼器…';
+                s.scannerBridgeState=tries?(prevState||'retrying'):'connecting';
                 try{
                     var user=auth.currentUser;
                     if(!user)throw new Error('POS 尚未登入');
-                    var idToken=await s.scannerBridgeToken(false);
+                    var idToken=await s.scannerBridgeToken(!!(tries&&forceRefresh));
                     if(s.scannerBridgeSessionId!==sessionId||!s.showOfflineModal)return;
                     var bases=s.scannerBridgeBases(),lastError=null;
                     for(var i=0;i<bases.length;i++){
@@ -6902,9 +6906,21 @@
                     s.pollScannerBridge(sessionId);
                 }catch(error){
                     if(s.scannerBridgeSessionId!==sessionId)return;
-                    s.scannerBridgeStatus='Pi USB 掃碼器未連線：'+s.describeScannerBridgeError(error)+'；仍可直接輸入';
-                    s.scannerBridgeState='error';
-                    console.warn('POS scanner bridge unavailable:',error&&error.status?('HTTP '+error.status):'',error&&error.message?error.message:error);
+                    var reason=s.describeScannerBridgeError(error);
+                    console.warn('POS scanner bridge unavailable (try '+(tries+1)+'):',error&&error.status?('HTTP '+error.status):'',error&&error.message?error.message:error);
+                    if(!s.showOfflineModal){
+                        s.scannerBridgeStatus='Pi USB 掃碼器未連線：'+reason+'；仍可直接輸入';
+                        s.scannerBridgeState='error';
+                        return;
+                    }
+                    // 視窗還開著：自動重試（1.5→3→5 秒，之後每 5 秒）；前兩次顯示「重新連線中」，之後轉紅色請店員手動輸入
+                    var delay=[1500,3000][tries]||5000;
+                    var needRefresh=(error&&error.status===401)||/scanner_auth_timeout|尚未登入/.test(String(error&&error.message||''));
+                    s.scannerBridgeStatus='Pi USB 掃碼器未連線：'+reason+'；自動重試中（第 '+(tries+1)+' 次），也可直接輸入';
+                    s.scannerBridgeState=tries>=2?'error':'retrying';
+                    s.scannerBridgePollTimer=setTimeout(function(){
+                        if(s.showOfflineModal&&s.scannerBridgeSessionId===sessionId)s.startScannerBridge(tries+1,needRefresh);
+                    },delay);
                 }
             },
             // ★ scanner-diag-20261009：LINE Pay 掃碼扣款失敗代碼 → 店內看得懂的處理方式
