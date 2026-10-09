@@ -6883,7 +6883,10 @@
                             s.scannerBridgeAuthToken=idToken;
                             lastError=null;
                             break;
-                        }catch(error){lastError=error;}
+                        }catch(error){
+                            // ★ scanner-diag-20261009：優先保留有 HTTP 狀態碼的錯誤（較能看出是哪一段失敗）
+                            if(!lastError||(!lastError.status&&error&&error.status))lastError=error;
+                        }
                     }
                     if(lastError)throw lastError;
                     if(s.scannerBridgeSessionId!==sessionId||!s.showOfflineModal)return;
@@ -6891,9 +6894,25 @@
                     s.pollScannerBridge(sessionId);
                 }catch(error){
                     if(s.scannerBridgeSessionId!==sessionId)return;
-                    s.scannerBridgeStatus='Pi USB 掃碼器未連線；仍可直接輸入';
-                    console.warn('POS scanner bridge unavailable:',error&&error.message?error.message:error);
+                    s.scannerBridgeStatus='Pi USB 掃碼器未連線：'+s.describeScannerBridgeError(error)+'；仍可直接輸入';
+                    console.warn('POS scanner bridge unavailable:',error&&error.status?('HTTP '+error.status):'',error&&error.message?error.message:error);
                 }
+            },
+            // ★ scanner-diag-20261009：把掃碼器連線錯誤翻成店內看得懂的原因（哪一段斷掉）
+            describeScannerBridgeError:function(error){
+                var status=Number(error&&error.status||0);
+                var msg=String(error&&(error.message||error.name)||error||'');
+                if(/POS 尚未登入/.test(msg))return 'POS 尚未登入';
+                if(/scanner_auth_timeout/.test(msg))return '取得 POS 登入憑證逾時';
+                if(status===503)return '樹莓派掃碼轉送服務未啟用（LINE Pay 服務沒載入掃碼器設定）';
+                if(status===401)return '這個 POS 登入帳號沒有掃碼器權限（請重新登入，或確認帳號在 POS 允許名單）';
+                if(status===404||status===405)return '樹莓派 LINE Pay 服務沒有掃碼器功能（版本未更新）';
+                if(status===409)return '掃碼器正在另一台 POS 使用';
+                if(status===400)return '掃碼工作階段格式錯誤';
+                if(status)return '樹莓派回應 HTTP '+status;
+                if(/abort/i.test(msg)||(error&&error.name==='AbortError'))return '連線樹莓派逾時';
+                if(/fetch|network|load failed/i.test(msg))return '連不到樹莓派 LINE Pay 服務';
+                return msg?msg.slice(0,60):'原因不明';
             },
             scannerBridgeToken:async function(forceRefresh){
                 if(!auth.currentUser)throw new Error('POS 尚未登入');
@@ -6942,7 +6961,7 @@
                         }
                         if(s.scannerBridgeSessionId!==sessionId||!s.showOfflineModal)return;
                     }
-                    s.scannerBridgeStatus='Pi USB 掃碼器連線中斷，正在重試…';
+                    s.scannerBridgeStatus='Pi USB 掃碼器連線中斷（'+s.describeScannerBridgeError(error)+'），正在重試…';
                     s.scannerBridgePollTimer=setTimeout(function(){s.pollScannerBridge(sessionId);},1500);
                 }
             },
@@ -7167,9 +7186,11 @@
                                     // ★ phone-paid-no-reprint-20260927：內容沒改只回寫已付款，不印；有改才印修改後完整單
                                     var phonePrint=!ctx.skipPaidPrint;
                                     var paidPhonePayload=Object.assign({},ctx.phonePayload||{}, {
-                                        paymentMethod:'linepay_offline',paymentStatus:'paid',status:'done',
-                                        completedAt:new Date().toISOString(),autoPrintKitchen:phonePrint
+                                        paymentMethod:'linepay_offline',paymentStatus:'paid',autoPrintKitchen:phonePrint
                                     });
+                                    // ★ phone-linepay-status-20261009：付款成功不把電話單改成「已完成」，訂單狀態維持原樣
+                                    delete paidPhonePayload.status;
+                                    delete paidPhonePayload.completedAt;
                                     s.queuePhoneOrderCommand(ctx.phoneOrder,'replace_order',paidPhonePayload).then(function(){
                                         s.offlineSuccess=phonePrint?"付款成功，修改工單已送出":"付款成功（已出過工單，不重印）";
                                         setTimeout(function(){s.closeOfflineModal();},2000);
@@ -7744,12 +7765,20 @@
                     var kitchenContentChanged=!s.editKitchenSig||s.editKitchenSignature()!==s.editKitchenSig;
                     if(s.isPhoneCommandOrder(targetOrder)){
                         var phonePayment=s.buildPhoneCommandPayment(realPm,oldPm,oldPaid);
-                        var phoneEditPayload=s.buildPhoneEditCommandPayload(targetOrder,{
+                        // ★ phone-linepay-status-20261009：電話單 LINE Pay（📲／💚）比照其他來源，只改付款狀態、不動訂單狀態
+                        //   （以前一律送 status:'done'，付款後卡片變「已完成」反灰）。現金／未付款編輯維持原行為。
+                        var phoneIsLinePay=(realPm==='linepay'||realPm==='linepay_offline');
+                        var phoneEditExtra={
                             paymentMethod:phonePayment.paymentMethod,
-                            paymentStatus:phonePayment.paymentStatus,
-                            status:'done',
-                            completedAt:new Date().toISOString()
-                        });
+                            paymentStatus:phonePayment.paymentStatus
+                        };
+                        if(!phoneIsLinePay){
+                            phoneEditExtra.status='done';
+                            phoneEditExtra.completedAt=new Date().toISOString();
+                        }
+                        var phoneEditPayload=s.buildPhoneEditCommandPayload(targetOrder,phoneEditExtra);
+                        // 不帶 status → Node-RED 保留電話單目前的狀態（新訂單／製作中…）
+                        if(phoneIsLinePay)delete phoneEditPayload.status;
                         var phoneSourcePath=s.normalizeSourceRecordPath(targetOrder,id);
                         if((realPm==='linepay'||realPm==='linepay_offline')&&!/^phone_ai\/orders\/[A-Za-z0-9_-]{1,200}$/.test(phoneSourcePath))throw new Error('找不到電話訂單來源路徑');
                         if(realPm==='linepay_offline'){
@@ -7766,7 +7795,7 @@
                             s.offlineAutoSubmitBlocked=false;
                             s.offlinePhoneOrder=targetOrder;
                             s.offlinePhoneEditPayload=Object.assign({},phoneEditPayload,{
-                                paymentMethod:'linepay_offline',paymentStatus:'paid',status:'done',autoPrintKitchen:kitchenContentChanged
+                                paymentMethod:'linepay_offline',paymentStatus:'paid',autoPrintKitchen:kitchenContentChanged
                             });
                             s.offlineSourceRecordPath=phoneSourcePath;
                             s.showOfflineModal=true;
