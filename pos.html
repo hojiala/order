@@ -899,6 +899,12 @@
       <div class="px-5 py-4">
         <p class="text-gray-500 text-sm mb-1">訂單金額</p>
         <p class="text-3xl font-black text-gray-900 mb-4">${{ offlineAmount }}</p>
+        <!-- ★ scanner-ready-20261009：大字顯示掃碼器是否已向 Pi 登記好；準備中就掃，Pi 會把條碼丟掉（有嗶、沒數字） -->
+        <div v-if="offlineOrderId && scannerBridgeState && !offlineSubmitting && !offlineSuccess"
+          style="margin-bottom:.75rem;border-radius:.75rem;padding:.5rem .75rem;text-align:center;font-weight:900;font-size:1rem"
+          :style="scannerBridgeState==='ready' ? 'background:#dcfce7;color:#15803d' : ((scannerBridgeState==='connecting'||scannerBridgeState==='retrying') ? 'background:#fef3c7;color:#92400e' : 'background:#fee2e2;color:#b91c1c')">
+          {{ {connecting:'⏳ 掃碼器準備中，請稍候再掃',ready:'✅ 可以掃碼了',retrying:'⏳ 掃碼器重新連線中，請稍候再掃',error:'⚠️ 掃碼器未連線，請手動輸入',busy:'⚠️ 掃碼器被另一台 POS 使用中'}[scannerBridgeState] || '' }}
+        </div>
         <p class="text-gray-700 text-sm font-bold mb-2">請顧客出示 LINE Pay 條碼，對準掃碼器掃描（掃到後自動付款）：</p>
         <div class="relative">
           <input ref="barcodeInput" v-model="offlineBarcode" type="tel" maxlength="20"
@@ -912,7 +918,7 @@
         </div>
         <p class="text-gray-400 text-xs mt-1 text-center">{{ !offlineOrderId ? '正在建立付款訂單，完成後即可掃碼' : (offlineCreating ? '訂單同步中；可先掃碼，完成後再確認付款' : (scannerBridgeStatus || '等待 Pi USB 掃碼器，掃到後自動付款；也可手動輸入後按 Enter')) }}</p>
         <button type="button" @click="startScannerBridge" :disabled="offlineSubmitting" class="mt-2 text-sm text-blue-700 underline">重新連接掃碼器</button>
-        <p v-if="offlineError" class="mt-2 text-red-500 text-sm text-center font-medium">{{ offlineError }}</p>
+        <p v-if="offlineError" class="mt-2 text-red-500 text-sm text-center font-medium" style="white-space:pre-line">{{ offlineError }}</p>
         <p v-if="offlineSuccess" class="mt-2 text-green-600 text-sm text-center font-bold">✅ {{ offlineSuccess }}</p>
       </div>
       <div class="px-5 pb-4 flex gap-2">
@@ -1028,7 +1034,7 @@
                 // ★ 情境3 Offline 掃碼
                 showOfflineModal:false, offlineBarcode:"", offlineAmount:0,offlineCreating:false,offlinePhoneOrder:null,offlinePhoneEditPayload:null,offlineSourceRecordPath:"",offlineSkipPaidPrint:false,editKitchenSig:"",offlineAutoSubmitBlocked:false,
                 offlineOrderId:"", offlineOrderDateKey:"", offlineItems:[], offlineError:"", offlineSuccess:"",
-                scannerBridgeSessionId:"",scannerBridgeAuthToken:"",scannerBridgeBase:"",scannerBridgeStatus:"",scannerBridgePollTimer:null,
+                scannerBridgeSessionId:"",scannerBridgeAuthToken:"",scannerBridgeBase:"",scannerBridgeStatus:"",scannerBridgePollTimer:null,scannerBridgeState:"",
                 // ★ LINE Pay Online 付款連結彈窗
                 showLinePayLinkModal:false, pendingLinePayUrl:"", pendingLinePayOrderId:"", pendingLinePayOrderDateKey:"",
                 offlineSubmitting:false
@@ -6866,6 +6872,7 @@
                     :(Date.now().toString(36)+Math.random().toString(36).slice(2)+Math.random().toString(36).slice(2));
                 s.scannerBridgeSessionId=sessionId;
                 s.scannerBridgeStatus='正在連接 Pi USB 掃碼器…';
+                s.scannerBridgeState='connecting';
                 try{
                     var user=auth.currentUser;
                     if(!user)throw new Error('POS 尚未登入');
@@ -6891,12 +6898,24 @@
                     if(lastError)throw lastError;
                     if(s.scannerBridgeSessionId!==sessionId||!s.showOfflineModal)return;
                     s.scannerBridgeStatus='Pi USB 掃碼器已連線，等待掃碼';
+                    s.scannerBridgeState='ready';
                     s.pollScannerBridge(sessionId);
                 }catch(error){
                     if(s.scannerBridgeSessionId!==sessionId)return;
                     s.scannerBridgeStatus='Pi USB 掃碼器未連線：'+s.describeScannerBridgeError(error)+'；仍可直接輸入';
+                    s.scannerBridgeState='error';
                     console.warn('POS scanner bridge unavailable:',error&&error.status?('HTTP '+error.status):'',error&&error.message?error.message:error);
                 }
+            },
+            // ★ scanner-diag-20261009：LINE Pay 掃碼扣款失敗代碼 → 店內看得懂的處理方式
+            describeOfflinePayError:function(raw){
+                var msg=String(raw||'').trim()||'付款失敗，請重試';
+                var m=msg.match(/\((\d{4})\)/);
+                var code=m?m[1]:'';
+                if(code==='1133'||/invalid onetimekey/i.test(msg))return msg+'\n→ 付款碼無效或已更新：請顧客重新整理 LINE Pay 付款碼再掃一次（手動輸入請逐碼核對）';
+                if(code==='1142')return msg+'\n→ 顧客 LINE Pay 餘額不足，請改用其他付款方式';
+                if(code==='1172')return msg+'\n→ 這張單已建立過 LINE Pay 交易（例：先按過 💚 LINE Pay），請先確認是否已付款';
+                return msg;
             },
             // ★ scanner-diag-20261009：把掃碼器連線錯誤翻成店內看得懂的原因（哪一段斷掉）
             describeScannerBridgeError:function(error){
@@ -6942,6 +6961,7 @@
                             s.maybeAutoSubmitOfflinePay();
                         }
                     }
+                    if(s.scannerBridgeState!=='ready')s.scannerBridgeState='ready';
                     s.scannerBridgePollTimer=setTimeout(function(){s.pollScannerBridge(sessionId);},700);
                 }catch(error){
                     if(s.scannerBridgeSessionId!==sessionId||!s.showOfflineModal)return;
@@ -6956,12 +6976,14 @@
                             if(s.scannerBridgeSessionId!==sessionId||!s.showOfflineModal)return;
                             if(resumeError.status===409){
                                 s.scannerBridgeStatus='掃碼器正在另一個 POS 使用；請確認後按重新連接，或直接輸入';
+                                s.scannerBridgeState='busy';
                                 return;
                             }
                         }
                         if(s.scannerBridgeSessionId!==sessionId||!s.showOfflineModal)return;
                     }
                     s.scannerBridgeStatus='Pi USB 掃碼器連線中斷（'+s.describeScannerBridgeError(error)+'），正在重試…';
+                    s.scannerBridgeState='retrying';
                     s.scannerBridgePollTimer=setTimeout(function(){s.pollScannerBridge(sessionId);},1500);
                 }
             },
@@ -6975,6 +6997,7 @@
                 this.scannerBridgeAuthToken='';
                 this.scannerBridgeBase='';
                 this.scannerBridgeStatus='';
+                this.scannerBridgeState='';
                 if(sessionId&&base&&idToken){
                     this.scannerBridgeFetch(base,'/api/pos/scanner/session',{action:'stop',sessionId:sessionId},idToken,2500)
                         .catch(function(){});
@@ -7224,7 +7247,7 @@
                                 setTimeout(function(){s.closeOfflineModal();},2000);
                             }else if(r.status==="error"){
                                 clearInterval(poll);
-                                s.offlineError=r.error||"付款失敗，請重試";
+                                s.offlineError=s.describeOfflinePayError(r.error);
                                 if(/timeout|逾時|連線失敗|stale|worker offline/i.test(String(r.error||''))){
                                     s.offlineAutoSubmitBlocked=true;
                                     s.offlineError+="（付款結果未確認，已暫停自動送出）";
