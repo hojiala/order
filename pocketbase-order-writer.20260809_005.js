@@ -2387,6 +2387,30 @@ export function requestStaffOrderPresets(options) {
     });
 }
 
+// menu-availability-schedule-20261011：自動上下架排程（manage 專用，走既有 menu 管理路由，Worker 不需更新）。
+// 讀取送 action=read＋availabilitySchedule：舊版 PocketBase 只會當成一般菜單讀取（回 items、沒有 rules），
+// 這裡回報 capable=false，後台就不會送出任何寫入（舊版會把不認得的 action 當成新增餐點）。
+export function requestMenuAvailabilitySchedule(options) {
+    options = options || {};
+    var op = text(options.op || "read").trim() || "read";
+    var payload = op === "read"
+        ? { action: "read", availabilitySchedule: "read" }
+        : { action: "availabilitySchedule", op: op };
+    if (op !== "read") {
+        if (options.rule) payload.rule = plainJson(options.rule, {});
+        if (options.ruleId) payload.ruleId = text(options.ruleId);
+        if (options.enabled === true || options.enabled === false) payload.enabled = options.enabled;
+    }
+    return writeManageRequest("menu", payload, options).then(function(result) {
+        if (!result || result.ok === false) throw new Error((result && (result.message || result.reason)) || "PocketBase menu schedule unavailable");
+        if (!Array.isArray(result.rules)) {
+            if (op === "read") return { ok: true, capable: false, backend: "pocketbase_manage", rules: [], orphanPending: [], log: [] };
+            throw new Error("menu_schedule_not_supported");
+        }
+        return Object.assign({ ok: true, capable: true, backend: "pocketbase_manage" }, result);
+    });
+}
+
 export function readManageSettingsFromPocketBase(options) {
     return writeManageRequest("settings", { action: "read" }, options || {}).then(function(result) {
         if (!result || result.ok === false || !result.settings || typeof result.settings !== "object") {
