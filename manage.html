@@ -604,11 +604,11 @@
         <div v-if="activeTab === 'stats'" class="manage-tab-panel p-6">
             <div class="stats-header mb-6 flex items-center justify-between">
                 <div>
-                    <h2 class="text-xl font-bold text-white">{{ lineMemberOrdersMode ? 'LINE 會員訂單' : '營業統計' }}</h2>
-                    <p class="text-slate-400 text-sm mt-0.5">{{ lineMemberOrdersMode ? ('會員：' + ((lineMemberOrdersMember && lineMemberOrdersMember.display_name) || '未命名') + '（含新訂單、已完成及已取消訂單）') : '查看歷史訂單與營業額' }}</p>
+                    <h2 class="text-xl font-bold text-white">{{ lineMemberOrdersMode ? memberOrdersTitle : '營業統計' }}</h2>
+                    <p class="text-slate-400 text-sm mt-0.5">{{ lineMemberOrdersMode ? memberOrdersSubtitle : '查看歷史訂單與營業額' }}</p>
                 </div>
                 <button @click="lineMemberOrdersMode ? closeLineMemberOrders() : refreshStats()" class="bg-slate-700 hover:bg-slate-600 text-slate-300 hover:text-white font-bold px-4 py-2.5 rounded-xl transition flex items-center gap-2 text-sm border border-slate-600">
-                    {{ lineMemberOrdersMode ? '← 返回 LINE 會員' : '🔄 重新整理' }}
+                    {{ lineMemberOrdersMode ? '← 返回會員名單' : '🔄 重新整理' }}
                 </button>
             </div>
             <div v-if="!lineMemberOrdersMode" class="bg-slate-800 rounded-xl border border-slate-700 p-4 mb-6">
@@ -959,15 +959,59 @@
             </div>
         </div>
 
-        <!-- ===== TAB: LINE 會員 ===== -->
+        <!-- ===== TAB: 會員名單（線上會員 / LINE 會員） ===== -->
         <div v-if="activeTab === 'members'" class="manage-tab-panel p-6">
             <div class="flex items-center justify-between gap-3 mb-6">
                 <div>
-                    <h2 class="text-xl font-bold text-white">LINE 會員</h2>
-                    <p class="text-slate-400 text-sm mt-0.5">會員、有效訂單數、消費金額與最後消費日</p>
+                    <h2 class="text-xl font-bold text-white">會員名單</h2>
+                    <p class="text-slate-400 text-sm mt-0.5">{{ memberListTab === 'online' ? '網頁點餐的聯絡資訊，同一支電話合併為同一位' : '會員、有效訂單數、消費金額與最後消費日' }}</p>
                 </div>
-                <button @click="loadLineMembers" :disabled="lineMembersLoading" class="bg-slate-700 hover:bg-slate-600 text-white text-sm font-bold px-3 py-2 rounded-lg">{{ lineMembersLoading ? '讀取中…' : '重新整理' }}</button>
+                <button @click="refreshMemberList" :disabled="memberListBusy" class="bg-slate-700 hover:bg-slate-600 text-white text-sm font-bold px-3 py-2 rounded-lg">{{ memberListBusy ? '讀取中…' : '重新整理' }}</button>
             </div>
+            <div class="grid grid-cols-2 gap-2 bg-slate-800/70 border border-slate-700 rounded-xl p-1 mb-4">
+                <button @click="switchMemberListTab('online')"
+                    :class="memberListTab==='online' ? 'bg-emerald-600 text-white shadow' : 'text-slate-300 hover:bg-slate-700'"
+                    class="rounded-lg px-3 py-2.5 text-sm font-bold transition">🌐 {{ memberTabLabels.online }}</button>
+                <button @click="switchMemberListTab('line')"
+                    :class="memberListTab==='line' ? 'bg-emerald-600 text-white shadow' : 'text-slate-300 hover:bg-slate-700'"
+                    class="rounded-lg px-3 py-2.5 text-sm font-bold transition">💬 {{ memberTabLabels.line }}</button>
+            </div>
+            <div v-show="memberListTab === 'online'">
+                <div class="mb-3 flex flex-wrap items-center gap-3">
+                    <input v-model.trim="onlineCustomerSearch" type="search" placeholder="搜尋姓名或電話"
+                        class="w-full sm:w-80 rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-sm text-white placeholder-slate-500 focus:border-emerald-500 focus:outline-none">
+                    <span class="text-xs text-slate-400">共 {{ onlineCustomers.length }} 位<template v-if="onlineCustomerSearch">，符合 {{ filteredOnlineCustomers.length }} 位</template></span>
+                </div>
+                <p v-if="onlineCustomersMeta.truncated" class="rounded-lg border border-amber-700 bg-amber-900/50 px-3 py-2 text-sm text-amber-300 mb-3">只統計最近 {{ onlineCustomersMeta.scannedOrders }} 筆網頁訂單，更早的訂單沒有算進來。</p>
+                <p v-if="onlineCustomersError" class="rounded-lg border border-red-800 bg-red-900/30 px-3 py-2 text-sm text-red-300 mb-3">{{ onlineCustomersError }}</p>
+                <div v-if="onlineCustomersLoading && !onlineCustomers.length" class="rounded-xl border border-slate-700 bg-slate-800 p-8 text-center text-slate-400">讀取中…</div>
+                <div v-else-if="!filteredOnlineCustomers.length" class="rounded-xl border border-slate-700 bg-slate-800 p-8 text-center text-slate-400">{{ onlineCustomerSearch ? '找不到符合的會員' : '尚無線上會員' }}</div>
+                <div v-else class="overflow-x-auto rounded-xl border border-slate-700 bg-slate-800">
+                    <table class="w-full min-w-[680px] text-sm">
+                        <thead class="bg-slate-700/60 text-slate-300 whitespace-nowrap">
+                            <tr><th class="px-3 py-2 text-left">會員</th><th class="px-3 py-2 text-left">電話</th><th class="px-3 py-2 text-right">全部訂單</th><th class="px-3 py-2 text-right">消費</th><th class="px-3 py-2 text-left">最後消費</th></tr>
+                        </thead>
+                        <tbody class="divide-y divide-slate-700">
+                            <tr v-for="customer in filteredOnlineCustomers" :key="customer.id" class="text-slate-200">
+                                <td class="px-3 py-2">
+                                    <div class="font-bold whitespace-nowrap">{{ customer.display_name || '未填姓名' }}</div>
+                                    <div v-if="customer.other_names && customer.other_names.length" class="mt-0.5 text-xs text-slate-400">也填過：{{ customer.other_names.join('、') }}</div>
+                                </td>
+                                <td class="px-3 py-2 whitespace-nowrap">{{ customer.phone || '—' }}</td>
+                                <td class="px-3 py-2 text-right">
+                                    <button @click="openOnlineCustomerOrders(customer)" :disabled="onlineCustomerOrdersLoadingId===customer.id"
+                                        class="font-bold text-blue-400 enabled:hover:text-blue-300 enabled:underline disabled:text-slate-500">
+                                        {{ onlineCustomerOrdersLoadingId===customer.id ? '讀取中…' : customer.history_order_count }}
+                                    </button>
+                                </td>
+                                <td class="px-3 py-2 text-right">${{ customer.total_spent || 0 }}</td>
+                                <td class="px-3 py-2 whitespace-nowrap">{{ customer.last_order_at ? formatMemberDate(customer.last_order_at) : '—' }}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div v-show="memberListTab === 'line'">
             <div class="mb-4 rounded-xl border border-slate-700 bg-slate-800 p-5">
                 <div class="flex items-center justify-between gap-4">
                     <div>
@@ -1004,6 +1048,7 @@
                         </tr>
                     </tbody>
                 </table>
+            </div>
             </div>
         </div>
 
@@ -2275,7 +2320,7 @@ window._doCountUp = function() {
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getDatabase, ref, query, orderByKey, limitToLast, set, get, push, update, remove, onValue, onChildAdded, onChildChanged } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-    import { listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, readManageSettingsFromPocketBase, readManageMenuFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, writeMenuItemToPocketBase, deleteMenuItemFromPocketBase, updateMenuSortInPocketBase, writeSettingsToPocketBase, requestLineMembers, requestStaffOrderPresets, pocketBaseRecordToOrder, isReservedOrderId } from "./pocketbase-order-writer.20260809_005.js?v=20260920_customer_status_hours_1";
+    import { listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, readManageSettingsFromPocketBase, readManageMenuFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, writeMenuItemToPocketBase, deleteMenuItemFromPocketBase, updateMenuSortInPocketBase, writeSettingsToPocketBase, requestLineMembers, requestStaffOrderPresets, pocketBaseRecordToOrder, isReservedOrderId } from "./pocketbase-order-writer.20260809_005.js?v=20261011_member_list_1";
     import { isManageUser } from "./staff-auth-activation.20260818_001.js?v=20260818_001";
 
     const firebaseConfig = {
@@ -2376,10 +2421,15 @@ window._doCountUp = function() {
                     { id: 'menu',      label: '菜單管理', icon: '🍽️' },
                     { id: 'stats',     label: '營業統計', icon: '📊' },
                     { id: 'presets',   label: '常客快速單', icon: '⭐' },
-                    { id: 'members',   label: 'LINE 會員', icon: '💬' },
+                    { id: 'members',   label: '會員名單', icon: '👥' },
                     { id: 'settings',  label: '店面設定', icon: '⚙️' }
                 ],
                 lineMembers: [], lineMembersLoading: false, lineMembersError: '', linePushSettingSaving: false, lineMemberOrdersLoadingId: '', lineMemberOrdersMode: false, lineMemberOrdersMember: null,
+                // member-list-20261011: 會員名單（線上會員＝index 網頁點餐依電話合併；LINE 會員＝LIFF）
+                memberListTab: 'online', memberOrdersKind: 'line',
+                memberTabLabels: { online: '線上會員', line: 'LINE 會員' },
+                onlineCustomers: [], onlineCustomersLoading: false, onlineCustomersLoaded: false, onlineCustomersError: '',
+                onlineCustomersMeta: { scannedOrders: 0, truncated: false }, onlineCustomerSearch: '', onlineCustomerOrdersLoadingId: '',
                 staffPresets: [], staffPresetsLoading: false, staffPresetsSaving: false, staffPresetsError: '', showStaffPresetModal: false,
                 staffPresetForm: { id:'', buttonLabel:'', customerName:'', phone:'', active:true, sortOrder:0, templates:[] },
                 staffPresetItemDrag: null, staffPresetItemDragOver: null,
@@ -2524,6 +2574,30 @@ window._doCountUp = function() {
         },
 
         computed: {
+            memberListBusy: function() {
+                return this.memberListTab === 'online' ? this.onlineCustomersLoading : this.lineMembersLoading;
+            },
+            filteredOnlineCustomers: function() {
+                var list = Array.isArray(this.onlineCustomers) ? this.onlineCustomers : [];
+                var q = String(this.onlineCustomerSearch || '').trim().toLowerCase();
+                if (!q) return list;
+                var digits = q.replace(/[^0-9]/g, '');
+                return list.filter(function(customer) {
+                    var names = [customer.display_name].concat(customer.other_names || []).join(' ').toLowerCase();
+                    if (names.indexOf(q) !== -1) return true;
+                    return !!digits && String(customer.phone || '').indexOf(digits) !== -1;
+                });
+            },
+            memberOrdersTitle: function() {
+                var labels = this.memberTabLabels || {};
+                return (this.memberOrdersKind === 'online' ? labels.online : labels.line) + '訂單';
+            },
+            memberOrdersSubtitle: function() {
+                var member = this.lineMemberOrdersMember || {};
+                var who = member.display_name || '未命名';
+                if (this.memberOrdersKind === 'online' && member.phone) who += '（' + member.phone + '）';
+                return '會員：' + who + '（含新訂單、已完成及已取消訂單）';
+            },
             currentTabLabel: function() {
                 var current = (this.tabs || []).find(function(tab) {
                     return tab && tab.id === this.activeTab;
@@ -2778,7 +2852,7 @@ window._doCountUp = function() {
                 } else if (newTab === 'members') {
                     this.lineMemberOrdersMode = false;
                     this.lineMemberOrdersMember = null;
-                    this.loadLineMembers();
+                    this.refreshMemberList();
                 } else if (newTab === 'presets') {
                     this.lineMemberOrdersMode = false;
                     this.lineMemberOrdersMember = null;
@@ -3411,28 +3485,89 @@ window._doCountUp = function() {
                     limit: 500,
                     timeoutMs: 10000
                 }).then(function(result) {
-                    var rows = (Array.isArray(result && result.records) ? result.records : [])
-                        .map(pocketBaseRecordToOrder)
-                        .map(function(order) { return self.normalizeStatsOrder(order); })
-                        .filter(Boolean);
-                    self.statsOrders = rows;
-                    self.allOrdersCache = rows.slice();
-                    self.syncLinePayTransactionState();
-                    self.statsSearch = '';
-                    self.statsSubTab = 'detail';
-                    var dates = rows.map(function(order) { return self.getOrderDate(order); }).filter(Boolean).sort();
-                    if (dates.length) {
-                        self.statsMode = 'range';
-                        self.statsStart = dates[0];
-                        self.statsEnd = dates[dates.length - 1];
-                    }
-                    self.lineMemberOrdersMember = member;
-                    self.lineMemberOrdersMode = true;
-                    self.activeTab = 'stats';
+                    self.showMemberOrdersInStats(result, 'line', member);
                 }).catch(function(err) {
                     self.lineMembersError = '會員訂單讀取失敗：' + String((err && err.message) || err || '未知錯誤');
                 }).finally(function() {
                     self.lineMemberOrdersLoadingId = '';
+                });
+            },
+            showMemberOrdersInStats: function(result, kind, member) {
+                var self = this;
+                var rows = (Array.isArray(result && result.records) ? result.records : [])
+                    .map(pocketBaseRecordToOrder)
+                    .map(function(order) { return self.normalizeStatsOrder(order); })
+                    .filter(Boolean);
+                self.statsOrders = rows;
+                self.allOrdersCache = rows.slice();
+                self.syncLinePayTransactionState();
+                self.statsSearch = '';
+                self.statsSubTab = 'detail';
+                var dates = rows.map(function(order) { return self.getOrderDate(order); }).filter(Boolean).sort();
+                if (dates.length) {
+                    self.statsMode = 'range';
+                    self.statsStart = dates[0];
+                    self.statsEnd = dates[dates.length - 1];
+                }
+                self.memberOrdersKind = kind === 'online' ? 'online' : 'line';
+                self.lineMemberOrdersMember = member;
+                self.lineMemberOrdersMode = true;
+                self.activeTab = 'stats';
+            },
+            switchMemberListTab: function(tab) {
+                this.memberListTab = tab === 'line' ? 'line' : 'online';
+                if (this.memberListTab === 'online') {
+                    if (!this.onlineCustomersLoaded) this.loadOnlineCustomers();
+                } else {
+                    this.loadLineMembers();
+                }
+            },
+            refreshMemberList: function() {
+                if (this.memberListTab === 'online') return this.loadOnlineCustomers();
+                return this.loadLineMembers();
+            },
+            loadOnlineCustomers: function() {
+                var self = this;
+                if (self.onlineCustomersLoading) return;
+                self.onlineCustomersLoading = true;
+                self.onlineCustomersError = '';
+                return requestLineMembers({
+                    settings: self.settings,
+                    firebaseUser: auth.currentUser,
+                    kind: 'online',
+                    limit: 1000,
+                    timeoutMs: 15000
+                }).then(function(result) {
+                    if (!result || result.kind !== 'online') throw new Error('PocketBase 尚未更新（請先套用 Pi 更新包）');
+                    self.onlineCustomers = Array.isArray(result.records) ? result.records : [];
+                    self.onlineCustomersMeta = { scannedOrders: Number(result.scannedOrders) || 0, truncated: result.truncated === true };
+                    self.onlineCustomersLoaded = true;
+                }).catch(function(err) {
+                    self.onlineCustomers = [];
+                    self.onlineCustomersError = '線上會員讀取失敗：' + String((err && err.message) || err || '未知錯誤');
+                }).finally(function() {
+                    self.onlineCustomersLoading = false;
+                });
+            },
+            openOnlineCustomerOrders: function(customer) {
+                var self = this;
+                if (!customer || !customer.phone || self.onlineCustomerOrdersLoadingId) return;
+                self.onlineCustomerOrdersLoadingId = customer.id;
+                self.onlineCustomersError = '';
+                requestLineMembers({
+                    settings: self.settings,
+                    firebaseUser: auth.currentUser,
+                    kind: 'online',
+                    phone: customer.phone,
+                    limit: 500,
+                    timeoutMs: 15000
+                }).then(function(result) {
+                    if (!result || result.kind !== 'online') throw new Error('PocketBase 尚未更新（請先套用 Pi 更新包）');
+                    self.showMemberOrdersInStats(result, 'online', { display_name: customer.display_name || '未填姓名', phone: customer.phone });
+                }).catch(function(err) {
+                    self.onlineCustomersError = '會員訂單讀取失敗：' + String((err && err.message) || err || '未知錯誤');
+                }).finally(function() {
+                    self.onlineCustomerOrdersLoadingId = '';
                 });
             },
             closeLineMemberOrders: function() {

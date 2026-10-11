@@ -2821,6 +2821,9 @@ export function requestLineMembers(options) {
             },
             body: JSON.stringify({
                 memberId: text(options.memberId) || undefined,
+                // member-list-20261011: kind=online 讀線上會員（index 依電話彙整）；phone 讀該電話的訂單。
+                kind: text(options.kind) || undefined,
+                phone: text(options.phone) || undefined,
                 limit: Math.max(1, Math.min(1000, Number(options.limit) || 500))
             })
         }, Number(options.timeoutMs || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS);
