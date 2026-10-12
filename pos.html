@@ -1943,6 +1943,62 @@
                 if(b.length>a.length)return b;
                 return a;
             },
+            // ★ pos-edit-list-refresh-20261012：品項「內容指紋」（key 排序、忽略 _ 開頭內部欄位）。
+            //   只用來判斷後端送來的品項和上一輪是否相同，不拿來比哪份比較完整。
+            orderItemsContentSig:function(items){
+                if(!Array.isArray(items)||!items.length)return '';
+                var stable=function(v){
+                    if(Array.isArray(v))return '['+v.map(stable).join(',')+']';
+                    if(v&&typeof v==='object'){
+                        return '{'+Object.keys(v).filter(function(k){return k.charAt(0)!=='_'&&v[k]!==undefined&&typeof v[k]!=='function';}).sort().map(function(k){return JSON.stringify(k)+':'+stable(v[k]);}).join(',')+'}';
+                    }
+                    var j=JSON.stringify(v);
+                    return j===undefined?'null':j;
+                };
+                try{return stable(items);}catch(e){return '';}
+            },
+            // ★ pos-edit-list-refresh-20261012：「💾 儲存列印」寫入後端成功後，左側清單立刻改顯示剛存的內容
+            //   （和工單同一份），不必等下一輪讀取；後端讀回新內容（或 30 秒到期）就放掉，之後一律以後端為準。
+            rememberLocalOrderEdit:function(id,fields,baseOrder){
+                var s=this;
+                var key=String(id||'');
+                if(!key||!fields||!Array.isArray(fields.items)||!fields.items.length)return;
+                if(!s.localOrderEdits||typeof s.localOrderEdits!=='object')s.localOrderEdits={};
+                var patch={items:JSON.parse(JSON.stringify(fields.items))};
+                var total=Number(fields.total);
+                if(Number.isFinite(total))patch.total=total;
+                ['type','pickupMode','pickupDate','pickupTime','pickupTimeLabel','orderNote','tableLabel','phone','paymentMethod','paymentStatus'].forEach(function(k){
+                    if(Object.prototype.hasOwnProperty.call(fields,k)&&fields[k]!==undefined)patch[k]=fields[k];
+                });
+                if(patch.paymentMethod||patch.paymentStatus){
+                    var basePayment=(baseOrder&&baseOrder.payment&&typeof baseOrder.payment==='object')?baseOrder.payment:{};
+                    patch.payment=Object.assign({},basePayment,{method:patch.paymentMethod||basePayment.method||'',status:patch.paymentStatus||basePayment.status||''});
+                }
+                var preview=null;
+                try{preview=s.normalizeIncomingOrder(Object.assign({},baseOrder||{},patch,{id:key}));}catch(e){preview=null;}
+                var known=(s.remoteOrderItemsSig&&typeof s.remoteOrderItemsSig==='object')?s.remoteOrderItemsSig:{};
+                s.localOrderEdits[key]={
+                    patch:patch,
+                    baseSig:Object.prototype.hasOwnProperty.call(known,key)?known[key]:'',
+                    editSig:s.orderItemsContentSig((preview&&preview.items)||patch.items),
+                    until:Date.now()+30000
+                };
+                s.onlineOrders=(Array.isArray(s.onlineOrders)?s.onlineOrders:[]).map(function(o){
+                    return (o&&String(o.id)===key)?Object.assign({},o,patch,{items:JSON.parse(JSON.stringify(patch.items))}):o;
+                });
+            },
+            applyLocalOrderEdit:function(order,remoteSig){
+                var edits=this.localOrderEdits;
+                if(!order||!order.id||!edits||typeof edits!=='object')return order;
+                var key=String(order.id);
+                var edit=edits[key];
+                if(!edit)return order;
+                // 後端已是新內容（指紋等於剛存的、或已不同於存檔前那份）→ 放掉，以後端為準
+                var caughtUp=!!remoteSig&&(remoteSig===edit.editSig||(!!edit.baseSig&&remoteSig!==edit.baseSig));
+                if(caughtUp||!(Date.now()<Number(edit.until||0))){delete edits[key];return order;}
+                // 後端還是存檔前的舊內容（在途的舊讀取／尚未同步）→ 繼續顯示剛存、剛印的內容
+                return Object.assign({},order,edit.patch,{items:JSON.parse(JSON.stringify(edit.patch.items))});
+            },
             shouldHydrateOrderFromSource:function(order){
                 if(!order||!order.id)return false;
                 if(this.orderHydrateDone&&this.orderHydrateDone[order.id])return false;
@@ -5659,8 +5715,19 @@
                         upsertMerged(mergedMap,o);
                     });
                 }
+                // ★ pos-edit-list-refresh-20261012：記下每張單「後端送來的品項指紋」。指紋和上一輪不同＝後端內容真的被改過
+                //   （本機或其他裝置「編輯訂單」、電話後台改單），這一輪以後端為準，不再拿畫面上一輪「金額較高／選項較多」
+                //   的舊品項蓋回去（以前改成不加蛋、數量變少，清單都會停在舊內容，要重新整理才正確）。
+                //   後端沒變時維持原本的保護（保留 hydrate 過、較完整的品項）。
+                var remoteSigPrev=(s.remoteOrderItemsSig&&typeof s.remoteOrderItemsSig==='object')?s.remoteOrderItemsSig:{};
+                var remoteSigNext={};
                 var mergedOrders=s.normalizeIncomingOrders(collapseByDisplaySignature(collapseMergedValues(Object.values(mergedMap)))).map(function(o){
                     var normalized=s.normalizeIncomingOrder(o);
+                    var remoteKey=String((normalized&&normalized.id)||'');
+                    var remoteSig=s.orderItemsContentSig(normalized&&normalized.items);
+                    var remoteChanged=!!(remoteKey&&remoteSig&&Object.prototype.hasOwnProperty.call(remoteSigPrev,remoteKey)&&remoteSigPrev[remoteKey]!==remoteSig);
+                    if(remoteKey&&remoteSig)remoteSigNext[remoteKey]=remoteSig;
+                    if(remoteChanged&&s.orderHydrateDone)delete s.orderHydrateDone[remoteKey];
                     var previous=findPreviousOrder(normalized);
                     if(previous&&(!normalized.orderNo||!Number.isFinite(Number(normalized.orderNo)))&&previous.orderNo){
                         normalized.orderNo=previous.orderNo;
@@ -5669,7 +5736,7 @@
                     }
                     if(previous&&!normalized.tableLabel&&previous.tableLabel)normalized.tableLabel=previous.tableLabel;
                     if(previous)normalized=s.applyTrustedOrderIdentity(normalized,previous);
-                    if(previous&&Array.isArray(previous.items)&&previous.items.length){
+                    if(previous&&!remoteChanged&&Array.isArray(previous.items)&&previous.items.length){
                         var bestItems=pickRicherItems(normalized.items,previous.items);
                         if(bestItems===previous.items){
                             normalized=Object.assign({},normalized,{
@@ -5678,8 +5745,10 @@
                             });
                         }
                     }
+                    normalized=s.applyLocalOrderEdit(normalized,remoteSig);
                     return s.applyStatusOverrideToOrder(normalized);
                 });
+                s.remoteOrderItemsSig=remoteSigNext;
                 s.onlineOrders=mergedOrders.filter(function(o){return !o||o.status!=='archived';}).sort(function(a,b){
                     var aNo=Number(a.orderNo||a.serialNumber||0),bNo=Number(b.orderNo||b.serialNumber||0);
                     if(aNo!==bNo)return bNo-aNo;
@@ -7798,6 +7867,13 @@
                         return editTask;
                     };
 
+                    // ★ pos-edit-list-refresh-20261012：後端寫入成功後，左側「所有進行中訂單」立刻換成剛存的內容
+                    //   只是畫面更新：失敗也不可讓已成功的儲存變成「儲存失敗」或漏印修改後完整單
+                    var commitEditMirror=async function(){
+                        await s.updateOrderMirror(id,upd,targetOrder);
+                        try{if(typeof s.rememberLocalOrderEdit==='function')s.rememberLocalOrderEdit(id,upd,targetOrder);}
+                        catch(e){console.warn('編輯後清單即時更新略過:',e&&e.message?e.message:e);}
+                    };
                     // ★ paid-no-reprint-20260927：已出過廚房工單（平板/線上/POS 未付款單）事後改 LINE Pay，
                     //   付款成功後不重印；內容有改才在「儲存列印」當下先印一張「修改後完整單」。
                     var kitchenTicketIssued=s.hasIssuedKitchenTicket(targetOrder);
@@ -7857,7 +7933,7 @@
                     if(realPm==='cash'){
                         upd.paymentMethod='cash';
                         upd.paymentStatus='paid';
-                        await s.updateOrderMirror(id,upd,targetOrder);
+                        await commitEditMirror();
                         await s.openCashDrawerAfterCashPayment(oldPm==='cash'&&oldPaid);
                         await writeEditPrintTask();
                         s.toast('✅ 已改為現金已付款，重新列印中...');
@@ -7868,7 +7944,7 @@
                     if(realPm==='store'){
                         upd.paymentMethod='store';
                         upd.paymentStatus='pending';
-                        await s.updateOrderMirror(id,upd,targetOrder);
+                        await commitEditMirror();
                         await writeEditPrintTask();
                         s.toast('✅ 已改為未付款，重新列印中...');
                         s.exitOnline();
@@ -7878,7 +7954,7 @@
                     if(realPm==='linepay_offline'){
                         upd.paymentMethod='linepay';
                         upd.paymentStatus='pending';
-                        await s.updateOrderMirror(id,upd,targetOrder);
+                        await commitEditMirror();
                         if(kitchenTicketIssued){
                             // 保留原 print_task：付款成功後不重印；內容有改才現在印修改後完整單
                             if(kitchenContentChanged)await writeEditPrintTask();
@@ -7913,7 +7989,7 @@
                         if(keepPaid){
                             upd.paymentMethod='linepay';
                             upd.paymentStatus='paid';
-                            await s.updateOrderMirror(id,upd,targetOrder);
+                            await commitEditMirror();
                             await writeEditPrintTask();
                             s.toast('✅ LINE Pay 已付清，重新列印中...');
                             s.exitOnline();
@@ -7922,7 +7998,7 @@
 
                         upd.paymentMethod='linepay';
                         upd.paymentStatus='pending';
-                        await s.updateOrderMirror(id,upd,targetOrder);
+                        await commitEditMirror();
                         if(kitchenTicketIssued){
                             // 保留原 print_task：Pi 確認付款時看到 kitchen_ 就不重印；內容有改才現在印修改後完整單
                             if(kitchenContentChanged)await writeEditPrintTask();
@@ -7942,7 +8018,7 @@
                         return;
                     }
 
-                    await s.updateOrderMirror(id,upd,targetOrder);
+                    await commitEditMirror();
                     await writeEditPrintTask();
                     s.toast('✅ 修改已儲存，重新列印中...');
                     s.exitOnline();
