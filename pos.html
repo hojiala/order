@@ -598,13 +598,32 @@
   <div class="w-full max-w-2xl max-h-[88vh] overflow-y-auto rounded-2xl bg-white shadow-2xl border border-amber-100">
     <div class="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-gray-100 bg-white px-5 py-4">
       <div>
-        <h3 class="text-lg font-black text-gray-800">{{ selectedStaffPreset ? selectedStaffPreset.buttonLabel : '常客快速單' }}</h3>
-        <p class="mt-0.5 text-xs text-gray-400">{{ selectedStaffPreset ? '請選擇這次要套用的餐點範本' : '選擇常客後，餐點會先帶入目前訂單供您確認' }}</p>
+        <h3 class="text-lg font-black text-gray-800">{{ staffPresetPending ? '目前訂單已有餐點' : (selectedStaffPreset ? selectedStaffPreset.buttonLabel : '常客快速單') }}</h3>
+        <p class="mt-0.5 text-xs text-gray-400">{{ staffPresetPending ? '要把這個範本加入目前訂單，還是取代現有內容？' : (selectedStaffPreset ? '請選擇這次要套用的餐點範本' : '選擇常客後，餐點會先帶入目前訂單供您確認') }}</p>
       </div>
       <button @click="closeStaffPresetPicker" class="h-9 w-9 rounded-full bg-gray-100 text-xl text-gray-500 hover:bg-gray-200">×</button>
     </div>
     <div class="p-5">
-      <div v-if="staffPresetsLoading" class="py-12 text-center font-bold text-gray-400">讀取常客資料中…</div>
+      <!-- ★ staff-preset-append-20261012：目前訂單已有餐點 → 選「加入目前訂單」或「取代目前訂單」（以前只能取代） -->
+      <div v-if="staffPresetPending" data-staff-preset-pending>
+        <div class="rounded-xl border-2 border-amber-200 bg-amber-50 p-4">
+          <b class="block text-lg text-gray-800">{{ staffPresetPending.preset.buttonLabel }}－{{ staffPresetPending.template.label }}</b>
+          <p class="mt-2 text-sm text-gray-600" style="line-height:1.5rem">{{ staffPresetTemplateSummary(staffPresetPending.template) }}</p>
+          <p class="mt-2 text-xs font-bold text-amber-700">目前訂單：共 {{ cartCount }} 件・${{ cartTotal }}</p>
+        </div>
+        <div class="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <button @click="confirmStaffPresetPending('append')" data-staff-preset-append class="rounded-xl bg-amber-600 px-4 py-4 text-left text-white shadow transition">
+            <b class="block text-lg">➕ 加入目前訂單</b>
+            <span class="mt-1 block text-xs" style="color:#fffbeb">保留現有餐點，再加上這個範本</span>
+          </button>
+          <button @click="confirmStaffPresetPending('replace')" data-staff-preset-replace class="rounded-xl border-2 border-red-200 bg-white px-4 py-4 text-left text-red-600 transition hover:bg-red-50">
+            <b class="block text-lg">🔄 取代目前訂單</b>
+            <span class="mt-1 block text-xs text-red-400">清掉現有餐點，只留這個範本</span>
+          </button>
+        </div>
+        <button @click="cancelStaffPresetPending" data-staff-preset-cancel class="mt-3 w-full rounded-xl bg-gray-100 py-3 font-bold text-gray-500 hover:bg-gray-200">取消</button>
+      </div>
+      <div v-else-if="staffPresetsLoading" class="py-12 text-center font-bold text-gray-400">讀取常客資料中…</div>
       <div v-else-if="staffPresetsError" class="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-600">
         <p>{{ staffPresetsError }}</p>
         <button @click="loadStaffPresets" class="mt-3 rounded-lg bg-red-600 px-3 py-2 font-bold text-white">重新讀取</button>
@@ -1012,7 +1031,7 @@
                 menu:[],menuItems:[],menuLoading:true,filterCat:"",settings:{categories:[],autoOpenCashDrawer:true,stations:[{name:'湯麵',ip:'192.168.0.6'},{name:'麵包台',ip:'192.168.0.7'},{name:'飲料台',ip:'192.168.0.8'}]},settingsStationsLoaded:false,
                 activeView:"menu",editMode:false,
                 cart:[],custName:"",custPhone:"",isSubmitting:false,checkoutProgress:"",drawerOpening:false,cancelInFlight:{},
-                staffPresets:[],staffPresetsLoading:false,staffPresetsError:"",showStaffPresetPicker:false,selectedStaffPreset:null,
+                staffPresets:[],staffPresetsLoading:false,staffPresetsError:"",showStaffPresetPicker:false,selectedStaffPreset:null,staffPresetPending:null,
                 voiceActive:false,voiceConnecting:false,voiceStatus:"",voiceTranscript:"",
                 posMetaExpanded:false,showStorePayChoiceModal:false,showLinePayChoiceModal:false,showCounterSettingsModal:false,showCashCalculator:false,showBackendStatus:false,posOrderNote:"",
                 counterResetTime:"00:00",counterMaxNo:999,counterLegacyValue:0,counterSaving:false,cashCalcInput:"",
@@ -1256,13 +1275,21 @@
             },
             openStaffPresetPicker:function(){
                 var s=this;
-                s.selectedStaffPreset=null;s.showStaffPresetPicker=true;
+                s.selectedStaffPreset=null;s.staffPresetPending=null;s.showStaffPresetPicker=true;
                 Promise.all([
                     s.loadStaffPresets(),
                     s.loadProtectedMenuDetails().catch(function(){return s.menu||[];})
                 ]).catch(function(){});
             },
-            closeStaffPresetPicker:function(){this.showStaffPresetPicker=false;this.selectedStaffPreset=null;},
+            closeStaffPresetPicker:function(){this.showStaffPresetPicker=false;this.selectedStaffPreset=null;this.staffPresetPending=null;},
+            // ★ staff-preset-append-20261012：「加入目前訂單」／「取代目前訂單」／「取消」
+            confirmStaffPresetPending:function(mode){
+                var pending=this.staffPresetPending;
+                this.staffPresetPending=null;
+                if(!pending||!pending.preset||!pending.template)return;
+                this.applyStaffPresetTemplate(pending.preset,pending.template,mode==='append'?'append':'replace');
+            },
+            cancelStaffPresetPending:function(){this.staffPresetPending=null;},
             selectStaffPreset:function(preset){
                 var templates=Array.isArray(preset&&preset.templates)?preset.templates:[];
                 if(templates.length===1)this.applyStaffPresetTemplate(preset,templates[0]);
@@ -1349,10 +1376,14 @@
                 var qty=Math.max(1,Math.min(99,Math.floor(Number(saved&&saved.qty)||1)));
                 return {id:item.id,name:item.name,shortName:String(item.shortName||'').trim(),printName:String(item.shortName||item.printName||'').trim(),price:Number(item.price)||0,station:item.station||s.getDefaultStationName(),printStations:Array.isArray(item.printStations)?item.printStations.slice():[],qty:qty,note:String(saved&&saved.note||''),drinkNote:String(saved&&saved.drinkNote||''),options:options,posExtras:posExtras,comboDrinkAddons:comboDrinkAddons,comboDrinkPrintName:comboDrinkPrintName,comboDrinkShortName:comboDrinkPrintName,optionGroupSelections:selections,optionSelections:optionSelections,selectedOptions:Object.assign({},optionSelections),itemTotal:(basePrice+extra)*qty};
             },
-            applyStaffPresetTemplate:function(preset,template){
+            applyStaffPresetTemplate:function(preset,template,mode){
                 var s=this;
                 if(!preset||!template)return;
-                if(s.cart.length&&!confirm('目前訂單已有餐點，是否改用「'+preset.buttonLabel+'－'+template.label+'」並取代現有內容？'))return;
+                // ★ staff-preset-append-20261012：目前訂單已有餐點 → 先在常客視窗內選「加入」或「取代」
+                //   （以前只有 confirm「取代／取消」，一張單只能有第 1 個快速單）
+                var hasCart=Array.isArray(s.cart)&&s.cart.length>0;
+                if(hasCart&&mode!=='append'&&mode!=='replace'){s.staffPresetPending={preset:preset,template:template};return;}
+                var appendToCart=hasCart&&mode==='append';
                 var nextCart;
                 try{
                     var items=Array.isArray(template.items)?template.items:[];
@@ -1362,12 +1393,26 @@
                     alert('無法套用常客快速單：'+String(err&&err.message||err));
                     return;
                 }
+                var tableLabel=String(template.tableLabel||'').trim();
+                var matchedTable=(s.posTables||[]).find(function(tbl){var label=String(tbl||'').trim();return label===tableLabel||label.replace(/桌$/,'')===tableLabel.replace(/桌$/,'');});
+                if(appendToCart){
+                    // 加入：保留現有餐點與訂單設定（內用／外帶、桌號、取餐時間），範本餐點接在後面
+                    s.cart=s.cart.concat(nextCart);
+                    if(!String(s.custName||'').trim())s.custName=String(preset.customerName||preset.buttonLabel||'常客');
+                    if(!String(s.custPhone||'').trim())s.custPhone=String(preset.phone||'');
+                    if(s.posOrderType==='dinein'&&!s.posTableLabel&&template.orderType==='dinein'&&matchedTable)s.posTableLabel=String(matchedTable);
+                    var addNote=String(template.orderNote||'').trim(),curNote=String(s.posOrderNote||'').trim();
+                    if(addNote&&curNote.indexOf(addNote)<0)s.posOrderNote=curNote?curNote+'；'+addNote:addNote;
+                    var templateType=template.orderType==='dinein'?'dinein':'takeout',currentType=s.posOrderType==='dinein'?'dinein':'takeout';
+                    var typeHint=templateType!==currentType?'（訂單維持'+(currentType==='dinein'?'內用':'外帶')+'）':'';
+                    s.closeStaffPresetPicker();
+                    s.toast('✓ 已加入 '+preset.buttonLabel+'－'+template.label+typeHint+'，請確認後付款');
+                    return;
+                }
                 s.cart=nextCart;
                 s.custName=String(preset.customerName||preset.buttonLabel||'常客');
                 s.custPhone=String(preset.phone||'');
                 s.posOrderType=template.orderType==='dinein'?'dinein':'takeout';
-                var tableLabel=String(template.tableLabel||'').trim();
-                var matchedTable=(s.posTables||[]).find(function(tbl){var label=String(tbl||'').trim();return label===tableLabel||label.replace(/桌$/,'')===tableLabel.replace(/桌$/,'');});
                 s.posTableLabel=s.posOrderType==='dinein'&&matchedTable?String(matchedTable):'';
                 s.posOrderNote=String(template.orderNote||'');
                 s.posPickupDate=s.todayStr;s.posPickupTime='現場取餐';
