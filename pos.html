@@ -458,40 +458,74 @@
     <div class="flex-1 overflow-y-auto">
       <div v-if="cart.length===0" class="flex flex-col items-center justify-center h-full text-gray-300 py-8"><div class="text-5xl mb-3">&#128722;</div><p class="text-sm">尚無餐點</p></div>
       <div v-else>
-        <div v-for="(item,idx) in cart" :key="idx"
+        <template v-for="row in posBagRows" :key="row.key">
+        <!-- ★ pos-bag-split-20261012：袋標題（點一下＝新點的餐加到這袋；可切外帶／內用；空袋可刪） -->
+        <div v-if="row.kind==='bag'" data-pos-bag-header :data-bag-active="row.active?'1':'0'"
+             class="sticky top-0 z-10 flex flex-wrap items-center gap-2 px-3 py-2 border-b cursor-pointer select-none"
+             :class="row.active?'bg-orange-100 border-orange-200':'bg-gray-50 border-gray-200'"
+             :style="row.active?'box-shadow:inset 4px 0 0 #f97316':''"
+             @click="posBagSetActive(row.bag.id)" @dragover.prevent @drop.prevent="posBagDropOnBag(row.bag.id)">
+          <span class="text-base flex-shrink-0">{{ row.bag.type==='dinein' ? '🍽️' : '🛍️' }}</span>
+          <div class="min-w-0 flex-1" style="min-width:6.5rem">
+            <p class="text-sm font-black text-gray-800 truncate">{{ row.count ? row.label : '新的一袋（空）' }}<span v-if="row.count" class="ml-1 text-xs font-bold text-gray-500">{{ row.count }}件 ${{ row.total }}</span></p>
+            <p class="text-[11px] font-bold truncate" :class="row.active?'text-orange-600':'text-gray-400'">{{ row.active ? '● 新點的餐加到這袋' : '點這裡改加到這袋' }}</p>
+          </div>
+          <div class="ml-auto flex flex-shrink-0 rounded-full border border-gray-200 bg-white" style="padding:2px" @click.stop>
+            <button @click.stop="posBagSetType(row.bag.id,'takeout')" data-pos-bag-type="takeout" class="rounded-full px-2 py-1 text-[11px] font-bold transition" :class="row.bag.type==='takeout'?'bg-orange-500 text-white':'text-gray-500'">外帶</button>
+            <button @click.stop="posBagSetType(row.bag.id,'dinein')" data-pos-bag-type="dinein" class="rounded-full px-2 py-1 text-[11px] font-bold transition" :class="row.bag.type==='dinein'?'bg-blue-500 text-white':'text-gray-500'">內用</button>
+          </div>
+          <button v-if="!row.count" @click.stop="posBagRemove(row.bag.id)" data-pos-bag-remove class="w-7 h-7 flex-shrink-0 rounded-full text-gray-400 hover:text-red-500" title="刪除這袋">✕</button>
+        </div>
+        <div v-else-if="row.kind==='empty'" data-pos-bag-empty class="px-4 py-3 border-b border-gray-100 text-xs text-gray-400 text-center cursor-pointer"
+             @click="posBagSetActive(row.bag.id)" @dragover.prevent @drop.prevent="posBagDropOnBag(row.bag.id)">
+          {{ row.active ? '點左邊菜單，餐點會放進這袋' : '點這裡後再點餐，或用品項的「🛍️ 換袋」移過來' }}
+        </div>
+        <div v-else
              class="flex items-start gap-3 px-4 py-3 border-b border-gray-100 hover:bg-orange-50 transition cursor-pointer"
-             :class="{'opacity-50 ring-2 ring-orange-300':cartDragIdx===idx}"
-             draggable="true" @dragstart="cartDragIdx=idx;$event.dataTransfer.effectAllowed='move'" @dragover.prevent @drop.prevent="cartDrop(idx)" @dragend="cartDragIdx=null"
-             @click="editCartItem(idx)">
+             :class="{'opacity-50 ring-2 ring-orange-300':cartDragIdx===row.idx}"
+             draggable="true" @dragstart="cartDragIdx=row.idx;$event.dataTransfer.effectAllowed='move'" @dragover.prevent @drop.prevent="cartDrop(row.idx)" @dragend="cartDragIdx=null"
+             @click="editCartItem(row.idx)">
           <div class="flex flex-col gap-0.5 flex-shrink-0 mt-1 cursor-grab text-gray-400 text-sm select-none" @click.stop>
-            <button @click.stop="moveCartItem(idx,-1)" :disabled="idx===0" class="text-gray-400 hover:text-gray-700 disabled:opacity-20 text-xs leading-none">▲</button>
+            <button @click.stop="moveCartItem(row.idx,-1)" :disabled="row.idx===0" class="text-gray-400 hover:text-gray-700 disabled:opacity-20 text-xs leading-none">▲</button>
             <span class="text-center text-xs">⠿</span>
-            <button @click.stop="moveCartItem(idx,1)" :disabled="idx===cart.length-1" class="text-gray-400 hover:text-gray-700 disabled:opacity-20 text-xs leading-none">▼</button>
+            <button @click.stop="moveCartItem(row.idx,1)" :disabled="row.idx===cart.length-1" class="text-gray-400 hover:text-gray-700 disabled:opacity-20 text-xs leading-none">▼</button>
           </div>
           <div class="flex-1 min-w-0">
-            <p class="font-bold text-gray-800 text-sm">{{ getCartItemDisplayName(item,idx) }}</p>
-            <div v-if="getCartVisibleOptionChips(item,idx).length" class="flex flex-wrap gap-1 mt-1">
-              <span v-for="sel in getCartVisibleOptionChips(item,idx)" :key="sel.groupName+'_'+sel.name"
+            <p class="font-bold text-gray-800 text-sm">{{ getCartItemDisplayName(row.item,row.idx) }}</p>
+            <div v-if="getCartVisibleOptionChips(row.item,row.idx).length" class="flex flex-wrap gap-1 mt-1">
+              <span v-for="sel in getCartVisibleOptionChips(row.item,row.idx)" :key="sel.groupName+'_'+sel.name"
                 class="text-xs bg-orange-50 text-orange-600 border border-orange-200 px-1.5 py-0.5 rounded">
                 {{ sel.name }}</span></div>
-            <div v-if="getCartComboDrinkMetaText(item)" class="text-xs text-orange-500 font-bold mt-0.5">🧋 {{ getCartComboDrinkMetaText(item) }}</div>
-            <div v-if="getCartItemMealDrinkText(item,idx)" class="text-xs text-orange-500 mt-0.5">🧋 {{ getCartItemMealDrinkText(item,idx) }}</div>
-            <div v-if="getCartDisplayComboDrinkAddons(item,idx).length" class="text-xs text-orange-400 mt-0.5">＋ {{ getCartDisplayComboDrinkAddons(item,idx).map(function(o){return o.name+(o.price>0?(' +$'+o.price):'');}).join(', ') }}</div>
-            <div v-if="formatAddonList(item.options,true)" class="text-xs text-gray-400 mt-0.5">{{ formatAddonList(item.options,true) }}</div>
-            <div v-if="formatAddonList(item.posExtras,false)" class="text-xs text-purple-500 mt-0.5">🔧 {{ formatAddonList(item.posExtras,false) }}</div>
-            <div v-if="getCartVisibleNote(item,idx)" class="text-xs text-blue-500 mt-0.5">&#128221; {{ getCartVisibleNote(item,idx) }}</div>
-            <div v-if="getCartVisibleDrinkNote(item,idx)" class="text-xs text-blue-500 mt-0.5">&#129371; {{ getCartVisibleDrinkNote(item,idx) }}</div>
-            <p class="text-orange-500 font-black text-sm mt-1">${{ item.itemTotal }}</p>
+            <div v-if="getCartComboDrinkMetaText(row.item)" class="text-xs text-orange-500 font-bold mt-0.5">🧋 {{ getCartComboDrinkMetaText(row.item) }}</div>
+            <div v-if="getCartItemMealDrinkText(row.item,row.idx)" class="text-xs text-orange-500 mt-0.5">🧋 {{ getCartItemMealDrinkText(row.item,row.idx) }}</div>
+            <div v-if="getCartDisplayComboDrinkAddons(row.item,row.idx).length" class="text-xs text-orange-400 mt-0.5">＋ {{ getCartDisplayComboDrinkAddons(row.item,row.idx).map(function(o){return o.name+(o.price>0?(' +$'+o.price):'');}).join(', ') }}</div>
+            <div v-if="formatAddonList(row.item.options,true)" class="text-xs text-gray-400 mt-0.5">{{ formatAddonList(row.item.options,true) }}</div>
+            <div v-if="formatAddonList(row.item.posExtras,false)" class="text-xs text-purple-500 mt-0.5">🔧 {{ formatAddonList(row.item.posExtras,false) }}</div>
+            <div v-if="getCartVisibleNote(row.item,row.idx)" class="text-xs text-blue-500 mt-0.5">&#128221; {{ getCartVisibleNote(row.item,row.idx) }}</div>
+            <div v-if="getCartVisibleDrinkNote(row.item,row.idx)" class="text-xs text-blue-500 mt-0.5">&#129371; {{ getCartVisibleDrinkNote(row.item,row.idx) }}</div>
+            <div class="flex items-center gap-2 mt-1">
+              <p class="text-orange-500 font-black text-sm">${{ row.item.itemTotal }}</p>
+              <button v-if="posBags.length" @click.stop="posBagOpenMove(row.idx)" data-pos-bag-move class="rounded-full border border-orange-200 bg-orange-50 px-2 py-0.5 text-[11px] font-bold text-orange-700 transition active:scale-95">🛍️ 換袋</button>
+            </div>
           </div>
           <div class="flex items-center gap-1 flex-shrink-0 mt-0.5">
-            <button @click.stop="chgQty(idx,-1)" class="w-7 h-7 rounded-full border border-gray-200 text-gray-500 flex items-center justify-center font-bold text-base hover:bg-red-50 hover:text-red-500 transition active:scale-90">&#8722;</button>
-            <span class="w-6 text-center font-bold text-sm text-gray-800">{{ item.qty }}</span>
-            <button @click.stop="chgQty(idx,1)" class="w-7 h-7 rounded-full border border-gray-200 text-gray-500 flex items-center justify-center font-bold text-base hover:bg-green-50 hover:text-green-500 transition active:scale-90">+</button>
+            <button @click.stop="chgQty(row.idx,-1)" class="w-7 h-7 rounded-full border border-gray-200 text-gray-500 flex items-center justify-center font-bold text-base hover:bg-red-50 hover:text-red-500 transition active:scale-90">&#8722;</button>
+            <span class="w-6 text-center font-bold text-sm text-gray-800">{{ row.item.qty }}</span>
+            <button @click.stop="chgQty(row.idx,1)" class="w-7 h-7 rounded-full border border-gray-200 text-gray-500 flex items-center justify-center font-bold text-base hover:bg-green-50 hover:text-green-500 transition active:scale-90">+</button>
           </div>
         </div>
+        </template>
       </div>
     </div>
     <div class="flex-shrink-0 border-t border-gray-200 bg-white">
+      <!-- ★ pos-bag-split-20261012：🛍️ 分袋（分開裝／內用＋外帶） -->
+      <div v-if="(cart.length>0||posBags.length)&&!(orderMode!=='pos'&&editingLinePayPaid)" data-pos-bag-bar class="px-4 pt-2 flex gap-2">
+        <button v-if="!posBags.length" @click="posBagStart" data-pos-bag-start class="flex-1 rounded-lg border-2 border-dashed border-orange-200 bg-white py-1.5 text-xs font-black text-orange-600 hover:bg-orange-50 transition active:scale-95">🛍️ 分袋（分開裝／內用＋外帶）</button>
+        <template v-else>
+          <button @click="posBagAdd()" data-pos-bag-add class="flex-1 rounded-lg bg-orange-500 py-1.5 text-xs font-black text-white transition active:scale-95">＋ 再分一袋</button>
+          <button @click="posBagCancel" data-pos-bag-cancel class="rounded-lg bg-gray-100 px-3 py-1.5 text-xs font-bold text-gray-500 hover:bg-gray-200 transition">取消分袋</button>
+        </template>
+      </div>
       <!-- ★ POS 新訂單 -->
       <div v-if="orderMode==='pos'" class="px-4 pt-3 pb-1 space-y-2">
         <button @click="posMetaExpanded=!posMetaExpanded" class="w-full flex items-center justify-between bg-orange-50 hover:bg-orange-100 border border-orange-200 rounded-lg px-3 py-1.5 transition">
@@ -505,8 +539,8 @@
         </div>
         <div v-if="posMetaExpanded" class="space-y-2">
           <div class="flex gap-1.5">
-            <button @click="posOrderType='takeout';posTableLabel=''" :class="posOrderType==='takeout'?'bg-orange-500 text-white':'bg-gray-100 text-gray-600'" class="flex-1 py-2 rounded-lg font-bold text-xs transition">🥡 外帶</button>
-            <button @click="posOrderType='dinein'" :class="posOrderType==='dinein'?'bg-blue-500 text-white':'bg-gray-100 text-gray-600'" class="flex-1 py-2 rounded-lg font-bold text-xs transition">🍽️ 內用</button>
+            <button @click="posOrderType='takeout';posTableLabel='';posBagFollowOrderType()" :class="posOrderType==='takeout'?'bg-orange-500 text-white':'bg-gray-100 text-gray-600'" class="flex-1 py-2 rounded-lg font-bold text-xs transition">🥡 外帶</button>
+            <button @click="posOrderType='dinein';posBagFollowOrderType()" :class="posOrderType==='dinein'?'bg-blue-500 text-white':'bg-gray-100 text-gray-600'" class="flex-1 py-2 rounded-lg font-bold text-xs transition">🍽️ 內用</button>
           </div>
           <div v-if="posOrderType==='dinein'" class="flex flex-wrap gap-1">
             <button v-for="tbl in posTables" :key="tbl" @click="posTableLabel=tbl" :class="posTableLabel===tbl?'bg-blue-600 text-white':'bg-blue-50 text-blue-700'" class="px-2.5 py-1 rounded-lg font-bold text-xs transition border border-blue-200">{{ tbl }}</button>
@@ -537,8 +571,8 @@
         </div>
         <div class="flex justify-between items-center px-1"><span class="text-gray-500 text-sm">共 {{ cartCount }} 件</span><span class="text-2xl font-black text-gray-900">${{ cartTotal }}</span></div>
         <div class="flex gap-1.5">
-          <button @click="editOrderType='takeout';editTableLabel=''" :class="editOrderType==='takeout'?'bg-orange-500 text-white':'bg-gray-100 text-gray-600'" class="flex-1 py-2 rounded-lg font-bold text-xs transition">🥡 外帶</button>
-          <button @click="editOrderType='dinein'" :class="editOrderType==='dinein'?'bg-blue-500 text-white':'bg-gray-100 text-gray-600'" class="flex-1 py-2 rounded-lg font-bold text-xs transition">🍽️ 內用</button>
+          <button @click="editOrderType='takeout';editTableLabel='';posBagFollowOrderType()" :class="editOrderType==='takeout'?'bg-orange-500 text-white':'bg-gray-100 text-gray-600'" class="flex-1 py-2 rounded-lg font-bold text-xs transition">🥡 外帶</button>
+          <button @click="editOrderType='dinein';posBagFollowOrderType()" :class="editOrderType==='dinein'?'bg-blue-500 text-white':'bg-gray-100 text-gray-600'" class="flex-1 py-2 rounded-lg font-bold text-xs transition">🍽️ 內用</button>
         </div>
         <div v-if="editOrderType==='dinein'" class="flex flex-wrap gap-1">
           <button v-for="tbl in posTables" :key="tbl" @click="editTableLabel=tbl" :class="editTableLabel===tbl?'bg-blue-600 text-white':'bg-blue-50 text-blue-700'" class="px-2.5 py-1 rounded-lg font-bold text-xs transition border border-blue-200">{{ tbl }}</button>
@@ -589,6 +623,38 @@
             class="py-3 rounded-xl font-bold text-sm bg-gray-200 hover:bg-gray-300 text-gray-600 transition">關閉</button>
         </template>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- ★ pos-bag-split-20261012：品項換袋（數量 >1 可只移部分份數） -->
+<div v-if="posBagMoveIdx>=0 && cart[posBagMoveIdx]" data-pos-bag-move-modal class="fixed inset-0 flex items-center justify-center p-3" style="z-index:1100;background:rgba(0,0,0,.5)" @click.self="posBagCloseMove">
+  <div class="w-full max-w-sm rounded-2xl bg-white shadow-2xl p-4">
+    <div class="flex items-start justify-between gap-2 mb-3">
+      <div class="min-w-0">
+        <h3 class="text-lg font-black text-gray-800 truncate">🛍️ {{ getCartItemDisplayName(cart[posBagMoveIdx],posBagMoveIdx) }}</h3>
+        <p class="text-xs text-gray-400">目前在：{{ posBagLabelOf(cart[posBagMoveIdx].bagNo) || '新的一袋' }}・要換到哪一袋？</p>
+      </div>
+      <button @click="posBagCloseMove" class="h-9 w-9 flex-shrink-0 rounded-full bg-gray-100 text-xl text-gray-500 hover:bg-gray-200">×</button>
+    </div>
+    <div v-if="(Number(cart[posBagMoveIdx].qty)||1)>1" class="mb-3 flex items-center justify-between gap-2 rounded-xl bg-gray-50 px-3 py-2">
+      <span class="text-sm font-bold text-gray-700">移幾份？<span class="text-xs text-gray-400">（共 {{ cart[posBagMoveIdx].qty }} 份）</span></span>
+      <div class="flex items-center gap-2 flex-shrink-0">
+        <button @click="posBagMoveQty=Math.max(1,posBagMoveQty-1)" data-pos-bag-qty-minus class="w-8 h-8 rounded-full border border-gray-200 bg-white font-bold text-gray-600">&#8722;</button>
+        <b class="w-6 text-center text-lg text-gray-800" data-pos-bag-qty>{{ posBagMoveQty }}</b>
+        <button @click="posBagMoveQty=Math.min(Number(cart[posBagMoveIdx].qty)||1,posBagMoveQty+1)" data-pos-bag-qty-plus class="w-8 h-8 rounded-full border border-gray-200 bg-white font-bold text-gray-600">+</button>
+      </div>
+    </div>
+    <div class="grid grid-cols-2 gap-2">
+      <button v-for="bag in posBags" :key="bag.id" @click="posBagMoveTo(bag.id)" :disabled="bag.id===cart[posBagMoveIdx].bagNo" data-pos-bag-target
+        class="rounded-xl border-2 px-3 py-3 text-left transition disabled:opacity-40"
+        :class="bag.id===cart[posBagMoveIdx].bagNo?'border-gray-200 bg-gray-50':'border-orange-200 bg-orange-50 hover:bg-orange-100'">
+        <b class="block text-sm text-gray-800 truncate">{{ bag.type==='dinein' ? '🍽️' : '🛍️' }} {{ posBagLabelOf(bag.id) || '新的一袋' }}</b>
+        <span class="block text-[11px] text-gray-500">{{ bag.type==='dinein' ? '內用' : '外帶' }}・{{ posBagItemCount(bag.id) }}件{{ bag.id===cart[posBagMoveIdx].bagNo ? '（目前）' : '' }}</span>
+      </button>
+      <button @click="posBagMoveTo('new')" data-pos-bag-target-new class="rounded-xl border-2 border-dashed border-orange-200 bg-white px-3 py-3 text-left text-orange-600 transition hover:bg-orange-50">
+        <b class="block text-sm">＋ 新的一袋</b><span class="block text-[11px] text-gray-400">外帶</span>
+      </button>
     </div>
   </div>
 </div>
@@ -1039,6 +1105,7 @@
                 editPickupDate:"",editPickupTime:"",editOrderNote:"",editCustomerName:"",editCustomerPhone:"",editingCartIdx:-1,
                 editShowCustomer:false,editShowPayment:false,editOrderType:'takeout',editTableLabel:'',editingLinePayPaid:false,
                 posOrderType:'takeout',posTableLabel:'',posTables:[],cartDragIdx:null,
+                posBags:[],posBagSeq:0,posBagActive:0,posBagMoveIdx:-1,posBagMoveQty:1,// ★ pos-bag-split-20261012
                 posPickupDate:"",posPickupTime:"",
                 orderMode:"pos",editingOrder:null,
                 onlineOrders:[],ordersLoading:false,assigningNos:{},orderBuckets:{},orderBucketUnsubs:[],integrationOrdersUnsub:null,integrationOrdersCache:[],phoneOrdersUnsub:null,phoneOrdersCache:[],useIntegrationView:false,ordersReadBackend:'checking',settingsReadBackend:'checking',menuReadBackend:'checking',lastWriteBackend:'',lastWriteAt:0,menuEditOverrideUntil:0,menuLocalOverrides:{},menuSettingsPollTimer:null,menuVersion:'',menuVersionPollTimer:null,menuVersionReadInFlight:false,pbOrdersPollTimer:null,pbOrdersReadInFlight:false,pbOrdersEverConnected:false,pbOrdersFailureCount:0,pbOrdersSuccessStreak:0,ordersFallbackHoldUntil:0,remoteStatusOverrides:{},remoteStatusOverridesUnsub:null,orderHydrateInFlight:{},orderHydrateDone:{},
@@ -1066,6 +1133,29 @@
             activeStaffPresets:function(){return (this.staffPresets||[]).filter(function(row){return row&&row.active!==false&&Array.isArray(row.templates)&&row.templates.length;});},
             cartTotal:function(){return this.cart.reduce(function(s,i){return s+(Number(i.itemTotal)||0);},0);},
             cartCount:function(){return this.cart.reduce(function(s,i){return s+i.qty;},0);},
+            // ★ pos-bag-split-20261012：每袋目前的工單標示（只算有餐點的袋）
+            posBagLabels:function(){
+                var used=this.posBagUsedBags(this.cart||[]);
+                return used.length?this.posBagComputeLabels(used,this.posBagOrderType()):{};
+            },
+            // ★ pos-bag-split-20261012：目前訂單的顯示列（沒分袋時＝原本的品項列表）
+            posBagRows:function(){
+                var s=this,cart=s.cart||[],bags=s.posBagList();
+                if(!bags.length)return cart.map(function(item,idx){return {kind:'item',key:'i'+idx,item:item,idx:idx};});
+                var labels=s.posBagLabels,rows=[],placed={};
+                bags.forEach(function(bag){
+                    var head={kind:'bag',key:'b'+bag.id,bag:bag,label:labels[bag.id]||'',count:0,total:0,active:bag.id===s.posBagActive};
+                    rows.push(head);
+                    cart.forEach(function(item,idx){
+                        if(!item||item.bagNo!==bag.id)return;
+                        head.count+=Number(item.qty)||0;head.total+=Number(item.itemTotal)||0;placed[idx]=true;
+                        rows.push({kind:'item',key:'i'+idx,item:item,idx:idx});
+                    });
+                    if(!head.count)rows.push({kind:'empty',key:'e'+bag.id,bag:bag,active:head.active});
+                });
+                cart.forEach(function(item,idx){if(!placed[idx])rows.push({kind:'item',key:'i'+idx,item:item,idx:idx});});
+                return rows;
+            },
             cashReceivedAmount:function(){return Number(this.cashCalcInput||0)||0;},
             cashChangeAmount:function(){return this.cashReceivedAmount-this.cartTotal;},
             activeOrderCount:function(){
@@ -1206,6 +1296,10 @@
                 return(b+e)*this.tempQty;
             }
         },
+        watch:{
+            // ★ pos-bag-split-20261012：購物車變動 → 新點的餐放進「目前加入」的袋、依袋排序；購物車清空就結束分袋
+            cart:{handler:function(){this.posBagSyncCart();},deep:true}
+        },
         created:function(){
             var s=this;
             try{
@@ -1258,6 +1352,243 @@
         },
         beforeUnmount:function(){this.stopScannerBridge();},
         methods:{
+            // ── 分袋（pos-bag-split-20261012）────────────────────────────────
+            // 顧客：「1號套餐裝1袋，蛋餅+大冰奶放第2袋」「2號套餐內用，蘿蔔糕外帶」。
+            // 購物車品項帶 bagNo（袋的內部編號）／bagType；送單時換成 1..n 袋號，並在品項備註
+            // （有套餐飲料的也寫飲料備註）最前面加【第2袋】【內用】【外帶】→ 既有 Node-RED／print_order.py／
+            // LINE Pay 付款後出單／manage 明細不用改就會印出、顯示。
+            posBagOrderType:function(){
+                if(this.orderMode&&this.orderMode!=='pos')return this.editOrderType==='dinein'?'dinein':'takeout';
+                return this.posOrderType==='dinein'?'dinein':'takeout';
+            },
+            posBagList:function(){return Array.isArray(this.posBags)?this.posBags:[];},
+            posBagFind:function(id){var list=this.posBagList();for(var i=0;i<list.length;i++){if(list[i]&&list[i].id===id)return list[i];}return null;},
+            posBagNewId:function(){
+                var max=Number(this.posBagSeq)||0;
+                this.posBagList().forEach(function(b){if(b&&b.id>max)max=b.id;});
+                this.posBagSeq=max+1;
+                return this.posBagSeq;
+            },
+            posBagReset:function(){this.posBags=[];this.posBagActive=0;this.posBagSeq=0;this.posBagMoveIdx=-1;this.posBagMoveQty=1;},
+            // 🛍️ 分袋：現有餐點＝第1袋（和訂單同樣內用／外帶），自動開新的一袋並設為「目前加入」
+            posBagStart:function(){
+                var s=this;
+                if(s.posBagList().length){s.posBagAdd();return;}
+                var first={id:s.posBagNewId(),type:s.posBagOrderType()};
+                s.posBags=[first];
+                (s.cart||[]).forEach(function(it){if(it){it.bagNo=first.id;it.bagType=first.type;}});
+                s.posBagActive=first.id;
+                if((s.cart||[]).length){
+                    s.posBagAdd();
+                    s.toast('🛍️ 已分袋：現有餐點在第1袋，接著點的餐會放進新的一袋');
+                }
+            },
+            posBagAdd:function(type){
+                var bag={id:this.posBagNewId(),type:type==='dinein'?'dinein':'takeout'};
+                this.posBags=this.posBagList().concat([bag]);
+                this.posBagActive=bag.id;
+                return bag;
+            },
+            posBagSetActive:function(id){if(this.posBagFind(id))this.posBagActive=id;},
+            posBagSetType:function(id,type){
+                var bag=this.posBagFind(id);if(!bag)return;
+                type=type==='dinein'?'dinein':'takeout';
+                bag.type=type;
+                (this.cart||[]).forEach(function(it){if(it&&it.bagNo===id&&it.bagType!==type)it.bagType=type;});
+            },
+            // 訂單設定切內用／外帶時，第1袋跟著改
+            posBagFollowOrderType:function(){
+                var list=this.posBagList();if(!list.length)return;
+                this.posBagSetType(list[0].id,this.posBagOrderType());
+            },
+            posBagRemove:function(id){
+                var s=this,list=s.posBagList(),at=-1;
+                for(var i=0;i<list.length;i++){if(list[i].id===id){at=i;break;}}
+                if(at<0)return;
+                var target=list[at-1]||list[at+1];
+                if(!target){s.posBagCancel();return;}
+                (s.cart||[]).forEach(function(it){if(it&&it.bagNo===id){it.bagNo=target.id;it.bagType=target.type;}});
+                s.posBags=list.filter(function(b){return b.id!==id;});
+                if(s.posBagActive===id||!s.posBagFind(s.posBagActive))s.posBagActive=target.id;
+                s.posBagSortCart();
+            },
+            posBagCancel:function(){
+                (this.cart||[]).forEach(function(it){if(it){delete it.bagNo;delete it.bagType;delete it.bagLabel;}});
+                this.posBagReset();
+            },
+            posBagSortCart:function(){
+                var list=this.posBagList();if(!list.length)return;
+                var rank={};list.forEach(function(b,i){rank[b.id]=i;});
+                var rows=(this.cart||[]).map(function(it,i){return {it:it,i:i,r:(it&&rank[it.bagNo]!==undefined)?rank[it.bagNo]:list.length};});
+                rows.sort(function(a,b){return (a.r-b.r)||(a.i-b.i);});
+                for(var k=0;k<rows.length;k++){if(rows[k].i!==k){this.cart=rows.map(function(r){return r.it;});return;}}
+            },
+            // 購物車變動後：沒有袋號的（剛點的）放進「目前加入」的袋；購物車清空 → 結束分袋
+            posBagSyncCart:function(){
+                var s=this,cart=s.cart||[],list=s.posBagList();
+                if(s._posBagSyncing)return;
+                s._posBagSyncing=true;
+                try{
+                    if(!cart.length){if(list.length||s.posBagActive||s.posBagMoveIdx>=0)s.posBagReset();return;}
+                    if(!list.length){
+                        // LINE Pay 返回還原購物車等：品項有袋號就把分袋畫面還原
+                        if(cart.some(function(it){return it&&Number(it.bagNo)>0;}))s.posBagRebuild();
+                        return;
+                    }
+                    var active=s.posBagFind(s.posBagActive)||list[list.length-1];
+                    if(s.posBagActive!==active.id)s.posBagActive=active.id;
+                    cart.forEach(function(it){
+                        if(!it)return;
+                        var bag=s.posBagFind(it.bagNo);
+                        if(!bag){bag=active;it.bagNo=bag.id;}
+                        if(it.bagType!==bag.type)it.bagType=bag.type;
+                        if(it.bagLabel!==undefined)delete it.bagLabel;
+                    });
+                    s.posBagSortCart();
+                    if(s.posBagMoveIdx>=(s.cart||[]).length)s.posBagMoveIdx=-1;
+                }finally{s._posBagSyncing=false;}
+            },
+            posBagRebuild:function(){
+                var s=this,bags=[],seen={};
+                (s.cart||[]).forEach(function(it){
+                    var n=Math.floor(Number(it&&it.bagNo)||0);
+                    if(n<=0||seen[n])return;
+                    seen[n]={id:n,type:it.bagType==='dinein'?'dinein':'takeout'};bags.push(seen[n]);
+                });
+                if(!bags.length)return false;
+                bags.sort(function(a,b){return a.id-b.id;});
+                (s.cart||[]).forEach(function(it){
+                    if(!it)return;
+                    var n=Math.floor(Number(it.bagNo)||0);
+                    if(!seen[n]){it.bagNo=bags[0].id;it.bagType=bags[0].type;}
+                    else{if(it.bagNo!==n)it.bagNo=n;if(it.bagType!==seen[n].type)it.bagType=seen[n].type;}
+                    if(it.bagLabel!==undefined)delete it.bagLabel;
+                });
+                s.posBags=bags;
+                s.posBagSeq=bags[bags.length-1].id;
+                s.posBagActive=bags[bags.length-1].id;
+                s.posBagSortCart();
+                return true;
+            },
+            // 備註最前面的袋標示：【第2袋】【內用】【外帶】【外帶第2袋】【內用第1份】
+            posBagStripLabel:function(text){
+                var raw=String(text===undefined||text===null?'':text);
+                var m=/^\s*【((?:內用|外帶)?(?:第\d{1,2}[袋份])?)】[，,、\s]*/.exec(raw);
+                if(!m||!m[1])return {label:'',rest:raw};
+                return {label:m[1],rest:raw.slice(m[0].length)};
+            },
+            posBagJoinLabel:function(label,text){
+                var rest=this.posBagStripLabel(text).rest.trim();
+                if(!label)return rest;
+                return '【'+label+'】'+(rest?'，'+rest:'');
+            },
+            posBagLabelType:function(label){return /內用|份/.test(String(label||''))?'dinein':'takeout';},
+            posBagComputeLabels:function(bags,orderType){
+                var count={},seen={},map={};
+                orderType=orderType==='dinein'?'dinein':'takeout';
+                (bags||[]).forEach(function(b){count[b.type]=(count[b.type]||0)+1;});
+                var withType=Object.keys(count).length>1||(bags||[]).some(function(b){return b.type!==orderType;});
+                (bags||[]).forEach(function(b){
+                    seen[b.type]=(seen[b.type]||0)+1;
+                    var unit=b.type==='dinein'?'份':'袋',word=b.type==='dinein'?'內用':'外帶',k=seen[b.type];
+                    map[b.id]=withType?(count[b.type]>1?word+'第'+k+unit:word):('第'+k+unit);
+                });
+                return map;
+            },
+            posBagUsedBags:function(items){
+                var list=this.posBagList();
+                return list.filter(function(b){return (items||[]).some(function(it){return it&&it.bagNo===b.id;});});
+            },
+            posBagHasComboDrink:function(it){
+                return !!(it&&Array.isArray(it.optionGroupSelections)&&it.optionGroupSelections.some(function(sel){return sel&&String(sel.pricing||'')==='mealUpgrade';}));
+            },
+            // 送單／儲存用（items 是複本）：袋號 1..n、bagType、bagLabel，備註最前面加標示；沒分袋 → 拿掉袋欄位
+            posBagApplyLabels:function(items,orderType){
+                var s=this,list=Array.isArray(items)?items:[],bags=s.posBagList();
+                var clear=function(it){if(it&&typeof it==='object'){delete it.bagNo;delete it.bagType;delete it.bagLabel;}};
+                if(!bags.length){list.forEach(clear);return list;}
+                var active=s.posBagFind(s.posBagActive)||bags[bags.length-1];
+                list.forEach(function(it){if(it&&typeof it==='object'&&!s.posBagFind(it.bagNo))it.bagNo=active.id;});
+                var used=s.posBagUsedBags(list);
+                orderType=orderType==='dinein'?'dinein':'takeout';
+                if(!used.length||(used.length===1&&used[0].type===orderType)){list.forEach(clear);return list;}
+                var labels=s.posBagComputeLabels(used,orderType),rank={};
+                used.forEach(function(b,i){rank[b.id]=i;});
+                var rows=list.map(function(it,i){return {it:it,i:i,r:(it&&rank[it.bagNo]!==undefined)?rank[it.bagNo]:used.length};});
+                rows.sort(function(a,b){return (a.r-b.r)||(a.i-b.i);});
+                rows.forEach(function(row){
+                    var it=row.it,bag=used[row.r];
+                    if(!it||typeof it!=='object'||!bag)return;
+                    var label=labels[bag.id];
+                    it.bagNo=row.r+1;it.bagType=bag.type;it.bagLabel=label;
+                    it.note=s.posBagJoinLabel(label,it.note);
+                    if(s.posBagHasComboDrink(it)||s.posBagStripLabel(it.drinkNote).label)it.drinkNote=s.posBagJoinLabel(label,it.drinkNote);
+                });
+                list.length=0;
+                rows.forEach(function(r){list.push(r.it);});
+                return list;
+            },
+            posBagOrderItems:function(orderType){
+                if(this.posBagList().length)this.posBagSyncCart();
+                return this.posBagApplyLabels((this.cart||[]).map(function(i){return Object.assign({},i);}),orderType);
+            },
+            // 編輯訂單讀回：備註前的標示拿掉，依 bagNo（或標示）還原分袋畫面
+            posBagLoadFromCart:function(){
+                var s=this,byLabel={},nextId=0,cart=s.cart||[];
+                s.posBagReset();
+                cart.forEach(function(it){var n=Math.floor(Number(it&&it.bagNo)||0);if(n>nextId)nextId=n;});
+                cart.forEach(function(it){
+                    if(!it||typeof it!=='object')return;
+                    var main=s.posBagStripLabel(it.note),drink=s.posBagStripLabel(it.drinkNote);
+                    var label=String(it.bagLabel||main.label||drink.label||'').trim();
+                    if(main.label)it.note=main.rest;
+                    if(drink.label)it.drinkNote=drink.rest;
+                    if(!(Number(it.bagNo)>0)&&label){
+                        if(!byLabel[label])byLabel[label]=++nextId;
+                        it.bagNo=byLabel[label];
+                        it.bagType=s.posBagLabelType(label);
+                    }else if(Number(it.bagNo)>0&&it.bagType!=='dinein'&&it.bagType!=='takeout'){
+                        it.bagType=label?s.posBagLabelType(label):'takeout';
+                    }
+                    if(it.bagLabel!==undefined)delete it.bagLabel;
+                });
+                s.posBagRebuild();
+            },
+            posBagItemCount:function(id){return (this.cart||[]).reduce(function(n,it){return n+((it&&it.bagNo===id)?(Number(it.qty)||0):0);},0);},
+            posBagLabelOf:function(id){return this.posBagFind(id)?(this.posBagLabels[id]||''):'';},
+            posBagOpenMove:function(idx){
+                var it=(this.cart||[])[idx];if(!it)return;
+                this.posBagMoveIdx=idx;this.posBagMoveQty=Math.max(1,Number(it.qty)||1);
+            },
+            posBagCloseMove:function(){this.posBagMoveIdx=-1;this.posBagMoveQty=1;},
+            posBagMoveTo:function(target){
+                var s=this,idx=s.posBagMoveIdx,item=(s.cart||[])[idx];
+                if(!item){s.posBagCloseMove();return;}
+                var bag=target==='new'?null:s.posBagFind(target);
+                if(target!=='new'&&!bag)return;
+                if(bag&&bag.id===item.bagNo){s.posBagCloseMove();return;}
+                if(!bag){var keepActive=s.posBagActive;bag=s.posBagAdd();if(s.posBagFind(keepActive))s.posBagActive=keepActive;}
+                var qty=Math.max(1,Number(item.qty)||1),k=Math.max(1,Math.min(qty,Math.floor(Number(s.posBagMoveQty)||qty)));
+                var name=String(item.name||'');
+                if(k>=qty){item.bagNo=bag.id;item.bagType=bag.type;}
+                else{
+                    var total=Number(item.itemTotal)||0,unit=Math.round(total/qty);
+                    var moved=JSON.parse(JSON.stringify(item));
+                    moved.qty=k;moved.itemTotal=unit*k;moved.bagNo=bag.id;moved.bagType=bag.type;
+                    item.qty=qty-k;item.itemTotal=total-moved.itemTotal;
+                    s.cart.splice(idx+1,0,moved);
+                }
+                s.posBagCloseMove();
+                s.posBagSortCart();
+                s.toast('🛍️ '+name+(k<qty?(' '+k+'份'):'')+' → '+(s.posBagLabelOf(bag.id)||'新的一袋'));
+            },
+            posBagDropOnBag:function(id){
+                var fi=this.cartDragIdx,it=(this.cart||[])[fi],bag=this.posBagFind(id);
+                this.cartDragIdx=null;
+                if(!it||!bag||it.bagNo===bag.id)return;
+                it.bagNo=bag.id;it.bagType=bag.type;
+                this.posBagSortCart();
+            },
             loadStaffPresets:function(){
                 var s=this;
                 if(s.staffPresetsLoading)return Promise.resolve(s.staffPresets);
@@ -1409,6 +1740,7 @@
                     s.toast('✓ 已加入 '+preset.buttonLabel+'－'+template.label+typeHint+'，請確認後付款');
                     return;
                 }
+                if(typeof s.posBagReset==='function')s.posBagReset();// ★ pos-bag-split-20261012：取代 → 結束分袋
                 s.cart=nextCart;
                 s.custName=String(preset.customerName||preset.buttonLabel||'常客');
                 s.custPhone=String(preset.phone||'');
@@ -3130,6 +3462,7 @@
             buildPhoneCommandItems:function(){
                 var s=this;
                 var src=JSON.parse(JSON.stringify(this.cart||[]));
+                if(typeof this.posBagApplyLabels==='function')src=this.posBagApplyLabels(src,this.editOrderType==='dinein'?'dinein':'takeout');// ★ pos-bag-split-20261012：電話單也帶袋標示
                 var out=[];
                 var consumedIdx={};
                 var comboDrinkRe=/(?:\u5957\u9910\u98f2\u6599|\u642d\u914d\u98f2\u6599\u6298\s*5\s*\u5143|\u98f2\u6599\u52a0\u8cfc|\u88dc\u5dee\u50f9)/;
@@ -5112,7 +5445,8 @@
                     it=it||{};
                     return [it.id||'',it.name||'',Number(it.qty||it.quantity||0),Number(it.itemTotal||0),
                         it.size||'',it.temp||'',it.note||'',it.drinkNote||'',it.mealDrink||'',it.comboDrinkText||'',
-                        it.options||[],it.optionGroupSelections||[],it.addons||[],it.posExtras||[],it.comboDrinkAddons||[],it.station||''];
+                        it.options||[],it.optionGroupSelections||[],it.addons||[],it.posExtras||[],it.comboDrinkAddons||[],it.station||'',
+                        it.bagNo||0,it.bagType||''];// ★ pos-bag-split-20261012：換袋也算修改
                 };
                 return JSON.stringify({
                     items:(this.cart||[]).map(pick),
@@ -6618,7 +6952,8 @@
                 var up=bp+ex;
                 // 找已有相同品項
                 var key=JSON.stringify(ogSels),found=null;
-                for(var i=0;i<this.cart.length;i++){var c=this.cart[i];if(c.id===item.id&&!c.note&&(!c.options||!c.options.length)&&JSON.stringify(c.optionGroupSelections||[])===key){found=c;break;}}
+                var bagId=(Array.isArray(this.posBags)&&this.posBags.length)?this.posBagActive:0;// ★ pos-bag-split-20261012：只在同一袋裡合併
+                for(var i=0;i<this.cart.length;i++){var c=this.cart[i];if(c.id===item.id&&!c.note&&(!c.options||!c.options.length)&&JSON.stringify(c.optionGroupSelections||[])===key&&(!bagId||c.bagNo===bagId)){found=c;break;}}
                 if(found){found.qty+=1;found.itemTotal=up*found.qty;}
                 else{this.cart.push({id:item.id,name:item.name,shortName:String(item.shortName||'').trim(),printName:String(item.shortName||item.printName||'').trim(),price:item.price,station:item.station||this.getDefaultStationName(),printStations:Array.isArray(item.printStations)?item.printStations.slice():[],qty:1,note:"",options:[],optionGroupSelections:ogSels,itemTotal:up});}
                 this.toast("✓ "+item.name);
@@ -6936,6 +7271,9 @@
                 var rebuiltOptionSelections={};
                 sels.forEach(function(sel){if(sel&&sel.groupName&&sel.name)rebuiltOptionSelections[sel.groupName]=sel.name;});
                 var newItem={id:item.id,name:item.name,shortName:String(item.shortName||'').trim(),printName:String(item.shortName||item.printName||'').trim(),price:item.price,station:item.station||s.getDefaultStationName(),printStations:Array.isArray(item.printStations)?item.printStations.slice():[],qty:s.tempQty,note:s.tempNote,drinkNote:String(s.tempDrinkNote||''),options:s.tempSels.slice(),posExtras:(s.tempPosExtras||[]).slice(),comboDrinkAddons:(s.tempDrinkAddons||[]).slice(),comboDrinkPrintName:comboDrinkPrintName,comboDrinkShortName:comboDrinkPrintName,optionGroupSelections:sels,optionSelections:rebuiltOptionSelections,selectedOptions:Object.assign({},rebuiltOptionSelections),itemTotal:(b+e)*s.tempQty};
+                // ★ pos-bag-split-20261012：修改已有品項時保留原本的袋
+                var prevCartItem=(s.editingCartIdx>=0&&s.editingCartIdx<s.cart.length)?s.cart[s.editingCartIdx]:null;
+                if(prevCartItem&&prevCartItem.bagNo){newItem.bagNo=prevCartItem.bagNo;newItem.bagType=prevCartItem.bagType;}
                 if(s.editingCartIdx>=0&&s.editingCartIdx<s.cart.length){
                     // 修改已有品項
                     s.cart.splice(s.editingCartIdx,1,newItem);
@@ -7205,7 +7543,7 @@
                 if(!pickTime)pickTime="預約取餐";
                 var custDisplay2=(s.posOrderType==='dinein'&&s.posTableLabel)?s.posTableLabel:(s.custName||"現場");
                 var o={customer:custDisplay2,phone:s.custPhone||"",pickupDate:pickDate,pickupTime:pickTime,
-                    items:s.cart.map(function(i){return Object.assign({},i);}),
+                    items:(typeof s.posBagOrderItems==='function')?s.posBagOrderItems(s.posOrderType):s.cart.map(function(i){return Object.assign({},i);}),// ★ pos-bag-split-20261012
                     total:s.cartTotal,status:"new",paymentStatus:"pending",
                     orderNote:s.posOrderNote||"",
                     type:s.posOrderType||'takeout',
@@ -7465,7 +7803,7 @@
                     return;
                 }
                 if(isLinePay){
-                    var cartSig=s.orderSig(s.cart);
+                    var cartSig=s.orderSig((typeof s.posBagOrderItems==='function')?s.posBagOrderItems(s.posOrderType):s.cart);// ★ pos-bag-split-20261012：和已存的（含袋標示）比對
                     var dup=(s.onlineOrders||[]).find(function(or){
                         if(!or||or.paymentMethod!=='linepay')return false;
                         if(or.paymentStatus!=='pending')return false;
@@ -7488,7 +7826,7 @@
                 var custDisplay=(s.custName||'').trim()||((s.posOrderType==='dinein'&&s.posTableLabel)?s.posTableLabel:"現場");
                 var storePrintTask=isLinePay?null:("kitchen_"+Date.now());
                 var o={customer:custDisplay,phone:s.custPhone||"",pickupDate:pickDate,pickupTime:pickTime,
-                    items:s.cart.map(function(i){return Object.assign({},i);}),
+                    items:(typeof s.posBagOrderItems==='function')?s.posBagOrderItems(s.posOrderType):s.cart.map(function(i){return Object.assign({},i);}),// ★ pos-bag-split-20261012
                     total:s.cartTotal,
                     orderNote:s.posOrderNote||"",
                     type:s.posOrderType||'takeout',
@@ -7654,6 +7992,7 @@
                 this.editingLinePayPaid=((this.editingOrder.paymentMethod==='linepay'||this.editingOrder.paymentMethod==='linepay_offline')&&(this.editingOrder.paymentStatus==='paid'||this.lpConfirmed[this.editingOrder.id]||this.lpStatus[this.editingOrder.id]==='confirmed'));
                 this.orderMode="online";
                 this.activeMenu=null;
+                if(typeof this.posBagLoadFromCart==='function')this.posBagLoadFromCart();// ★ pos-bag-split-20261012：備註前的袋標示拿掉、還原分袋
                 this.editKitchenSig=this.editKitchenSignature();
             },
             exitOnline:function(){this.orderMode="pos";this.editingOrder=null;this.editKitchenSig="";this.cart=[];this.editPickupDate="";this.editPickupTime="";this.editOrderNote="";this.editCustomerName="";this.editCustomerPhone="";this.editShowCustomer=false;this.editShowPayment=false;this.editOrderType="takeout";this.editTableLabel="";this.editingLinePayPaid=false;},
@@ -7859,6 +8198,8 @@
                         }
                         return clone;
                     });
+                    // ★ pos-bag-split-20261012：分袋 → 袋號 1..n、品項備註最前面加【第N袋】／【內用】／【外帶】
+                    if(typeof s.posBagApplyLabels==='function')serializedItems=s.posBagApplyLabels(serializedItems,s.editOrderType==='dinein'?'dinein':'takeout');
                     var upd={
                         items:serializedItems,
                         total:s.cartTotal,
@@ -8348,8 +8689,15 @@
                     .finally(function(){delete s.cancelInFlight[order.id];});
             },
 
-            moveCartItem:function(idx,dir){var ni=idx+dir;if(ni<0||ni>=this.cart.length)return;var t=this.cart[idx];this.cart.splice(idx,1);this.cart.splice(ni,0,t);},
-            cartDrop:function(toIdx){var fi=this.cartDragIdx;if(fi===null||fi===toIdx)return;var it=this.cart[fi];this.cart.splice(fi,1);this.cart.splice(toIdx,0,it);this.cartDragIdx=null;},
+            moveCartItem:function(idx,dir){var ni=idx+dir;if(ni<0||ni>=this.cart.length)return;var t=this.cart[idx];
+                // ★ pos-bag-split-20261012：分袋時跨過袋的邊界 → 移到隔壁袋（放在交界處）
+                var nb=this.cart[ni];if(Array.isArray(this.posBags)&&this.posBags.length&&t&&nb&&t.bagNo!==nb.bagNo){t.bagNo=nb.bagNo;t.bagType=nb.bagType;this.posBagSortCart();return;}
+                this.cart.splice(idx,1);this.cart.splice(ni,0,t);},
+            cartDrop:function(toIdx){var fi=this.cartDragIdx;if(fi===null||fi===toIdx)return;var it=this.cart[fi];
+                // ★ pos-bag-split-20261012：拖到別袋的品項上 → 換到那一袋
+                var target=this.cart[toIdx];if(Array.isArray(this.posBags)&&this.posBags.length&&it&&target&&it.bagNo!==target.bagNo){it.bagNo=target.bagNo;it.bagType=target.bagType;}
+                this.cart.splice(fi,1);this.cart.splice(toIdx,0,it);this.cartDragIdx=null;
+                if(Array.isArray(this.posBags)&&this.posBags.length)this.posBagSortCart();},
             // ── 未印出工單（print-contention-queue-20260926）──
             // print_daemon 把與廠商 POS 搶印表機而印不出的工作站存進佇列；這裡每 15 秒查一次。
             startPrintJobsWatch:function(){
