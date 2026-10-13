@@ -925,7 +925,7 @@
                 </div>
             </div>
             </div>
-            <div v-show="statsSubTab==='detail'" class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
+            <div v-if="statsSubTab==='detail'" class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
                 <div class="px-5 py-4 border-b border-slate-700 flex flex-wrap items-center justify-between gap-3">
                     <div>
                         <p class="font-bold text-white text-sm">訂單明細</p>
@@ -2554,24 +2554,56 @@
 </div>
 
 <script>
-function countUpEl(el, target, duration) {
+// ★ 20261013 stats-report-lag：數字動畫
+//   1. 舊版用「畫格數」計時（固定 56 格），主執行緒一忙每格間隔就變長，0.9 秒的動畫會拖成好幾秒；
+//      改用 performance.now() 依實際經過時間計算，任何電腦都在 duration 內跑完。
+//   2. 同一格上一次動畫還沒跑完就先停掉，避免兩個動畫互搶數字。
+//   3. 一開始就寫入起始值，避免最終數字先閃一下、再跳回 0 才開始爬。
+//   4. from：從指定數字接續（背景自動刷新用，不再每次掉回 0）；delay：延後起跑（等圖表畫完，動畫才不會被打斷）。
+function countUpEl(el, target, duration, from, delay) {
     if (!el || isNaN(target)) return;
-    var steps = Math.max(1, Math.round(duration / 16));
-    var cur = 0, i = 0;
-    var inc = target / steps;
+    if (el._countUpRaf) cancelAnimationFrame(el._countUpRaf);
+    el._countUpRaf = 0;
+    var token = {};
+    el._countUpToken = token;
+    var begin = Number(from);
+    if (!isFinite(begin)) begin = 0;
+    el.textContent = begin.toLocaleString();
+    if (begin === target) return;
+    var start = 0;
     function tick() {
-        i++;
-        cur = i >= steps ? target : Math.round(inc * i);
+        if (el._countUpToken !== token) return;
+        var now = performance.now();
+        if (!start) start = now;
+        var p = duration > 0 ? Math.min(1, (now - start) / duration) : 1;
+        var cur = p >= 1 ? target : Math.round(begin + (target - begin) * p);
         el.textContent = cur.toLocaleString();
-        if (i < steps) requestAnimationFrame(tick);
+        el._countUpRaf = p < 1 ? requestAnimationFrame(tick) : 0;
     }
-    requestAnimationFrame(tick);
+    function go() {
+        if (el._countUpToken === token) el._countUpRaf = requestAnimationFrame(tick);
+    }
+    if (delay > 0) setTimeout(go, delay); else go();
 }
-window._doCountUp = function() {
-    document.querySelectorAll('[data-countup-val]').forEach(function(el) {
+window._doCountUp = function(opts) {
+    opts = opts || {};
+    var els = document.querySelectorAll('[data-countup-val]');
+    var from = Array.isArray(opts.from) && opts.from.length === els.length ? opts.from : null;
+    els.forEach(function(el, i) {
         var v = parseInt(el.getAttribute('data-countup-val')) || 0;
-        countUpEl(el, v, 900);
+        countUpEl(el, v, 900, from ? from[i] : 0, opts.delay || 0);
     });
+};
+// 讀目前畫面上顯示的數字（背景刷新時，動畫從這裡接續）
+window._readCountUpShown = function() {
+    return Array.prototype.map.call(document.querySelectorAll('[data-countup-val]'), function(el) {
+        var n = parseInt(String(el.textContent || '').replace(/[^0-9-]/g, ''), 10);
+        return isFinite(n) ? n : 0;
+    });
+};
+// 進入營業統計時先歸零，等資料到了再從 0 爬升（不會先顯示上次的舊數字再掉回 0）
+window._resetCountUp = function() {
+    document.querySelectorAll('[data-countup-val]').forEach(function(el) { countUpEl(el, 0, 0); });
 };
 </script>
 <script type="module">
@@ -5193,24 +5225,59 @@ window._doCountUp = function() {
             normalizeDetailNameForMatch: function(name) {
                 return String(name || '').replace(/[\s\u3000]+/g, '').replace(/[()\uFF08\uFF09\[\]\u3010\u3011\u300C\u300D\u300E\u300F]/g, '').trim();
             },
+            // ★ 20261013 stats-report-lag：菜單查詢索引快取。
+            //   舊寫法每查一次品名就把整份菜單（經 Vue reactive proxy）重新攤平再逐筆比對；
+            //   營業統計載入時每筆訂單、每個品項都要查好幾次 → 一進「📈 營業報表」主執行緒卡住數秒，
+            //   數字動畫也被拖慢。改成菜單內容（陣列或其中任一筆）換掉時才重建一次索引；
+            //   同一品名的查詢結果也快取。比對規則與舊版相同（完全相同優先，4 字以上才做包含比對）。
+            getDetailMenuIndex: function() {
+                var current = this.menuItems; // 讀 reactive 屬性：保留「菜單更新 → 重新渲染」依賴
+                var isArr = Array.isArray(current);
+                if (isArr) void current.length; // 也追蹤 push / splice
+                var toRaw = (typeof Vue !== 'undefined' && Vue && typeof Vue.toRaw === 'function') ? Vue.toRaw : function(v) { return v; };
+                var raw = isArr ? toRaw(current) : [];
+                var cached = this._detailMenuIndex;
+                if (cached && cached.source === raw && cached.rows.length === raw.length) {
+                    var same = true;
+                    for (var r = 0; r < raw.length; r++) {
+                        if (cached.rows[r] !== raw[r]) { same = false; break; }
+                    }
+                    if (same) return cached;
+                }
+                var self = this;
+                var menu = this.flattenDetailMenuItems(raw);
+                var index = {
+                    source: raw,
+                    rows: raw.slice(),
+                    menu: menu,
+                    names: menu.map(function(m) {
+                        return [m && m.name, m && m['\u54c1\u9805'], m && m.itemName, m && m.title, m && m.label]
+                            .map(function(v) { return self.normalizeDetailNameForMatch(v); })
+                            .filter(Boolean);
+                    }),
+                    byTarget: new Map()
+                };
+                this._detailMenuIndex = index;
+                return index;
+            },
             findDetailMenuItemByName: function(name) {
-                var menu = this.flattenDetailMenuItems(Array.isArray(this.menuItems) ? this.menuItems : []);
+                var index = this.getDetailMenuIndex();
                 var target = this.normalizeDetailNameForMatch(name);
                 if (!target) return null;
-                var namesOf = function(m) {
-                    return [m && m.name, m && m['\u54c1\u9805'], m && m.itemName, m && m.title, m && m.label]
-                        .map(function(v) { return this.normalizeDetailNameForMatch(v); }.bind(this))
-                        .filter(Boolean);
-                }.bind(this);
-                for (var i = 0; i < menu.length; i++) {
-                    if (namesOf(menu[i]).some(function(candidate) { return candidate === target; })) return menu[i];
+                if (index.byTarget.has(target)) return index.byTarget.get(target);
+                var menu = index.menu;
+                var names = index.names;
+                var found = null;
+                for (var i = 0; i < menu.length && !found; i++) {
+                    if (names[i].some(function(candidate) { return candidate === target; })) found = menu[i];
                 }
-                if (target.length >= 4) {
-                    for (var j = 0; j < menu.length; j++) {
-                        if (namesOf(menu[j]).some(function(candidate) { return candidate.indexOf(target) !== -1 || target.indexOf(candidate) !== -1; })) return menu[j];
+                if (!found && target.length >= 4) {
+                    for (var j = 0; j < menu.length && !found; j++) {
+                        if (names[j].some(function(candidate) { return candidate.indexOf(target) !== -1 || target.indexOf(candidate) !== -1; })) found = menu[j];
                     }
                 }
-                return null;
+                index.byTarget.set(target, found);
+                return found;
             },
             // ★ 從菜單查詢該餐點 mealUpgrade 群組的標題/前綴（給 AI 電話訂單等沒帶新欄位的訂單回查用）
             getDetailMealUpgradeMetaFromMenu: function(itemName) {
@@ -7582,10 +7649,9 @@ window._doCountUp = function() {
                 var self = this;
                 self.syncLinePayTransactionState();
                 this.$nextTick(function() {
+                    if (window._resetCountUp) window._resetCountUp();
                     self.loadStats().finally(function() {
-                        self.$nextTick(function() {
-                            self.renderDashboardCharts();
-                        });
+                        self.scheduleReportChartRender();
                     });
                 });
             },
@@ -7604,9 +7670,7 @@ window._doCountUp = function() {
                 this.syncLinePayTransactionState();
                 this.allOrdersCache = null;
                 this.loadStats().finally(function() {
-                    self.$nextTick(function() {
-                        self.renderDashboardCharts();
-                    });
+                    self.scheduleReportChartRender();
                 });
             },
             getStatsExportStoreName: function() {
@@ -7948,10 +8012,31 @@ window._doCountUp = function() {
                 clearTimeout(self.reportRenderRetryTimer);
                 self.reportRenderTimer = setTimeout(function() {
                     self.renderDashboardCharts();
+                    self.$nextTick(function() {
+                        self._reportChartLayout = self.measureReportChartLayout();
+                    });
                     self.reportRenderRetryTimer = setTimeout(function() {
+                        var layout = self.measureReportChartLayout();
+                        if (layout.ready && layout.key === (self._reportChartLayout && self._reportChartLayout.key)) return;
                         self.renderDashboardCharts();
                     }, 360);
                 }, 80);
+            },
+            // ★ 20261013 stats-report-lag：記錄 6 張報表圖的容器尺寸與圖表狀態，給 360ms 補畫判斷「版面有沒有變」
+            measureReportChartLayout: function() {
+                var self = this;
+                var ids = ['report-revenue-chart', 'report-orders-hour-chart', 'report-source-chart', 'report-payment-chart', 'report-top-items-chart', 'report-channel-chart'];
+                var ready = true;
+                var key = ids.map(function(id) {
+                    var el = document.getElementById(id);
+                    var chart = self.reportCharts && self.reportCharts[id];
+                    var alive = !!(el && chart && typeof chart.getDom === 'function' && chart.getDom() === el && !(typeof chart.isDisposed === 'function' && chart.isDisposed()));
+                    var w = el ? el.clientWidth : 0;
+                    var h = el ? el.clientHeight : 0;
+                    if (!alive || !w || !h) ready = false;
+                    return id + ':' + w + 'x' + h + ':' + (alive ? 1 : 0);
+                }).join('|');
+                return { key: key, ready: ready };
             },
             getOrCreateReportChart: function(id) {
                 if (typeof echarts === 'undefined') return null;
@@ -8328,6 +8413,7 @@ window._doCountUp = function() {
                     clearTimeout(self.statsStatusRefreshTimer);
                     self.statsStatusRefreshTimer = setTimeout(function() {
                         self.allOrdersCache = null;
+                        self._statsCountUpFromCurrent = true;
                         self.loadStats();
                     }, 150);
                 };
@@ -8407,6 +8493,9 @@ window._doCountUp = function() {
             },
             doFilter: function() {
                 var self = this;
+                // ★ 20261013 stats-report-lag：背景自動刷新 → 記下目前畫面數字，動畫從這裡接續
+                var countUpFrom = self._statsCountUpFromCurrent && window._readCountUpShown ? window._readCountUpShown() : null;
+                self._statsCountUpFromCurrent = false;
                 var all = Array.isArray(self.allOrdersCache) ? self.allOrdersCache.slice() : [];
                 var collapseVisibleStatsOrders = function(list) {
                     var bySig = {};
@@ -8507,7 +8596,7 @@ window._doCountUp = function() {
                 });
                 self.statsLoading = false;
                 self.applyReportFallbackFromStats();
-                self.$nextTick(function(){ if(window._doCountUp) window._doCountUp(); });
+                self.$nextTick(function(){ if(window._doCountUp) window._doCountUp({ from: countUpFrom, delay: 100 }); });
             },
             statsSort: function(key) {
                 if (this.statsSortKey === key) {
@@ -8539,6 +8628,7 @@ window._doCountUp = function() {
                 }
                 self.statsLoading = true;
                 self.allOrdersCache = null;
+                self._detailMenuIndex = null;
                 if (self.statsMode === 'single' && !self.statsDate) {
                     self.statsDate = self.getTodayStr();
                 }
