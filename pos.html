@@ -819,7 +819,8 @@
       </div>
       <!-- 主餐備註 + 飲料備註（套餐才顯示飲料備註） -->
       <textarea v-model="tempNote" class="editor-note" :placeholder="hasComboDrinkGroup(activeItem) ? '主餐備註（例：不要胡椒）' : '單項備註'"></textarea>
-      <textarea v-if="hasComboDrinkGroup(activeItem)" v-model="tempDrinkNote" class="editor-note" placeholder="飲料備註（例：不用吸管 / 攪拌棒*1）"></textarea>
+      <!-- ★ preset-drink-note-20261013：非套餐品項若仍帶有飲料備註，也要顯示欄位（看得到、改得到） -->
+      <textarea v-if="hasComboDrinkGroup(activeItem)||tempShowDrinkNote" v-model="tempDrinkNote" class="editor-note" placeholder="飲料備註（例：不用吸管 / 攪拌棒*1）"></textarea>
     </div>
     <div class="editor-modal-actions">
       <div class="editor-qty">
@@ -1111,7 +1112,7 @@
                 onlineOrders:[],ordersLoading:false,assigningNos:{},orderBuckets:{},orderBucketUnsubs:[],integrationOrdersUnsub:null,integrationOrdersCache:[],phoneOrdersUnsub:null,phoneOrdersCache:[],useIntegrationView:false,ordersReadBackend:'checking',settingsReadBackend:'checking',menuReadBackend:'checking',lastWriteBackend:'',lastWriteAt:0,menuEditOverrideUntil:0,menuLocalOverrides:{},menuSettingsPollTimer:null,menuVersion:'',menuVersionPollTimer:null,menuVersionReadInFlight:false,pbOrdersPollTimer:null,pbOrdersReadInFlight:false,pbOrdersEverConnected:false,pbOrdersFailureCount:0,pbOrdersSuccessStreak:0,ordersFallbackHoldUntil:0,remoteStatusOverrides:{},remoteStatusOverridesUnsub:null,orderHydrateInFlight:{},orderHydrateDone:{},
                 orderSearch:"",
                 showBatchPrint:false,batchPrintFrom:"",batchPrintTo:"",batchPrinting:false,batchPrintProgress:"",batchSummary:null,
-                activeItem:null,tempQty:1,tempNote:"",tempDrinkNote:"",tempSels:[],tempOG:{},tempPosExtras:[],tempComboSize:{},tempDrinkAddons:[],
+                activeItem:null,tempQty:1,tempNote:"",tempDrinkNote:"",tempShowDrinkNote:false,tempSels:[],tempOG:{},tempPosExtras:[],tempComboSize:{},tempDrinkAddons:[],
                 toastMsg:"",toastTimer:null,lastOrderId:null,
                 printJobs:[],printJobsPanel:false,printJobsTimer:null,printJobsBusy:{},printJobsError:"",
                 activeMenu:null,menuPos:null,activeMenuOrder:null,
@@ -1705,7 +1706,15 @@
                     extra+=comboDrinkAddons.reduce(function(total,row){return total+Number(row.price||0);},0);
                 }
                 var qty=Math.max(1,Math.min(99,Math.floor(Number(saved&&saved.qty)||1)));
-                return {id:item.id,name:item.name,shortName:String(item.shortName||'').trim(),printName:String(item.shortName||item.printName||'').trim(),price:Number(item.price)||0,station:item.station||s.getDefaultStationName(),printStations:Array.isArray(item.printStations)?item.printStations.slice():[],qty:qty,note:String(saved&&saved.note||''),drinkNote:String(saved&&saved.drinkNote||''),options:options,posExtras:posExtras,comboDrinkAddons:comboDrinkAddons,comboDrinkPrintName:comboDrinkPrintName,comboDrinkShortName:comboDrinkPrintName,optionGroupSelections:selections,optionSelections:optionSelections,selectedOptions:Object.assign({},optionSelections),itemTotal:(basePrice+extra)*qty};
+                // ★ preset-drink-note-20261013：沒有套餐飲料（mealUpgrade）的品項，飲料備註併入單項備註，
+                //   彈出視窗看得到、工單「備註」會印（Node-RED 只把 drinkNote 印在套餐飲料列）
+                var presetNote=String(saved&&saved.note||''),presetDrinkNote=String(saved&&saved.drinkNote||'');
+                if(presetDrinkNote.trim()&&!selections.some(function(sel){return sel&&sel.pricing==='mealUpgrade';})){
+                    var noteA=presetNote.trim(),noteB=presetDrinkNote.trim();
+                    presetNote=!noteA?noteB:(noteA.indexOf(noteB)>=0?noteA:noteA+'；'+noteB);
+                    presetDrinkNote='';
+                }
+                return {id:item.id,name:item.name,shortName:String(item.shortName||'').trim(),printName:String(item.shortName||item.printName||'').trim(),price:Number(item.price)||0,station:item.station||s.getDefaultStationName(),printStations:Array.isArray(item.printStations)?item.printStations.slice():[],qty:qty,note:presetNote,drinkNote:presetDrinkNote,options:options,posExtras:posExtras,comboDrinkAddons:comboDrinkAddons,comboDrinkPrintName:comboDrinkPrintName,comboDrinkShortName:comboDrinkPrintName,optionGroupSelections:selections,optionSelections:optionSelections,selectedOptions:Object.assign({},optionSelections),itemTotal:(basePrice+extra)*qty};
             },
             applyStaffPresetTemplate:function(preset,template,mode){
                 var s=this;
@@ -6962,7 +6971,7 @@
                 if((item.optionGroups&&item.optionGroups.length)||(item.options&&item.options.length))this.openDetail(item);else this.quickAdd(item);
             },
             openDetail:function(item){
-                this.activeItem=item;this.tempQty=1;this.tempNote="";this.tempDrinkNote="";this.tempSels=[];this.tempPosExtras=[];this.tempDrinkAddons=[];this.editingCartIdx=-1;
+                this.activeItem=item;this.tempQty=1;this.tempNote="";this.tempDrinkNote="";this.tempShowDrinkNote=false;this.tempSels=[];this.tempPosExtras=[];this.tempDrinkAddons=[];this.editingCartIdx=-1;
                 var og={};(item.optionGroups||[]).forEach(function(g,gi){og[gi]=g.type==='checkbox'?[]:g.defaultIdx||0;});this.tempOG=og;
                 this.initTempComboSizes(item);
             },
@@ -7002,7 +7011,17 @@
                 this.tempSels=restoreByName(cartItem.options,menuItem.options);
                 this.tempPosExtras=restoreByName(cartItem.posExtras,menuItem.posExtras);
                 this.tempDrinkAddons=(cartItem.comboDrinkAddons||[]).slice();
-                this.tempDrinkNote=String(cartItem.drinkNote||"");
+                // ★ preset-drink-note-20261013：沒有套餐飲料的品項（單點飲料／一般餐點），飲料備註不會印在工單上
+                //   → 放進「單項備註」欄位，按「套用」後存成單項備註（工單「備註」會印）；套餐維持原本的飲料備註欄位
+                var savedDrinkNote=String(cartItem.drinkNote||"");
+                var keepDrinkNote=typeof this.hasComboDrinkGroup!=='function'||this.hasComboDrinkGroup(menuItem)||(cartItem.optionGroupSelections||[]).some(function(sel){return sel&&String(sel.pricing||'')==='mealUpgrade';});
+                if(savedDrinkNote.trim()&&!keepDrinkNote){
+                    var noteA=String(this.tempNote||'').trim(),noteB=savedDrinkNote.trim();
+                    this.tempNote=!noteA?noteB:(noteA.indexOf(noteB)>=0?noteA:noteA+'；'+noteB);
+                    this.tempDrinkNote="";
+                }
+                else this.tempDrinkNote=savedDrinkNote;
+                this.tempShowDrinkNote=!!String(this.tempDrinkNote||"").trim();
                 this.editingCartIdx=idx;
                 // 恢復選項群組選擇
                 var og={};
