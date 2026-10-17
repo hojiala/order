@@ -3065,8 +3065,10 @@
                     // 與 index 可選取餐日一致：跳過公休，避免未來預訂單落在未讀日期桶。
                     for (let i = 1, added = 0; added < pickupDays && i < 60; i++) {
                         const key = this.dateKeyOffset(i);
-                        if (holidays.indexOf(key) !== -1 || daysOff.indexOf(new Date(key + 'T00:00:00').getDay()) !== -1) continue;
+                        // ★ pos-pickup-date-move-20261018：公休日也要讀（店員可把訂單改到公休日，例如週日特別出餐），
+                        //   但不算進可取餐天數，讀取範圍的最後一天仍和 index 可選的最後一天相同
                         out.push(key);
+                        if (holidays.indexOf(key) !== -1 || daysOff.indexOf(new Date(key + 'T00:00:00').getDay()) !== -1) continue;
                         added++;
                     }
                     return out.filter((key, index) => out.indexOf(key) === index);
@@ -4216,6 +4218,61 @@
                     this.alertSound.currentTime = 0;
                     this.alertSound.play().catch(err => console.log("音效被阻擋"));
                 },
+                // ★ pos-pickup-date-move-20261018（admin）：編輯訂單把取餐日期改成別天＝把訂單搬到新日期。
+                //   PB 的 date_key 就是取餐日期，讀回來的 pickupDate 也取 date_key；以前只改 pickupDate，
+                //   date_key 留在原日期 → 工單正確，但清單／再次編輯又變回原日期，開店配號、當日清單、報表也算在原日期；
+                //   改日期同時選 LINE Pay 時，送出的新日期在 Firebase 找不到訂單而失敗。電話單不在 admin 編輯。
+                buildPickupDateMove(id, order, newDateKey) {
+                    const key = String(id || '').trim();
+                    const to = String(newDateKey || '').trim();
+                    const dateRe = /^\d{4}-\d{2}-\d{2}$/;
+                    if (!key || !order || !dateRe.test(to)) return null;
+                    if (typeof this.isPhoneSourceOrder === 'function' && this.isPhoneSourceOrder(order)) return null;
+                    const from = String(this.resolveOrderDateKey(order) || '').trim();
+                    if (!dateRe.test(from) || from === to) return null;
+                    const toPath = 'orders/' + to + '/' + key;
+                    const bucketPathRe = /^orders\/\d{4}-\d{2}-\d{2}\/[^\/?#]+$/;
+                    const current = this.normalizeSourceRecordPath(order, key);
+                    // 只搬放在 orders/<日期>/<id> 的訂單；其他來源路徑（封存、電話）不動
+                    if (current && !bucketPathRe.test(current)) return null;
+                    const fromPaths = [current, 'orders/' + from + '/' + key].filter((p, idx, arr) => !!p && bucketPathRe.test(p) && p !== toPath && arr.indexOf(p) === idx);
+                    return { fromDateKey: from, toDateKey: to, toSourcePath: toPath, fromPaths };
+                },
+                // PB 確定已存成新日期（date_key＝新日期）才算搬好
+                pickupDateMoveCommitted(move, result) {
+                    if (!move || !(result && result.ok)) return false;
+                    const rec = (result.record && typeof result.record === 'object') ? result.record : {};
+                    const savedKey = String(rec.date_key || rec.dateKey || '').trim();
+                    return !savedKey || savedKey === move.toDateKey;
+                },
+                // 之後寫 Firebase（print_task）、列印、LINE Pay 用的訂單路徑
+                withOrderDatePath(order, dateKey, path) {
+                    const out = Object.assign({}, order || {});
+                    out.sourceRecordPath = path;
+                    out._sourceDateKey = dateKey;
+                    out.orderDateKey = dateKey;
+                    if (out.integration && typeof out.integration === 'object') out.integration = Object.assign({}, out.integration, { sourceRecordPath: path });
+                    return out;
+                },
+                // 先寫 PB（PB hook 會把完整訂單鏡射到 Firebase orders/<新日期>/<id>），搬好再清掉 Firebase 舊日期桶。
+                // 清除不等待：Firebase 連線卡住時不可拖住儲存。PB 沒寫成回傳 false，由呼叫端照舊寫原日期那筆。
+                async commitPickupDateMove(id, order, move) {
+                    if (!move || !order || !Array.isArray(order.items) || !order.items.length) return false;
+                    let result = null;
+                    try {
+                        result = await writeOrderToPocketBase(id, Object.assign({}, order, { id }), { settings: this.settings, firebaseUser: auth.currentUser, sourcePage: 'admin', allowPocketBaseUpdate: true });
+                    } catch (e) {
+                        console.warn('改取餐日期：PB 寫入失敗，改寫原日期那筆:', id, e && e.message ? e.message : e);
+                        return false;
+                    }
+                    if (!this.pickupDateMoveCommitted(move, result)) return false;
+                    (move.fromPaths || []).forEach((p) => {
+                        try {
+                            Promise.resolve(remove(ref(db, p))).catch((e) => console.warn('舊日期桶清除失敗（不影響儲存）:', p, e && e.message ? e.message : e));
+                        } catch (e) { console.warn('舊日期桶清除失敗（不影響儲存）:', p, e && e.message ? e.message : e); }
+                    });
+                    return true;
+                },
                 openEditModal(order) {
                     if (this.isIntegrationReadOnlyOrder(order)) {
                         this.toast('☎️ 電話整合訂單目前請在電話後台編輯');
@@ -4289,8 +4346,32 @@
                             paymentMethod: realPm,
                             paymentStatus: newPayStatus
                         };
+                        // ★ pos-pickup-date-move-20261018（admin）：改了取餐日期 → 訂單日期（PB date_key）一起換到新日期
+                        const pickupDateMove = (typeof this.buildPickupDateMove === 'function') ? this.buildPickupDateMove(id, orderForMirror, upd.pickupDate) : null;
+                        if (pickupDateMove) {
+                            upd.orderDateKey = pickupDateMove.toDateKey;
+                            upd.sourceRecordPath = pickupDateMove.toSourcePath;
+                        }
                         const updatedOrder = Object.assign({}, orderForMirror, upd, { id });
-                        await this.updateOrderMirror(id, upd, updatedOrder);
+                        let mirrorOrder = updatedOrder;
+                        let linePayDateKey = this.editPickupDate || this.editModal.orderDateKey || this.editModal.pickupDate || '';
+                        if (pickupDateMove) {
+                            if (await this.commitPickupDateMove(id, updatedOrder, pickupDateMove)) {
+                                // PB 已存成新日期，Firebase 新日期桶由 PB hook 鏡射
+                                mirrorOrder = this.withOrderDatePath(updatedOrder, pickupDateMove.toDateKey, pickupDateMove.toSourcePath);
+                                linePayDateKey = pickupDateMove.toDateKey;
+                                if (typeof this.buildWatchDateKeys === 'function' && this.buildWatchDateKeys().indexOf(pickupDateMove.toDateKey) < 0) {
+                                    this.toast('📅 已改到 ' + pickupDateMove.toDateKey + ' 取餐（不在清單顯示的日期範圍內，暫時看不到這張單）');
+                                }
+                            } else {
+                                // PB 沒寫成：照舊寫進原日期那筆（帶新日期欄位），日後補回 PB 時 date_key 會是新日期
+                                mirrorOrder = this.withOrderDatePath(updatedOrder, pickupDateMove.fromDateKey, pickupDateMove.fromPaths[0] || ('orders/' + pickupDateMove.fromDateKey + '/' + id));
+                                linePayDateKey = pickupDateMove.fromDateKey;
+                                await this.updateOrderMirror(id, upd, mirrorOrder);
+                            }
+                        } else {
+                            await this.updateOrderMirror(id, upd, updatedOrder);
+                        }
                         orderSaved = true;
                         if (isLinePay && newPayStatus === 'pending' && confirmBase) {
                             // ★ paid-no-reprint-20260927：已出過廚房工單（kitchen_ print_task）的訂單，
@@ -4298,15 +4379,15 @@
                             const kitchenTicketIssued = /^kitchen_/.test(String(orderForMirror.print_task || '').trim());
                             const kitchenContentChanged = !this.editModalKitchenSig || this.editModalKitchenSignature() !== this.editModalKitchenSig;
                             if (kitchenTicketIssued && kitchenContentChanged) {
-                                await this.clearPrintTaskMirror(id, updatedOrder);
-                                await this.setPrintTaskMirror(id, `kitchen_edit_${Date.now()}`, updatedOrder);
+                                await this.clearPrintTaskMirror(id, mirrorOrder);
+                                await this.setPrintTaskMirror(id, `kitchen_edit_${Date.now()}`, mirrorOrder);
                             }
-                            const orderDateKey = this.editPickupDate || this.editModal.orderDateKey || this.editModal.pickupDate || '';
+                            const orderDateKey = linePayDateKey;
                             this.editModal = null;
                             await this.startAdminLinePay(id, orderDateKey, confirmBase);
                         } else {
-                            await this.clearPrintTaskMirror(id, updatedOrder);
-                            await this.setPrintTaskMirror(id, `kitchen_edit_${Date.now()}`, updatedOrder);
+                            await this.clearPrintTaskMirror(id, mirrorOrder);
+                            await this.setPrintTaskMirror(id, `kitchen_edit_${Date.now()}`, mirrorOrder);
                             this.editModal = null;
                         }
                     } catch (err) {
