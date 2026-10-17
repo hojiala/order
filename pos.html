@@ -2356,6 +2356,9 @@
                 ['type','pickupMode','pickupDate','pickupTime','pickupTimeLabel','orderNote','tableLabel','phone','paymentMethod','paymentStatus'].forEach(function(k){
                     if(Object.prototype.hasOwnProperty.call(fields,k)&&fields[k]!==undefined)patch[k]=fields[k];
                 });
+                // ★ pos-pickup-date-move-20261018：改取餐日期時日期桶欄位一起換，清單與再次編輯都以新日期為準
+                if(fields.orderDateKey){patch.orderDateKey=fields.orderDateKey;patch._sourceDateKey=fields.orderDateKey;}
+                if(fields.sourceRecordPath)patch.sourceRecordPath=fields.sourceRecordPath;
                 if(patch.paymentMethod||patch.paymentStatus){
                     var basePayment=(baseOrder&&baseOrder.payment&&typeof baseOrder.payment==='object')?baseOrder.payment:{};
                     patch.payment=Object.assign({},basePayment,{method:patch.paymentMethod||basePayment.method||'',status:patch.paymentStatus||basePayment.status||''});
@@ -2381,9 +2384,51 @@
                 if(!edit)return order;
                 // 後端已是新內容（指紋等於剛存的、或已不同於存檔前那份）→ 放掉，以後端為準
                 var caughtUp=!!remoteSig&&(remoteSig===edit.editSig||(!!edit.baseSig&&remoteSig!==edit.baseSig));
+                // ★ pos-pickup-date-move-20261018：只改日期時品項指紋不變，要等後端讀回新日期才算跟上
+                if(caughtUp&&edit.patch&&edit.patch.orderDateKey&&String(order._sourceDateKey||order.orderDateKey||order.pickupDate||'')!==String(edit.patch.orderDateKey))caughtUp=false;
                 if(caughtUp||!(Date.now()<Number(edit.until||0))){delete edits[key];return order;}
                 // 後端還是存檔前的舊內容（在途的舊讀取／尚未同步）→ 繼續顯示剛存、剛印的內容
                 return Object.assign({},order,edit.patch,{items:JSON.parse(JSON.stringify(edit.patch.items))});
+            },
+            // ★ pos-pickup-date-move-20261018：POS 編輯把取餐日期改成別天＝把訂單搬到新日期。
+            //   PB 的 date_key 就是取餐日期（index 下單時 orderDateKey=pickupDate），讀回來的 pickupDate 也取 date_key；
+            //   以前只改 pickupDate、date_key 留在原日期 → 工單正確，但清單／再次編輯又變回原日期，
+            //   開店配號、當日清單、報表也都還算在原日期。電話單走 Node-RED 改單命令，不在這裡處理。
+            buildPickupDateMove:function(id,order,newDateKey){
+                var key=String(id||'').trim();
+                var to=String(newDateKey||'').trim();
+                var dateRe=/^\d{4}-\d{2}-\d{2}$/;
+                if(!key||!order||!dateRe.test(to))return null;
+                if(this.isPhoneCommandOrder(order))return null;
+                var from=String(this.resolveOrderDateKey(order)||'').trim();
+                if(!dateRe.test(from)||from===to)return null;
+                var toPath='orders/'+to+'/'+key;
+                var bucketPathRe=/^orders\/\d{4}-\d{2}-\d{2}\/[^\/?#]+$/;
+                var current=this.normalizeSourceRecordPath(order,key);
+                // 只搬放在 orders/<日期>/<id> 的訂單；其他來源路徑（封存、電話）不動
+                if(current&&!bucketPathRe.test(current))return null;
+                var fromPaths=[current,'orders/'+from+'/'+key].filter(function(p,idx,arr){
+                    return !!p&&bucketPathRe.test(p)&&p!==toPath&&arr.indexOf(p)===idx;
+                });
+                return {fromDateKey:from,toDateKey:to,toSourcePath:toPath,fromPaths:fromPaths};
+            },
+            // PB 確定已存成新日期（date_key＝新日期）才算搬好；PB 失敗改走 Firebase 備援時不算
+            pickupDateMoveCommitted:function(move,mirrorResult){
+                if(!move||!(mirrorResult&&mirrorResult.ok))return false;
+                var rec=(mirrorResult.record&&typeof mirrorResult.record==='object')?mirrorResult.record:{};
+                var savedKey=String(rec.date_key||rec.dateKey||'').trim();
+                return !savedKey||savedKey===move.toDateKey;
+            },
+            // 搬好後清掉 Firebase 舊日期桶的鏡像（新日期桶由 PB hook 鏡射）。不等待結果：
+            // 店內 RTDB 連線卡住時不可拖住儲存列印；沒搬好（Firebase 備援）時舊桶是唯一副本，保留。
+            retireMovedOrderBuckets:function(move,mirrorResult){
+                if(!this.pickupDateMoveCommitted(move,mirrorResult)||!Array.isArray(move.fromPaths)||!move.fromPaths.length)return [];
+                move.fromPaths.forEach(function(p){
+                    try{
+                        Promise.resolve(remove(ref(db,p))).catch(function(e){console.warn('舊日期桶清除失敗（不影響儲存）:',p,e&&e.message?e.message:e);});
+                    }catch(e){console.warn('舊日期桶清除失敗（不影響儲存）:',p,e&&e.message?e.message:e);}
+                });
+                return move.fromPaths.slice();
             },
             shouldHydrateOrderFromSource:function(order){
                 if(!order||!order.id)return false;
@@ -5769,8 +5814,11 @@
                 // 與 index 可選取餐日一致：跳過公休，避免未來預訂單落在未讀日期桶。
                 for(var i=1,added=0;added<pickupDays&&i<60;i++){
                     var key=this.dateKeyOffset(i);
+                    // ★ pos-pickup-date-move-20261018：公休日也要讀（店員可在 POS 把訂單改到公休日，例如週日特別出餐），
+                    //   但不算進可取餐天數，讀取範圍的最後一天仍和 index 可選的最後一天相同
+                    out.push(key);
                     if(holidays.indexOf(key)!==-1||daysOff.indexOf(new Date(key+'T00:00:00').getDay())!==-1)continue;
-                    out.push(key);added++;
+                    added++;
                 }
                 return out.filter(function(key,index){return out.indexOf(key)===index;});
             },
@@ -8289,6 +8337,13 @@
                     upd.pickupDate=s.editPickupDate||targetOrder.pickupDate||s.todayStr;
                     upd.pickupTime=s.editPickupTime||'';
                     upd.pickupTimeLabel=s.editPickupTime||'';
+                    // ★ pos-pickup-date-move-20261018：改了取餐日期 → 訂單日期（PB date_key）一起換到新日期
+                    var pickupDateMove=(typeof s.buildPickupDateMove==='function')?s.buildPickupDateMove(id,targetOrder,upd.pickupDate):null;
+                    var dateKeyAfterSave=s.resolveOrderDateKey(targetOrder);
+                    if(pickupDateMove){
+                        upd.orderDateKey=pickupDateMove.toDateKey;
+                        upd.sourceRecordPath=pickupDateMove.toSourcePath;
+                    }
                     if(s.editOrderNote!==undefined)upd.orderNote=s.editOrderNote;
                     var qtyOfPrintItem=function(item){
                         var q=Number(item&&((item.qty!==undefined)?item.qty:((item['\u6578\u91cf']!==undefined)?item['\u6578\u91cf']:item.quantity)));
@@ -8319,6 +8374,7 @@
                         printOrder['訂單來源']='POS';
                         printOrder['修改後完整單']=true;
                         printOrder['修改單提示']='請以本張為準，作廢前張同單號';
+                        if(pickupDateMove&&dateKeyAfterSave===pickupDateMove.toDateKey)printOrder._sourceDateKey=dateKeyAfterSave;
                         s.writeToPrintQueue(id,editTask,printOrder);
                         return editTask;
                     };
@@ -8326,9 +8382,22 @@
                     // ★ pos-edit-list-refresh-20261012：後端寫入成功後，左側「所有進行中訂單」立刻換成剛存的內容
                     //   只是畫面更新：失敗也不可讓已成功的儲存變成「儲存失敗」或漏印修改後完整單
                     var commitEditMirror=async function(){
-                        await s.updateOrderMirror(id,upd,targetOrder);
+                        var mirrorResult=await s.updateOrderMirror(id,upd,targetOrder);
                         try{if(typeof s.rememberLocalOrderEdit==='function')s.rememberLocalOrderEdit(id,upd,targetOrder);}
                         catch(e){console.warn('編輯後清單即時更新略過:',e&&e.message?e.message:e);}
+                        // ★ pos-pickup-date-move-20261018：PB 已存成新日期 → 後續（LINE Pay、工單）用新日期，並清掉 Firebase 舊日期桶
+                        if(pickupDateMove){
+                            try{
+                                if(s.pickupDateMoveCommitted(pickupDateMove,mirrorResult)){
+                                    dateKeyAfterSave=pickupDateMove.toDateKey;
+                                    s.retireMovedOrderBuckets(pickupDateMove,mirrorResult);
+                                    if(s.buildWatchDateKeys().indexOf(pickupDateMove.toDateKey)<0){
+                                        var movedTo=pickupDateMove.toDateKey;
+                                        setTimeout(function(){s.toast('📅 已改到 '+movedTo+' 取餐（不在清單顯示的日期範圍內，暫時看不到這張單）');},2400);
+                                    }
+                                }
+                            }catch(e){console.warn('改取餐日期後續處理略過:',e&&e.message?e.message:e);}
+                        }
                     };
                     // ★ paid-no-reprint-20260927：已出過廚房工單（平板/線上/POS 未付款單）事後改 LINE Pay，
                     //   付款成功後不重印；內容有改才在「儲存列印」當下先印一張「修改後完整單」。
@@ -8419,7 +8488,7 @@
                         }
 
                         s.offlineOrderId=id;
-                        s.offlineOrderDateKey=s.resolveOrderDateKey(targetOrder)||upd.pickupDate||s.todayStr;
+                        s.offlineOrderDateKey=dateKeyAfterSave||upd.pickupDate||s.todayStr;
                         s.offlineAmount=upd.total||0;
                         s.offlineItems=upd.items||[];
                         s.offlineBarcode='';
@@ -8468,7 +8537,7 @@
                             return;
                         }
 
-                        var orderDateKey2=s.resolveOrderDateKey(targetOrder);
+                        var orderDateKey2=dateKeyAfterSave;
                         s.exitOnline();
                         s.startPosLinePay(id,orderDateKey2,confirmBase,false);
                         return;
