@@ -7231,6 +7231,31 @@
                         if(matched>=0||fallback>=0)og[gi]=matched>=0?matched:fallback;
                     });
                 }
+                // ★ phone-edit-no-default-egg-20261021：電話單（AI／電話 POS）品項沒有記錄的加價群組，開視窗不可自動帶菜單預設
+                //   No.005：6號招牌總匯套餐 沒加蛋，加蛋 群組 defaultIdx=0 是 +全熟蛋 $15 → 店員只改飲料按「套用」就多收 $15
+                //   線上／POS 建立的品項每個群組都有 optionGroupSelections，不會走到這裡
+                (function(){
+                    var normChoice=function(v){return String(v||'').replace(/\s+/g,'').replace(/^[+＋]/,'').replace(/^加(?=.)/,'').trim();};
+                    var savedGroups={},mentioned=[];
+                    (cartItem.optionGroupSelections||[]).forEach(function(sel){
+                        if(!sel)return;
+                        savedGroups[String(sel.groupName||'')]=true;
+                        var n=normChoice(sel.name);if(n)mentioned.push(n);
+                    });
+                    String(cartItem.note||'').split(/[，,、；;\/|]/).forEach(function(t){var n=normChoice(t);if(n)mentioned.push(n);});
+                    (menuItem.optionGroups||[]).forEach(function(g,gi){
+                        if(!g||g.type==='checkbox'||savedGroups[String(g.groupName||'')])return;
+                        if(String(g.pricing||'addDelta')!=='addDelta')return;
+                        var choices=g.choices||[];if(!choices.length)return;
+                        var di=Math.max(0,Math.min(choices.length-1,Number(g.defaultIdx||0)));
+                        if(og[gi]!==di)return;// 已由 容量／溫度／套餐飲料 還原
+                        if(!(Number(choices[di]&&choices[di].price||0)>0))return;// 預設不加價（例：太陽蛋 $0）→ 照舊
+                        var hit=choices.findIndex(function(c){var n=normChoice(c&&c.name);return !!n&&mentioned.indexOf(n)!==-1;});
+                        if(hit>=0){og[gi]=hit;return;}
+                        var none=choices.findIndex(function(c){return Number(c&&c.price||0)===0&&/^(?:不加|不要|免|無|去)/.test(String(c&&c.name||'').trim());});
+                        if(none>=0)og[gi]=none;
+                    });
+                })();
                 this.tempOG=og;
                 this.initTempComboSizes(menuItem, cartItem);
             },
