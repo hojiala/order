@@ -3869,6 +3869,16 @@
                 });
                 return out;
             },
+            // ★ phone-linepay-card-status-20261023：電話單用 LINE Pay 付款、內容沒改 → 只送付款欄位（paymentOnly）。
+            //   Node-RED 只改付款狀態：不標「已修改」、不加「修改原流水號碼」、不帶入 外帶／盡快、不列印
+            buildPhonePaymentOnlyCommandPayload:function(paymentMethod,paymentStatus,extra){
+                return Object.assign({
+                    paymentOnly:true,
+                    paymentMethod:String(paymentMethod||''),
+                    paymentStatus:String(paymentStatus||''),
+                    autoPrintKitchen:false
+                },extra||{});
+            },
             buildPhoneEditCommandPayload:function(targetOrder,extra){
                 var phoneItems=this.buildPhoneCommandItems();
                 return Object.assign({
@@ -7967,6 +7977,8 @@
                                     // ★ phone-linepay-status-20261009：付款成功不把電話單改成「已完成」，訂單狀態維持原樣
                                     delete paidPhonePayload.status;
                                     delete paidPhonePayload.completedAt;
+                                    // ★ phone-linepay-card-status-20261023：只改付款時一併帶交易編號（電話主頁卡片顯示 💚 LINE Pay 已付清）
+                                    if(paidPhonePayload.paymentOnly&&r&&r.transactionId)paidPhonePayload.linePayTransactionId=String(r.transactionId);
                                     s.queuePhoneOrderCommand(ctx.phoneOrder,'replace_order',paidPhonePayload).then(function(){
                                         s.offlineSuccess=phonePrint?"付款成功，修改工單已送出":"付款成功（已出過工單，不重印）";
                                         setTimeout(function(){s.closeOfflineModal();},2000);
@@ -8596,9 +8608,12 @@
                             s.offlineSkipPaidPrint=!kitchenContentChanged;
                             s.offlineAutoSubmitBlocked=false;
                             s.offlinePhoneOrder=targetOrder;
-                            s.offlinePhoneEditPayload=Object.assign({},phoneEditPayload,{
-                                paymentMethod:'linepay_offline',paymentStatus:'paid',autoPrintKitchen:kitchenContentChanged
-                            });
+                            // ★ phone-linepay-card-status-20261023：內容沒改只送付款（不算修改）；有改才送整張修改後內容並印修改後完整工單
+                            s.offlinePhoneEditPayload=kitchenContentChanged
+                                ?Object.assign({},phoneEditPayload,{
+                                    paymentMethod:'linepay_offline',paymentStatus:'paid',autoPrintKitchen:true
+                                })
+                                :s.buildPhonePaymentOnlyCommandPayload('linepay_offline','paid');
                             s.offlineSourceRecordPath=phoneSourcePath;
                             s.showOfflineModal=true;
                             s.exitOnline();
@@ -8611,7 +8626,10 @@
                             if(!confirmBase)throw new Error('尚未設定 LINE Pay 確認頁網址');
                             // ★ phone-paid-no-reprint-20260927：Pi 付款確認後不再印電話單；內容有改就現在印修改後完整單
                             phoneEditPayload.autoPrintKitchen=kitchenContentChanged;
-                            await s.queuePhoneOrderCommand(targetOrder,'replace_order',phoneEditPayload);
+                            // ★ phone-linepay-card-status-20261023：內容沒改只送付款（付款處理中）；付款成功由樹莓派 LINE Pay 服務回寫「已付清」
+                            await s.queuePhoneOrderCommand(targetOrder,'replace_order',kitchenContentChanged
+                                ?phoneEditPayload
+                                :s.buildPhonePaymentOnlyCommandPayload(phonePayment.paymentMethod,phonePayment.paymentStatus));
                             var phoneOrderDateKey=s.resolveOrderDateKey(targetOrder)||s.editPickupDate||s.todayStr;
                             s.exitOnline();
                             s.startPosLinePay(id,phoneOrderDateKey,confirmBase,false,phoneSourcePath);
