@@ -15,6 +15,8 @@
   <!-- 店內 POS 使用登入權杖，不使用 Cloudflare Turnstile。 -->
   <script>window.PB_REQUIRE_TURNSTILE = false;</script>
   <script src="https://unpkg.com/vue@3.5.40/dist/vue.global.prod.js" integrity="sha384-yjSqnKX+01fhYzLUMRlCkMrHMTdKxwYcGIk5HZ6ug+4nfJn10+F7YsKRuGR5kQac" crossorigin="anonymous"></script>
+  <!-- pos-linepay-inpage-qr-20261024：💚 LINE Pay 的 QR 直接畫在頁面上（同 dinein.html 用的版本與 SRI） -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js" integrity="sha384-3zSEDfvllQohrq0PHL1fOXJuC/jSOO34H46t6UQfobFOmxE5BpjjaIJY5F2/bMnU" crossorigin="anonymous"></script>
   <script src="./order-batch-tools.20260809_002.js?v=20260902_001"></script>
   <script src="./print-jobs-alert.20260928_001.js"></script>
   <style>
@@ -1035,6 +1037,33 @@
     </div>
   </div>
 
+  <!-- ★ pos-linepay-inpage-qr-20261024：💚 LINE Pay 的 QR 直接顯示在 POS（做法同 dinein 平板），付款確認後自動關閉；不再整頁跳到 LINE Pay -->
+  <div v-if="posQr.show" class="fixed inset-0 flex items-center justify-center" style="z-index:1150;background:rgba(0,0,0,0.6)">
+    <div class="bg-white rounded-2xl shadow-2xl overflow-hidden" style="max-width:22rem;width:calc(100% - 2rem)">
+      <div class="px-5 py-3 flex items-center gap-2" style="background:linear-gradient(135deg,#06C755,#00B900)">
+        <span class="text-xl">💚</span>
+        <span class="text-white font-black text-base">LINE Pay 付款</span>
+        <span class="ml-auto text-white font-black text-lg">${{ posQr.amount }}</span>
+      </div>
+      <div class="px-5 py-4 text-center">
+        <p v-if="posQr.orderNo" class="text-gray-500 text-sm font-bold mb-1">No.{{ String(posQr.orderNo).padStart(3,'0') }}</p>
+        <p v-if="posQr.state==='waiting'||posQr.state==='cancelling'" class="text-green-800 font-black text-base mb-2">📱 請顧客用手機 LINE（或相機）掃描付款</p>
+        <div v-show="posQr.url&&(posQr.state==='waiting'||posQr.state==='cancelling')" class="flex justify-center mb-3">
+          <div ref="posLinePayQrBox" class="inline-block p-2 bg-white border-2 border-gray-200 rounded-xl"></div>
+        </div>
+        <p v-if="posQr.state==='waiting'" class="text-gray-500 text-sm animate-pulse">⏳ 等待付款中（{{ posLinePayQrElapsedText() }}）… 付款完成後自動關閉</p>
+        <p v-if="posQr.state==='cancelling'" class="text-gray-500 text-sm">正在取消並撤回這張單…</p>
+        <p v-if="posQr.state==='paid'" class="text-green-600 font-black text-xl my-4">✅ 付款成功</p>
+        <p v-if="posQr.error" class="mt-2 text-sm font-bold" :class="posQr.state==='failed'?'text-red-600':'text-amber-700'" style="white-space:pre-line">{{ posQr.error }}</p>
+        <p v-if="!posQr.newOrder&&posQr.state==='waiting'" class="text-gray-400 text-xs mt-2">也可以先關閉視窗：這張單維持「LINE Pay 待付款」，顧客付款後一樣會自動更新。</p>
+      </div>
+      <div class="px-5 pb-4 grid grid-cols-1 gap-2">
+        <button v-if="posQr.newOrder&&(posQr.state==='waiting'||posQr.state==='cancelling')" @click="cancelPosLinePayQr" :disabled="posQr.state==='cancelling'" class="w-full bg-gray-100 hover:bg-gray-200 disabled:opacity-60 text-gray-600 font-bold py-2.5 rounded-xl text-sm transition">{{ posQr.state==='cancelling' ? '正在取消…' : '取消付款（撤回這張單）' }}</button>
+        <button v-if="(!posQr.newOrder||posQr.state==='failed'||posQr.cancelFailed)&&posQr.state!=='paid'&&posQr.state!=='cancelling'" @click="closePosLinePayQr" class="w-full bg-gray-100 hover:bg-gray-200 text-gray-500 font-bold py-2 rounded-xl text-sm transition">關閉視窗</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ★ 情境3：LINE Pay Offline 掃碼付款 Modal -->
   <div v-if="showOfflineModal" class="fixed inset-0 flex items-center justify-center" style="z-index:1200;background:rgba(0,0,0,0.6)">
     <div class="bg-white rounded-2xl shadow-2xl overflow-hidden" style="max-width:22rem;width:calc(100% - 2rem)">
@@ -1099,6 +1128,8 @@
     };
     const app=initializeApp(firebaseConfig),db=getDatabase(app),auth=getAuth(app);
     const posVoiceRuntime={pc:null,dc:null,stream:null,idleTimer:null,seenCalls:new Set(),aliases:[],typos:[],pendingSearch:null,transcriptionPrompt:'台灣早餐店現場點餐，請使用繁體中文。'};
+    // ★ pos-linepay-inpage-qr-20261024：QR 視窗的計時器（不放進 Vue 狀態）
+    const posLinePayQrRuntime={timer:null,closeTimer:null};
 
     // ★ 每日主題顏色：依星期套用 --day-theme / --day-theme-bg，並監聽 settings/dailyThemes 即時更新
     (function applyDailyTheme(){
@@ -1190,6 +1221,8 @@
                 scannerBridgeSessionId:"",scannerBridgeAuthToken:"",scannerBridgeBase:"",scannerBridgeStatus:"",scannerBridgePollTimer:null,scannerBridgeState:"",
                 // ★ LINE Pay Online 付款連結彈窗
                 showLinePayLinkModal:false, pendingLinePayUrl:"", pendingLinePayOrderId:"", pendingLinePayOrderDateKey:"",
+                // ★ pos-linepay-inpage-qr-20261024：💚 LINE Pay 在 POS 上顯示 QR（不整頁跳到 LINE Pay）
+                posQr:{show:false,state:'',orderId:'',orderDateKey:'',transactionId:'',amount:0,orderNo:'',newOrder:false,url:'',error:'',cancelFailed:false,openedAt:0,elapsed:0},
                 offlineSubmitting:false
             };
         },
@@ -2595,7 +2628,7 @@
                 }
                 return String(payUrl||'').trim();
             },
-            startPosLinePay:function(orderId,orderDateKey,confirmBase,clearCartOnRedirect,sourceRecordPath){
+            startPosLinePay:function(orderId,orderDateKey,confirmBase,clearCartOnRedirect,sourceRecordPath,meta){
                 var s=this;
                 s.checkoutProgress='正在建立 LINE Pay QR 付款頁…';
                 s.toast('⏳ 正在建立 LINE Pay 連結...');
@@ -2610,49 +2643,29 @@
                 }).then(function(result){
                     return new Promise(function(resolve,reject){
                         var finished=false,stopWatching=function(){},timer=null;
-                        var finish=function(error,payUrl){
+                        var finish=function(error,payUrl,data){
                             if(finished)return;
                             finished=true;clearTimeout(timer);stopWatching();s.isSubmitting=false;s.checkoutProgress='';
                             if(error){reject(error);return;}
-                            if(clearCartOnRedirect){
-                                try{
-                                    saveLinePayCheckoutHandoff({
-                                        orderId:orderId,
-                                        returnPage:'pos',
-                                        cart:s.cart,
-                                        form:{
-                                            custName:s.custName,
-                                            custPhone:s.custPhone,
-                                            posPickupDate:s.posPickupDate,
-                                            posPickupTime:s.posPickupTime,
-                                            posOrderType:s.posOrderType,
-                                            posTableLabel:s.posTableLabel,
-                                            posOrderNote:s.posOrderNote
-                                        }
-                                    });
-                                }catch(storageError){
-                                    cancelOwnedOrderViaBackend(orderId,{
-                                        settings:s.settings,
-                                        firebaseUser:auth.currentUser,
-                                        timeoutMs:10000
-                                    }).then(function(){
-                                        reject(new Error('無法暫存購物車，付款已取消；目前購物車仍保留'));
-                                    }).catch(function(){
-                                        reject(new Error('無法暫存購物車且付款狀態待確認，請勿重複下單'));
-                                    });
-                                    return;
-                                }
-                                s.clearCart();
-                            }
-                            try{localStorage.setItem('linepay_return_url',window.location.href);}catch(e){}
-                            window.location.href=payUrl;
+                            // ★ pos-linepay-inpage-qr-20261024：以前這裡整頁跳到 LINE Pay（window.location.href=payUrl），
+                            //   顧客用手機付款後 LINE Pay 只把手機帶回確認頁，POS 會停在 LINE Pay 的 QR 頁回不來。
+                            //   現在改在 POS 上顯示 QR；新單的購物車等付款成功才清空，取消付款時保留。
+                            s.openPosLinePayQr({
+                                orderId:orderId,
+                                orderDateKey:orderDateKey,
+                                payUrl:payUrl,
+                                data:data||{},
+                                newOrder:!!clearCartOnRedirect,
+                                sourceRecordPath:sourceRecordPath||'',
+                                meta:meta||{}
+                            });
                             resolve();
                         };
                         var handle=function(data){
                             if(!data)return false;
                             var status=String(data.status||'').toLowerCase();
                             var payUrl=s.extractLinePayUrlFromPayload(data);
-                            if(payUrl&&status==='ready'){finish(null,payUrl);return true;}
+                            if(payUrl&&status==='ready'){finish(null,payUrl,data);return true;}
                             if(status==='error'||status==='failed'){finish(new Error(data.error||'未知錯誤'));return true;}
                             return false;
                         };
@@ -2667,6 +2680,175 @@
                     s.checkoutProgress='';
                     s.toast('⚠️ LINE Pay 失敗：'+(error&&error.message||error||'未知錯誤'));
                 });
+            },
+            // ★ pos-linepay-inpage-qr-20261024：💚 LINE Pay 的 QR 直接顯示在 POS（做法同 dinein 平板）。
+            //   顧客用手機 LINE／相機掃碼付款 → 樹莓派 LINE Pay 服務確認付款 → 訂單列表變「已付清」→ 視窗自動關閉。
+            //   付款結果只看訂單列表（PocketBase 安全讀取），不直接讀 Firebase linepay_transactions（見 tests/secure_order_read.test.js）。
+            //   「📲 掃碼 LINE Pay」「📷 掃碼付款」（掃碼器掃顧客條碼）是另一套流程，不經過這裡。
+            pickPosLinePayQrUrl:function(data,payUrl){
+                var safe=function(value,app){
+                    try{
+                        var u=new URL(String(value||''));
+                        if(u.username||u.password||u.port)return '';
+                        if(app&&u.protocol==='line:'&&u.hostname==='pay'&&u.pathname.indexOf('/payment/')===0)return u.href;
+                        if(u.protocol==='https:'&&/(^|\.)line\.me$/i.test(u.hostname))return u.href;
+                    }catch(e){}
+                    return '';
+                };
+                var d=(data&&typeof data==='object')?data:{};
+                // 同 dinein 平板：優先編碼 LINE Pay 的 App 網址（手機掃了直接開 LINE Pay），沒有才用網頁版
+                return safe(d.qrCodeUrl,true)||safe(d.appUrl,true)||safe(payUrl,false)||safe(d.paymentUrl,false);
+            },
+            emptyPosLinePayQr:function(){
+                return {show:false,state:'',orderId:'',orderDateKey:'',transactionId:'',amount:0,orderNo:'',newOrder:false,url:'',error:'',cancelFailed:false,openedAt:0,elapsed:0};
+            },
+            openPosLinePayQr:function(ctx){
+                var s=this;
+                ctx=ctx||{};
+                s.stopPosLinePayQrWatch();
+                var data=(ctx.data&&typeof ctx.data==='object')?ctx.data:{};
+                var meta=ctx.meta||{};
+                var order=(typeof s.findOrderById==='function')?s.findOrderById(ctx.orderId):null;
+                var q=s.emptyPosLinePayQr();
+                q.show=true;
+                q.state='waiting';
+                q.orderId=String(ctx.orderId||'');
+                q.orderDateKey=String(ctx.orderDateKey||'');
+                q.transactionId=String(data.transactionId||'');
+                q.amount=Math.round(Number(meta.amount||data.amount||(order&&order.total)||0))||0;
+                q.orderNo=meta.orderNo||(order&&order.orderNo)||'';
+                q.newOrder=!!ctx.newOrder;
+                q.url=s.pickPosLinePayQrUrl(data,ctx.payUrl);
+                q.openedAt=Date.now();
+                if(!q.url)q.error='無法產生 QR Code（LINE Pay 回傳的付款網址格式不對）。\n'+(q.newOrder?'請按「取消付款」，改用其他付款方式。':'請關閉視窗，改用其他付款方式。');
+                s.posQr=q;
+                var orderId=q.orderId;
+                posLinePayQrRuntime.timer=setInterval(function(){s.tickPosLinePayQr(orderId);},1000);
+                s.$nextTick(function(){s.renderPosLinePayQr();});
+            },
+            renderPosLinePayQr:function(){
+                var s=this,q=s.posQr,box=s.$refs&&s.$refs.posLinePayQrBox;
+                if(!q||!q.show||!q.url||!box)return;
+                box.innerHTML='';
+                var QR=window.QRCode;
+                if(typeof QR!=='function'){
+                    q.error='QR Code 元件沒有載入。請重新整理 POS 後再試，或改用「📲 掃碼 LINE Pay」。';
+                    return;
+                }
+                try{
+                    new QR(box,{text:q.url,width:220,height:220,colorDark:'#000000',colorLight:'#ffffff',correctLevel:QR.CorrectLevel.H});
+                }catch(e){
+                    q.error='QR Code 產生失敗：'+(e&&e.message?e.message:e);
+                }
+            },
+            posLinePayQrOrderState:function(orderId){
+                // 回傳 'paid'／'failed'／'reconcile'／''（還在等）
+                var s=this,q=s.posQr;
+                var order=(typeof s.findOrderById==='function')?s.findOrderById(orderId):null;
+                if(!order||!/^linepay/.test(String(order.paymentMethod||'')))return '';
+                var txn=(order.linePayTransaction&&typeof order.linePayTransaction==='object')?order.linePayTransaction:{};
+                var txnId=String(txn.transactionId||order.linePayTransactionId||'');
+                if(q.transactionId&&txnId&&txnId!==q.transactionId)return '';
+                var st=s.getLinePayState(order);
+                if(st==='paid'){
+                    // 已付清的單不會再走「💚 LINE Pay」，所以這裡的已付清就是這次付款；只排除明顯很久以前的確認時間
+                    var confirmedAt=Number(txn.confirmedAt||order.paymentConfirmedAt||0)||0;
+                    if(confirmedAt>0&&confirmedAt<q.openedAt-600000)return '';
+                    return 'paid';
+                }
+                if(String(txn.status||'').toLowerCase()==='reconcile_required')return 'reconcile';
+                if(st==='failed'||st==='cancelled'){
+                    var failedAt=Number(order.paymentFailedAt||0)||0;
+                    if(q.newOrder||failedAt>=q.openedAt-5000)return 'failed';
+                }
+                return '';
+            },
+            tickPosLinePayQr:function(orderId){
+                var s=this,q=s.posQr;
+                if(!q.show||q.orderId!==orderId){s.stopPosLinePayQrWatch();return;}
+                q.elapsed=Math.max(0,Math.floor((Date.now()-q.openedAt)/1000));
+                if(q.state!=='waiting'&&q.state!=='failed')return;
+                var st=s.posLinePayQrOrderState(orderId);
+                if(st==='paid'){s.markPosLinePayQrPaid(orderId);return;}
+                if(q.state==='waiting'&&q.elapsed>=6&&(st==='failed'||st==='reconcile')){
+                    q.state='failed';
+                    q.error=st==='reconcile'
+                        ?'LINE Pay 回報這筆需要人工對帳。請到 LINE Pay 商家後台確認是否已扣款，確認前請勿重複收款。'
+                        :(q.newOrder
+                            ?'這筆 LINE Pay 付款沒有完成，系統會撤回這張單（不出單）。\n購物車還在，可以改用其他付款方式。'
+                            :'這筆 LINE Pay 付款沒有完成，這張單保留。\n可以在訂單改用其他付款方式。');
+                    return;
+                }
+                // PocketBase 即時通知之外的保險：等待中每 4 秒請訂單列表重新讀一次
+                if(q.state==='waiting'&&q.elapsed>0&&q.elapsed%4===0&&s.ordersReadBackend!=='firebase'&&typeof s.scheduleOrdersRealtimeRefresh==='function'){
+                    s.scheduleOrdersRealtimeRefresh();
+                }
+            },
+            markPosLinePayQrPaid:function(orderId){
+                var s=this,q=s.posQr;
+                if(!q.show||q.orderId!==orderId||q.state==='paid'||q.state==='cancelling')return;
+                q.state='paid';
+                q.error='';
+                s.stopPosLinePayQrWatch();
+                // 出單由樹莓派確認付款時處理（和以前一樣），這裡只清購物車、提示、關視窗
+                if(q.newOrder)s.clearCart();
+                s.toast('✅ LINE Pay 付款成功 $'+q.amount+(q.orderNo?' (No.'+String(q.orderNo).padStart(3,'0')+')':''));
+                posLinePayQrRuntime.closeTimer=setTimeout(function(){
+                    posLinePayQrRuntime.closeTimer=null;
+                    if(s.posQr.orderId===orderId&&s.posQr.state==='paid')s.posQr=s.emptyPosLinePayQr();
+                },1800);
+            },
+            stopPosLinePayQrWatch:function(){
+                if(posLinePayQrRuntime.timer){clearInterval(posLinePayQrRuntime.timer);posLinePayQrRuntime.timer=null;}
+                if(posLinePayQrRuntime.closeTimer){clearTimeout(posLinePayQrRuntime.closeTimer);posLinePayQrRuntime.closeTimer=null;}
+            },
+            closePosLinePayQr:function(){
+                var s=this,q=s.posQr;
+                if(!q.show||q.state==='cancelling'||q.state==='paid')return;
+                // 新單等待付款中只能「取消付款」（撤回訂單），取消失敗後才可以直接關閉
+                if(q.newOrder&&q.state==='waiting'&&!q.cancelFailed)return;
+                var waiting=q.state==='waiting',newOrder=q.newOrder;
+                s.stopPosLinePayQrWatch();
+                s.posQr=s.emptyPosLinePayQr();
+                if(waiting)s.toast(newOrder?'⚠️ 這張 LINE Pay 單仍是待付款，請在訂單列表確認，勿重複收款':'這張單維持「LINE Pay 待付款」，顧客付款後會自動更新');
+            },
+            cancelPosLinePayQr:async function(){
+                var s=this,q=s.posQr;
+                if(!q.show||!q.newOrder||q.state!=='waiting')return;
+                if(!confirm('確定取消這筆 LINE Pay 付款嗎？\n\n這張單會撤回、不出單；購物車保留，可以改用其他付款方式。'))return;
+                var orderId=q.orderId;
+                // 先看是否剛好已付款成功：已付款就不撤單
+                if(s.posLinePayQrOrderState(orderId)==='paid'){s.markPosLinePayQrPaid(orderId);return;}
+                q.state='cancelling';
+                q.error='';
+                try{
+                    // 和以前在 LINE Pay 付款頁按「取消」一樣：後端撤回未付款訂單（不出單）；萬一剛好付款成功，後端會改成取消並自動退款
+                    var result=await cancelOwnedOrderViaBackend(orderId,{settings:s.settings,firebaseUser:auth.currentUser,timeoutMs:10000});
+                    if(s.posQr.orderId!==orderId)return;
+                    s.stopPosLinePayQrWatch();
+                    s.posQr=s.emptyPosLinePayQr();
+                    var cancelled=result&&result.cancelled;
+                    if(cancelled&&String(cancelled.status||'').toLowerCase()==='cancelled'){
+                        alert('顧客在取消的同時完成了 LINE Pay 付款。\n這張單已取消，系統會自動向 LINE Pay 退款（卡片會顯示 💜 已退款）。\n購物車保留。');
+                    }else{
+                        s.toast('↩️ 已取消 LINE Pay 付款，這張單已撤回（不出單）；購物車保留');
+                    }
+                }catch(e){
+                    if(s.posQr.orderId!==orderId||s.posQr.state!=='cancelling')return;
+                    var raw=String(e&&e.message?e.message:e||'');
+                    var reasons={
+                        customer_order_cancel_deadline_passed:'已超過可撤回的時間（取餐時間前 15 分鐘）',
+                        customer_order_owner_mismatch:'這張單不是用這台 POS 的帳號建立的',
+                        customer_order_not_cancellable:'這張單已經不是新單'
+                    };
+                    s.posQr.state='waiting';
+                    s.posQr.cancelFailed=true;
+                    s.posQr.error='取消沒有完成：'+(reasons[raw]||raw||'未知錯誤')+'\n這張單仍在等待付款，請勿重複收款。可以再按一次取消，或按「關閉視窗」稍後在訂單列表處理。';
+                }
+            },
+            posLinePayQrElapsedText:function(){
+                var sec=Math.max(0,Math.floor(Number(this.posQr&&this.posQr.elapsed||0)||0));
+                return Math.floor(sec/60)+':'+String(sec%60).padStart(2,'0');
             },
             normalizeSourceRecordPath:function(order,orderId){
                 var o=order||{};
@@ -8212,7 +8394,7 @@
 
                         if(isLinePay){
                             // Worker 從 Firebase canonical 訂單建立 queue；瀏覽器不再提交金額或品項。
-                            s.startPosLinePay(orderId,o.orderDateKey||o.pickupDate||'',confirmBase,true);
+                            s.startPosLinePay(orderId,o.orderDateKey||o.pickupDate||'',confirmBase,true,'',{amount:o.total,orderNo:o.orderNo});// ★ pos-linepay-inpage-qr-20261024：QR 視窗顯示金額與單號
                         }else{
                             // ★ 店內付款：立即列印；print_task 已隨訂單本體一起寫入，避免 POS 監聽器補印第二次
                             s.writeToPrintQueue(orderId,storePrintTask,o).then(function(delivery){

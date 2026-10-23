@@ -17,6 +17,8 @@
     <link rel="stylesheet" href="./daily-theme.css?v=20261021_001">
     <script src="./daily-theme.js?v=20261021_001"></script>
     <script src="https://unpkg.com/vue@3.5.40/dist/vue.global.prod.js" integrity="sha384-yjSqnKX+01fhYzLUMRlCkMrHMTdKxwYcGIk5HZ6ug+4nfJn10+F7YsKRuGR5kQac" crossorigin="anonymous"></script>
+    <!-- pos-linepay-inpage-qr-20261024：💚 LINE Pay 的 QR 直接畫在頁面上（同 dinein.html 用的版本與 SRI） -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js" integrity="sha384-3zSEDfvllQohrq0PHL1fOXJuC/jSOO34H46t6UQfobFOmxE5BpjjaIJY5F2/bMnU" crossorigin="anonymous"></script>
     <script src="./order-batch-tools.20260809_002.js?v=20260902_001"></script>
     <script src="./print-jobs-alert.20260928_001.js"></script>
     <style>[v-cloak] { display: none; }</style>
@@ -373,6 +375,30 @@
                 </div>
             </div>
         </div>
+        <!-- ★ pos-linepay-inpage-qr-20261024：💚 LINE Pay 的 QR 直接顯示在 admin（做法同 POS），付款確認後自動關閉；不再整頁跳到 LINE Pay -->
+        <div v-if="adminQr.show" class="fixed inset-0 flex items-center justify-center" style="z-index:1150;background:rgba(0,0,0,0.6)">
+            <div class="bg-white rounded-2xl shadow-2xl overflow-hidden" style="max-width:22rem;width:calc(100% - 2rem)">
+                <div class="px-5 py-3 flex items-center gap-2" style="background:linear-gradient(135deg,#06C755,#00B900)">
+                    <span class="text-xl">💚</span>
+                    <span class="text-white font-black text-base">LINE Pay 付款</span>
+                    <span class="ml-auto text-white font-black text-lg">${{ adminQr.amount }}</span>
+                </div>
+                <div class="px-5 py-4 text-center">
+                    <p v-if="adminQr.orderNo" class="text-gray-500 text-sm font-bold mb-1">No.{{ String(adminQr.orderNo).padStart(3,'0') }}</p>
+                    <p v-if="adminQr.state==='waiting'" class="text-green-800 font-black text-base mb-2">📱 請顧客用手機 LINE（或相機）掃描付款</p>
+                    <div v-show="adminQr.url&&adminQr.state==='waiting'" class="flex justify-center mb-3">
+                        <div ref="adminLinePayQrBox" class="inline-block p-2 bg-white border-2 border-gray-200 rounded-xl"></div>
+                    </div>
+                    <p v-if="adminQr.state==='waiting'" class="text-gray-500 text-sm animate-pulse">⏳ 等待付款中（{{ adminLinePayQrElapsedText() }}）… 付款完成後自動關閉</p>
+                    <p v-if="adminQr.state==='paid'" class="text-green-600 font-black text-xl my-4">✅ 付款成功</p>
+                    <p v-if="adminQr.error" class="mt-2 text-sm font-bold" :class="adminQr.state==='failed'?'text-red-600':'text-amber-700'" style="white-space:pre-line">{{ adminQr.error }}</p>
+                    <p v-if="adminQr.state==='waiting'" class="text-gray-400 text-xs mt-2">也可以先關閉視窗：這張單維持「LINE Pay 待付款」，顧客付款後一樣會自動更新。</p>
+                </div>
+                <div class="px-5 pb-4">
+                    <button v-if="adminQr.state!=='paid'" @click="closeAdminLinePayQr" class="w-full bg-gray-100 hover:bg-gray-200 text-gray-500 font-bold py-2 rounded-xl text-sm transition">關閉視窗</button>
+                </div>
+            </div>
+        </div>
         <!-- Toast -->
         <div v-if="toastMsg" class="fixed bottom-6 left-1/2 -translate-x-1/2 z-[999] pointer-events-none">
             <div class="bg-gray-900 text-white text-sm font-bold px-5 py-2.5 rounded-full shadow-xl whitespace-nowrap">{{ toastMsg }}</div>
@@ -451,6 +477,8 @@
         //   不一致，另一頁初始化時的持久層整併會清掉這層 → 立即被登出。統一用 getAuth 預設層。
         const authReady = Promise.resolve();
         const { createApp } = Vue;
+        // ★ pos-linepay-inpage-qr-20261024：QR 視窗的計時器（不放進 Vue 狀態）
+        const adminLinePayQrRuntime = { timer: null, closeTimer: null };
 
         createApp({
             data() {
@@ -506,6 +534,8 @@
                     batchPrintProgress: '',
                     batchSummary: null,
                     toastMsg: '', toastTimer: null,
+                    // ★ pos-linepay-inpage-qr-20261024：💚 LINE Pay 在 admin 上顯示 QR（不整頁跳到 LINE Pay）
+                    adminQr: { show: false, state: '', orderId: '', transactionId: '', amount: 0, orderNo: '', url: '', error: '', openedAt: 0, elapsed: 0 },
                     printJobs: [], printJobsPanel: false, printJobsTimer: null, printJobsBusy: {}, printJobsError: '',
                     alertSound: new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg')
                 }
@@ -780,7 +810,7 @@
                     return String(payUrl || '').trim();
                 },
                 async startAdminLinePay(orderId, orderDateKey, confirmBase) {
-                    this.toast('⏳ 正在建立 LINE Pay 連結...');
+                    this.toast('⏳ 正在建立 LINE Pay QR Code...');
                     const result = await requestLinePayViaBackend(orderId, orderDateKey, {
                         settings: this.settings,
                         firebaseUser: auth.currentUser,
@@ -789,13 +819,16 @@
                     });
                     const immediateStatus = String(result && result.request && result.request.status || '').toLowerCase();
                     const immediateUrl = this.extractLinePayUrl(result && result.request);
+                    // ★ pos-linepay-inpage-qr-20261024：以前整頁跳到 LINE Pay，顧客手機付款後 admin 會停在 LINE Pay 的 QR 頁；
+                    //   現在改在 admin 上顯示 QR，付款確認後自動關閉
                     if (immediateUrl && immediateStatus === 'ready') {
-                        window.location.href = immediateUrl;
+                        this.openAdminLinePayQr(orderId, immediateUrl, result.request);
                         return;
                     }
                     if (['error', 'failed', 'request_failed', 'cancelled'].includes(immediateStatus)) {
                         throw new Error(result.request.error || 'LINE Pay 建立失敗');
                     }
+                    let payData = null;
                     const payUrl = await new Promise((resolve, reject) => {
                         let finished = false;
                         let stopWatching = () => {};
@@ -812,12 +845,136 @@
                             const data = snap.val();
                             const status = String(data.status || '').toLowerCase();
                             const url = this.extractLinePayUrl(data);
-                            if (url && status === 'ready') finish(null, url);
+                            if (url && status === 'ready') { payData = data; finish(null, url); }
                             else if (['error', 'failed', 'request_failed', 'cancelled'].includes(status)) finish(new Error(data.error || 'LINE Pay 建立失敗'));
                         }, (error) => finish(error || new Error('linepay_watch_failed')));
                         if (finished) stopWatching();
                     });
-                    window.location.href = payUrl;
+                    this.openAdminLinePayQr(orderId, payUrl, payData);
+                },
+                // ★ pos-linepay-inpage-qr-20261024：QR 視窗（做法同 POS／dinein 平板）。顧客手機掃碼付款 → 樹莓派確認 → 自動關閉。
+                //   admin 只有「已存在的訂單改成 💚 LINE Pay」會用到，所以只有「關閉視窗」，不撤單。
+                emptyAdminLinePayQr() {
+                    return { show: false, state: '', orderId: '', transactionId: '', amount: 0, orderNo: '', url: '', error: '', openedAt: 0, elapsed: 0 };
+                },
+                pickAdminLinePayQrUrl(data, payUrl) {
+                    const safe = (value, app) => {
+                        try {
+                            const u = new URL(String(value || ''));
+                            if (u.username || u.password || u.port) return '';
+                            if (app && u.protocol === 'line:' && u.hostname === 'pay' && u.pathname.indexOf('/payment/') === 0) return u.href;
+                            if (u.protocol === 'https:' && /(^|\.)line\.me$/i.test(u.hostname)) return u.href;
+                        } catch (e) {}
+                        return '';
+                    };
+                    const d = (data && typeof data === 'object') ? data : {};
+                    return safe(d.qrCodeUrl, true) || safe(d.appUrl, true) || safe(payUrl, false) || safe(d.paymentUrl, false);
+                },
+                findAdminLinePayQrOrder(orderId) {
+                    return (this.orders || []).find((o) => o && String(o.id) === String(orderId)) || null;
+                },
+                openAdminLinePayQr(orderId, payUrl, data) {
+                    this.stopAdminLinePayQrWatch();
+                    const d = (data && typeof data === 'object') ? data : {};
+                    const order = this.findAdminLinePayQrOrder(orderId);
+                    const q = this.emptyAdminLinePayQr();
+                    q.show = true;
+                    q.state = 'waiting';
+                    q.orderId = String(orderId || '');
+                    q.transactionId = String(d.transactionId || '');
+                    q.amount = Math.round(Number(d.amount || (order && order.total) || 0)) || 0;
+                    q.orderNo = (order && order.orderNo) || '';
+                    q.url = this.pickAdminLinePayQrUrl(d, payUrl);
+                    q.openedAt = Date.now();
+                    if (!q.url) q.error = '無法產生 QR Code（LINE Pay 回傳的付款網址格式不對）。\n請關閉視窗，改用其他付款方式。';
+                    this.adminQr = q;
+                    const id = q.orderId;
+                    adminLinePayQrRuntime.timer = setInterval(() => this.tickAdminLinePayQr(id), 1000);
+                    this.$nextTick(() => this.renderAdminLinePayQr());
+                },
+                renderAdminLinePayQr() {
+                    const q = this.adminQr;
+                    const box = this.$refs && this.$refs.adminLinePayQrBox;
+                    if (!q || !q.show || !q.url || !box) return;
+                    box.innerHTML = '';
+                    const QR = window.QRCode;
+                    if (typeof QR !== 'function') {
+                        q.error = 'QR Code 元件沒有載入。請重新整理 admin 後再試。';
+                        return;
+                    }
+                    try {
+                        new QR(box, { text: q.url, width: 220, height: 220, colorDark: '#000000', colorLight: '#ffffff', correctLevel: QR.CorrectLevel.H });
+                    } catch (e) {
+                        q.error = 'QR Code 產生失敗：' + (e && e.message ? e.message : e);
+                    }
+                },
+                adminLinePayQrOrderState(orderId) {
+                    // 付款結果只看訂單列表（PocketBase 安全讀取），不直接讀 Firebase linepay_transactions
+                    const q = this.adminQr;
+                    const order = this.findAdminLinePayQrOrder(orderId);
+                    if (!order || !/^linepay/.test(String(order.paymentMethod || ''))) return '';
+                    const txn = (order.linePayTransaction && typeof order.linePayTransaction === 'object') ? order.linePayTransaction : {};
+                    const txnId = String(txn.transactionId || order.linePayTransactionId || '');
+                    if (q.transactionId && txnId && txnId !== q.transactionId) return '';
+                    const st = this.getLinePayState(order);
+                    if (st === 'paid') {
+                        const confirmedAt = Number(txn.confirmedAt || order.paymentConfirmedAt || 0) || 0;
+                        if (confirmedAt > 0 && confirmedAt < q.openedAt - 600000) return '';
+                        return 'paid';
+                    }
+                    if (String(txn.status || '').toLowerCase() === 'reconcile_required') return 'reconcile';
+                    if (st === 'failed' || st === 'cancelled') {
+                        const failedAt = Number(order.paymentFailedAt || 0) || 0;
+                        if (failedAt >= q.openedAt - 5000) return 'failed';
+                    }
+                    return '';
+                },
+                tickAdminLinePayQr(orderId) {
+                    const q = this.adminQr;
+                    if (!q.show || q.orderId !== orderId) { this.stopAdminLinePayQrWatch(); return; }
+                    q.elapsed = Math.max(0, Math.floor((Date.now() - q.openedAt) / 1000));
+                    if (q.state !== 'waiting' && q.state !== 'failed') return;
+                    const st = this.adminLinePayQrOrderState(orderId);
+                    if (st === 'paid') { this.markAdminLinePayQrPaid(orderId); return; }
+                    if (q.state === 'waiting' && q.elapsed >= 6 && (st === 'failed' || st === 'reconcile')) {
+                        q.state = 'failed';
+                        q.error = st === 'reconcile'
+                            ? 'LINE Pay 回報這筆需要人工對帳。請到 LINE Pay 商家後台確認是否已扣款，確認前請勿重複收款。'
+                            : '這筆 LINE Pay 付款沒有完成，這張單保留。\n可以在訂單改用其他付款方式。';
+                        return;
+                    }
+                    // admin 平常每 10 秒才讀一次訂單；等待中每 4 秒多讀一次
+                    if (q.state === 'waiting' && q.elapsed > 0 && q.elapsed % 4 === 0 && this.ordersReadBackend !== 'firebase' && typeof this.readPocketBaseOrdersPrimary === 'function') {
+                        Promise.resolve().then(() => this.readPocketBaseOrdersPrimary()).catch(() => {});
+                    }
+                },
+                markAdminLinePayQrPaid(orderId) {
+                    const q = this.adminQr;
+                    if (!q.show || q.orderId !== orderId || q.state === 'paid') return;
+                    q.state = 'paid';
+                    q.error = '';
+                    this.stopAdminLinePayQrWatch();
+                    this.toast('✅ LINE Pay 付款成功 $' + q.amount + (q.orderNo ? ' (No.' + String(q.orderNo).padStart(3, '0') + ')' : ''));
+                    adminLinePayQrRuntime.closeTimer = setTimeout(() => {
+                        adminLinePayQrRuntime.closeTimer = null;
+                        if (this.adminQr.orderId === orderId && this.adminQr.state === 'paid') this.adminQr = this.emptyAdminLinePayQr();
+                    }, 1800);
+                },
+                stopAdminLinePayQrWatch() {
+                    if (adminLinePayQrRuntime.timer) { clearInterval(adminLinePayQrRuntime.timer); adminLinePayQrRuntime.timer = null; }
+                    if (adminLinePayQrRuntime.closeTimer) { clearTimeout(adminLinePayQrRuntime.closeTimer); adminLinePayQrRuntime.closeTimer = null; }
+                },
+                closeAdminLinePayQr() {
+                    const q = this.adminQr;
+                    if (!q.show || q.state === 'paid') return;
+                    const waiting = q.state === 'waiting';
+                    this.stopAdminLinePayQrWatch();
+                    this.adminQr = this.emptyAdminLinePayQr();
+                    if (waiting) this.toast('這張單維持「LINE Pay 待付款」，顧客付款後會自動更新');
+                },
+                adminLinePayQrElapsedText() {
+                    const sec = Math.max(0, Math.floor(Number(this.adminQr && this.adminQr.elapsed || 0) || 0));
+                    return Math.floor(sec / 60) + ':' + String(sec % 60).padStart(2, '0');
                 },
                 getOrderRenderKey(order) {
                     if (!order || typeof order !== 'object') return 'order:empty';
