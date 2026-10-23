@@ -136,6 +136,9 @@
                                         class="inline-block text-xs font-bold px-2 py-0.5 rounded-full mt-1 bg-blue-100 text-blue-600">
                                         🔵 LINE Pay 處理中
                                     </span>
+                                    <!-- 20261024 phone cancel linepay refund：已取消但 LINE Pay 還沒退款 -->
+                                    <button v-if="needsLinePayRefund(order)" @click.stop="refundCancelledLinePayOrder(order)"
+                                        class="block ml-auto mt-1 text-xs font-bold px-2 py-0.5 rounded-full bg-purple-100 text-purple-700 hover:bg-purple-200">💜 補退款</button>
                                 </template>
                                 <span v-else-if="order.paymentStatus==='refunded'"
                                     class="inline-block text-xs font-bold px-2 py-0.5 rounded-full mt-1 bg-purple-100 text-purple-600">
@@ -214,6 +217,8 @@
                                     <button @click="printOrder(order); activeMenu = null" class="w-full text-left px-4 py-3 hover:bg-gray-100 text-gray-700 border-b text-sm font-bold">🖨️ 補印工單</button>
                                     <button @click="printReceipt(order); activeMenu = null" class="w-full text-left px-4 py-3 hover:bg-gray-100 text-gray-700 border-b text-sm font-bold">🧾 印收據</button>
                                     <button v-if="getDisplayStatus(order) !== 'done' && getDisplayStatus(order) !== 'cancelled'" @click="cancelOrder(order); activeMenu = null" class="w-full text-left px-4 py-3 hover:bg-red-50 text-red-600 text-sm font-bold">❌ 取消訂單</button>
+                                    <!-- 20261024 phone cancel linepay refund：已取消但 LINE Pay 還沒退款 -->
+                                    <button v-if="needsLinePayRefund(order)" @click="refundCancelledLinePayOrder(order); activeMenu = null" class="w-full text-left px-4 py-3 hover:bg-purple-50 text-purple-700 border-b text-sm font-bold">💜 補退款</button>
                                     <button v-if="getDisplayStatus(order) === 'cancelled'" @click="archiveCancelledOrder(order); activeMenu = null" class="w-full text-left px-4 py-3 hover:bg-slate-100 text-slate-700 text-sm font-bold">🗄️ 移除畫面（保留歷史）</button>
                                 </div>
                             </div>
@@ -3912,6 +3917,37 @@
                     if (orderStatus === 'archived' && order.wasCancelled) return 'cancelled';
                     return 'pending';
                 },
+                // 20261024 phone cancel linepay refund：已取消、但 LINE Pay 仍是已付清（沒退到款）→ 顯示「💜 補退款」
+                //   例：電話主頁取消、取消時退款失敗。退款沿用 requestLinePayRefund（Pi 核對已取消、交易存在、未退款才退）。
+                needsLinePayRefund(order) {
+                    if (!order) return false;
+                    const st = String(order.status || '').toLowerCase();
+                    const cancelled = this.getDisplayStatus(order) === 'cancelled' || st === 'cancelled' || (st === 'archived' && !!order.wasCancelled);
+                    if (!cancelled) return false;
+                    if (!['linepay', 'linepay_offline'].includes(String(order.paymentMethod || '').toLowerCase())) return false;
+                    return this.getLinePayState(order) === 'paid';
+                },
+                async refundCancelledLinePayOrder(order) {
+                    if (!this.needsLinePayRefund(order)) return false;
+                    this._refundInFlight = this._refundInFlight || {};
+                    if (this._refundInFlight[order.id]) { this.toast('⏳ 此訂單正在退款，請勿重複按'); return false; }
+                    if (!confirm(`這張單已取消，但 LINE Pay $${order.total || 0} 還沒退款。\n\n確定向 LINE Pay 退款？`)) return false;
+                    this._refundInFlight[order.id] = true;
+                    this.toast('⏳ 正在向 LINE Pay 退款…');
+                    try {
+                        const refund = await this.requestLinePayRefund(order);
+                        if (!refund || !refund.success) {
+                            alert('⚠️ 退款失敗：' + ((refund && refund.error) || '服務無回應') + '。\n請稍後再按一次「💜 補退款」，或到 LINE Pay 商家後台手動退款。');
+                            return false;
+                        }
+                        Object.assign(order, { paymentMethod: 'linepay_refund', paymentStatus: 'refunded', refundedAt: Date.now() });
+                        this.lpStatus[order.id] = 'refunded';
+                        this.toast(`✅ LINE Pay 已確認退款 $${order.total || 0}`);
+                        return true;
+                    } finally {
+                        delete this._refundInFlight[order.id];
+                    }
+                },
                 async waitForPhoneOrderCancelled(order) {
                     const sourcePath = this.normalizeSourceRecordPath(order, order.id);
                     if (!/^phone_ai\/orders\/[A-Za-z0-9_-]{1,200}$/.test(sourcePath)) throw new Error('找不到電話訂單來源路徑');
@@ -4079,7 +4115,11 @@
                 },
                 async archiveCancelledOrder(order) {
                     if (!order || this.getDisplayStatus(order) !== 'cancelled') return;
-                    if (!confirm('確定移除此已取消訂單？\n訂單會封存並保留在歷史紀錄。')) return;
+                    // 20261024 phone cancel linepay refund：LINE Pay 還沒退款的單，移除前再提醒一次
+                    const unrefunded = this.needsLinePayRefund(order);
+                    if (!confirm(unrefunded
+                        ? '⚠️ 這張單的 LINE Pay 還沒退款，移除後畫面上就沒有「💜 補退款」按鈕。\n\n確定仍要移除？'
+                        : '確定移除此已取消訂單？\n訂單會封存並保留在歷史紀錄。')) return;
                     if (this.isPhoneCommandOrder(order)) {
                         try {
                             await this.archivePhoneOrder(order);

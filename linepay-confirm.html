@@ -75,9 +75,14 @@ setTimeout(function () {
   if (!loading || loading.style.display === 'none') return;
   const spinner = loading.querySelector('.spinner');
   if (spinner) spinner.style.display = 'none';
-  loading.querySelector('.title').textContent = '請店員核對付款結果';
-  loading.querySelector('.msg').textContent =
-    '目前無法確認是否付款成功。請出示訂單編號，由店員核對；請勿重新下單或再次付款。';
+  // 20261024 phone cancel linepay refund：POS／admin 建立、顧客用自己手機掃 QR 付款 → 這支手機讀不到結果，改說明結果在店員畫面
+  const fallbackParams = new URLSearchParams(window.location.search);
+  const crossDeviceFallback = fallbackParams.get('action') === 'confirm' &&
+    ['pos', 'admin', 'phone'].includes(fallbackParams.get('returnPage') || '');
+  loading.querySelector('.title').textContent = crossDeviceFallback ? 'LINE Pay 付款步驟已完成' : '請店員核對付款結果';
+  loading.querySelector('.msg').textContent = crossDeviceFallback
+    ? '付款結果會顯示在店員的畫面上，請回到櫃台告知店員；請勿重新下單或再次付款。'
+    : '目前無法確認是否付款成功。請出示訂單編號，由店員核對；請勿重新下單或再次付款。';
   const reference = document.getElementById('paymentReference');
   reference.textContent = '訂單查詢編號：' + (new URLSearchParams(window.location.search).get('orderId') || '未取得');
   reference.style.display = 'block';
@@ -111,6 +116,9 @@ const callbackToken = params.get('callbackToken') || '';
 const callbackAmount = Number(params.get('amount') || 0);
 const callbackOrderDateKey = params.get('orderDateKey') || '';
 const returnPage = params.get('returnPage') || '';
+// 20261024 phone cancel linepay refund：店員裝置（POS／admin／電話後台）建立的訂單，顧客用自己的手機掃 QR 付款。
+//   這支手機不是下單的裝置，讀不到這筆訂單的付款結果；不要讓顧客等約 1 分鐘後看到「目前無法確認是否付款成功」。
+const crossDevicePage = ['pos', 'admin', 'phone'].includes(returnPage);
 
 function showView(id) {
   document.getElementById('paymentReference').style.display = 'none';
@@ -177,6 +185,24 @@ function showConfirmationPending() {
     '目前無法確認是否付款成功。請出示訂單編號，由店員核對；請勿重新下單或再次付款。';
   document.getElementById('phoneReminder').style.display = 'none';
   showView('success');
+  document.getElementById('paymentReference').textContent = '訂單查詢編號：' + orderId;
+  document.getElementById('paymentReference').style.display = 'block';
+}
+// 20261024 phone cancel linepay refund：顧客手機掃店員畫面的 QR 付款完成（LINE Pay 已帶 action=confirm 回來），
+// 結果由店家系統確認、顯示在店員畫面。不顯示「返回點餐頁面」：那會把顧客帶到 POS／admin。
+function showCrossDevicePaid() {
+  const box = document.getElementById('success');
+  box.querySelector('.icon').textContent = '📲';
+  box.querySelector('.title').textContent = 'LINE Pay 付款步驟已完成';
+  box.querySelector('.msg').textContent =
+    '付款結果會顯示在店員的畫面上，請回到櫃台告知店員；請勿重新下單或再次付款。';
+  document.getElementById('phoneReminder').style.display = 'none';
+  document.getElementById('backBtn').style.display = 'none';
+  document.getElementById('closePosBtn').style.display = 'none';
+  showView('success');
+  const help = document.getElementById('returnHelp');
+  help.textContent = '確認後可以直接關閉這個頁面。';
+  help.style.display = 'block';
   document.getElementById('paymentReference').textContent = '訂單查詢編號：' + orderId;
   document.getElementById('paymentReference').style.display = 'block';
 }
@@ -395,14 +421,17 @@ async function processPayment() {
     const dbRestUrl = 'https://breakfast-ai-system-default-rtdb.asia-southeast1.firebasedatabase.app';
     const idToken = await waitForExistingIdToken();
     if (!idToken) {
+      if (crossDevicePage) { showCrossDevicePaid(); return; }
       showConfirmationPending();
       return;
     }
     let confirmed = false;
+    let ownerReadOk = false;
     // A lost callback response is not a declined payment. Read the existing
     // transaction first, including reloads where callback metadata was removed.
     try {
       const existing = await readLinePayStatusViaBackend(orderId, {firebaseIdToken: idToken, timeoutMs: 5000});
+      ownerReadOk = true;
       if (showTerminalPayment(existing)) return;
       confirmed = paymentOutcome(existing) === 'paid';
     } catch (e) { /* Owner-checked reads may recover in the bounded polling below. */ }
@@ -437,6 +466,12 @@ async function processPayment() {
       ['callbackToken','amount','transactionId'].forEach(key => clean.delete(key));
       history.replaceState(null, '', window.location.pathname + '?' + clean.toString());
     } catch (e) {}
+
+    // 20261024：店員裝置下的單、這支手機讀不到（不是下單的裝置）→ 不輪詢約 1 分鐘，直接說明結果在店員畫面
+    if (crossDevicePage && !ownerReadOk && !confirmed) {
+      showCrossDevicePaid();
+      return;
+    }
 
     for (let i = 0; i < 9; i++) {
       if (confirmed) break;
