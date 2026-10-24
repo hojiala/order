@@ -206,6 +206,18 @@ function showCrossDevicePaid() {
   document.getElementById('paymentReference').textContent = '訂單查詢編號：' + orderId;
   document.getElementById('paymentReference').style.display = 'block';
 }
+// pos-linepay-qr-retry-20261024：顧客在 LINE Pay 按「取消」回到這頁（POS／admin 的 QR）。
+// 不在這支手機上撤單（交給店員畫面的 QR 視窗與樹莓派），也不顯示任何回到 POS／admin 的按鈕。
+function showCrossDeviceCancelled() {
+  const box = document.getElementById('cancelled');
+  box.querySelector('.title').textContent = '付款已取消';
+  box.querySelector('.msg').textContent = '這筆 LINE Pay 沒有扣款。請回到櫃台告知店員，改用其他付款方式。';
+  document.getElementById('cancelBackBtn').style.display = 'none';
+  showView('cancelled');
+  const help = document.getElementById('returnHelp');
+  help.textContent = '可以直接關閉這個頁面。';
+  help.style.display = 'block';
+}
 function getBackUrl() {
   const urlParams = new URLSearchParams(window.location.search);
   const returnPage = urlParams.get('returnPage');
@@ -378,9 +390,16 @@ async function processPayment() {
     document.getElementById('errorBackBtn').href = backUrl;
   }
 
+  // pos-linepay-qr-retry-20261024：POS／admin 已經不會整頁跳到 LINE Pay，returnPage=pos／admin 的這頁一定開在付款的手機上；
+  //   任何情況都不提供回到 POS／admin 的連結（以前登入過店家帳號的手機會被自動帶到 pos.html）。
+  if (crossDevicePage) {
+    ['backBtn', 'cancelBackBtn', 'errorBackBtn', 'closePosBtn'].forEach(id => { document.getElementById(id).style.display = 'none'; });
+  }
+
   // ── 取消 ──
   if (action === 'cancel') {
     if (returnPage === 'dinein') return reconcileDineinCancellationReturn();
+    if (crossDevicePage) { showCrossDeviceCancelled(); return; }
     // dinein/phone 的付款頁可能開在另一支手機，沒有原下單裝置的 Firebase 身分；
     // 它們維持既有流程，由原裝置的狀態輪詢／取消按鈕收尾。
     if (!['index', 'pos', 'admin'].includes(returnPage)) {
@@ -419,6 +438,38 @@ async function processPayment() {
     // callbackToken 是建立交易時由後端產生的一次性能力憑證；
     // Firebase 規則會同時核對交易編號、金額與日期。
     const dbRestUrl = 'https://breakfast-ai-system-default-rtdb.asia-southeast1.firebasedatabase.app';
+    // pos-linepay-qr-retry-20261024：POS／admin 的 QR 只顯示在店員畫面上，來到這頁的一定是付款的那支手機
+    //   （就算這支手機登入過店家帳號，例如老闆自己的手機）。馬上顯示「付款步驟已完成」，不輪詢、不跳回 POS／admin。
+    //   付款由樹莓派主動向 LINE Pay 查詢後確認；這支手機剛好有登入時，順便把付款回呼交給店家系統。
+    if (crossDevicePage) {
+      showCrossDevicePaid();
+      if (callbackMetadataComplete) {
+        const callbackIdToken = await waitForExistingIdToken();
+        if (callbackIdToken) {
+          try {
+            await boundedFetch(firebaseRestUrl(dbRestUrl, `linepay_confirms/${orderId}`, callbackIdToken), {
+              method: 'PUT',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({
+                transactionId: String(txnId),
+                amount: Number(amount),
+                orderId: orderId,
+                orderDateKey: orderDateKey,
+                callbackToken: callbackToken,
+                status: 'pending',
+                timestamp: Date.now()
+              })
+            });
+          } catch (e) { console.error('寫入 confirms 失敗:', e); }
+        }
+      }
+      try {
+        const clean = new URLSearchParams(window.location.search);
+        ['callbackToken','amount','transactionId'].forEach(key => clean.delete(key));
+        history.replaceState(null, '', window.location.pathname + '?' + clean.toString());
+      } catch (e) {}
+      return;
+    }
     const idToken = await waitForExistingIdToken();
     if (!idToken) {
       if (crossDevicePage) { showCrossDevicePaid(); return; }
