@@ -2128,37 +2128,199 @@
                     self.tryRefreshOrderStatus();
                 }, 15000);
             },
+            // ★ 20261025：再訂1次 依原訂單還原 套餐飲料（飲料／容量）、溫度等選項、飲料加料、主餐備註、飲料備註、訂單備註。
+            //   價格一律用「目前菜單」重算，不沿用舊訂單金額；原選項已不存在時才改用預設，並列出調整內容請顧客確認。
+            buildReorderCartItem: function(item, current) {
+                var self = this;
+                var norm = function(v) { return String(v === null || v === undefined ? '' : v).trim(); };
+                var label = norm(current.name);
+                var adjusted = [];
+                var groups = Array.isArray(current.optionGroups) ? current.optionGroups : [];
+                var prevSels = (Array.isArray(item.optionGroupSelections) ? item.optionGroupSelections : []).filter(function(sel) { return sel && norm(sel.name); });
+                var used = prevSels.map(function() { return false; });
+                var choiceIdx = function(grp, name) {
+                    var arr = (grp && grp.choices) || [];
+                    for (var k = 0; k < arr.length; k++) if (arr[k] && norm(arr[k].name) === name) return k;
+                    return -1;
+                };
+                var picks = [];
+                // 1) 同群組名稱：依「選項名稱」找回目前菜單的位置（不信任舊 idx，菜單排序可能改過）
+                groups.forEach(function(grp, gi) {
+                    var gname = norm(grp && grp.groupName);
+                    var hit = false;
+                    var list = [];
+                    prevSels.forEach(function(sel, si) {
+                        if (used[si] || !grp || norm(sel.groupName) !== gname) return;
+                        if (grp.type !== 'checkbox' && hit) return;
+                        used[si] = true;
+                        hit = true;
+                        var ci = choiceIdx(grp, norm(sel.name));
+                        if (ci >= 0) list.push(ci);
+                        else if (grp.type === 'checkbox') adjusted.push(label + '：「' + norm(sel.name) + '」已無此選項，未加入');
+                        else list.push({ missing: norm(sel.name) });
+                    });
+                    picks[gi] = { hit: hit, list: list };
+                });
+                // 2) 群組改名：用同計價方式＋同選項名稱對回
+                groups.forEach(function(grp, gi) {
+                    if (!grp || picks[gi].hit) return;
+                    prevSels.forEach(function(sel, si) {
+                        if (used[si]) return;
+                        if (grp.type !== 'checkbox' && picks[gi].list.length) return;
+                        if (sel.pricing && grp.type !== 'checkbox' && sel.pricing !== grp.pricing) return;
+                        var ci = choiceIdx(grp, norm(sel.name));
+                        if (ci < 0) return;
+                        used[si] = true;
+                        picks[gi].hit = true;
+                        picks[gi].list.push(ci);
+                    });
+                });
+                prevSels.forEach(function(sel, si) {
+                    if (!used[si]) adjusted.push(label + '：「' + norm(sel.name) + '」已無此選項，未加入');
+                });
+                var basePrice = Number(current.price || 0);
+                var extra = 0;
+                var ogSels = [];
+                var comboDrinkBase = '';
+                var comboRestored = false;
+                var hasComboGroup = false;
+                groups.forEach(function(grp, gi) {
+                    if (!grp) return;
+                    var pick = picks[gi];
+                    if (grp.type === 'checkbox') {
+                        pick.list.forEach(function(ci) {
+                            var ch = (grp.choices || [])[ci];
+                            if (!ch) return;
+                            extra += Number(ch.price || 0);
+                            ogSels.push({ groupName: grp.groupName, idx: ci, name: ch.name, price: ch.price, pricing: 'addDelta', baseValue: 0 });
+                        });
+                        return;
+                    }
+                    var restored = typeof pick.list[0] === 'number';
+                    var selIdx = restored ? pick.list[0] : (grp.defaultIdx || 0);
+                    var ch = (grp.choices || [])[selIdx];
+                    if (!ch) return;
+                    if (!restored) {
+                        if (pick.list[0] && pick.list[0].missing) adjusted.push(label + '：' + norm(grp.groupName) + '「' + pick.list[0].missing + '」已無此選項，改為「' + norm(ch.name) + '」');
+                        else adjusted.push(label + '：新增「' + norm(grp.groupName) + '」，已選預設「' + norm(ch.name) + '」');
+                    }
+                    if (grp.pricing === 'setPrice') basePrice = Number(ch.price || 0);
+                    else if (grp.pricing === 'addDelta') extra += Number(ch.price || 0);
+                    else if (grp.pricing === 'mealUpgrade') extra += Math.max(0, Number(ch.price || 0) - Number(grp.baseValue || 0));
+                    if (self.isComboDrinkGroup(grp) && !hasComboGroup) {
+                        hasComboGroup = true;
+                        comboRestored = restored;
+                        comboDrinkBase = self.splitDrinkName(ch.name).base;
+                    }
+                    ogSels.push({ groupName: grp.groupName, idx: selIdx, name: ch.name, price: ch.price, pricing: grp.pricing, baseValue: grp.baseValue || 0, mealUpgradeDisplayLabel: String(grp.mealUpgradeDisplayLabel || '').trim(), mealUpgradeChargePrefix: String(grp.mealUpgradeChargePrefix || '').trim() });
+                });
+                // 舊版加料（品項本身的 options，例如單點美式的 加糖／加奶）：用目前菜單的物件與價格
+                var options = [];
+                var curOptions = Array.isArray(current.options) ? current.options : [];
+                (Array.isArray(item.options) ? item.options : []).forEach(function(o) {
+                    var name = norm(o && o.name);
+                    if (!name) return;
+                    var found = null;
+                    for (var k = 0; k < curOptions.length; k++) if (curOptions[k] && norm(curOptions[k].name) === name) { found = curOptions[k]; break; }
+                    if (!found) { adjusted.push(label + '：加料「' + name + '」已無此選項，未加入'); return; }
+                    if (options.indexOf(found) >= 0) return;
+                    options.push(found);
+                    extra += Number(found.price || 0);
+                });
+                // 套餐飲料加料（加糖／加奶…）：只在原飲料還原成功時沿用，價格取目前飲料品項
+                var comboDrinkAddons = [];
+                var prevAddons = (Array.isArray(item.comboDrinkAddons) ? item.comboDrinkAddons : []).filter(function(o) { return o && norm(o.name); });
+                if (prevAddons.length) {
+                    if (!hasComboGroup || !comboRestored) {
+                        adjusted.push(label + '：飲料已變更，飲料加料「' + prevAddons.map(function(o) { return norm(o.name); }).join('、') + '」未加入');
+                    } else {
+                        var drinkItem = self.findDrinkMenuItem(comboDrinkBase);
+                        var drinkOpts = (drinkItem && Array.isArray(drinkItem.options)) ? drinkItem.options : [];
+                        prevAddons.forEach(function(o) {
+                            var name = norm(o.name);
+                            if (comboDrinkAddons.some(function(a) { return norm(a.name) === name; })) return;
+                            var found = null;
+                            for (var k = 0; k < drinkOpts.length; k++) if (drinkOpts[k] && norm(drinkOpts[k].name) === name) { found = drinkOpts[k]; break; }
+                            if (!found) { adjusted.push(label + '：飲料加料「' + name + '」已無此選項，未加入'); return; }
+                            comboDrinkAddons.push({ name: found.name, price: Number(found.price || 0) });
+                            extra += Number(found.price || 0);
+                        });
+                    }
+                }
+                var mealDrink = '';
+                if (Array.isArray(current.mealOptions) && current.mealOptions.length) {
+                    var prevMeal = norm(item.mealDrink);
+                    var mealHit = prevMeal && current.mealOptions.some(function(m) { return m && norm(m.name) === prevMeal; });
+                    mealDrink = mealHit ? prevMeal : current.mealOptions[0].name;
+                    if (prevMeal && !mealHit) adjusted.push(label + '：套餐飲料「' + prevMeal + '」已無此選項，改為「' + norm(mealDrink) + '」');
+                }
+                var qty = Math.max(1, Math.floor(Number(item.qty) || 1));
+                var unitPrice = basePrice + extra;
+                return {
+                    adjusted: adjusted,
+                    cartItem: {
+                        id: current.id,
+                        name: current.name,
+                        shortName: String(current.shortName || '').trim(),
+                        printName: String(current.shortName || current.printName || '').trim(),
+                        price: current.price,
+                        station: current.station || self.getDefaultStationName(),
+                        printStations: Array.isArray(current.printStations) ? current.printStations.slice() : [],
+                        qty: qty,
+                        note: String(item.note || ''),
+                        drinkNote: String(item.drinkNote || ''),
+                        options: options,
+                        mealDrink: mealDrink,
+                        comboDrinkAddons: comboDrinkAddons,
+                        optionGroupSelections: ogSels,
+                        itemTotal: unitPrice * qty
+                    }
+                };
+            },
             reorderItems: function(order) {
                 var self = this;
-                if (!order.items || !order.items.length) return;
+                if (!order || !order.items || !order.items.length) return;
                 var added = 0;
                 var unavailable = [];
-                var resetChoices = false;
+                var adjusted = [];
+                var priceChanged = [];
                 order.items.forEach(function(item) {
+                    if (!item) return;
                     var current = self.menu.find(function(menuItem) {
-                        return menuItem && ((item.id && menuItem.id === item.id) || String(menuItem.name || '').trim() === String(item.name || '').trim());
+                        return menuItem && menuItem.active !== false && ((item.id && menuItem.id === item.id) || String(menuItem.name || '').trim() === String(item.name || '').trim());
                     });
                     if (!current) {
                         unavailable.push(String(item.name || '已下架品項'));
                         return;
                     }
-                    if (item.note || item.drinkNote || (item.options || []).length || (item.optionGroupSelections || []).length || (item.comboDrinkAddons || []).length) {
-                        resetChoices = true;
+                    var built = self.buildReorderCartItem(item, current);
+                    self.cart.push(built.cartItem);
+                    added += built.cartItem.qty;
+                    adjusted = adjusted.concat(built.adjusted);
+                    var oldTotal = Number(item.itemTotal);
+                    if (isFinite(oldTotal) && oldTotal > 0 && oldTotal !== built.cartItem.itemTotal) {
+                        priceChanged.push(String(current.name || '').trim() + ' $' + oldTotal + ' → $' + built.cartItem.itemTotal);
                     }
-                    var qty = Math.max(1, Number(item.qty) || 1);
-                    for (var i = 0; i < qty; i++) self.quickAddOrDetail(current);
-                    added += qty;
                 });
                 if (!added) {
                     self.showAlertModal('無法再次點餐', '原訂單品項目前皆已下架，請重新選購。');
                     return;
                 }
+                // 訂單備註（大備註）：購物車備註是空的就帶入；已有其他備註則接在後面，不覆蓋顧客剛打的字
+                var prevOrderNote = String(order.orderNote || '').trim();
+                if (prevOrderNote) {
+                    var curOrderNote = String(self.orderNote || '').trim();
+                    if (!curOrderNote) self.orderNote = prevOrderNote;
+                    else if (curOrderNote.indexOf(prevOrderNote) < 0) self.orderNote = curOrderNote + '\n' + prevOrderNote;
+                }
                 self.showStoreInfo = false;
                 self.goToCart();
                 var notes = [];
-                if (resetChoices) notes.push('已依目前菜單價格與預設選項加入，請重新確認口味、加料及備註。');
                 if (unavailable.length) notes.push('未加入已下架品項：' + unavailable.join('、'));
-                if (notes.length) self.showAlertModal('請確認購物車', notes.join('\n'));
+                if (adjusted.length) notes.push('部分選項已調整，請確認：\n' + adjusted.join('\n'));
+                if (priceChanged.length) notes.push('價格已依目前菜單更新：\n' + priceChanged.join('\n'));
+                if (notes.length) self.showAlertModal('請確認購物車', notes.join('\n\n'));
+                else self.showQuickAddToast('原訂單餐點');
             },
             confirmCancelMyOrder: function(order) {
                 var self = this;
