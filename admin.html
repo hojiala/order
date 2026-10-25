@@ -116,6 +116,7 @@
                                 <span v-if="getDisplayStatus(order) === 'done'" class="bg-gray-200 text-gray-600 px-2 py-1 rounded text-xs font-bold">已完成</span>
                                 <span v-if="getDisplayStatus(order) === 'cancelled'" class="bg-red-100 text-red-600 px-2 py-1 rounded text-xs font-bold">已取消</span>
                                 <p class="text-lg font-bold text-red-500 mt-2">${{ order.total }}</p>
+                                <p v-if="order.luckyWheel && Number(order.luckyWheel.discount) > 0" class="text-xs font-bold text-orange-600">🎡{{ order.luckyWheel.label }} -${{ order.luckyWheel.discount }}</p>
                                 <!-- 付款狀態 -->
                                 <template v-if="order.paymentMethod==='linepay'||order.paymentMethod==='linepay_offline'||order.paymentMethod==='linepay_refund'">
                                     <span v-if="getLinePayState(order)==='refunded'"
@@ -409,7 +410,7 @@
         import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
         import { getDatabase, ref, query, orderByKey, limitToLast, onValue, onChildAdded, onChildChanged, onChildRemoved, update, set, get, remove } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
         import { getAuth, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-        import { allocateOrderNoFromPocketBase, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, readManageMenuFromPocketBase, listMenuItemsFromPocketBase, writeOrderToPocketBase, requestLinePayViaBackend, queuePhoneOrderCommandViaBackend, isReservedOrderId } from "./pocketbase-order-writer.20260809_005.js?v=20260920_customer_status_hours_1";
+        import { allocateOrderNoFromPocketBase, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, readManageMenuFromPocketBase, listMenuItemsFromPocketBase, writeOrderToPocketBase, requestLinePayViaBackend, queuePhoneOrderCommandViaBackend, isReservedOrderId } from "./pocketbase-order-writer.20260809_005.js?v=20261025_lucky_wheel_1";
         import { isBackofficeUser } from "./staff-auth-activation.20260818_001.js?v=20260818_001";
 
         // ★★★ 請貼入您相同的 Firebase 配置 ★★★
@@ -3346,7 +3347,10 @@
                     const pickDisplayTotal = (orderHint, currentTotal, incomingTotal, mergedItems) => {
                         const cur = Number(currentTotal);
                         const inc = Number(incomingTotal);
-                        const sum = sumItems(mergedItems);
+                        // lucky-wheel-20261025：品項是原價、總金額是折後；扣掉折扣再比較，否則 max() 會蓋回原價
+                        const lwDiscount = Number(orderHint && orderHint.luckyWheel && orderHint.luckyWheel.discount) || 0;
+                        let sum = sumItems(mergedItems);
+                        if (lwDiscount > 0 && Number.isFinite(sum) && sum > lwDiscount) sum -= lwDiscount;
                         const isPos = (v) => Number.isFinite(v) && v > 0;
                         const sourcePath = String((orderHint && ((orderHint.integration && orderHint.integration.sourceRecordPath) || orderHint.sourceRecordPath)) || '').toLowerCase();
                         const src = String((orderHint && orderHint.source) || '').toLowerCase();
@@ -4552,6 +4556,16 @@
                             paymentMethod: realPm,
                             paymentStatus: newPayStatus
                         };
+                        // lucky-wheel-20261025：保留原本抽到的折扣（同一個%，依品項小計重算，受單筆上限）
+                        const lwOrig = this.editModal.luckyWheel;
+                        if (lwOrig && Number(lwOrig.pct) > 0 && Array.isArray(this.editModal.items)) {
+                            const lwSub = Number(upd.total) || 0;
+                            const lwCap = Number(lwOrig.cap) || 0;
+                            const lwRaw = Math.round(lwSub * Number(lwOrig.pct) / 100);
+                            const lwDiscount = Math.max(0, Math.min(lwSub, lwCap > 0 ? Math.min(lwCap, lwRaw) : lwRaw));
+                            upd.total = lwSub - lwDiscount;
+                            upd.luckyWheel = { label: String(lwOrig.label || ''), pct: Number(lwOrig.pct) || 0, discount: lwDiscount, subtotal: lwSub, cap: lwCap };
+                        }
                         // ★ pos-pickup-date-move-20261018（admin）：改了取餐日期 → 訂單日期（PB date_key）一起換到新日期
                         const pickupDateMove = (typeof this.buildPickupDateMove === 'function') ? this.buildPickupDateMove(id, orderForMirror, upd.pickupDate) : null;
                         if (pickupDateMove) {

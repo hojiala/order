@@ -1144,7 +1144,7 @@
             <div class="flex items-center justify-between gap-3 mb-6">
                 <div>
                     <h2 class="text-xl font-bold text-white">會員名單</h2>
-                    <p class="text-slate-400 text-sm mt-0.5">{{ memberListTab === 'online' ? '網頁點餐的聯絡資訊，同一支電話合併為同一位' : '會員、有效訂單數、消費金額與最後消費日' }}</p>
+                    <p class="text-slate-400 text-sm mt-0.5">{{ memberListTab === 'online' ? '網頁點餐的聯絡資訊，同一支電話合併為同一位' : '會員、有效訂單數、消費金額與最後消費日' }}。備註只給店內看，會印在工單上，收據與顧客畫面都不會出現。</p>
                 </div>
                 <button @click="refreshMemberList" :disabled="memberListBusy" class="bg-slate-700 hover:bg-slate-600 text-white text-sm font-bold px-3 py-2 rounded-lg">{{ memberListBusy ? '讀取中…' : '重新整理' }}</button>
             </div>
@@ -1164,12 +1164,13 @@
                 </div>
                 <p v-if="onlineCustomersMeta.truncated" class="rounded-lg border border-amber-700 bg-amber-900/50 px-3 py-2 text-sm text-amber-300 mb-3">只統計最近 {{ onlineCustomersMeta.scannedOrders }} 筆網頁訂單，更早的訂單沒有算進來。</p>
                 <p v-if="onlineCustomersError" class="rounded-lg border border-red-800 bg-red-900/30 px-3 py-2 text-sm text-red-300 mb-3">{{ onlineCustomersError }}</p>
+                <p v-if="memberNoteError" class="rounded-lg border border-red-800 bg-red-900/30 px-3 py-2 text-sm text-red-300 mb-3">{{ memberNoteError }}</p>
                 <div v-if="onlineCustomersLoading && !onlineCustomers.length" class="rounded-xl border border-slate-700 bg-slate-800 p-8 text-center text-slate-400">讀取中…</div>
                 <div v-else-if="!filteredOnlineCustomers.length" class="rounded-xl border border-slate-700 bg-slate-800 p-8 text-center text-slate-400">{{ onlineCustomerSearch ? '找不到符合的會員' : '尚無線上會員' }}</div>
                 <div v-else class="overflow-x-auto rounded-xl border border-slate-700 bg-slate-800">
                     <table class="w-full min-w-[680px] text-sm">
                         <thead class="bg-slate-700/60 text-slate-300 whitespace-nowrap">
-                            <tr><th class="px-3 py-2 text-left">會員</th><th class="px-3 py-2 text-left">電話</th><th class="px-3 py-2 text-right">全部訂單</th><th class="px-3 py-2 text-right">消費</th><th class="px-3 py-2 text-left">最後消費</th></tr>
+                            <tr><th class="px-3 py-2 text-left">會員</th><th class="px-3 py-2 text-left">電話</th><th class="px-3 py-2 text-right">全部訂單</th><th class="px-3 py-2 text-right">消費</th><th class="px-3 py-2 text-left">最後消費</th><th class="px-3 py-2 text-left" style="min-width:14rem;">備註（印在工單）</th></tr>
                         </thead>
                         <tbody class="divide-y divide-slate-700">
                             <tr v-for="customer in filteredOnlineCustomers" :key="customer.id" class="text-slate-200">
@@ -1186,6 +1187,16 @@
                                 </td>
                                 <td class="px-3 py-2 text-right">${{ customer.total_spent || 0 }}</td>
                                 <td class="px-3 py-2 whitespace-nowrap">{{ customer.last_order_at ? formatMemberDate(customer.last_order_at) : '—' }}</td>
+                                <td class="px-3 py-2 align-top">
+                                    <template v-if="memberNoteEditing === 'online:' + customer.id">
+                                        <textarea v-model="memberNoteDraft" rows="2" maxlength="200" placeholder="喜好、特別注意事項、未取餐次數…" class="w-full rounded-lg border border-slate-600 bg-slate-900 px-2 py-1.5 text-sm text-white placeholder-slate-500"></textarea>
+                                        <div class="mt-1 flex items-center gap-2"><button @click="saveMemberNoteFor('online', customer)" :disabled="memberNoteSaving" class="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold px-3 py-1.5 rounded-lg">{{ memberNoteSaving ? '儲存中…' : '儲存' }}</button><button @click="cancelMemberNote" :disabled="memberNoteSaving" class="text-slate-400 hover:text-white text-xs px-2 py-1.5">取消</button><span class="text-xs text-slate-500">{{ memberNoteDraft.length }}/200</span></div>
+                                    </template>
+                                    <button v-else @click="editMemberNote('online', customer)" class="w-full text-left rounded-lg px-2 py-1 hover:bg-slate-700/60">
+                                        <span v-if="customer.note" class="text-amber-300 font-bold whitespace-pre-wrap">{{ customer.note }}</span>
+                                        <span v-else class="text-slate-500 text-xs">＋ 新增備註</span>
+                                    </button>
+                                </td>
                             </tr>
                         </tbody>
                     </table>
@@ -1206,11 +1217,12 @@
                 <p v-if="linePushSettingSaving" class="mt-2 text-xs text-slate-400">儲存中…</p>
             </div>
             <p v-if="lineMembersError" class="rounded-lg border border-red-800 bg-red-900/30 px-3 py-2 text-sm text-red-300 mb-3">{{ lineMembersError }}</p>
+            <p v-if="memberNoteError" class="rounded-lg border border-red-800 bg-red-900/30 px-3 py-2 text-sm text-red-300 mb-3">{{ memberNoteError }}</p>
             <div v-if="!lineMembersLoading && !lineMembers.length" class="rounded-xl border border-slate-700 bg-slate-800 p-8 text-center text-slate-400">尚無 LINE 會員</div>
             <div v-else class="overflow-x-auto rounded-xl border border-slate-700 bg-slate-800">
                 <table class="w-full min-w-[680px] text-sm">
                     <thead class="bg-slate-700/60 text-slate-300">
-                        <tr><th class="px-3 py-2 text-left">會員</th><th class="px-3 py-2 text-left">電話</th><th class="px-3 py-2 text-right">全部訂單</th><th class="px-3 py-2 text-right">消費</th><th class="px-3 py-2 text-left">最後消費</th><th class="px-3 py-2 text-left">推播</th></tr>
+                        <tr><th class="px-3 py-2 text-left">會員</th><th class="px-3 py-2 text-left">電話</th><th class="px-3 py-2 text-right">全部訂單</th><th class="px-3 py-2 text-right">消費</th><th class="px-3 py-2 text-left">最後消費</th><th class="px-3 py-2 text-left">推播</th><th class="px-3 py-2 text-left" style="min-width:14rem;">備註（印在工單）</th></tr>
                     </thead>
                     <tbody class="divide-y divide-slate-700">
                         <tr v-for="member in lineMembers" :key="member.id" class="text-slate-200">
@@ -1225,10 +1237,159 @@
                             <td class="px-3 py-2 text-right">${{ member.total_spent || 0 }}</td>
                             <td class="px-3 py-2">{{ member.last_order_at ? formatMemberDate(member.last_order_at) : '—' }}</td>
                             <td class="px-3 py-2"><span :class="settings.lineOrderPushEnabled && member.push_enabled ? 'text-green-400' : 'text-slate-500'">{{ !settings.lineOrderPushEnabled ? '總開關關閉' : (member.push_enabled ? '開啟' : '關閉') }}</span></td>
+                            <td class="px-3 py-2 align-top">
+                                <template v-if="memberNoteEditing === 'line:' + member.id">
+                                    <textarea v-model="memberNoteDraft" rows="2" maxlength="200" placeholder="喜好、特別注意事項、未取餐次數…" class="w-full rounded-lg border border-slate-600 bg-slate-900 px-2 py-1.5 text-sm text-white placeholder-slate-500"></textarea>
+                                    <div class="mt-1 flex items-center gap-2"><button @click="saveMemberNoteFor('line', member)" :disabled="memberNoteSaving" class="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold px-3 py-1.5 rounded-lg">{{ memberNoteSaving ? '儲存中…' : '儲存' }}</button><button @click="cancelMemberNote" :disabled="memberNoteSaving" class="text-slate-400 hover:text-white text-xs px-2 py-1.5">取消</button><span class="text-xs text-slate-500">{{ memberNoteDraft.length }}/200</span></div>
+                                </template>
+                                <button v-else @click="editMemberNote('line', member)" class="w-full text-left rounded-lg px-2 py-1 hover:bg-slate-700/60">
+                                    <span v-if="member.note" class="text-amber-300 font-bold whitespace-pre-wrap">{{ member.note }}</span>
+                                    <span v-else class="text-slate-500 text-xs">＋ 新增備註</span>
+                                </button>
+                            </td>
                         </tr>
                     </tbody>
                 </table>
             </div>
+            </div>
+        </div>
+
+        <!-- ===== TAB: 幸運轉盤（lucky-wheel-20261025） ===== -->
+        <div v-if="activeTab === 'luckyWheel'" class="manage-tab-panel p-6 max-w-3xl">
+            <div class="flex items-center justify-between gap-3 mb-4 flex-wrap">
+                <div>
+                    <h2 class="text-xl font-bold text-white">🎡 幸運轉盤</h2>
+                    <p class="text-slate-400 text-sm mt-0.5">顧客送出訂單時轉盤抽折扣；結果由伺服器在建單時決定，前台只負責顯示。</p>
+                </div>
+                <span :class="lwStatus.pill" class="text-xs font-bold px-3 py-1 rounded-full border">{{ lwStatus.pillText }}</span>
+            </div>
+            <p v-if="lwError" class="rounded-lg border border-red-800 bg-red-900/30 px-3 py-2 text-sm text-red-300 mb-3">{{ lwError }}</p>
+            <p v-if="lwNotice" class="rounded-lg border border-emerald-800 bg-emerald-900/30 px-3 py-2 text-sm text-emerald-300 mb-3">{{ lwNotice }}</p>
+            <div v-if="lwForm" class="flex flex-col gap-4">
+                <div :class="lwStatus.box" class="rounded-xl border px-4 py-3 text-sm">{{ lwStatus.text }}</div>
+
+                <!-- 總開關：切換後立即儲存 -->
+                <div class="rounded-xl border border-slate-700 bg-slate-800 p-5 flex items-center justify-between gap-4">
+                    <div>
+                        <p class="font-bold text-white">總開關</p>
+                        <p class="mt-1 text-sm text-slate-400">關閉後立即停止，排程日期也不會啟動。切換後馬上生效。</p>
+                    </div>
+                    <label class="toggle-switch">
+                        <input type="checkbox" :checked="lwForm.enabled" :disabled="lwSaving" @change="lwToggleEnabled($event.target.checked)">
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+
+                <div class="rounded-xl border border-slate-700 bg-slate-800 p-5 flex flex-col gap-4">
+                    <div>
+                        <p class="font-bold text-white mb-2">開放日期</p>
+                        <div class="grid grid-cols-2 gap-2 bg-slate-900/60 border border-slate-700 rounded-xl p-1">
+                            <button type="button" @click="lwForm.mode='always'; lwDirty=true" :class="lwForm.mode==='always' ? 'bg-emerald-600 text-white shadow' : 'text-slate-300 hover:bg-slate-700'" class="rounded-lg px-3 py-2 text-sm font-bold transition">每天開放</button>
+                            <button type="button" @click="lwForm.mode='schedule'; lwDirty=true" :class="lwForm.mode==='schedule' ? 'bg-emerald-600 text-white shadow' : 'text-slate-300 hover:bg-slate-700'" class="rounded-lg px-3 py-2 text-sm font-bold transition">只在排程日期</button>
+                        </div>
+                    </div>
+                    <div :class="lwForm.mode==='schedule' ? '' : 'opacity-50'">
+                        <div v-if="!lwSortedSchedule.length" class="rounded-lg border border-slate-700 bg-slate-900/40 px-3 py-4 text-center text-sm text-slate-400">還沒有排程。用下面的表單加入單一日期或日期範圍。</div>
+                        <div v-else class="divide-y divide-slate-700 rounded-lg border border-slate-700">
+                            <div v-for="entry in lwSortedSchedule" :key="lwEntryKey(entry)" class="flex items-center gap-3 px-3 py-2.5 text-sm">
+                                <span class="text-xs font-bold px-2 py-0.5 rounded-full border border-slate-600 text-slate-300 whitespace-nowrap">{{ entry.type === 'range' ? '日期範圍' : '單一日期' }}</span>
+                                <div class="flex-1 min-w-0">
+                                    <div class="font-bold text-white">{{ entry.name || '（未命名）' }}</div>
+                                    <div class="text-slate-400 text-xs">{{ lwEntryText(entry) }}</div>
+                                </div>
+                                <span :class="lwEntryState(entry).cls" class="text-xs font-bold px-2 py-0.5 rounded-full whitespace-nowrap">{{ lwEntryState(entry).text }}</span>
+                                <button type="button" @click="lwRemoveEntry(entry)" class="text-slate-400 hover:text-red-300 text-lg px-2" :title="'刪除 ' + (entry.name || lwEntryText(entry))">×</button>
+                            </div>
+                        </div>
+                        <div class="mt-3 flex flex-wrap items-end gap-2">
+                            <div class="grid grid-cols-2 gap-1 bg-slate-900/60 border border-slate-700 rounded-lg p-1">
+                                <button type="button" @click="lwAdd.type='date'" :class="lwAdd.type==='date' ? 'bg-slate-600 text-white' : 'text-slate-300'" class="rounded px-3 py-1.5 text-xs font-bold">單一日期</button>
+                                <button type="button" @click="lwAdd.type='range'" :class="lwAdd.type==='range' ? 'bg-slate-600 text-white' : 'text-slate-300'" class="rounded px-3 py-1.5 text-xs font-bold">日期範圍</button>
+                            </div>
+                            <label class="flex flex-col text-xs text-slate-400">{{ lwAdd.type==='range' ? '開始日期' : '日期' }}
+                                <input v-model="lwAdd.start" type="date" class="mt-1 rounded-lg border border-slate-600 bg-slate-900 px-2 py-1.5 text-sm text-white"></label>
+                            <label v-if="lwAdd.type==='range'" class="flex flex-col text-xs text-slate-400">結束日期
+                                <input v-model="lwAdd.end" type="date" class="mt-1 rounded-lg border border-slate-600 bg-slate-900 px-2 py-1.5 text-sm text-white"></label>
+                            <label class="flex flex-col text-xs text-slate-400">名稱（選填）
+                                <input v-model.trim="lwAdd.name" maxlength="20" placeholder="例：聖誕節" class="mt-1 w-32 rounded-lg border border-slate-600 bg-slate-900 px-2 py-1.5 text-sm text-white placeholder-slate-500"></label>
+                            <button type="button" @click="lwAddEntry" class="bg-blue-700 hover:bg-blue-600 text-white text-sm font-bold px-3 py-2 rounded-lg">加入排程</button>
+                            <button type="button" @click="lwAddToday" class="bg-slate-700 hover:bg-slate-600 text-white text-sm font-bold px-3 py-2 rounded-lg">今天臨時開放</button>
+                        </div>
+                        <p v-if="lwAddError" class="mt-2 text-sm font-bold text-amber-300">{{ lwAddError }}</p>
+                        <p class="mt-2 text-xs text-slate-400">以顧客送出訂單的日期（台灣時間）判斷，不是取餐日期。排程過了自動失效，不用回來關。</p>
+                    </div>
+                </div>
+
+                <div class="rounded-xl border border-slate-700 bg-slate-800 p-5 grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                        <p class="font-bold text-white mb-2">適用點餐管道</p>
+                        <label class="flex items-center gap-2 text-sm text-slate-200 mb-1.5"><input type="checkbox" v-model="lwForm.channels.online" @change="lwDirty=true">🌐 線上點餐（index）</label>
+                        <label class="flex items-center gap-2 text-sm text-slate-200 mb-1.5"><input type="checkbox" v-model="lwForm.channels.liff" @change="lwDirty=true">💬 LINE 點餐（LIFF）</label>
+                        <label class="flex items-start gap-2 text-sm text-slate-400" title="桌邊點餐頁面還沒有轉盤動畫"><input type="checkbox" v-model="lwForm.channels.dinein" :disabled="!lwForm.channels.dinein" @change="lwDirty=true" class="mt-1"><span>🍽️ 桌邊點餐（含掃碼內用、掃碼外帶）<span class="block text-xs text-slate-500">先保留、暫時鎖住：桌邊點餐頁面還沒有轉盤動畫，打開的話客人看不到轉盤卻被打折。之後加上桌邊轉盤時再開放（桌邊沒有手機號碼，屆時每張訂單各轉一次）。</span></span></label>
+                    </div>
+                    <div>
+                        <p class="font-bold text-white mb-2">適用付款方式</p>
+                        <label class="flex items-center gap-2 text-sm text-slate-200 mb-1.5"><input type="checkbox" v-model="lwForm.payMethods.store" @change="lwDirty=true">💰 店內付款</label>
+                        <label class="flex items-center gap-2 text-sm text-slate-200"><input type="checkbox" v-model="lwForm.payMethods.linepay" @change="lwDirty=true">💚 LINE Pay</label>
+                        <div class="grid grid-cols-2 gap-2 mt-3">
+                            <label class="flex flex-col text-xs text-slate-400">最低消費（元）
+                                <input v-model.number="lwForm.minOrder" @input="lwDirty=true" type="number" min="0" step="5" class="mt-1 rounded-lg border border-slate-600 bg-slate-900 px-2 py-1.5 text-sm text-white"></label>
+                            <label class="flex flex-col text-xs text-slate-400">單筆最多折（元，0＝不限）
+                                <input v-model.number="lwForm.maxDiscount" @input="lwDirty=true" type="number" min="0" step="5" class="mt-1 rounded-lg border border-slate-600 bg-slate-900 px-2 py-1.5 text-sm text-white"></label>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="rounded-xl border border-slate-700 bg-slate-800 p-5">
+                    <p class="font-bold text-white mb-2">獎項與機率</p>
+                    <table class="w-full text-sm">
+                        <thead class="text-slate-400 text-xs"><tr><th class="text-left py-1">獎項</th><th class="text-left py-1">折扣 %</th><th class="text-left py-1">權重</th><th class="text-right py-1">機率</th><th></th></tr></thead>
+                        <tbody class="divide-y divide-slate-700">
+                            <tr v-for="(tier, i) in lwForm.tiers" :key="'tier-' + i">
+                                <td class="py-1.5 font-black text-white whitespace-nowrap">{{ lwTierLabel(tier.pct) }}</td>
+                                <td class="py-1.5"><input v-model.number="tier.pct" @input="lwDirty=true" type="number" min="0" max="50" step="1" class="w-20 rounded-lg border border-slate-600 bg-slate-900 px-2 py-1 text-sm text-white"></td>
+                                <td class="py-1.5"><input v-model.number="tier.weight" @input="lwDirty=true" type="number" min="0" max="1000" step="1" class="w-20 rounded-lg border border-slate-600 bg-slate-900 px-2 py-1 text-sm text-white"></td>
+                                <td class="py-1.5 text-right text-slate-200 tabular-nums">{{ lwTierProb(tier) }}</td>
+                                <td class="py-1.5 text-right"><button v-if="lwForm.tiers.length > 2" type="button" @click="lwForm.tiers.splice(i, 1); lwDirty=true" class="text-slate-400 hover:text-red-300 text-lg px-2" title="移除">×</button></td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <div class="flex flex-wrap items-center gap-3 mt-3">
+                        <button type="button" @click="lwAddTier" :disabled="lwForm.tiers.length >= 6" class="bg-slate-700 hover:bg-slate-600 disabled:opacity-40 text-white text-sm font-bold px-3 py-2 rounded-lg">新增獎項</button>
+                        <span v-if="!lwTotalWeight" class="text-sm font-bold text-amber-300">至少要有一個獎項的權重大於 0，否則轉盤不會出現。</span>
+                    </div>
+                    <div class="mt-4 rounded-lg bg-slate-900/60 border border-slate-700 px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                            <div class="text-xs text-slate-400">平均折扣</div>
+                            <div class="text-lg font-black text-white">約 {{ lwZhe(lwAvgPct) }} <span class="text-sm font-normal text-slate-400">（平均省 {{ lwAvgPct.toFixed(1) }}%）</span></div>
+                        </div>
+                        <div class="flex items-center gap-2 text-sm text-slate-300">
+                            目標 ≤ <input v-model.number="lwForm.targetPct" @input="lwDirty=true" type="number" min="0" max="50" step="0.5" class="w-16 rounded-lg border border-slate-600 bg-slate-900 px-2 py-1 text-sm text-white">%
+                            <span :class="lwAvgPct <= (Number(lwForm.targetPct) || 0) + 1e-9 ? 'bg-emerald-900/60 text-emerald-300' : 'bg-amber-900/60 text-amber-300'" class="text-xs font-bold px-2 py-1 rounded-full">{{ lwAvgPct <= (Number(lwForm.targetPct) || 0) + 1e-9 ? '符合目標' : '超過目標 ' + (lwAvgPct - (Number(lwForm.targetPct) || 0)).toFixed(1) + '%' }}</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="rounded-xl border border-slate-700 bg-slate-800 p-5">
+                    <p class="font-bold text-white mb-2">折扣成本估算 <span class="text-xs font-normal text-slate-400">週日公休不計</span></p>
+                    <div class="grid grid-cols-2 gap-2">
+                        <label class="flex flex-col text-xs text-slate-400">每天達門檻的單數
+                            <input v-model.number="lwEst.orders" type="number" min="0" step="1" class="mt-1 rounded-lg border border-slate-600 bg-slate-900 px-2 py-1.5 text-sm text-white"></label>
+                        <label class="flex flex-col text-xs text-slate-400">達門檻訂單平均金額（元）
+                            <input v-model.number="lwEst.ticket" type="number" min="0" step="5" class="mt-1 rounded-lg border border-slate-600 bg-slate-900 px-2 py-1.5 text-sm text-white"></label>
+                    </div>
+                    <div class="grid grid-cols-3 gap-2 mt-3">
+                        <div class="rounded-lg bg-slate-900/60 px-3 py-2"><div class="text-xs text-slate-400">每單平均折</div><div class="text-lg font-black text-white">${{ Math.round(lwCost.perOrder) }}</div></div>
+                        <div class="rounded-lg bg-slate-900/60 px-3 py-2"><div class="text-xs text-slate-400">開放日每天</div><div class="text-lg font-black text-white">${{ Math.round(lwCost.daily) }}</div></div>
+                        <div class="rounded-lg bg-slate-900/60 px-3 py-2"><div class="text-xs text-slate-400">{{ lwCost.periodLabel }}</div><div class="text-lg font-black text-white">${{ Math.round(lwCost.period) }}</div></div>
+                    </div>
+                </div>
+
+                <div class="sticky bottom-0 flex items-center justify-end gap-3 py-3" style="background:linear-gradient(transparent,#0f172a 30%);">
+                    <span v-if="lwDirty" class="text-sm text-amber-300">有尚未儲存的變更</span>
+                    <button type="button" @click="lwInitForm(true)" :disabled="lwSaving || !lwDirty" class="bg-slate-700 hover:bg-slate-600 disabled:opacity-40 text-white text-sm font-bold px-4 py-2 rounded-lg">還原</button>
+                    <button type="button" @click="lwSave()" :disabled="lwSaving" class="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-sm font-black px-5 py-2 rounded-lg">{{ lwSaving ? '儲存中…' : '儲存轉盤設定' }}</button>
+                </div>
             </div>
         </div>
 
@@ -2610,7 +2771,7 @@ window._resetCountUp = function() {
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getDatabase, ref, query, orderByKey, limitToLast, set, get, push, update, remove, onValue, onChildAdded, onChildChanged } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-    import { listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, readManageSettingsFromPocketBase, readManageMenuFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, writeMenuItemToPocketBase, deleteMenuItemFromPocketBase, updateMenuSortInPocketBase, writeSettingsToPocketBase, requestLineMembers, requestStaffOrderPresets, requestMenuAvailabilitySchedule, pocketBaseRecordToOrder, isReservedOrderId } from "./pocketbase-order-writer.20260809_005.js?v=20261011_menu_schedule_1";
+    import { listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, readManageSettingsFromPocketBase, readManageMenuFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, writeMenuItemToPocketBase, deleteMenuItemFromPocketBase, updateMenuSortInPocketBase, writeSettingsToPocketBase, requestLineMembers, saveMemberNote, requestStaffOrderPresets, requestMenuAvailabilitySchedule, pocketBaseRecordToOrder, isReservedOrderId } from "./pocketbase-order-writer.20260809_005.js?v=20261025_lucky_wheel_1";
     import { isManageUser } from "./staff-auth-activation.20260818_001.js?v=20260818_001";
 
     const firebaseConfig = {
@@ -2712,12 +2873,19 @@ window._resetCountUp = function() {
                     { id: 'stats',     label: '營業統計', icon: '📊' },
                     { id: 'presets',   label: '常客快速單', icon: '⭐' },
                     { id: 'members',   label: '會員名單', icon: '👥' },
+                    { id: 'luckyWheel', label: '幸運轉盤', icon: '🎡' }, // lucky-wheel-20261025
                     { id: 'settings',  label: '店面設定', icon: '⚙️' }
                 ],
                 lineMembers: [], lineMembersLoading: false, lineMembersError: '', linePushSettingSaving: false, lineMemberOrdersLoadingId: '', lineMemberOrdersMode: false, lineMemberOrdersMember: null,
                 // member-list-20261011: 會員名單（線上會員＝index 網頁點餐依電話合併；LINE 會員＝LIFF）
                 memberListTab: 'online', memberOrdersKind: 'line',
                 memberTabLabels: { online: '線上會員', line: 'LINE 會員' },
+                // member-notes-20261025：會員備註（只存在 PocketBase 本機，列印工單時由 Pi 查詢）
+                memberNoteEditing: '', memberNoteDraft: '', memberNoteSaving: false, memberNoteError: '',
+                // lucky-wheel-20261025：幸運轉盤設定（存在 settings.luckyWheel；伺服器建單時依這份抽獎）
+                lwForm: null, lwDirty: false, lwSaving: false, lwError: '', lwNotice: '',
+                lwAdd: { type: 'date', start: '', end: '', name: '' }, lwAddError: '',
+                lwEst: { orders: 15, ticket: 280 },
                 onlineCustomers: [], onlineCustomersLoading: false, onlineCustomersLoaded: false, onlineCustomersError: '',
                 onlineCustomersMeta: { scannedOrders: 0, truncated: false }, onlineCustomerSearch: '', onlineCustomerOrdersLoadingId: '',
                 staffPresets: [], staffPresetsLoading: false, staffPresetsSaving: false, staffPresetsError: '', showStaffPresetModal: false,
@@ -2870,6 +3038,53 @@ window._resetCountUp = function() {
             memberListBusy: function() {
                 return this.memberListTab === 'online' ? this.onlineCustomersLoading : this.lineMembersLoading;
             },
+            // ── lucky-wheel-20261025 ──
+            lwSortedSchedule: function() {
+                var list = this.lwForm && Array.isArray(this.lwForm.schedule) ? this.lwForm.schedule.slice() : [];
+                var self = this;
+                return list.sort(function(a, b) { return self.lwEntryStart(a) < self.lwEntryStart(b) ? -1 : 1; });
+            },
+            lwTotalWeight: function() {
+                return (this.lwForm && this.lwForm.tiers || []).reduce(function(sum, t) { return sum + Math.max(0, Number(t.weight) || 0); }, 0);
+            },
+            lwAvgPct: function() {
+                var W = this.lwTotalWeight;
+                if (!W) return 0;
+                return (this.lwForm.tiers || []).reduce(function(sum, t) { return sum + Math.max(0, Number(t.weight) || 0) / W * (Number(t.pct) || 0); }, 0);
+            },
+            lwStatus: function() {
+                var cfg = this.lwForm;
+                var today = this.lwToday();
+                var label = this.lwDayLabel(today);
+                if (!cfg) return { text: '', pill: '', pillText: '', box: '' };
+                var next = this.lwNextEntry(today);
+                var nextText = next ? '下一次：' + this.lwDayLabel(this.lwEntryStart(next)) + ' ' + (next.name || '') + '，還有 ' + this.lwDaysBetween(today, this.lwEntryStart(next)) + ' 天' : '之後沒有排程';
+                if (!cfg.enabled) return { text: '總開關關閉中：轉盤與所有排程都暫停。' + (cfg.mode === 'schedule' && next ? '打開後依排程，' + nextText + '。' : ''), pill: 'border-amber-700 text-amber-300', pillText: '已暫停', box: 'border-amber-800 bg-amber-900/30 text-amber-200' };
+                var active = cfg.mode === 'always' ? '每天開放' : '';
+                if (!active) {
+                    var hit = (cfg.schedule || []).filter(function(e) { return this.lwCovers(e, today); }, this)[0];
+                    if (hit) active = '排程「' + (hit.name || this.lwEntryText(hit)) + '」';
+                }
+                if (active) return { text: '今天 ' + label + ' 開放中 · ' + active + (this.lwDirty ? '（設定尚未儲存）' : ''), pill: 'border-emerald-700 text-emerald-300', pillText: '今天開放中', box: 'border-emerald-800 bg-emerald-900/30 text-emerald-200' };
+                return { text: '今天 ' + label + ' 未開放 · ' + nextText, pill: 'border-slate-600 text-slate-300', pillText: '今天未開放', box: 'border-slate-700 bg-slate-900/40 text-slate-300' };
+            },
+            lwCost: function() {
+                var cfg = this.lwForm;
+                var orders = Math.max(0, Number(this.lwEst.orders) || 0);
+                var avg = Math.max(0, Number(this.lwEst.ticket) || 0);
+                var W = this.lwTotalWeight, per = 0;
+                var cap = Math.max(0, Number(cfg && cfg.maxDiscount) || 0);
+                (cfg && cfg.tiers || []).forEach(function(t) {
+                    var w = Math.max(0, Number(t.weight) || 0);
+                    if (!W || !w) return;
+                    var d = Math.round(avg * (Number(t.pct) || 0) / 100);
+                    per += w / W * (cap > 0 ? Math.min(cap, d) : d);
+                });
+                var daily = per * orders;
+                var days = cfg && cfg.mode === 'always' ? 26 : this.lwScheduledBusinessDays();
+                return { perOrder: per, daily: daily, period: daily * days, periodLabel: cfg && cfg.mode === 'always' ? '每月（26 個營業日）' : '排程內 ' + days + ' 個營業日' };
+            },
+
             filteredOnlineCustomers: function() {
                 var list = Array.isArray(this.onlineCustomers) ? this.onlineCustomers : [];
                 var q = String(this.onlineCustomerSearch || '').trim().toLowerCase();
@@ -3231,6 +3446,10 @@ window._resetCountUp = function() {
                     this.lineMemberOrdersMode = false;
                     this.lineMemberOrdersMember = null;
                     this.loadStaffPresets();
+                } else if (newTab === 'luckyWheel') {
+                    this.lineMemberOrdersMode = false;
+                    this.lineMemberOrdersMember = null;
+                    if (!this.lwForm || !this.lwDirty) this.lwInitForm();
                 } else {
                     this.lineMemberOrdersMode = false;
                     this.lineMemberOrdersMember = null;
@@ -4050,6 +4269,200 @@ window._resetCountUp = function() {
                 if (drinkNote) add('飲料備註：' + drinkNote);
                 return parts.join('・');
             },
+            // ── member-notes-20261025：會員備註 ──
+            editMemberNote: function(kind, row) {
+                this.memberNoteError = '';
+                this.memberNoteEditing = kind + ':' + row.id;
+                this.memberNoteDraft = String(row.note || '');
+            },
+            cancelMemberNote: function() {
+                this.memberNoteEditing = '';
+                this.memberNoteDraft = '';
+            },
+            saveMemberNoteFor: function(kind, row) {
+                var self = this;
+                if (self.memberNoteSaving) return;
+                var draft = String(self.memberNoteDraft || '');
+                if (draft.length > 200) { self.memberNoteError = '備註最多 200 字。'; return; }
+                self.memberNoteSaving = true;
+                self.memberNoteError = '';
+                saveMemberNote(self.pocketBaseManageOptions({ kind: kind, key: kind === 'online' ? (row.phone || row.id) : row.id, note: draft, timeoutMs: 10000 })).then(function(result) {
+                    if (!result || result.ok !== true) throw new Error((result && result.message) || '儲存失敗');
+                    // 舊版 PocketBase 不認得 saveNote，會照舊回會員清單（ok:true 但沒有 note）→ 不能當成存好了
+                    if (!result.note || typeof result.note !== 'object') throw new Error('not_found');
+                    var saved = result.note || {};
+                    row.note = String(saved.note || '');
+                    row.note_updated_at = String(saved.updated_at || '');
+                    self.memberNoteEditing = '';
+                    self.memberNoteDraft = '';
+                }).catch(function(err) {
+                    var msg = String((err && err.message) || err || '未知錯誤');
+                    if (/note_too_long/.test(msg)) msg = '備註最多 200 字。';
+                    else if (/not_found|404/.test(msg)) msg = 'PocketBase 尚未更新（請先套用 Pi 更新包）。';
+                    self.memberNoteError = '備註儲存失敗：' + msg;
+                }).finally(function() {
+                    self.memberNoteSaving = false;
+                });
+            },
+            // ── lucky-wheel-20261025：幸運轉盤設定 ──
+            lwDefaultConfig: function() {
+                return {
+                    enabled: false, mode: 'schedule', schedule: [],
+                    channels: { online: true, liff: true, dinein: false },
+                    payMethods: { store: true, linepay: true },
+                    minOrder: 240, maxDiscount: 50, targetPct: 5,
+                    tiers: [ { pct: 2, weight: 50 }, { pct: 5, weight: 30 }, { pct: 10, weight: 15 }, { pct: 20, weight: 5 } ]
+                };
+            },
+            lwInitForm: function(force) {
+                var raw = this.settings && this.settings.luckyWheel;
+                if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { raw = null; } }
+                var base = this.lwDefaultConfig();
+                var cfg = raw && typeof raw === 'object' ? JSON.parse(JSON.stringify(raw)) : base;
+                cfg.channels = Object.assign({}, base.channels, cfg.channels || {});
+                cfg.payMethods = Object.assign({}, base.payMethods, cfg.payMethods || {});
+                cfg.schedule = Array.isArray(cfg.schedule) ? cfg.schedule : [];
+                cfg.tiers = Array.isArray(cfg.tiers) && cfg.tiers.length ? cfg.tiers.map(function(t) { return { pct: Number(t.pct) || 0, weight: Number(t.weight !== undefined ? t.weight : t.w) || 0 }; }) : base.tiers;
+                if (!(cfg.targetPct >= 0)) cfg.targetPct = 5;
+                cfg.mode = cfg.mode === 'always' ? 'always' : 'schedule';
+                this.lwForm = cfg;
+                this.lwDirty = false;
+                this.lwAddError = '';
+                if (force) { this.lwNotice = ''; this.lwError = ''; }
+            },
+            lwToday: function() {
+                var d = new Date();
+                return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2);
+            },
+            lwDayLabel: function(key) {
+                var p = String(key || '').split('-');
+                if (p.length !== 3) return key;
+                var d = new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2]));
+                return (d.getMonth() + 1) + '/' + d.getDate() + '（' + '日一二三四五六'.charAt(d.getDay()) + '）';
+            },
+            lwDaysBetween: function(a, b) {
+                var pa = String(a).split('-'), pb = String(b).split('-');
+                return Math.round((new Date(+pb[0], +pb[1] - 1, +pb[2]) - new Date(+pa[0], +pa[1] - 1, +pa[2])) / 86400000);
+            },
+            lwEntryStart: function(e) { return e && e.type === 'range' ? String(e.start || '') : String(e && e.date || ''); },
+            lwEntryEnd: function(e) { return e && e.type === 'range' ? String(e.end || '') : String(e && e.date || ''); },
+            lwCovers: function(e, day) { return day >= this.lwEntryStart(e) && day <= this.lwEntryEnd(e); },
+            lwEntryKey: function(e) { return (e.type || '') + ':' + this.lwEntryStart(e) + ':' + this.lwEntryEnd(e) + ':' + (e.name || ''); },
+            lwEntryText: function(e) {
+                if (!e) return '';
+                if (e.type === 'range') return this.lwDayLabel(e.start) + ' ～ ' + this.lwDayLabel(e.end) + ' · ' + (this.lwDaysBetween(e.start, e.end) + 1) + ' 天';
+                return String(e.date || '').slice(0, 4) + ' ' + this.lwDayLabel(e.date);
+            },
+            lwEntryState: function(e) {
+                var today = this.lwToday();
+                if (this.lwEntryEnd(e) < today) return { text: '已結束', cls: 'bg-slate-700 text-slate-400' };
+                if (this.lwCovers(e, today)) return { text: '今天', cls: 'bg-emerald-900/60 text-emerald-300' };
+                return { text: this.lwDaysBetween(today, this.lwEntryStart(e)) + ' 天後', cls: 'bg-blue-900/60 text-blue-300' };
+            },
+            lwNextEntry: function(today) {
+                var self = this;
+                return (this.lwForm && this.lwForm.schedule || []).filter(function(e) { return self.lwEntryStart(e) > today; })
+                    .sort(function(a, b) { return self.lwEntryStart(a) < self.lwEntryStart(b) ? -1 : 1; })[0] || null;
+            },
+            lwScheduledBusinessDays: function() {
+                var self = this, today = this.lwToday(), seen = {}, n = 0;
+                (this.lwForm && this.lwForm.schedule || []).forEach(function(e) {
+                    var start = self.lwEntryStart(e) < today ? today : self.lwEntryStart(e);
+                    var end = self.lwEntryEnd(e);
+                    var p = start.split('-'), d = new Date(+p[0], +p[1] - 1, +p[2]);
+                    for (var guard = 0; guard < 400; guard++) {
+                        var key = d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2);
+                        if (key > end) break;
+                        if (!seen[key]) { seen[key] = 1; if (d.getDay() !== 0) n++; }
+                        d.setDate(d.getDate() + 1);
+                    }
+                });
+                return n;
+            },
+            lwTierLabel: function(pct) {
+                pct = Number(pct) || 0;
+                if (pct <= 0) return '原價';
+                var left = 100 - pct;
+                return (left % 10 === 0 ? String(left / 10) : String(left)) + '折';
+            },
+            lwTierProb: function(tier) {
+                var W = this.lwTotalWeight;
+                return W ? (Math.max(0, Number(tier.weight) || 0) / W * 100).toFixed(1) + '%' : '0%';
+            },
+            lwZhe: function(avgPct) {
+                var v = Math.round((100 - (Number(avgPct) || 0)) * 10) / 10;
+                return (v % 10 === 0 ? String(v / 10) : String(v)) + ' 折';
+            },
+            lwAddTier: function() {
+                if (!this.lwForm || this.lwForm.tiers.length >= 6) return;
+                var used = this.lwForm.tiers.map(function(t) { return Number(t.pct); });
+                var pct = [3, 8, 12, 15, 25].filter(function(p) { return used.indexOf(p) < 0; })[0] || 0;
+                this.lwForm.tiers.push({ pct: pct, weight: 5 });
+                this.lwDirty = true;
+            },
+            lwAddEntry: function() {
+                var a = this.lwAdd, today = this.lwToday();
+                this.lwAddError = '';
+                if (!a.start) { this.lwAddError = a.type === 'range' ? '請選開始日期。' : '請選日期。'; return; }
+                if (a.type === 'range') {
+                    if (!a.end) { this.lwAddError = '請選結束日期。'; return; }
+                    if (a.end < a.start) { this.lwAddError = '結束日期不能早於開始日期。'; return; }
+                    if (this.lwDaysBetween(a.start, a.end) > 62) { this.lwAddError = '日期範圍最長 62 天；更長的期間請改用「每天開放」。'; return; }
+                }
+                if ((a.type === 'range' ? a.end : a.start) < today) { this.lwAddError = '這個日期已經過去了。'; return; }
+                if (this.lwForm.schedule.length >= 60) { this.lwAddError = '排程最多 60 筆，請先刪除已結束的。'; return; }
+                this.lwForm.schedule.push(a.type === 'range' ? { type: 'range', start: a.start, end: a.end, name: a.name } : { type: 'date', date: a.start, name: a.name });
+                this.lwAdd = { type: a.type, start: '', end: '', name: '' };
+                this.lwDirty = true;
+            },
+            lwAddToday: function() {
+                var today = this.lwToday(), self = this;
+                this.lwAddError = '';
+                if (this.lwForm.schedule.some(function(e) { return self.lwCovers(e, today); })) { this.lwAddError = '今天已經在排程內。'; return; }
+                this.lwForm.schedule.push({ type: 'date', date: today, name: '臨時開放' });
+                if (this.lwForm.mode !== 'schedule') this.lwForm.mode = 'schedule';
+                this.lwDirty = true;
+            },
+            lwRemoveEntry: function(entry) {
+                var idx = this.lwForm.schedule.indexOf(entry);
+                if (idx >= 0) { this.lwForm.schedule.splice(idx, 1); this.lwDirty = true; }
+            },
+            lwToggleEnabled: function(checked) {
+                // 總開關：只切換 enabled 並立即儲存（其他未儲存的修改不會一起送出）
+                var self = this;
+                var saved = this.settings && this.settings.luckyWheel && typeof this.settings.luckyWheel === 'object' ? JSON.parse(JSON.stringify(this.settings.luckyWheel)) : this.lwDefaultConfig();
+                saved.enabled = checked === true;
+                this.lwForm.enabled = checked === true;
+                return this.lwSave(saved, checked ? '已開啟幸運轉盤（依開放日期生效）。' : '已關閉幸運轉盤，立即停止。');
+            },
+            lwSave: function(configOverride, okText) {
+                var self = this;
+                if (self.lwSaving) return Promise.resolve();
+                var cfg = configOverride || JSON.parse(JSON.stringify(self.lwForm));
+                cfg.minOrder = Math.max(0, Math.round(Number(cfg.minOrder) || 0));
+                cfg.maxDiscount = Math.max(0, Math.round(Number(cfg.maxDiscount) || 0));
+                cfg.targetPct = Math.max(0, Math.min(50, Number(cfg.targetPct) || 0));
+                cfg.tiers = (cfg.tiers || []).map(function(t) { return { pct: Math.max(0, Math.min(50, Math.round(Number(t.pct) || 0))), weight: Math.max(0, Math.min(1000, Math.round(Number(t.weight) || 0))) }; });
+                if (!configOverride && cfg.enabled && !cfg.tiers.some(function(t) { return t.weight > 0; })) {
+                    self.lwError = '至少要有一個獎項的權重大於 0。';
+                    return Promise.resolve();
+                }
+                var keepDirty = !!configOverride && self.lwDirty;
+                self.lwSaving = true; self.lwError = ''; self.lwNotice = '';
+                var patch = { luckyWheel: cfg };
+                return self.writeSettingsPrimary(patch, function() { return update(ref(db, 'settings'), patch); }).then(function() {
+                    if (!configOverride) self.lwDirty = false;
+                    else if (keepDirty) self.lwDirty = true;
+                    // 本頁的已儲存設定也一起更新（總開關、下一次「還原」都以這份為準）
+                    if (self.settings) self.settings.luckyWheel = JSON.parse(JSON.stringify(cfg));
+                    self.lwNotice = okText || '已儲存，前台與伺服器會在幾秒內套用。';
+                }).catch(function(err) {
+                    if (configOverride) self.lwForm.enabled = !cfg.enabled;
+                    self.lwError = '幸運轉盤設定儲存失敗：' + String((err && err.message) || err || '未知錯誤');
+                }).finally(function() {
+                    self.lwSaving = false;
+                });
+            },
             formatMemberDate: function(value) {
                 var date = new Date(value);
                 if (isNaN(date.getTime())) return String(value || '');
@@ -4429,6 +4842,9 @@ window._resetCountUp = function() {
                 var cur = Number(currentTotal);
                 var inc = Number(incomingTotal);
                 var sum = this.sumStatsItemsTotal(items);
+                // lucky-wheel-20261025：品項是原價，總金額是折後；扣掉折扣再比較，營收才是實收
+                var lwDiscount = Number(orderHint && orderHint.luckyWheel && orderHint.luckyWheel.discount) || 0;
+                if (lwDiscount > 0 && Number.isFinite(sum) && sum > lwDiscount) sum -= lwDiscount;
                 var isPos = function(v) { return Number.isFinite(v) && v > 0; };
                 var sourcePath = String((orderHint && ((orderHint.integration && orderHint.integration.sourceRecordPath) || orderHint.sourceRecordPath)) || '').toLowerCase();
                 var src = String((orderHint && orderHint.source) || '').toLowerCase();
@@ -9387,8 +9803,12 @@ window._resetCountUp = function() {
                         dineinPin: s.dineinPin || s.qrPin || '',
                         qrPin: s.qrPin || s.dineinPin || '',
                         qrEntries: Array.isArray(s.qrEntries) ? s.qrEntries : [],
-                        tabletEntries: Array.isArray(s.tabletEntries) ? self.normalizeTabletEntries(s.tabletEntries) : self.defaultTabletEntries()
+                        tabletEntries: Array.isArray(s.tabletEntries) ? self.normalizeTabletEntries(s.tabletEntries) : self.defaultTabletEntries(),
+                        // lucky-wheel-20261025：幸運轉盤設定（這一頁只讀，儲存走「幸運轉盤」頁）
+                        luckyWheel: (s.luckyWheel && typeof s.luckyWheel === 'object' && !Array.isArray(s.luckyWheel)) ? s.luckyWheel
+                            : (typeof s.luckyWheel === 'string' && s.luckyWheel ? s.luckyWheel : (prev.luckyWheel || null))
                     };
+                    if (self.activeTab === 'luckyWheel' && !self.lwDirty && !self.lwSaving) self.lwInitForm();
                     self.announcementsTouched = false;
                     self.settingsReadBackend = backend || 'pocketbase';
                     self.syncCategoryShapeFromMenu();

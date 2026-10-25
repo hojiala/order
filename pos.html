@@ -338,6 +338,7 @@
                 </div>
               <div class="flex-shrink-0 text-right">
                   <p class="text-orange-500 font-black text-base">${{ order.total }}</p>
+                  <p v-if="order.luckyWheel && Number(order.luckyWheel.discount) > 0" class="text-xs font-bold text-orange-600 whitespace-nowrap">🎡{{ order.luckyWheel.label }} -${{ order.luckyWheel.discount }}</p>
                   <!-- 付款狀態 badge -->
                   <template v-if="order.paymentMethod==='linepay'||order.paymentMethod==='linepay_offline'||order.paymentMethod==='linepay_refund'">
                       <span v-if="getLinePayState(order)==='refunded'"
@@ -603,7 +604,7 @@
         <div v-if="editingLinePayPaid" class="bg-amber-50 border border-amber-300 rounded-lg px-3 py-1.5 text-center">
           <span class="text-amber-700 text-xs font-bold">⚠️ LINE Pay 已付清，不可修改餐點與金額</span>
         </div>
-        <div class="flex justify-between items-center px-1"><span class="text-gray-500 text-sm">共 {{ cartCount }} 件</span><span class="text-2xl font-black text-gray-900">${{ cartTotal }}</span></div>
+        <div class="flex justify-between items-center px-1"><span class="text-gray-500 text-sm">共 {{ cartCount }} 件</span><span class="text-2xl font-black text-gray-900"><span v-if="editLuckyWheel" class="text-xs font-bold text-orange-600" style="margin-right:0.35rem;">🎡{{ editLuckyWheel.label }} 小計${{ cartTotal }} -${{ editLuckyWheel.discount }}</span>${{ dueTotal }}</span></div>
         <div class="flex gap-1.5">
           <button @click="editOrderType='takeout';editTableLabel='';posBagFollowOrderType()" :class="editOrderType==='takeout'?'bg-orange-500 text-white':'bg-gray-100 text-gray-600'" class="flex-1 py-2 rounded-lg font-bold text-xs transition">🥡 外帶</button>
           <button @click="editOrderType='dinein';posBagFollowOrderType()" :class="editOrderType==='dinein'?'bg-blue-500 text-white':'bg-gray-100 text-gray-600'" class="flex-1 py-2 rounded-lg font-bold text-xs transition">🍽️ 內用</button>
@@ -953,7 +954,7 @@
         <div v-if="showCashCalculator" class="store-pay-summary">
           <div class="store-pay-calc-icon" aria-hidden="true">▦</div>
           <div class="store-pay-stat"><span class="store-pay-stat-label">收款</span><b class="store-pay-stat-value">${{ cashReceivedAmount }}</b></div>
-          <div class="store-pay-stat"><span class="store-pay-stat-label">應收</span><b class="store-pay-stat-value due">${{ cartTotal }}</b></div>
+          <div class="store-pay-stat"><span class="store-pay-stat-label">應收</span><b class="store-pay-stat-value due">${{ dueTotal }}</b></div>
           <div class="store-pay-stat"><span class="store-pay-stat-label">找零</span><b class="store-pay-stat-value" :class="cashChangeAmount<0?'negative':'positive'">${{ cashChangeAmount }}</b></div>
         </div>
         <button @click="showCashCalculator=!showCashCalculator" class="store-pay-calc-toggle" :aria-expanded="showCashCalculator">▦ 計算機</button>
@@ -1117,7 +1118,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getDatabase, ref, query, orderByKey, limitToLast, onValue, onChildAdded, onChildChanged, onChildRemoved, update, push, set, get, remove, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-    import { allocateOrderNoFromPocketBase, resetOrderNoInPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, requestLinePayViaBackend, openCashDrawerViaBackend, readPosOrderStateViaBackend, cancelOwnedOrderViaBackend, queuePhoneOrderCommandViaBackend, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, readManageMenuFromPocketBase, listMenuItemsFromPocketBase, writeMenuItemToPocketBase, writeSettingsToPocketBase, requestStaffOrderPresets, rememberPublicMenuItems, rememberPublicSettings, normalizePublicSettings, subscribeOrdersRealtime, isReservedOrderId } from "./pocketbase-order-writer.20260809_005.js?v=20260920_customer_status_hours_1";
+    import { allocateOrderNoFromPocketBase, resetOrderNoInPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, requestLinePayViaBackend, openCashDrawerViaBackend, readPosOrderStateViaBackend, cancelOwnedOrderViaBackend, queuePhoneOrderCommandViaBackend, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, readManageMenuFromPocketBase, listMenuItemsFromPocketBase, writeMenuItemToPocketBase, writeSettingsToPocketBase, requestStaffOrderPresets, rememberPublicMenuItems, rememberPublicSettings, normalizePublicSettings, subscribeOrdersRealtime, isReservedOrderId } from "./pocketbase-order-writer.20260809_005.js?v=20261025_lucky_wheel_1";
     import { saveLinePayCheckoutHandoff, consumeRestorableLinePayCheckout } from "./linepay-checkout-handoff.20260912_001.js";
     import { isBackofficeUser } from "./staff-auth-activation.20260818_001.js?v=20260818_001";
     const firebaseConfig = {
@@ -1260,7 +1261,10 @@
                 return rows;
             },
             cashReceivedAmount:function(){return Number(this.cashCalcInput||0)||0;},
-            cashChangeAmount:function(){return this.cashReceivedAmount-this.cartTotal;},
+            // lucky-wheel-20261025：改線上單時依原本抽到的折扣%重算（受單筆上限）；新 POS 單沒有轉盤
+            editLuckyWheel:function(){var o=this.orderMode!=='pos'?this.editingOrder:null;var lw=o&&o.luckyWheel;if(!lw||!(Number(lw.pct)>0))return null;var sub=Number(this.cartTotal)||0;var raw=Math.round(sub*Number(lw.pct)/100);var cap=Number(lw.cap)||0;var d=Math.max(0,Math.min(sub,cap>0?Math.min(cap,raw):raw));return {label:String(lw.label||''),pct:Number(lw.pct)||0,discount:d,subtotal:sub,cap:cap};},
+            dueTotal:function(){var lw=this.editLuckyWheel;return lw?(Number(this.cartTotal)||0)-lw.discount:this.cartTotal;},
+            cashChangeAmount:function(){return this.cashReceivedAmount-this.dueTotal;},
             activeOrderCount:function(){
                 try{return (this.onlineOrders||[]).filter(function(o){
                     if(!o)return false;
@@ -2386,6 +2390,9 @@
                 var cur=Number(currentTotal);
                 var inc=Number(incomingTotal);
                 var sum=this.sumOrderItemsTotal(items);
+                // lucky-wheel-20261025：品項是原價、總金額是折後；扣掉折扣再比較，否則 max() 會把金額蓋回原價
+                var lwDiscount=Number(orderHint&&orderHint.luckyWheel&&orderHint.luckyWheel.discount)||0;
+                if(lwDiscount>0&&Number.isFinite(sum)&&sum>lwDiscount)sum-=lwDiscount;
                 var finitePos=function(v){return Number.isFinite(v)&&v>0;};
                 var sourcePath=String((orderHint&&((orderHint.integration&&orderHint.integration.sourceRecordPath)||orderHint.sourceRecordPath))||'').toLowerCase();
                 var src=String((orderHint&&orderHint.source)||'').toLowerCase();
@@ -7016,7 +7023,7 @@
                 var baseItems=Array.isArray(latestOrder.items)?latestOrder.items:[];
                 if(s.editingOrder&&s.editingOrder.id===order.id&&s.cart.length){
                     updates.items=s.cart.map(function(i){return Object.assign({},i);});
-                    updates.total=s.cartTotal;
+                    updates.total=s.dueTotal; // lucky-wheel-20261025
                 }else if(baseItems.length){
                     updates.items=baseItems.map(function(i){return Object.assign({},i);});
                     if(latestOrder.total!==undefined)updates.total=latestOrder.total;
@@ -8091,7 +8098,7 @@
                 if(s.editingLinePayPaid){s.toast('⚠️ LINE Pay 已付清，不可再掃碼扣款');return;}
                 if(String(s.editingOrder.paymentStatus||'').toLowerCase()==='paid'){s.toast('⚠️ 此單已付款，未開啟掃碼');return;}
                 s.offlineOrderId='';
-                s.offlineAmount=s.cartTotal;
+                s.offlineAmount=s.dueTotal;
                 s.offlineBarcode='';
                 s.offlineError='';
                 s.offlineSuccess='';
@@ -8788,6 +8795,8 @@
                         customerName:String(s.editCustomerName||'').trim(),
                         phone:String(s.editCustomerPhone||'').trim()
                     };
+                    // lucky-wheel-20261025：保留原本抽到的折扣（同一個%，依新的小計重算，受單筆上限）
+                    if(s.editLuckyWheel){upd.total=s.dueTotal;upd.luckyWheel=Object.assign({},s.editLuckyWheel);}
                     if(isEditingPosOrder){
                         upd.source='pos';
                         upd.sourceLabel=(targetOrder&&targetOrder.sourceLabel)||(s.editingOrder&&s.editingOrder.sourceLabel)||'現場 POS';
@@ -8823,7 +8832,7 @@
                         var printOrder=Object.assign({},targetOrder,upd,{
                             id:id,
                             items:printItems,
-                            total:printTotal||upd.total,
+                            total:(upd.luckyWheel&&Number(upd.luckyWheel.discount)>0)?upd.total:(printTotal||upd.total), // lucky-wheel-20261025
                             print_task:editTask,
                             editFullReprint:true,
                             isEditFullReprint:true,

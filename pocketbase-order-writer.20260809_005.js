@@ -183,6 +183,10 @@ function customerPayload(orderData, options) {
         999
     ) || 999;
     payload.printSource = payload.printSource || text(orderData && (orderData.printSource || orderData["訂單來源"]));
+    // lucky-wheel-20261025：店員改單時帶著折扣資訊（顧客端送的會在 PocketBase 被丟掉，只認伺服器抽獎）
+    if (orderData && orderData.luckyWheel && typeof orderData.luckyWheel === "object" && payload.luckyWheel === undefined) {
+        payload.luckyWheel = Object.assign({}, orderData.luckyWheel);
+    }
     payload.createdByUid = payload.createdByUid || text(orderData && orderData.createdByUid);
     payload.sourceRecordPath = payload.sourceRecordPath || text(orderData && orderData.sourceRecordPath);
     if (!payload.stationMap && orderData && Array.isArray(orderData.stationMap)) payload.stationMap = orderData.stationMap;
@@ -555,6 +559,16 @@ export function pocketBaseRecordToOrder(record) {
     if (recTableDevice) order.tableDevice = recTableDevice;
     if (Array.isArray(customer.stationMap)) order.stationMap = customer.stationMap;
     if (Array.isArray(customer.stationSettings)) order.stationSettings = customer.stationSettings;
+    // lucky-wheel-20261025：total 已是折後金額；POS／admin／manage 用這個顯示折扣、避免把金額蓋回原價
+    if (customer.luckyWheel && typeof customer.luckyWheel === "object" && Number(customer.luckyWheel.discount) > 0) {
+        order.luckyWheel = {
+            label: text(customer.luckyWheel.label),
+            pct: Number(customer.luckyWheel.pct) || 0,
+            discount: Number(customer.luckyWheel.discount) || 0,
+            subtotal: Number(customer.luckyWheel.subtotal) || 0,
+            cap: Number(customer.luckyWheel.cap) || 0
+        };
+    }
     return order;
 }
 
@@ -2849,6 +2863,30 @@ export function requestLineMembers(options) {
                 kind: text(options.kind) || undefined,
                 phone: text(options.phone) || undefined,
                 limit: Math.max(1, Math.min(1000, Number(options.limit) || 500))
+            })
+        }, Number(options.timeoutMs || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS);
+    });
+}
+
+// member-notes-20261025：manage 會員名單備註（同一條 manage 權限路由；備註只存在 PocketBase 本機）
+export function saveMemberNote(options) {
+    options = options || {};
+    var config = resolvePocketBaseConfig(options);
+    var endpoint = config.orderEndpoint ? config.orderEndpoint.replace(/\/api\/(?:secure\/)?orders$/i, "/api/line/members") : "";
+    var user = options.firebaseUser;
+    if (!endpoint || !user || user.isAnonymous || typeof user.getIdToken !== "function") return Promise.reject(new Error("staff_auth_required"));
+    return Promise.resolve(user.getIdToken()).then(function(idToken) {
+        return requestJson(endpoint, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": "Bearer " + idToken
+            },
+            body: JSON.stringify({
+                action: "saveNote",
+                kind: text(options.kind),
+                key: text(options.key),
+                note: String(options.note === undefined || options.note === null ? "" : options.note)
             })
         }, Number(options.timeoutMs || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS);
     });
