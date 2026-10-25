@@ -930,6 +930,7 @@
                     <div>
                         <p class="font-bold text-white text-sm">訂單明細</p>
                         <p class="text-slate-400 text-xs mt-1">顯示 {{ statsFilteredOrders.length }} / 共 {{ statsOrders.length }} 筆（有效 {{ statsValidCount }} 筆）</p>
+                        <p v-if="statsLuckyWheelSummary.count" data-stats-lucky-summary class="text-amber-300 text-xs mt-1 font-bold">🎡 幸運轉盤 {{ statsLuckyWheelSummary.count }} 筆，共折 ${{ statsLuckyWheelSummary.discount }}<span class="font-normal text-slate-400">（搜尋「轉盤」可以只看這些單）</span></p>
                     </div>
                     <div class="flex flex-wrap items-center gap-3 w-full sm:w-auto">
                         <label class="relative flex-1 min-w-[220px] sm:w-80">
@@ -1009,7 +1010,12 @@
                                         {{ order.status==='archived'?(order.wasCancelled?'已取消':'已完成'):({new:'新訂單',making:'製作中',done:'已完成',cancelled:'已取消'}[order.status]||order.status) }}
                                     </span>
                                 </td>
-                                <td class="px-5 py-3 text-right text-red-400 font-bold">${{ getOrderTotalValue(order) }}</td>
+                                <td class="px-5 py-3 text-right text-red-400 font-bold">${{ getOrderTotalValue(order) }}
+                                    <template v-if="statsLuckyWheel(order)">
+                                        <span class="block text-xs font-bold text-amber-300 whitespace-nowrap">🎡{{ statsLuckyWheel(order).label }} -${{ statsLuckyWheel(order).discount }}</span>
+                                        <span class="block text-[11px] font-normal text-slate-400 whitespace-nowrap">原價 ${{ statsLuckyWheel(order).subtotal }}</span>
+                                    </template>
+                                </td>
                                 <td class="px-4 py-3 text-center">
                                     <span class="text-xs font-bold px-2 py-0.5 rounded-full"
                                         :class="statsPaymentBadgeClass(order)">
@@ -1280,18 +1286,23 @@
                     </label>
                 </div>
 
-                <!-- lucky-wheel-reset-20261025：今天參加紀錄、清除某支手機讓它再轉 -->
+                <!-- lucky-wheel-reset-20261025：今天參加紀錄、清除某支手機讓它再轉；lucky-wheel-stats-20261025：可選日期查前幾天 -->
                 <div class="rounded-xl border border-slate-700 bg-slate-800 p-5">
                     <div class="flex items-center justify-between gap-3 flex-wrap">
-                        <p class="font-bold text-white">今天參加紀錄 <span class="text-xs font-normal text-slate-400">{{ lwDrawsDate ? lwDrawsDate.slice(5).replace('-', '/') : '' }}（台灣時間）・{{ lwDraws.length }} 筆</span></p>
-                        <button type="button" @click="lwLoadDraws()" :disabled="lwDrawsLoading" class="bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-white text-xs font-bold px-3 py-1.5 rounded-lg">{{ lwDrawsLoading ? '讀取中…' : '重新整理' }}</button>
+                        <p class="font-bold text-white">{{ lwDrawsIsToday() ? '今天參加紀錄' : '參加紀錄' }} <span class="text-xs font-normal text-slate-400">{{ lwDrawsDate ? lwDrawsDate.slice(5).replace('-', '/') : '' }}（台灣時間）・{{ lwDraws.length }} 筆<span v-if="lwDraws.length">・有效 {{ lwDrawsSummary().valid }} 筆、共折 ${{ lwDrawsSummary().discount }}</span></span></p>
+                        <div class="flex items-center gap-2">
+                            <input type="date" data-lw-draws-day v-model="lwDrawsDay" :max="lwTaipeiToday()" @change="lwDrawsNotice = ''; lwLoadDraws()" class="rounded-lg border border-slate-600 bg-slate-900 px-2 py-1 text-xs text-white">
+                            <button type="button" v-if="!lwDrawsIsToday()" @click="lwDrawsPickToday()" class="bg-slate-700 hover:bg-slate-600 text-white text-xs font-bold px-3 py-1.5 rounded-lg">今天</button>
+                            <button type="button" @click="lwLoadDraws()" :disabled="lwDrawsLoading" class="bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-white text-xs font-bold px-3 py-1.5 rounded-lg">{{ lwDrawsLoading ? '讀取中…' : '重新整理' }}</button>
+                        </div>
                     </div>
-                    <div class="mt-3 flex flex-wrap items-end gap-2">
+                    <p v-if="!lwDrawsIsToday()" class="mt-2 text-xs text-slate-400">這是 {{ lwDrawsDate }} 的紀錄（只能查看）。參加資格每天自動重新開始，過去的紀錄不需要清除。</p>
+                    <div v-if="lwDrawsIsToday()" class="mt-3 flex flex-wrap items-end gap-2">
                         <label class="flex flex-col text-xs text-slate-400">手機號碼
                             <input v-model.trim="lwResetPhone" type="tel" inputmode="numeric" maxlength="20" placeholder="0912345678" @keyup.enter="lwResetDraw({ phone: lwResetPhone, fromInput: true })" class="mt-1 w-40 rounded-lg border border-slate-600 bg-slate-900 px-2 py-1.5 text-sm text-white placeholder-slate-500"></label>
                         <button type="button" data-lw-reset-phone @click="lwResetDraw({ phone: lwResetPhone, fromInput: true })" :disabled="!!lwResetting || !lwResetPhone" class="bg-amber-600 hover:bg-amber-500 disabled:opacity-40 text-white text-sm font-bold px-3 py-2 rounded-lg">清除，讓這支手機再轉</button>
                     </div>
-                    <p class="mt-2 text-xs text-slate-400">例如顧客取餐後發現漏給餐點、又想再點一次：清除後這支手機下一張單可以再轉一次（重新抽）；已送出的訂單金額不變。顧客的手機進購物車時會自動恢復轉盤提示。</p>
+                    <p v-if="lwDrawsIsToday()" class="mt-2 text-xs text-slate-400">例如顧客取餐後發現漏給餐點、又想再點一次：清除後這支手機下一張單可以再轉一次（重新抽）；已送出的訂單金額不變。顧客的手機進購物車時會自動恢復轉盤提示。</p>
                     <p v-if="lwDrawsError" class="mt-2 rounded-lg border border-red-800 bg-red-900/30 px-3 py-2 text-sm text-red-300">{{ lwDrawsError }}</p>
                     <p v-if="lwDrawsNotice" class="mt-2 rounded-lg border border-emerald-800 bg-emerald-900/30 px-3 py-2 text-sm text-emerald-300">{{ lwDrawsNotice }}</p>
                     <div v-if="lwDraws.length" class="mt-3 overflow-x-auto rounded-lg border border-slate-700">
@@ -1305,12 +1316,12 @@
                                     <td class="px-3 py-2 text-right">{{ r.orderNo ? String(r.orderNo).padStart(3, '0') : '—' }}</td>
                                     <td class="px-3 py-2 whitespace-nowrap font-bold text-amber-300">{{ r.label }}<span v-if="r.discount > 0" class="text-slate-300 font-normal"> -${{ r.discount }}</span></td>
                                     <td class="px-3 py-2 whitespace-nowrap"><span :class="lwDrawStatus(r).cls" class="text-xs font-bold px-2 py-0.5 rounded-full">{{ lwDrawStatus(r).text }}</span></td>
-                                    <td class="px-3 py-2 text-right whitespace-nowrap"><button type="button" @click="lwResetDraw(r.phone ? { phone: r.phone } : r)" :disabled="!!lwResetting" class="text-amber-300 hover:text-amber-200 disabled:opacity-40 text-xs font-bold">{{ lwResetting && (lwResetting === r.phone || lwResetting === r.id) ? '清除中…' : '清除，讓它再轉' }}</button></td>
+                                    <td class="px-3 py-2 text-right whitespace-nowrap"><button v-if="lwDrawsIsToday()" type="button" @click="lwResetDraw(r.phone ? { phone: r.phone } : r)" :disabled="!!lwResetting" class="text-amber-300 hover:text-amber-200 disabled:opacity-40 text-xs font-bold">{{ lwResetting && (lwResetting === r.phone || lwResetting === r.id) ? '清除中…' : '清除，讓它再轉' }}</button></td>
                                 </tr>
                             </tbody>
                         </table>
                     </div>
-                    <p v-else-if="lwDrawsLoaded && !lwDrawsError" class="mt-3 rounded-lg border border-slate-700 bg-slate-900/40 px-3 py-3 text-center text-sm text-slate-400">今天還沒有人參加轉盤。</p>
+                    <p v-else-if="lwDrawsLoaded && !lwDrawsError" class="mt-3 rounded-lg border border-slate-700 bg-slate-900/40 px-3 py-3 text-center text-sm text-slate-400">{{ lwDrawsIsToday() ? '今天還沒有人參加轉盤。' : '這一天沒有人參加轉盤。' }}</p>
                 </div>
 
                 <div class="rounded-xl border border-slate-700 bg-slate-800 p-5 flex flex-col gap-4">
@@ -2201,8 +2212,18 @@
                 <span class="text-slate-400 text-sm">取餐時間</span>
                 <span class="text-white text-sm font-medium">{{ getDisplayPickupTime(viewingOrder.pickupTime) }}</span>
             </div>
+            <template v-if="statsLuckyWheel(viewingOrder)">
+                <div class="flex justify-between items-center mb-1">
+                    <span class="text-slate-400 text-sm">小計（原價）</span>
+                    <span class="text-white text-sm font-medium">${{ statsLuckyWheel(viewingOrder).subtotal }}</span>
+                </div>
+                <div class="flex justify-between items-center mb-1" data-detail-lucky-wheel>
+                    <span class="text-amber-300 text-sm font-bold">🎡 幸運轉盤 {{ statsLuckyWheel(viewingOrder).label }}{{ statsLuckyWheel(viewingOrder).capped ? '（單筆上限）' : '' }}</span>
+                    <span class="text-amber-300 text-sm font-bold">-${{ statsLuckyWheel(viewingOrder).discount }}</span>
+                </div>
+            </template>
             <div class="flex justify-between items-center">
-                <span class="text-slate-400 text-sm">訂單總額</span>
+                <span class="text-slate-400 text-sm">{{ statsLuckyWheel(viewingOrder) ? '訂單總額（折後）' : '訂單總額' }}</span>
                     <span class="text-red-400 font-black text-xl">${{ getDetailOrderTotal(viewingOrder) }}</span>
             </div>
         </div>
@@ -2919,6 +2940,7 @@ window._resetCountUp = function() {
                 lwForm: null, lwDirty: false, lwSaving: false, lwError: '', lwNotice: '',
                 // lucky-wheel-reset-20261025：今天參加紀錄
                 lwDraws: [], lwDrawsDate: '', lwDrawsLoaded: false, lwDrawsLoading: false, lwDrawsError: '', lwDrawsNotice: '', lwResetPhone: '', lwResetting: '',
+                lwDrawsDay: '', // lucky-wheel-stats-20261025：參加紀錄要看的日期（空白＝今天）
                 lwAdd: { type: 'date', start: '', end: '', name: '' }, lwAddError: '',
                 lwEst: { orders: 15, ticket: 280 },
                 onlineCustomers: [], onlineCustomersLoading: false, onlineCustomersLoaded: false, onlineCustomersError: '',
@@ -3286,6 +3308,18 @@ window._resetCountUp = function() {
                 // ★ 同時計算 status=cancelled 和 wasCancelled=true（結單後狀態被封存的舊取消訂單）
                 return this.statsOrders.filter(function(o){ return o.status === 'cancelled' || o.wasCancelled === true; }).length;
             },
+            // lucky-wheel-stats-20261025：這段期間參加幸運轉盤的有效訂單數與折扣合計（和營收同一套規則）
+            statsLuckyWheelSummary: function() {
+                var self = this, count = 0, discount = 0;
+                (this.statsOrders || []).forEach(function(o) {
+                    if (!self.isRevenueOrder(o)) return;
+                    var lw = self.statsLuckyWheel(o);
+                    if (!lw) return;
+                    count += 1;
+                    discount += lw.discount;
+                });
+                return { count: count, discount: discount };
+            },
             statsValidCount: function() {
                 return this.statsOrders.filter(function(o){ return o.status !== 'cancelled' && !o.wasCancelled; }).length;
             },
@@ -3354,7 +3388,8 @@ window._resetCountUp = function() {
                         this.getOrderTotalValue(order || {}),
                         this.statsPaymentBadgeText(order || {}),
                         this.getStatsCsvItemSummary(order || {}),
-                        this.getDetailOrderNote(order || {})
+                        this.getDetailOrderNote(order || {}),
+                        this.statsLuckyWheel(order || {}) ? ('幸運轉盤 轉盤 ' + this.statsLuckyWheel(order || {}).label) : ''
                     ].join(' ').toLowerCase();
                     return fields.indexOf(keyword) !== -1;
                 }.bind(this));
@@ -4483,7 +4518,8 @@ window._resetCountUp = function() {
                 if (self.lwDrawsLoading) return Promise.resolve();
                 self.lwDrawsLoading = true;
                 self.lwDrawsError = '';
-                return requestLuckyWheelAdmin('luckyWheelDraws', {}, self.pocketBaseManageOptions({ timeoutMs: 15000, secureTimeoutMs: 15000 })).then(function(result) {
+                var lwDay = /^\d{4}-\d{2}-\d{2}$/.test(String(self.lwDrawsDay || '')) ? String(self.lwDrawsDay) : '';
+                return requestLuckyWheelAdmin('luckyWheelDraws', lwDay ? { date: lwDay } : {}, self.pocketBaseManageOptions({ timeoutMs: 15000, secureTimeoutMs: 15000 })).then(function(result) {
                     self.lwDraws = Array.isArray(result.records) ? result.records : [];
                     self.lwDrawsDate = String(result.date || '');
                     self.lwDrawsLoaded = true;
@@ -4514,6 +4550,23 @@ window._resetCountUp = function() {
                 }).finally(function() {
                     self.lwResetting = '';
                 });
+            },
+            // lucky-wheel-stats-20261025：台灣今天的日期（YYYY-MM-DD）
+            lwTaipeiToday: function() {
+                var d = new Date(Date.now() + 8 * 3600000);
+                return d.toISOString().slice(0, 10);
+            },
+            lwDrawsIsToday: function() {
+                return !this.lwDrawsDate || this.lwDrawsDate === this.lwTaipeiToday();
+            },
+            lwDrawsPickToday: function() {
+                this.lwDrawsDay = '';
+                this.lwDrawsNotice = '';
+                return this.lwLoadDraws();
+            },
+            lwDrawsSummary: function() {
+                var valid = (this.lwDraws || []).filter(function(r) { return !r.cancelled && !r.reusable; });
+                return { valid: valid.length, discount: valid.reduce(function(sum, r) { return sum + (Number(r.discount) || 0); }, 0) };
             },
             lwDrawTime: function(value) {
                 var d = new Date(value);
@@ -4744,6 +4797,20 @@ window._resetCountUp = function() {
                 if (Number.isFinite(Number(order.total))) return Number(order.total);
                 if (order.totals && Number.isFinite(Number(order.totals.finalTotal))) return Number(order.totals.finalTotal);
                 return 0;
+            },
+            // lucky-wheel-stats-20261025：這張單的幸運轉盤折扣（沒有折扣回 null）
+            statsLuckyWheel: function(order) {
+                var lw = order && order.luckyWheel;
+                if (!lw || typeof lw !== 'object') return null;
+                var discount = Math.round(Number(lw.discount) || 0);
+                if (!(discount > 0)) return null;
+                var pct = Number(lw.pct) || 0;
+                var left = 100 - pct;
+                var label = String(lw.label || '').trim() || (pct > 0 ? ((left % 10 === 0 ? String(left / 10) : String(left)) + '折') : '');
+                var total = Math.round(Number(this.getOrderTotalValue(order)) || 0);
+                var subtotal = Math.round(Number(lw.subtotal) || 0) || (total + discount);
+                var cap = Math.round(Number(lw.cap) || 0);
+                return { label: label, pct: pct, discount: discount, subtotal: subtotal, capped: cap > 0 && discount >= cap && Math.round(subtotal * pct / 100) > cap };
             },
             getDetailOrderTotal: function(order) {
                 var explicit = Number(this.getOrderTotalValue(order));
@@ -8256,7 +8323,7 @@ window._resetCountUp = function() {
             exportStatsCsv: function() {
                 var rows = this.statsSortedOrders || [];
                 if (!rows.length) return;
-                var headers = ['單號', '下單時間', '客戶', '來源', '電話', '取餐日期', '取餐時間', '狀態', '金額', '付款方式', '訂單明細', '訂單備註'];
+                var headers = ['單號', '下單時間', '客戶', '來源', '電話', '取餐日期', '取餐時間', '狀態', '金額', '付款方式', '訂單明細', '訂單備註', '幸運轉盤', '轉盤折扣', '折扣前金額'];
                 var csvRows = [headers.map(this.escapeCsvCell).join(',')];
                 rows.forEach(function(order) {
                     var orderNo = order && order.orderNo ? 'No.' + String(order.orderNo).padStart(3, '0') : '';
@@ -8274,6 +8341,9 @@ window._resetCountUp = function() {
                         this.getStatsCsvItemSummary(order),
                         this.getDetailOrderNote(order)
                     ];
+                    // lucky-wheel-stats-20261025：最後三欄（沒有參加的單留空）
+                    var lwCsv = this.statsLuckyWheel(order);
+                    line.push(lwCsv ? lwCsv.label : '', lwCsv ? lwCsv.discount : '', lwCsv ? lwCsv.subtotal : '');
                     csvRows.push(line.map(this.escapeCsvCell).join(','));
                 }.bind(this));
                 var filename = this.getStatsExportStoreName() + '-銷售報表_' + this.getStatsExportTimestamp() + '.csv';
