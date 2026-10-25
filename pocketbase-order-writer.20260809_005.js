@@ -2892,6 +2892,17 @@ export function saveMemberNote(options) {
     });
 }
 
+// lucky-wheel-reset-20261025：manage 幸運轉盤今天的參加紀錄／清除某支手機（同一條 manage 設定路由、同一管理權限）
+export function requestLuckyWheelAdmin(action, payload, options) {
+    var body = Object.assign({}, plainJson(payload || {}, {}), { action: text(action) });
+    return writeManageRequest("settings", body, options || {}).then(function(result) {
+        if (!result || result.ok === false) throw new Error((result && (result.message || result.reason)) || "lucky_wheel_admin_failed");
+        // 舊版 PocketBase 不認得這個動作（會當成空的設定儲存、照樣回 ok）→ 不能當成成功
+        if (result.action !== text(action)) throw new Error("not_found");
+        return result;
+    });
+}
+
 export function writeLinePayRequestAfterMirror(writeRequest, options) {
     options = options || {};
     if (typeof writeRequest !== "function") return Promise.reject(new TypeError("writeRequest must be a function"));

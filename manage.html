@@ -1280,6 +1280,39 @@
                     </label>
                 </div>
 
+                <!-- lucky-wheel-reset-20261025：今天參加紀錄、清除某支手機讓它再轉 -->
+                <div class="rounded-xl border border-slate-700 bg-slate-800 p-5">
+                    <div class="flex items-center justify-between gap-3 flex-wrap">
+                        <p class="font-bold text-white">今天參加紀錄 <span class="text-xs font-normal text-slate-400">{{ lwDrawsDate ? lwDrawsDate.slice(5).replace('-', '/') : '' }}（台灣時間）・{{ lwDraws.length }} 筆</span></p>
+                        <button type="button" @click="lwLoadDraws()" :disabled="lwDrawsLoading" class="bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-white text-xs font-bold px-3 py-1.5 rounded-lg">{{ lwDrawsLoading ? '讀取中…' : '重新整理' }}</button>
+                    </div>
+                    <div class="mt-3 flex flex-wrap items-end gap-2">
+                        <label class="flex flex-col text-xs text-slate-400">手機號碼
+                            <input v-model.trim="lwResetPhone" type="tel" inputmode="numeric" maxlength="20" placeholder="0912345678" @keyup.enter="lwResetDraw({ phone: lwResetPhone, fromInput: true })" class="mt-1 w-40 rounded-lg border border-slate-600 bg-slate-900 px-2 py-1.5 text-sm text-white placeholder-slate-500"></label>
+                        <button type="button" data-lw-reset-phone @click="lwResetDraw({ phone: lwResetPhone, fromInput: true })" :disabled="!!lwResetting || !lwResetPhone" class="bg-amber-600 hover:bg-amber-500 disabled:opacity-40 text-white text-sm font-bold px-3 py-2 rounded-lg">清除，讓這支手機再轉</button>
+                    </div>
+                    <p class="mt-2 text-xs text-slate-400">例如顧客取餐後發現漏給餐點、又想再點一次：清除後這支手機下一張單可以再轉一次（重新抽）；已送出的訂單金額不變。顧客的手機進購物車時會自動恢復轉盤提示。</p>
+                    <p v-if="lwDrawsError" class="mt-2 rounded-lg border border-red-800 bg-red-900/30 px-3 py-2 text-sm text-red-300">{{ lwDrawsError }}</p>
+                    <p v-if="lwDrawsNotice" class="mt-2 rounded-lg border border-emerald-800 bg-emerald-900/30 px-3 py-2 text-sm text-emerald-300">{{ lwDrawsNotice }}</p>
+                    <div v-if="lwDraws.length" class="mt-3 overflow-x-auto rounded-lg border border-slate-700">
+                        <table class="w-full text-sm">
+                            <thead class="bg-slate-900/60 text-xs text-slate-400"><tr><th class="px-3 py-2 text-left">時間</th><th class="px-3 py-2 text-left">手機</th><th class="px-3 py-2 text-left">姓名</th><th class="px-3 py-2 text-right">單號</th><th class="px-3 py-2 text-left">結果</th><th class="px-3 py-2 text-left">訂單</th><th class="px-3 py-2"></th></tr></thead>
+                            <tbody class="divide-y divide-slate-700">
+                                <tr v-for="r in lwDraws" :key="r.id" class="text-slate-200">
+                                    <td class="px-3 py-2 whitespace-nowrap">{{ lwDrawTime(r.createdAt) }}</td>
+                                    <td class="px-3 py-2 whitespace-nowrap">{{ r.phone || '（桌邊）' }}</td>
+                                    <td class="px-3 py-2 whitespace-nowrap">{{ r.name || '—' }}</td>
+                                    <td class="px-3 py-2 text-right">{{ r.orderNo ? String(r.orderNo).padStart(3, '0') : '—' }}</td>
+                                    <td class="px-3 py-2 whitespace-nowrap font-bold text-amber-300">{{ r.label }}<span v-if="r.discount > 0" class="text-slate-300 font-normal"> -${{ r.discount }}</span></td>
+                                    <td class="px-3 py-2 whitespace-nowrap"><span :class="lwDrawStatus(r).cls" class="text-xs font-bold px-2 py-0.5 rounded-full">{{ lwDrawStatus(r).text }}</span></td>
+                                    <td class="px-3 py-2 text-right whitespace-nowrap"><button type="button" @click="lwResetDraw(r.phone ? { phone: r.phone } : r)" :disabled="!!lwResetting" class="text-amber-300 hover:text-amber-200 disabled:opacity-40 text-xs font-bold">{{ lwResetting && (lwResetting === r.phone || lwResetting === r.id) ? '清除中…' : '清除，讓它再轉' }}</button></td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <p v-else-if="lwDrawsLoaded && !lwDrawsError" class="mt-3 rounded-lg border border-slate-700 bg-slate-900/40 px-3 py-3 text-center text-sm text-slate-400">今天還沒有人參加轉盤。</p>
+                </div>
+
                 <div class="rounded-xl border border-slate-700 bg-slate-800 p-5 flex flex-col gap-4">
                     <div>
                         <p class="font-bold text-white mb-2">開放日期</p>
@@ -2771,7 +2804,7 @@ window._resetCountUp = function() {
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getDatabase, ref, query, orderByKey, limitToLast, set, get, push, update, remove, onValue, onChildAdded, onChildChanged } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-    import { listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, readManageSettingsFromPocketBase, readManageMenuFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, writeMenuItemToPocketBase, deleteMenuItemFromPocketBase, updateMenuSortInPocketBase, writeSettingsToPocketBase, requestLineMembers, saveMemberNote, requestStaffOrderPresets, requestMenuAvailabilitySchedule, pocketBaseRecordToOrder, isReservedOrderId } from "./pocketbase-order-writer.20260809_005.js?v=20261025_lucky_wheel_1";
+    import { listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, readManageSettingsFromPocketBase, readManageMenuFromPocketBase, listMenuItemsFromPocketBase, rememberPublicMenuItems, rememberPublicSettings, writeMenuItemToPocketBase, deleteMenuItemFromPocketBase, updateMenuSortInPocketBase, writeSettingsToPocketBase, requestLineMembers, saveMemberNote, requestLuckyWheelAdmin, requestStaffOrderPresets, requestMenuAvailabilitySchedule, pocketBaseRecordToOrder, isReservedOrderId } from "./pocketbase-order-writer.20260809_005.js?v=20261025_lucky_wheel_2";
     import { isManageUser } from "./staff-auth-activation.20260818_001.js?v=20260818_001";
 
     const firebaseConfig = {
@@ -2884,6 +2917,8 @@ window._resetCountUp = function() {
                 memberNoteEditing: '', memberNoteDraft: '', memberNoteSaving: false, memberNoteError: '',
                 // lucky-wheel-20261025：幸運轉盤設定（存在 settings.luckyWheel；伺服器建單時依這份抽獎）
                 lwForm: null, lwDirty: false, lwSaving: false, lwError: '', lwNotice: '',
+                // lucky-wheel-reset-20261025：今天參加紀錄
+                lwDraws: [], lwDrawsDate: '', lwDrawsLoaded: false, lwDrawsLoading: false, lwDrawsError: '', lwDrawsNotice: '', lwResetPhone: '', lwResetting: '',
                 lwAdd: { type: 'date', start: '', end: '', name: '' }, lwAddError: '',
                 lwEst: { orders: 15, ticket: 280 },
                 onlineCustomers: [], onlineCustomersLoading: false, onlineCustomersLoaded: false, onlineCustomersError: '',
@@ -3450,6 +3485,7 @@ window._resetCountUp = function() {
                     this.lineMemberOrdersMode = false;
                     this.lineMemberOrdersMember = null;
                     if (!this.lwForm || !this.lwDirty) this.lwInitForm();
+                    this.lwLoadDraws(); // lucky-wheel-reset-20261025
                 } else {
                     this.lineMemberOrdersMode = false;
                     this.lineMemberOrdersMember = null;
@@ -4434,6 +4470,60 @@ window._resetCountUp = function() {
                 saved.enabled = checked === true;
                 this.lwForm.enabled = checked === true;
                 return this.lwSave(saved, checked ? '已開啟幸運轉盤（依開放日期生效）。' : '已關閉幸運轉盤，立即停止。');
+            },
+            // ── lucky-wheel-reset-20261025：今天參加紀錄、清除某支手機讓它再轉 ──
+            lwAdminError: function(err) {
+                var msg = String((err && err.message) || err || '未知錯誤');
+                if (/not_found|404/.test(msg)) return 'PocketBase 尚未更新（請先套用 Pi 更新包 lucky-wheel-reset-20261025）。';
+                if (/invalid_phone/.test(msg)) return '手機號碼格式不對。';
+                return msg;
+            },
+            lwLoadDraws: function() {
+                var self = this;
+                if (self.lwDrawsLoading) return Promise.resolve();
+                self.lwDrawsLoading = true;
+                self.lwDrawsError = '';
+                return requestLuckyWheelAdmin('luckyWheelDraws', {}, self.pocketBaseManageOptions({ timeoutMs: 15000, secureTimeoutMs: 15000 })).then(function(result) {
+                    self.lwDraws = Array.isArray(result.records) ? result.records : [];
+                    self.lwDrawsDate = String(result.date || '');
+                    self.lwDrawsLoaded = true;
+                }).catch(function(err) {
+                    self.lwDrawsError = '參加紀錄讀取失敗：' + self.lwAdminError(err);
+                }).finally(function() {
+                    self.lwDrawsLoading = false;
+                });
+            },
+            lwResetDraw: function(target) {
+                var self = this;
+                var phone = String((target && target.phone) || '').replace(/\D/g, '');
+                var drawId = phone ? '' : String((target && target.id) || '');
+                if (!phone && !drawId) { self.lwDrawsError = '請輸入手機號碼（例如 0912345678）。'; return Promise.resolve(); }
+                if (phone && phone.length < 8) { self.lwDrawsError = '手機號碼格式不對。'; return Promise.resolve(); }
+                var who = phone ? ('手機 ' + phone) : ('單號 ' + ((target && target.orderNo) || '') + ' 的紀錄');
+                if (!window.confirm('清除' + who + ' 今天的轉盤紀錄？\n\n清除後這支手機下一張單可以再轉一次（重新抽）。\n已經送出的訂單金額不變。')) return Promise.resolve();
+                self.lwResetting = phone || drawId;
+                self.lwDrawsError = '';
+                self.lwDrawsNotice = '';
+                return requestLuckyWheelAdmin('luckyWheelReset', phone ? { phone: phone } : { drawId: drawId }, self.pocketBaseManageOptions({ timeoutMs: 15000, secureTimeoutMs: 15000 })).then(function(result) {
+                    var n = Number(result.removed) || 0;
+                    self.lwDrawsNotice = n > 0 ? ('已清除' + who + ' 今天的紀錄，下一張單可以再轉一次。') : (who + ' 今天沒有轉盤紀錄，不用清除。');
+                    if (target && target.fromInput) self.lwResetPhone = '';
+                    return self.lwLoadDraws();
+                }).catch(function(err) {
+                    self.lwDrawsError = '清除失敗：' + self.lwAdminError(err);
+                }).finally(function() {
+                    self.lwResetting = '';
+                });
+            },
+            lwDrawTime: function(value) {
+                var d = new Date(value);
+                if (isNaN(d.getTime())) return '';
+                return d.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Taipei' });
+            },
+            lwDrawStatus: function(r) {
+                if (r.cancelled) return { text: '已取消・下一張沿用', cls: 'bg-slate-700 text-slate-300' };
+                if (r.reusable) return { text: '未成立・下一張沿用', cls: 'bg-slate-700 text-slate-300' };
+                return { text: '有效', cls: 'bg-emerald-900/60 text-emerald-300' };
             },
             lwSave: function(configOverride, okText) {
                 var self = this;

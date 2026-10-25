@@ -823,6 +823,7 @@
                 successPhoneLast4: '',
                 // lucky-wheel-20261025
                 successLuckyWheel: null, lwRulesOpen: false, lwBypassMinOrder: false,
+                lwMarksVersion: 0, lwMarksCheckedAt: 0, // lucky-wheel-reset-20261025：本機轉盤記號（變動時重算提示）
                 showHolidayModal: false,
                 showStoreInfo: false,
                 storeInfoTab: 'orders',
@@ -887,7 +888,9 @@
             luckyWheelBanner: function() {
                 var store = this.luckyWheelOpenFor('store'), linePay = this.luckyWheelOpenFor('linepay');
                 if (!store && !linePay) return null;
-                if (this.luckyWheelAlreadyDrawn(this.inputPhone)) return null;
+                // lucky-wheel-reset-20261025：還沒輸入完整電話時，這台裝置今天轉過就不顯示
+                var lwPhoneDigits = String(this.inputPhone || '').replace(/\D/g, '');
+                if (lwPhoneDigits.length >= 8 ? this.luckyWheelAlreadyDrawn(this.inputPhone) : this.luckyWheelDeviceMarks().length > 0) return null;
                 var min = this.luckyWheelMinOrder();
                 return {
                     min: min,
@@ -964,6 +967,7 @@
                 if (nv && this._menuLoaded) this.checkAnnouncements(nv);
             },
             currentView: function(nv, ov) {
+                if (nv === 'cart') this.luckyWheelRefreshMarks(); // lucky-wheel-reset-20261025
                 // ★ 進入餐點/購物車頁自動捲到最上方；回菜單頁還原原本捲動位置
                 if (ov === 'menu') this._menuScrollY = window.scrollY || window.pageYOffset || 0;
                 var self = this;
@@ -1041,6 +1045,7 @@
                     timeoutMs: 10000
                 }).then(function(result) {
                     self.rememberLineMemberSession(result);
+                    self.luckyWheelApplyMemberStatus(result && result.luckyWheelToday); // lucky-wheel-reset-20261025
                     self.lineMember = result.member || null;
                     if (result.member) {
                         self.lineDisplayName = result.member.display_name || self.lineDisplayName;
@@ -1321,6 +1326,7 @@
                         // lucky-wheel-20261025：幸運轉盤設定（manage「幸運轉盤」）
                         luckyWheel: has('luckyWheel') ? ((v.luckyWheel && typeof v.luckyWheel === 'object' && !Array.isArray(v.luckyWheel)) ? v.luckyWheel : null) : (prev.luckyWheel || null)
                     };
+                    if (self.settings.luckyWheel) self.luckyWheelRefreshMarks(); // lucky-wheel-reset-20261025
                     self.settingsReadBackend = backend || 'pocketbase';
                     self.categorySubcategories = self.normalizeCategorySubcategories(self.settings.categorySubcategories, self.settings.categories || self.categories);
                     if (self.menu && self.menu.length) self.refreshMenuCategoriesFromSettings();
@@ -2495,15 +2501,79 @@
                 var digits = String(phone || '').replace(/\D/g, '');
                 return digits.length >= 8 ? 'lw_drawn_' + this.luckyWheelTodayKey() + '_' + digits : '';
             },
-            luckyWheelAlreadyDrawn: function(phone) {
-                var key = this.luckyWheelDrawnKey(phone);
-                if (!key) return false;
-                try { return localStorage.getItem(key) === '1'; } catch (e) { return false; }
+            // lucky-wheel-reset-20261025：記號內容 { d: 伺服器抽獎編號, t: 時間 }；舊版的 '1' 照樣算轉過（沒有編號，無法向伺服器確認）
+            luckyWheelReadMark: function(key) {
+                try {
+                    var raw = localStorage.getItem(key);
+                    if (raw === '1') return { d: '' };
+                    if (!raw || raw.charAt(0) !== '{') return null;
+                    var mark = JSON.parse(raw);
+                    return mark && typeof mark === 'object' ? mark : null;
+                } catch (e) { return null; }
             },
-            luckyWheelMarkDrawn: function(phone) {
+            luckyWheelAlreadyDrawn: function(phone) {
+                void this.lwMarksVersion;
+                var key = this.luckyWheelDrawnKey(phone);
+                return key ? !!this.luckyWheelReadMark(key) : false;
+            },
+            luckyWheelDeviceMarks: function() {
+                void this.lwMarksVersion;
+                var prefix = 'lw_drawn_' + this.luckyWheelTodayKey() + '_', out = [];
+                try {
+                    for (var i = 0; i < localStorage.length; i++) {
+                        var key = localStorage.key(i);
+                        if (!key || key.indexOf(prefix) !== 0) continue;
+                        var mark = this.luckyWheelReadMark(key);
+                        if (mark) out.push({ key: key, drawId: String(mark.d || '') });
+                    }
+                } catch (e) {}
+                return out;
+            },
+            luckyWheelMarkDrawn: function(phone, drawId) {
                 var key = this.luckyWheelDrawnKey(phone);
                 if (!key) return;
-                try { localStorage.setItem(key, '1'); } catch (e) {}
+                if (!drawId && this.luckyWheelReadMark(key)) return; // 「今天已參加過」不覆蓋原本有抽獎編號的記號
+                try { localStorage.setItem(key, JSON.stringify({ d: String(drawId || ''), t: Date.now() })); } catch (e) {}
+                this.lwMarksVersion++;
+            },
+            // LINE 點餐：伺服器用已驗證的 LINE 會員身分回答「會員電話今天有沒有轉過」（在別的瀏覽器轉過也算）
+            luckyWheelApplyMemberStatus: function(status) {
+                if (!status || typeof status !== 'object') return;
+                var key = this.luckyWheelDrawnKey(status.phone);
+                if (!key || String(status.date || '') !== this.luckyWheelTodayKey()) return;
+                try {
+                    if (status.state === 'used') localStorage.setItem(key, JSON.stringify({ d: String(status.drawId || ''), t: Date.now(), m: 1 }));
+                    else if (status.state === 'none' || status.state === 'reusable') localStorage.removeItem(key);
+                    else return;
+                } catch (e) { return; }
+                this.lwMarksVersion++;
+            },
+            // 向伺服器確認：店家清除（gone）或上一張取消／LINE Pay 沒付成功（reusable）→ 拿掉記號，提示與轉盤恢復
+            luckyWheelRefreshMarks: function(force) {
+                var self = this;
+                if (!this.luckyWheelConfig() || typeof fetch !== 'function') return;
+                var now = Date.now();
+                if (!force && this.lwMarksCheckedAt && now - this.lwMarksCheckedAt < 20000) return;
+                var marks = this.luckyWheelDeviceMarks().filter(function(m) { return /^lw[a-z0-9]{13}$/.test(m.drawId); }).slice(0, 10);
+                if (!marks.length) return;
+                this.lwMarksCheckedAt = now;
+                var base = String((this.settings && this.settings.pocketBaseUrl) || 'https://pb.yuangi168.com').replace(/\/+$/, '');
+                var ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+                var timer = setTimeout(function() { if (ctrl) ctrl.abort(); }, 6000);
+                fetch(base + '/api/order-public/lucky-wheel-draws?ids=' + encodeURIComponent(marks.map(function(m) { return m.drawId; }).join(',')), {
+                    cache: 'no-store', signal: ctrl ? ctrl.signal : undefined
+                }).then(function(r) { return r.ok ? r.json() : null; }).then(function(data) {
+                    var states = data && data.ok === true && data.draws;
+                    if (!states || typeof states !== 'object') return;
+                    var changed = false;
+                    marks.forEach(function(m) {
+                        if (states[m.drawId] === 'gone' || states[m.drawId] === 'reusable') {
+                            try { localStorage.removeItem(m.key); } catch (e) {}
+                            changed = true;
+                        }
+                    });
+                    if (changed) self.lwMarksVersion++;
+                }).catch(function() {}).then(function() { clearTimeout(timer); });
             },
             // 轉盤格子：等分 8～12 格，常見獎項佔較多格；顏色跟著每日主題，最大獎固定金色
             luckyWheelSlices: function() {
@@ -2762,7 +2832,7 @@
                                 orderData.luckyWheel = { label: String(pbLucky.label || ''), pct: Number(pbLucky.pct) || 0, discount: Number(pbLucky.discount) || 0, subtotal: Number(pbLucky.subtotal) || 0 };
                             }
                         }
-                        if (pbLucky || (lwOutcome.reason === 'already')) self.luckyWheelMarkDrawn(orderData.phone);
+                        if (pbLucky || (lwOutcome.reason === 'already')) self.luckyWheelMarkDrawn(orderData.phone, pbLucky && pbLucky.drawId); // lucky-wheel-reset-20261025
                         var pbNo = pbRecord && Number(pbRecord.order_no || pbRecord.orderNo || 0);
                         if (!numberingDeferred && !assignedNo && Number.isFinite(pbNo) && pbNo > 0) {
                             assignedNo = pbNo;
@@ -2776,6 +2846,14 @@
                     // server_queue_v1 owns the initial kitchen handoff; the customer must not enqueue again.
                     self.saveMyOrder(orderId, orderData);
                     // lucky-wheel-20261025：轉盤停下、顧客按下按鈕後才繼續（成功視窗／跳轉 LINE Pay）
+                    // lucky-wheel-reset-20261025：本機以為轉過（店家剛清除、換過裝置…），伺服器卻有抽到 → 補轉一次再顯示結果
+                    if (!lwWheel && window.LuckyWheel && lwOutcome && lwOutcome.luckyWheel && Number(lwOutcome.luckyWheel.discount) > 0) {
+                        lwSlices = self.luckyWheelSlices();
+                        if (lwSlices.length) {
+                            lwWheel = window.LuckyWheel.create({ title: '幸運轉盤', status: '轉出你的折扣…', segments: lwSlices });
+                            lwWheel.open();
+                        }
+                    }
                     var lwDone = self.playLuckyWheel(lwWheel, lwSlices, lwOutcome, orderData, payMethod, lwState);
 
                     // ★ LINE Pay 付款流程（Firebase 中介，解決 HTTPS→HTTP 問題）
