@@ -1,0 +1,1404 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#13503F">
+<meta name="robots" content="noindex">
+<title>語音點餐</title>
+<!--
+  店內語音點餐平板（Grok Voice Agent 版）
+  ─────────────────────────────────────────
+  ‧ 預覽（離線）：直接用瀏覽器開這個檔案，或網址加 ?demo=1 → 模擬對話，不連線、不用麥克風。
+  ‧ 正式：放在 Cloudflare Pages（HTTPS）與 pocketbase-order-writer、kiosk-mic-worklet 同一層。
+      第一次由店員在平板開：kiosk-voice.html?kioskKey=<KIOSK_VOICE_KEYS 其中一把>
+      金鑰存在平板 localStorage，網址上的 key 會自動清掉。
+      Pi 位址預設讀 PocketBase settings.linePayServerUrl；要另外指定就加 ?pi=https://xxx
+  ‧ XAI_API_KEY 只放在 Pi（/api/kiosk/voice/token 只發 2 分鐘短效 token），平板拿不到永久金鑰。
+-->
+<style>
+:root{
+  --green:#13503F;
+  --green-deep:#0D3D30;
+  --green-soft:#1C6A54;
+  --yolk:#FFB000;
+  --yolk-light:#FFD45C;
+  --yolk-deep:#E68A00;
+  --white:#FFFDF5;
+  --ink:#23201B;
+  --muted:#6B6457;
+  --rule:#E3D9C2;
+  --red:#D2261C;
+  --toast:#C98A4B;
+  --toast-crust:#9C5F27;
+  --ask-bg:#FFEDB8;
+  --ask-ink:#7A4600;
+  font-size:clamp(16px,2.5vmin,30px);
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;overflow:hidden}
+body{
+  background:var(--green);
+  color:var(--white);
+  font-family:"PingFang TC","Noto Sans TC","Noto Sans CJK TC","Source Han Sans TC","Microsoft JhengHei","Heiti TC",system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased;
+  -webkit-tap-highlight-color:transparent;
+  -webkit-user-select:none;user-select:none;
+  touch-action:manipulation;
+}
+button{font:inherit;color:inherit;cursor:pointer}
+button:focus-visible{outline:.35rem solid var(--yolk-light);outline-offset:.3rem}
+.screen{position:fixed;inset:0;display:none}
+.screen.is-active{display:flex}
+
+/* ───── 首頁 ───── */
+.home{flex-direction:column;align-items:center;justify-content:center;gap:2.2vmin;padding:4vmin 4vmin 6vmin;text-align:center;overflow:hidden}
+.home > *{position:relative;z-index:1}
+.store-label{font-size:1.15rem;font-weight:700;opacity:.8;margin:0}
+.greet{margin:0;font-size:3.3rem;font-weight:900;letter-spacing:.06em;line-height:1.1}
+.egg{
+  position:relative;border:0;background:none;padding:0;
+  width:min(62vmin,600px);aspect-ratio:400/340;
+  -webkit-tap-highlight-color:transparent;
+}
+.egg-white{position:absolute;inset:0;width:100%;height:100%;filter:drop-shadow(0 1.3vmin 0 rgba(0,0,0,.2))}
+.yolk{
+  position:absolute;left:50%;top:51%;transform:translate(-50%,-50%);
+  width:58%;aspect-ratio:1;border-radius:50%;
+  background:radial-gradient(circle at 34% 30%,var(--yolk-light) 0,var(--yolk) 46%,var(--yolk-deep) 100%);
+  box-shadow:inset -1.2vmin -1.6vmin 0 rgba(200,110,0,.28);
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1.2vmin;
+  color:var(--ink);
+  animation:yolk-call 2.4s ease-in-out infinite;
+  transition:transform .12s ease;
+}
+.yolk::after{content:"";position:absolute;left:20%;top:16%;width:20%;height:13%;border-radius:50%;background:rgba(255,255,255,.55);transform:rotate(-28deg)}
+.egg:active .yolk{transform:translate(-50%,-50%) scale(.95)}
+.yolk-icon{width:9vmin;height:9vmin}
+.yolk-text{font-size:7.2vmin;font-weight:900;letter-spacing:.08em;line-height:1}
+@keyframes yolk-call{
+  0%,100%{box-shadow:inset -1.2vmin -1.6vmin 0 rgba(200,110,0,.28),0 0 0 0 rgba(255,176,0,.55)}
+  50%{box-shadow:inset -1.2vmin -1.6vmin 0 rgba(200,110,0,.28),0 0 0 3.2vmin rgba(255,176,0,0)}
+}
+.steps{list-style:none;margin:1vmin 0 0;padding:0;display:flex;gap:1.4rem;align-items:center;flex-wrap:wrap;justify-content:center}
+.steps li{display:flex;align-items:center;gap:.55rem;font-size:1.45rem;font-weight:800}
+.steps li + li::before{content:"";width:2.4rem;border-top:.28rem dotted rgba(255,253,245,.55);margin-right:.8rem}
+.step-no{display:inline-flex;align-items:center;justify-content:center;width:2.2rem;height:2.2rem;border-radius:50%;background:var(--white);color:var(--green);font-size:1.25rem;font-weight:900}
+.home > .home-status{position:absolute;right:2.2vmin;top:1.6vmin;z-index:1;font-size:.8rem;opacity:.6;margin:0}
+.decor{position:absolute;z-index:0;pointer-events:none}
+.decor-toast{left:-3vmin;bottom:-5vmin;width:26vmin;transform:rotate(-14deg)}
+.decor-cup{right:-1vmin;bottom:-2vmin;width:22vmin}
+
+/* ───── 點餐中 ───── */
+.order{
+  display:none;
+  grid-template-columns:minmax(0,37fr) minmax(0,63fr);
+  grid-template-rows:minmax(0,1fr) auto;
+  grid-template-areas:"talk slip" "actions slip";
+  gap:2.6vmin 3vmin;padding:3vmin;
+}
+.order.is-active{display:grid}
+.talk{grid-area:talk;display:flex;flex-direction:column;gap:2.2vmin;min-height:0}
+.status{
+  align-self:flex-start;display:inline-flex;align-items:center;gap:.7rem;
+  padding:.5rem 1.3rem .5rem .6rem;border-radius:999px;background:var(--green-deep);
+  font-size:1.55rem;font-weight:900;
+}
+.status-dot{position:relative;width:2.6rem;height:2.6rem;border-radius:50%;background:var(--yolk);display:flex;align-items:center;justify-content:center;color:var(--ink)}
+.status-dot svg{width:1.5rem;height:1.5rem}
+.status[data-state="listening"] .status-dot::after{content:"";position:absolute;inset:0;border-radius:50%;border:.3rem solid var(--yolk);animation:ping 1.3s ease-out infinite}
+.status[data-state="speaking"] .status-dot{background:var(--white)}
+.status[data-state="thinking"] .status-dot,.status[data-state="connecting"] .status-dot{background:var(--green-soft);color:var(--white)}
+@keyframes ping{from{transform:scale(1);opacity:.9}to{transform:scale(1.8);opacity:0}}
+.clerk{display:flex;gap:1.2rem;align-items:flex-start}
+.clerk-face{flex:none;width:4.2rem;height:4.2rem;border-radius:50%;background:radial-gradient(circle at 34% 30%,var(--yolk-light),var(--yolk) 55%,var(--yolk-deep));display:flex;align-items:center;justify-content:center}
+.clerk-face svg{width:2.6rem;height:2.6rem}
+.bubble{
+  position:relative;flex:1;min-width:0;background:var(--white);color:var(--ink);
+  border-radius:1.4rem;padding:1.1rem 1.4rem 1.2rem;
+  font-size:1.8rem;font-weight:800;line-height:1.45;min-height:7.5rem;
+}
+.bubble::before{content:"";position:absolute;left:-.9rem;top:1.3rem;border:.6rem solid transparent;border-right:.9rem solid var(--white);border-left:0}
+.bubble-who{display:block;font-size:1rem;font-weight:800;color:var(--muted);margin-bottom:.2rem}
+.heard{margin:0;font-size:1.35rem;font-weight:600;line-height:1.5;color:rgba(255,253,245,.86);padding-left:5.4rem;min-height:2rem;word-break:break-all}
+.heard strong{font-weight:900;color:var(--white);margin-right:.4rem}
+.actions{grid-area:actions;display:grid;gap:1.6vmin}
+.btn{border:0;border-radius:1.2rem;min-height:5rem;padding:.6rem 1rem;font-size:1.9rem;font-weight:900;letter-spacing:.06em}
+.btn-done{background:var(--yolk);color:var(--ink);box-shadow:0 .7vmin 0 var(--yolk-deep)}
+.btn-done:active{transform:translateY(.5vmin);box-shadow:0 .2vmin 0 var(--yolk-deep)}
+.btn-cancel{background:transparent;color:var(--white);border:.3rem solid rgba(255,253,245,.55);min-height:4.2rem;font-size:1.5rem}
+.btn-cancel.is-confirm{background:var(--red);border-color:var(--red)}
+
+/* 點餐單（紙條） */
+.slip{
+  grid-area:slip;position:relative;display:flex;flex-direction:column;min-height:0;
+  background:var(--white);color:var(--ink);
+  border-radius:.8rem .8rem 0 0;box-shadow:0 1.1vmin 0 rgba(0,0,0,.18);
+  margin-bottom:1.2rem;
+}
+.slip::after{
+  content:"";position:absolute;left:0;right:0;bottom:-1.1rem;height:1.2rem;
+  background:linear-gradient(135deg,var(--white) 50%,transparent 50%) 0 0/1.4rem 1.2rem repeat-x,
+             linear-gradient(225deg,var(--white) 50%,transparent 50%) 0 0/1.4rem 1.2rem repeat-x;
+}
+.slip-title{display:flex;justify-content:space-between;align-items:baseline;padding:1.1rem 1.6rem .4rem}
+.slip-title h2{margin:0;font-size:1.6rem;font-weight:900;letter-spacing:.2em}
+.slip-count{font-size:1.2rem;font-weight:700;color:var(--muted)}
+.cols{display:grid;grid-template-columns:3.4rem minmax(0,1fr) 3.6rem 6.6rem;column-gap:.8rem;align-items:start}
+.slip-head{padding:.5rem 1.6rem .6rem;border-bottom:.22rem solid var(--ink);font-size:1.1rem;font-weight:800;color:var(--muted)}
+.slip-head .c-qty{text-align:center}
+.slip-head .c-amt{text-align:right}
+.rows{flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch}
+.row{padding:1.05rem 1.6rem;border-bottom:.16rem dashed var(--rule)}
+.row.is-new{animation:row-in 1.8s ease-out}
+@keyframes row-in{0%{background:#FFE39A}100%{background:transparent}}
+.r-no{font-size:1.6rem;font-weight:800;color:var(--muted);line-height:1.35}
+.r-name{font-size:1.95rem;font-weight:900;line-height:1.3;word-break:break-all}
+.r-opts{margin-top:.25rem;font-size:1.2rem;font-weight:700;color:var(--muted);line-height:1.45}
+.r-ask{display:inline-block;margin-top:.45rem;padding:.12rem .7rem;border-radius:.5rem;background:var(--ask-bg);color:var(--ask-ink);font-size:1.15rem;font-weight:900}
+.r-qty{font-size:1.95rem;font-weight:900;text-align:center;line-height:1.3}
+.r-amt{font-size:1.95rem;font-weight:900;text-align:right;color:var(--red);line-height:1.3;font-variant-numeric:tabular-nums}
+.empty{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1rem;color:var(--muted);text-align:center;padding:2rem}
+.empty svg{width:7rem;height:6rem;opacity:.9}
+.empty p{margin:0;font-size:1.55rem;font-weight:800;line-height:1.5}
+.slip-foot{display:flex;justify-content:space-between;align-items:center;gap:1rem;padding:1rem 1.6rem 1.1rem;border-top:.45rem double var(--ink)}
+.total-label{font-size:2.1rem;font-weight:900;letter-spacing:.2em}
+.total{font-size:4.4rem;font-weight:900;color:var(--red);line-height:1;font-variant-numeric:tabular-nums}
+.total small{font-size:.5em;margin-right:.1em}
+
+/* ───── 點好了 ───── */
+.done{display:none;grid-template-columns:minmax(0,42fr) minmax(0,58fr);grid-template-areas:"msg slip";gap:3vmin;padding:4vmin}
+.done.is-active{display:grid}
+.done-msg{grid-area:msg;display:flex;flex-direction:column;justify-content:center;gap:2.4vmin}
+.done-msg h2{margin:0;font-size:3.6rem;font-weight:900;letter-spacing:.06em}
+.done-total{margin:0;font-size:2rem;font-weight:800}
+.done-total b{display:block;font-size:6.2rem;line-height:1;color:var(--yolk);font-variant-numeric:tabular-nums}
+.done-go{margin:0;font-size:2.4rem;font-weight:900;line-height:1.35}
+.done-msg .btn{align-self:flex-start;min-width:15rem}
+.done-count{margin:0;font-size:1.1rem;opacity:.75}
+.done .slip{grid-area:slip}
+.done .r-name,.done .r-qty,.done .r-amt{font-size:1.6rem}
+
+/* ───── 錯誤 ───── */
+.error{flex-direction:column;align-items:center;justify-content:center;gap:2.4vmin;padding:6vmin;text-align:center}
+.error h2{margin:0;font-size:3rem;font-weight:900}
+.error-why{margin:0;font-size:1.6rem;font-weight:700;opacity:.85}
+.error-do{margin:0;font-size:2.3rem;font-weight:900;color:var(--yolk)}
+.error .btn{min-width:15rem;margin-top:1vmin}
+
+.demo-badge{display:none;position:fixed;left:50%;top:1.4vmin;transform:translateX(-50%);z-index:50;background:var(--yolk);color:var(--ink);font-size:.95rem;font-weight:900;padding:.3rem 1rem;border-radius:999px;box-shadow:0 .3rem 0 rgba(0,0,0,.2)}
+body.is-demo #screen-home.is-active ~ .demo-badge{display:block}
+.demo-chip{display:none;margin-left:.8rem;padding:.2rem .7rem;border-radius:999px;background:var(--yolk);color:var(--ink);font-size:.9rem;font-weight:900;vertical-align:middle}
+body.is-demo .demo-chip{display:inline-block}
+.talk-top{display:flex;align-items:center;flex-wrap:wrap;gap:.6rem}
+
+/* 直立平板 */
+@media (max-aspect-ratio:1/1){
+  .order{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr) auto;grid-template-areas:"talk" "slip" "actions"}
+  .actions{grid-template-columns:2fr 1fr}
+  .btn-cancel{min-height:5rem}
+  .done{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr);grid-template-areas:"msg" "slip"}
+  .egg{width:min(78vmin,600px)}
+  .yolk-text{font-size:8.6vmin}
+  .greet{font-size:3.8rem}
+  .steps{flex-direction:column;align-items:flex-start;gap:1rem;margin-top:2vmin}
+  .steps li{font-size:1.6rem}
+  .steps li + li::before{display:none}
+  .step-no{width:2.5rem;height:2.5rem;font-size:1.35rem}
+  .decor-toast{width:30vmin}
+  .decor-cup{width:26vmin}
+}
+@media (prefers-reduced-motion:reduce){
+  .yolk,.status[data-state="listening"] .status-dot::after,.row.is-new{animation:none}
+}
+</style>
+</head>
+<body>
+
+<!-- 首頁 -->
+<section id="screen-home" class="screen home is-active" aria-label="開始點餐">
+  <p id="store-label" class="store-label" hidden></p>
+  <h1 id="greet" class="greet">早安！</h1>
+  <button id="btn-start" class="egg" type="button" aria-label="開始點餐">
+    <svg class="egg-white" viewBox="0 0 400 340" aria-hidden="true">
+      <path fill="#FFFDF5" d="M196 10c52-3 98 14 132 40 40 30 62 62 66 104 4 40-10 70-30 98-24 34-62 66-116 76-48 9-96 6-138-12C66 300 30 270 14 228 0 190 4 150 22 116 40 82 66 54 102 34 132 18 162 12 196 10z"/>
+    </svg>
+    <span class="yolk">
+      <svg class="yolk-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8.5" y="2.5" width="7" height="12" rx="3.5"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3.5"/></svg>
+      <span class="yolk-text">開始點餐</span>
+    </span>
+  </button>
+  <ol class="steps">
+    <li><span class="step-no">1</span>按蛋黃開始</li>
+    <li><span class="step-no">2</span>說出想吃的餐點</li>
+    <li><span class="step-no">3</span>到櫃台結帳</li>
+  </ol>
+  <p id="home-status" class="home-status"></p>
+  <svg class="decor decor-toast" viewBox="0 0 200 200" aria-hidden="true">
+    <path fill="#9C5F27" d="M38 178V86C14 80 8 56 20 38 34 16 66 8 100 8s66 8 80 30c12 18 6 42-18 48v92z"/>
+    <path fill="#F2D19A" d="M52 166V80c-18-6-22-22-14-34 10-16 34-24 62-24s52 8 62 24c8 12 4 28-14 34v86z"/>
+    <ellipse cx="100" cy="108" rx="34" ry="30" fill="#FFFDF5"/>
+    <circle cx="102" cy="106" r="15" fill="#FFB000"/>
+  </svg>
+  <svg class="decor decor-cup" viewBox="0 0 200 200" aria-hidden="true">
+    <path d="M70 34c-8 10 8 18 0 30M100 26c-8 12 8 20 0 34M130 34c-8 10 8 18 0 30" fill="none" stroke="#FFFDF5" stroke-width="7" stroke-linecap="round" opacity=".55"/>
+    <ellipse cx="100" cy="176" rx="82" ry="16" fill="#0D3D30"/>
+    <path fill="#FFFDF5" d="M36 80h128l-12 84c-2 10-10 16-20 16H68c-10 0-18-6-20-16z"/>
+    <path d="M162 98c26-4 34 32 4 44" fill="none" stroke="#FFFDF5" stroke-width="12" stroke-linecap="round"/>
+    <path fill="#C98A4B" d="M42 80h116l-2 14H44z"/>
+  </svg>
+</section>
+
+<!-- 點餐中 -->
+<section id="screen-order" class="screen order" aria-label="點餐中">
+  <div class="talk">
+    <div class="talk-top">
+      <div id="status" class="status" data-state="connecting" role="status" aria-live="polite">
+        <span class="status-dot"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><rect x="8.5" y="2.5" width="7" height="12" rx="3.5"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3.5"/></svg></span>
+        <span id="status-text">接通中…</span>
+      </div>
+      <span class="demo-chip">預覽模擬</span>
+    </div>
+    <div class="clerk">
+      <span class="clerk-face" aria-hidden="true"><svg viewBox="0 0 40 40" fill="none" stroke="#23201B" stroke-width="3" stroke-linecap="round"><path d="M13 16v2M27 16v2"/><path d="M12 25c4 5 12 5 16 0"/></svg></span>
+      <p id="agent-text" class="bubble" aria-live="polite"><span class="bubble-who">點餐員</span><span id="agent-line">正在幫您接通點餐員，請稍等…</span></p>
+    </div>
+    <p id="user-text" class="heard"></p>
+  </div>
+  <div class="actions">
+    <button id="btn-done" class="btn btn-done" type="button">我點好了</button>
+    <button id="btn-cancel" class="btn btn-cancel" type="button">取消重來</button>
+  </div>
+  <div class="slip" aria-label="點餐單">
+    <div class="slip-title"><h2>點餐單</h2><span id="order-count" class="slip-count"></span></div>
+    <div class="slip-head cols"><span>項次</span><span>餐點</span><span class="c-qty">數量</span><span class="c-amt">金額</span></div>
+    <div id="order-rows" class="rows"></div>
+    <div class="slip-foot"><span class="total-label">總價</span><span id="order-total" class="total"><small>$</small>0</span></div>
+  </div>
+</section>
+
+<!-- 點好了 -->
+<section id="screen-done" class="screen done" aria-label="點餐完成">
+  <div class="done-msg">
+    <h2>點好了！</h2>
+    <p class="done-total">總共<b id="done-total">$0</b></p>
+    <p class="done-go">請到櫃台結帳，<br>謝謝您！</p>
+    <button id="btn-home" class="btn btn-done" type="button">回到首頁</button>
+    <p id="done-count" class="done-count"></p>
+  </div>
+  <div class="slip" aria-label="點餐單">
+    <div class="slip-title"><h2>點餐單</h2><span id="done-items" class="slip-count"></span></div>
+    <div class="slip-head cols"><span>項次</span><span>餐點</span><span class="c-qty">數量</span><span class="c-amt">金額</span></div>
+    <div id="done-rows" class="rows"></div>
+  </div>
+</section>
+
+<!-- 無法使用 -->
+<section id="screen-error" class="screen error" aria-label="暫時無法使用">
+  <h2>語音點餐暫時不能用</h2>
+  <p id="error-why" class="error-why"></p>
+  <p class="error-do">請直接跟櫃台店員點餐，謝謝！</p>
+  <button id="btn-error-home" class="btn btn-done" type="button">回到首頁</button>
+</section>
+
+<div id="demo-badge" class="demo-badge">預覽模式：模擬對話，不會連線</div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* ═════════ 設定 ═════════ */
+  var CONFIG = {
+    piBase: '',                       // 留空 = 讀 PocketBase settings.linePayServerUrl；也可用 ?pi= 指定
+    tokenPath: '/api/kiosk/voice/token',
+    wsUrl: 'wss://api.x.ai/v1/realtime',
+    model: 'grok-voice-3.0',          // Pi 回傳的 model 優先
+    voice: 'ara',                     // Pi 回傳的 voice 優先（XAI_VOICE_NAME）
+    speechSpeed: 0.92,                // 長輩：稍微放慢（0.7–1.5）
+    reasoningEffort: 'none',          // 'none' 最快；聽懂但常點錯時改 'high'
+    bargeIn: false,                   // false = 點餐員說話時不收音，避免喇叭回音打斷自己；?bargein=1 可測試插話
+    serverIdlePromptMs: 15000,        // 顧客沉默多久，點餐員主動問「還需要什麼嗎？」
+    idleEndMs: 60000,                 // 完全沒聲音多久自動結束
+    maxSessionMs: 6 * 60 * 1000,      // 單次點餐最長時間（控制費用）
+    doneReturnMs: 60000,              // 點好了畫面停留多久回首頁
+    errorReturnMs: 20000,
+    menuRefreshMs: 5 * 60 * 1000,
+    writerModule: './pocketbase-order-writer.20260818_001.js?v=20260925_checkout_diag_1',
+    workletUrl: './kiosk-mic-worklet.20261029_001.js',
+    storeLabel: ''
+  };
+
+  var params = new URLSearchParams(location.search);
+  var DEMO = params.get('demo') === '1' || (location.protocol === 'file:' && params.get('demo') !== '0');
+  var TTS_ON = params.get('tts') !== '0';
+  if (params.get('bargein') === '1') CONFIG.bargeIn = true;
+  if (params.get('pi')) storeSet('kiosk_pi_base', params.get('pi'));
+  if (params.get('kioskKey')) {
+    storeSet('kiosk_voice_key', params.get('kioskKey'));
+    params.delete('kioskKey');
+    var qs = params.toString();
+    try { history.replaceState(null, '', location.pathname + (qs ? '?' + qs : '')); } catch (_) {}
+  }
+
+  function storeGet(k) { try { return localStorage.getItem(k) || ''; } catch (_) { return ''; } }
+  function storeSet(k, v) { try { localStorage.setItem(k, v); } catch (_) {} }
+  function $(id) { return document.getElementById(id); }
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function later(ms, fn) { return setTimeout(fn, ms); }
+
+  /* ═════════ 文字正規化（Grok 中文可能回簡體） ═════════ */
+  var S2T = {"并":"並","干":"乾","亚":"亞","个":"個","内":"內","两":"兩","汇":"匯","问":"問","单":"單","吗":"嗎","国":"國","图":"圖","坚":"堅","块":"塊","对":"對","层":"層","岛":"島","帐":"帳","带":"帶","帮":"幫","卷":"捲","换":"換","择":"擇","会":"會","条":"條","乐":"樂","样":"樣","柠":"檸","柜":"櫃","欧":"歐","欢":"歡","气":"氣","没":"沒","汤":"湯","温":"溫","汉":"漢","浆":"漿","浓":"濃","湾":"灣","为":"為","乌":"烏","无":"無","烟":"煙","热":"熱","烧":"燒","熏":"燻","现":"現","产":"產","发":"發","盘":"盤","确":"確","窑":"窯","约":"約","红":"紅","纽":"紐","结":"結","绞":"絞","丝":"絲","经":"經","总":"總","义":"義","听":"聽","肠":"腸","临":"臨","叶":"葉","卜":"蔔","葱":"蔥","苹":"蘋","兰":"蘭","萝":"蘿","号":"號","虾":"蝦","蜗":"蝸","见":"見","记":"記","认":"認","说":"說","请":"請","谢":"謝","赞":"讚","猪":"豬","贴":"貼","轮":"輪","这":"這","过":"過","选":"選","还":"還","边":"邊","乡":"鄉","腌":"醃","酱":"醬","钙":"鈣","锡":"錫","错":"錯","锅":"鍋","铁":"鐵","阳":"陽","双":"雙","鸡":"雞","颗":"顆","饮":"飲","饼":"餅","体":"體","松":"鬆","鱼":"魚","鲔":"鮪","鲜":"鮮","鸳":"鴛","鸯":"鴦","咸":"鹹","麦":"麥","面":"麵","么":"麼","黄":"黃","点":"點","龙":"龍"};
+  function toTrad(s) {
+    s = String(s == null ? '' : s);
+    var out = '';
+    for (var i = 0; i < s.length; i++) { var c = s.charAt(i); out += S2T[c] || c; }
+    return out;
+  }
+  var CN_NUM = { '一': 1, '二': 2, '兩': 2, '两': 2, '三': 3, '四': 4, '五': 5, '六': 6, '七': 7, '八': 8, '九': 9, '十': 10 };
+  function cnDigits(s) { return s.replace(/([一二兩两三四五六七八九十])(?=號)/g, function (m) { return String(CN_NUM[m]); }); }
+  function norm(s) {
+    return cnDigits(toTrad(s)).replace(/[（）()\[\]【】「」『』\s\/、,，.。．!！?？~～:：;；\-－_＋+*＊'"]/g, '').toLowerCase();
+  }
+  function normChoice(s) { return norm(s).replace(/^(我要|要|多加|加)(?=.)/, ''); }
+  function similarity(a, b) {
+    if (!a || !b) return 0;
+    if (a === b) return 1;
+    var prev = [], i, j;
+    for (j = 0; j <= b.length; j++) prev[j] = j;
+    for (i = 1; i <= a.length; i++) {
+      var cur = [i];
+      for (j = 1; j <= b.length; j++) cur[j] = Math.min(cur[j - 1] + 1, prev[j] + 1, prev[j - 1] + (a.charAt(i - 1) === b.charAt(j - 1) ? 0 : 1));
+      prev = cur;
+    }
+    return 1 - prev[b.length] / Math.max(a.length, b.length);
+  }
+
+  /* ═════════ 菜單 ═════════ */
+  var DEMO_MENU = [{"id":"-OmE1pdSYZaXXKe1R2bT","name":"1號辣卡脆雞捲套餐","shortName":"1號辣腿捲套餐","printName":"1號辣腿捲套餐","price":95,"category":"套餐","active":true,"optionGroups":[{"baseValue":0,"choices":[{"name":"去冰","price":0},{"name":"冰","price":0},{"name":"少冰","price":0},{"name":"溫","price":0}],"defaultIdx":0,"groupName":"溫度","pricing":"addDelta","type":"radio"},{"baseValue":30,"choices":[{"name":"錫蘭紅茶(大杯)","price":25},{"name":"錫蘭奶茶(大杯)","price":30},{"name":"錫蘭(鮮)奶茶(中杯)","price":35},{"name":"錫蘭(鮮)奶茶(大杯)","price":45},{"name":"美式咖啡(無糖無奶)(中杯)","price":40},{"name":"美式咖啡(無糖無奶)(大杯)","price":50},{"name":"鮮奶咖啡(無糖)(中杯)","price":50},{"name":"鮮奶咖啡(無糖)(大杯)","price":60},{"name":"三合一咖啡(大杯)","price":30},{"name":"巧克力可可(中杯)","price":25},{"name":"巧克力可可(大杯)","price":35},{"name":"柳橙汁(大杯)","price":30},{"name":"豆漿(大杯)","price":30},{"name":"鴛鴦奶茶(中杯)","price":35},{"name":"鴛鴦奶茶(大杯)","price":40},{"name":"柳橙紅茶(大杯)","price":30},{"name":"紅茶豆漿(大杯)","price":30}],"defaultIdx":1,"groupName":"套餐飲料","pricing":"mealUpgrade","type":"radio"}],"options":[{"name":"+散蛋","price":15},{"name":"+起司","price":10},{"name":"+火腿","price":15},{"name":"+培根","price":20}],"posExtras":[{"name":"不要菜","price":0},{"name":"不要胡椒","price":0},{"name":"不要醬","price":0},{"name":"不要番茄醬","price":0},{"name":"不要千島醬","price":0},{"name":"不要白沙拉","price":0},{"name":"不要芥末醬","price":0},{"name":"不要照燒醬","price":0},{"name":"不要小黃瓜","price":0},{"name":"不要九層塔","price":0},{"name":"不要焦","price":0},{"name":"不要烤","price":0},{"name":"不要切","price":0},{"name":"♨️酥/🔪切","price":0},{"name":"烤酥","price":0},{"name":"煎酥","price":0},{"name":"對切","price":0},{"name":"同一盒","price":0},{"name":"註記 _________","price":0},{"name":"🐔雞肉","price":0},{"name":"+燻雞35g","price":20},{"name":"+辣卡脆雞(無骨)","price":50},{"name":"+原卡脆雞(無骨)","price":50},{"name":"+卡疆雞腿(辣)","price":55},{"name":"+香雞","price":20},{"name":"🐷豬/🐂牛","price":0},{"name":"+里肌","price":30},{"name":"+培根","price":20},{"name":"+肉鬆20g","price":10},{"name":"+奇亞籽漢堡肉","price":20},{"name":"+單片豬肉","price":25},{"name":"+2片豬肉","price":50},{"name":"+青花椒豬肉片","price":35},{"name":"+牛肉(不含起司)","price":55},{"name":"🦀海鮮 🦐","price":0},{"name":"+鮪魚30g","price":20},{"name":"+辣椒鮪魚","price":25},{"name":"+虱目魚排(含醬)","price":30},{"name":"+蝦排(含醬)","price":50},{"name":"🥬蔬菜","price":0},{"name":"+玉米30g","price":10},{"name":"+九層塔10g","price":10},{"name":"+苜蓿芽","price":10},{"name":"+美生菜","price":10},{"name":"+蛋沙拉","price":25},{"name":"+辣椒丁","price":10},{"name":"🍞一片系列","price":0},{"name":"+一片白吐司(不烤)","price":5},{"name":"+一片果醬吐司","price":10},{"name":"+一片巧克力吐司","price":13},{"name":"+一片蘿蔔糕","price":20},{"name":"🍔麵包主食","price":0},{"name":"吐司換全麥","price":0},{"name":"+沙拉吐司","price":15},{"name":"+漢堡","price":20},{"name":"+燒餅","price":30},{"name":"+亞朵包","price":40},{"name":"+蝸牛堡","price":35},{"name":"+丹尼酥","price":50}]},{"id":"-OnjKGwdQC2VK6jE0b7I","name":"1號原卡脆雞捲套餐","shortName":"1號(原)腿捲套餐","printName":"1號(原)腿捲套餐","price":95,"category":"套餐","active":true,"optionGroups":[{"baseValue":0,"choices":[{"name":"去冰","price":0},{"name":"冰","price":0},{"name":"少冰","price":0},{"name":"溫","price":0}],"defaultIdx":0,"groupName":"溫度","pricing":"addDelta","type":"radio"},{"baseValue":30,"choices":[{"name":"錫蘭紅茶(大杯)","price":25},{"name":"錫蘭奶茶(大杯)","price":30},{"name":"錫蘭(鮮)奶茶(中杯)","price":35},{"name":"錫蘭(鮮)奶茶(大杯)","price":45},{"name":"美式咖啡(無糖無奶)(中杯)","price":40},{"name":"美式咖啡(無糖無奶)(大杯)","price":50},{"name":"鮮奶咖啡(無糖)(中杯)","price":50},{"name":"鮮奶咖啡(無糖)(大杯)","price":60},{"name":"三合一咖啡(大杯)","price":30},{"name":"巧克力可可(中杯)","price":25},{"name":"巧克力可可(大杯)","price":35},{"name":"柳橙汁(大杯)","price":30},{"name":"豆漿(大杯)","price":30},{"name":"鴛鴦奶茶(中杯)","price":35},{"name":"鴛鴦奶茶(大杯)","price":40},{"name":"柳橙紅茶(大杯)","price":30},{"name":"紅茶豆漿(大杯)","price":30}],"defaultIdx":1,"groupName":"套餐飲料","pricing":"mealUpgrade","type":"radio"}],"options":[{"name":"+散蛋","price":15},{"name":"+起司","price":10},{"name":"+火腿","price":15},{"name":"+培根","price":20}],"posExtras":[{"name":"不要菜","price":0},{"name":"不要胡椒","price":0},{"name":"不要醬","price":0},{"name":"不要番茄醬","price":0},{"name":"不要千島醬","price":0},{"name":"不要白沙拉","price":0},{"name":"不要芥末醬","price":0},{"name":"不要照燒醬","price":0},{"name":"不要小黃瓜","price":0},{"name":"不要九層塔","price":0},{"name":"不要焦","price":0},{"name":"不要烤","price":0},{"name":"不要切","price":0},{"name":"♨️酥/🔪切","price":0},{"name":"烤酥","price":0},{"name":"煎酥","price":0},{"name":"對切","price":0},{"name":"同一盒","price":0},{"name":"註記 _________","price":0},{"name":"🐔雞肉","price":0},{"name":"+燻雞35g","price":20},{"name":"+辣卡脆雞(無骨)","price":50},{"name":"+原卡脆雞(無骨)","price":50},{"name":"+卡疆雞腿(辣)","price":55},{"name":"+香雞","price":20},{"name":"🐷豬/🐂牛","price":0},{"name":"+里肌","price":30},{"name":"+培根","price":20},{"name":"+肉鬆20g","price":10},{"name":"+奇亞籽漢堡肉","price":20},{"name":"+單片豬肉","price":25},{"name":"+2片豬肉","price":50},{"name":"+青花椒豬肉片","price":35},{"name":"+牛肉(不含起司)","price":55},{"name":"🦀海鮮 🦐","price":0},{"name":"+鮪魚30g","price":20},{"name":"+辣椒鮪魚","price":25},{"name":"+虱目魚排(含醬)","price":30},{"name":"+蝦排(含醬)","price":50},{"name":"🥬蔬菜","price":0},{"name":"+玉米30g","price":10},{"name":"+九層塔10g","price":10},{"name":"+苜蓿芽","price":10},{"name":"+美生菜","price":10},{"name":"+蛋沙拉","price":25},{"name":"+辣椒丁","price":10},{"name":"🍞一片系列","price":0},{"name":"+一片白吐司(不烤)","price":5},{"name":"+一片果醬吐司","price":10},{"name":"+一片巧克力吐司","price":13},{"name":"+一片蘿蔔糕","price":20},{"name":"🍔麵包主食","price":0},{"name":"吐司換全麥","price":0},{"name":"+沙拉吐司","price":15},{"name":"+漢堡","price":20},{"name":"+燒餅","price":30},{"name":"+亞朵包","price":40},{"name":"+蝸牛堡","price":35},{"name":"+丹尼酥","price":50}]},{"id":"-OmE2iLIVarc83qrlBSX","name":"2號蛋沙拉燒餅套餐","price":69,"category":"套餐","active":true,"optionGroups":[{"baseValue":0,"choices":[{"name":"去冰","price":0},{"name":"冰","price":0},{"name":"少冰","price":0},{"name":"溫","price":0}],"defaultIdx":0,"groupName":"溫度","pricing":"addDelta","type":"radio"},{"baseValue":30,"choices":[{"name":"錫蘭紅茶(大杯)","price":25},{"name":"錫蘭奶茶(大杯)","price":30},{"name":"錫蘭(鮮)奶茶(中杯)","price":35},{"name":"錫蘭(鮮)奶茶(大杯)","price":45},{"name":"美式咖啡(無糖無奶)(中杯)","price":40},{"name":"美式咖啡(無糖無奶)(大杯)","price":50},{"name":"鮮奶咖啡(無糖)(中杯)","price":50},{"name":"鮮奶咖啡(無糖)(大杯)","price":60},{"name":"三合一咖啡(大杯)","price":30},{"name":"巧克力可可(中杯)","price":25},{"name":"巧克力可可(大杯)","price":35},{"name":"柳橙汁(大杯)","price":30},{"name":"豆漿(大杯)","price":30},{"name":"鴛鴦奶茶(中杯)","price":35},{"name":"鴛鴦奶茶(大杯)","price":40},{"name":"柳橙紅茶(大杯)","price":30},{"name":"紅茶豆漿(大杯)","price":30}],"defaultIdx":1,"groupName":"套餐飲料","pricing":"mealUpgrade","type":"radio"}],"options":[{"name":"+散蛋","price":15},{"name":"+起司","price":10}],"posExtras":[{"name":"不要菜","price":0},{"name":"不要胡椒","price":0},{"name":"不要醬","price":0},{"name":"不要番茄醬","price":0},{"name":"不要千島醬","price":0},{"name":"不要白沙拉","price":0},{"name":"不要芥末醬","price":0},{"name":"不要照燒醬","price":0},{"name":"不要小黃瓜","price":0},{"name":"不要九層塔","price":0},{"name":"不要焦","price":0},{"name":"不要烤","price":0},{"name":"不要切","price":0},{"name":"♨️酥/🔪切","price":0},{"name":"烤酥","price":0},{"name":"煎酥","price":0},{"name":"對切","price":0},{"name":"同一盒","price":0},{"name":"註記 _________","price":0},{"name":"🐔雞肉","price":0},{"name":"+燻雞35g","price":20},{"name":"+辣卡脆雞(無骨)","price":50},{"name":"+原卡脆雞(無骨)","price":50},{"name":"+卡疆雞腿(辣)","price":55},{"name":"+香雞","price":20},{"name":"🐷豬/🐂牛","price":0},{"name":"+里肌","price":30},{"name":"+培根","price":20},{"name":"+肉鬆20g","price":10},{"name":"+奇亞籽漢堡肉","price":20},{"name":"+單片豬肉","price":25},{"name":"+2片豬肉","price":50},{"name":"+青花椒豬肉片","price":35},{"name":"+牛肉(不含起司)","price":55},{"name":"🦀海鮮 🦐","price":0},{"name":"+鮪魚30g","price":20},{"name":"+辣椒鮪魚","price":25},{"name":"+虱目魚排(含醬)","price":30},{"name":"+蝦排(含醬)","price":50},{"name":"🥬蔬菜","price":0},{"name":"+玉米30g","price":10},{"name":"+九層塔10g","price":10},{"name":"+苜蓿芽","price":10},{"name":"+美生菜","price":10},{"name":"+蛋沙拉","price":25},{"name":"+辣椒丁","price":10},{"name":"🍞一片系列","price":0},{"name":"+一片白吐司(不烤)","price":5},{"name":"+一片果醬吐司","price":10},{"name":"+一片巧克力吐司","price":13},{"name":"+一片蘿蔔糕","price":20},{"name":"🍔麵包主食","price":0},{"name":"吐司換全麥","price":0},{"name":"+沙拉吐司","price":15},{"name":"+漢堡","price":20},{"name":"+燒餅","price":30},{"name":"+亞朵包","price":40},{"name":"+蝸牛堡","price":35},{"name":"+丹尼酥","price":50}]},{"id":"-OmE37UnHHgrJdVQsDfE","name":"3號牛肉起司漢堡套餐","shortName":"3號牛肉堡套餐","printName":"3號牛肉堡套餐","price":125,"category":"套餐","active":true,"optionGroups":[{"baseValue":0,"choices":[{"name":"+全熟蛋","price":15},{"name":"+半熟蛋","price":15},{"name":"+散蛋","price":15},{"name":"不加蛋","price":0}],"defaultIdx":0,"groupName":"加蛋","pricing":"addDelta","type":"radio"},{"baseValue":0,"choices":[{"name":"去冰","price":0},{"name":"冰","price":0},{"name":"少冰","price":0},{"name":"溫","price":0}],"defaultIdx":0,"groupName":"溫度","pricing":"addDelta","type":"radio"},{"baseValue":30,"choices":[{"name":"錫蘭紅茶(大杯)","price":25},{"name":"錫蘭奶茶(大杯)","price":30},{"name":"錫蘭(鮮)奶茶(中杯)","price":35},{"name":"錫蘭(鮮)奶茶(大杯)","price":45},{"name":"美式咖啡(無糖無奶)(中杯)","price":40},{"name":"美式咖啡(無糖無奶)(大杯)","price":50},{"name":"鮮奶咖啡(無糖)(中杯)","price":50},{"name":"鮮奶咖啡(無糖)(大杯)","price":60},{"name":"三合一咖啡(大杯)","price":30},{"name":"巧克力可可(中杯)","price":25},{"name":"巧克力可可(大杯)","price":35},{"name":"柳橙汁(大杯)","price":30},{"name":"豆漿(大杯)","price":30},{"name":"鴛鴦奶茶(中杯)","price":35},{"name":"鴛鴦奶茶(大杯)","price":40},{"name":"柳橙紅茶(大杯)","price":30},{"name":"紅茶豆漿(大杯)","price":30}],"defaultIdx":1,"groupName":"套餐飲料","pricing":"mealUpgrade","type":"radio"}],"options":[{"name":"+起司","price":10},{"name":"+火腿","price":15},{"name":"+培根","price":20}],"posExtras":[{"name":"不要菜","price":0},{"name":"不要胡椒","price":0},{"name":"不要醬","price":0},{"name":"不要番茄醬","price":0},{"name":"不要千島醬","price":0},{"name":"不要白沙拉","price":0},{"name":"不要芥末醬","price":0},{"name":"不要照燒醬","price":0},{"name":"不要小黃瓜","price":0},{"name":"不要九層塔","price":0},{"name":"不要焦","price":0},{"name":"不要烤","price":0},{"name":"不要切","price":0},{"name":"♨️酥/🔪切","price":0},{"name":"烤酥","price":0},{"name":"煎酥","price":0},{"name":"對切","price":0},{"name":"同一盒","price":0},{"name":"註記 _________","price":0},{"name":"🐔雞肉","price":0},{"name":"+燻雞35g","price":20},{"name":"+辣卡脆雞(無骨)","price":50},{"name":"+原卡脆雞(無骨)","price":50},{"name":"+卡疆雞腿(辣)","price":55},{"name":"+香雞","price":20},{"name":"🐷豬/🐂牛","price":0},{"name":"+里肌","price":30},{"name":"+培根","price":20},{"name":"+肉鬆20g","price":10},{"name":"+奇亞籽漢堡肉","price":20},{"name":"+單片豬肉","price":25},{"name":"+2片豬肉","price":50},{"name":"+青花椒豬肉片","price":35},{"name":"+牛肉(不含起司)","price":55},{"name":"🦀海鮮 🦐","price":0},{"name":"+鮪魚30g","price":20},{"name":"+辣椒鮪魚","price":25},{"name":"+虱目魚排(含醬)","price":30},{"name":"+蝦排(含醬)","price":50},{"name":"🥬蔬菜","price":0},{"name":"+玉米30g","price":10},{"name":"+九層塔10g","price":10},{"name":"+苜蓿芽","price":10},{"name":"+美生菜","price":10},{"name":"+蛋沙拉","price":25},{"name":"+辣椒丁","price":10},{"name":"🍞一片系列","price":0},{"name":"+一片白吐司(不烤)","price":5},{"name":"+一片果醬吐司","price":10},{"name":"+一片巧克力吐司","price":13},{"name":"+一片蘿蔔糕","price":20},{"name":"🍔麵包主食","price":0},{"name":"吐司換全麥","price":0},{"name":"+沙拉吐司","price":15},{"name":"+漢堡","price":20},{"name":"+燒餅","price":30},{"name":"+亞朵包","price":40},{"name":"+蝸牛堡","price":35},{"name":"+丹尼酥","price":50}]},{"id":"-OmE3PKESodGSuiRp0xH","name":"4號辣卡脆雞堡套餐","shortName":"4號辣腿堡套餐","printName":"4號辣腿堡套餐","price":95,"category":"套餐","active":true,"optionGroups":[{"baseValue":0,"choices":[{"name":"+全熟蛋","price":15},{"name":"+半熟蛋","price":15},{"name":"+散蛋","price":15},{"name":"不加蛋","price":0}],"defaultIdx":0,"groupName":"加蛋","pricing":"addDelta","type":"radio"},{"baseValue":0,"choices":[{"name":"去冰","price":0},{"name":"冰","price":0},{"name":"少冰","price":0},{"name":"溫","price":0}],"defaultIdx":0,"groupName":"溫度","pricing":"addDelta","type":"radio"},{"baseValue":30,"choices":[{"name":"錫蘭紅茶(大杯)","price":25},{"name":"錫蘭奶茶(大杯)","price":30},{"name":"錫蘭(鮮)奶茶(中杯)","price":35},{"name":"錫蘭(鮮)奶茶(大杯)","price":45},{"name":"美式咖啡(無糖無奶)(中杯)","price":40},{"name":"美式咖啡(無糖無奶)(大杯)","price":50},{"name":"鮮奶咖啡(無糖)(中杯)","price":50},{"name":"鮮奶咖啡(無糖)(大杯)","price":60},{"name":"三合一咖啡(大杯)","price":30},{"name":"巧克力可可(中杯)","price":25},{"name":"巧克力可可(大杯)","price":35},{"name":"柳橙汁(大杯)","price":30},{"name":"豆漿(大杯)","price":30},{"name":"鴛鴦奶茶(中杯)","price":35},{"name":"鴛鴦奶茶(大杯)","price":40},{"name":"柳橙紅茶(大杯)","price":30},{"name":"紅茶豆漿(大杯)","price":30}],"defaultIdx":1,"groupName":"套餐飲料","pricing":"mealUpgrade","type":"radio"}],"options":[{"name":"+起司","price":10}],"posExtras":[{"name":"不要菜","price":0},{"name":"不要胡椒","price":0},{"name":"不要醬","price":0},{"name":"不要番茄醬","price":0},{"name":"不要千島醬","price":0},{"name":"不要白沙拉","price":0},{"name":"不要芥末醬","price":0},{"name":"不要照燒醬","price":0},{"name":"不要小黃瓜","price":0},{"name":"不要九層塔","price":0},{"name":"不要焦","price":0},{"name":"不要烤","price":0},{"name":"不要切","price":0},{"name":"♨️酥/🔪切","price":0},{"name":"烤酥","price":0},{"name":"煎酥","price":0},{"name":"對切","price":0},{"name":"同一盒","price":0},{"name":"註記 _________","price":0},{"name":"🐔雞肉","price":0},{"name":"+燻雞35g","price":20},{"name":"+辣卡脆雞(無骨)","price":50},{"name":"+原卡脆雞(無骨)","price":50},{"name":"+卡疆雞腿(辣)","price":55},{"name":"+香雞","price":20},{"name":"🐷豬/🐂牛","price":0},{"name":"+里肌","price":30},{"name":"+培根","price":20},{"name":"+肉鬆20g","price":10},{"name":"+奇亞籽漢堡肉","price":20},{"name":"+單片豬肉","price":25},{"name":"+2片豬肉","price":50},{"name":"+青花椒豬肉片","price":35},{"name":"+牛肉(不含起司)","price":55},{"name":"🦀海鮮 🦐","price":0},{"name":"+鮪魚30g","price":20},{"name":"+辣椒鮪魚","price":25},{"name":"+虱目魚排(含醬)","price":30},{"name":"+蝦排(含醬)","price":50},{"name":"🥬蔬菜","price":0},{"name":"+玉米30g","price":10},{"name":"+九層塔10g","price":10},{"name":"+苜蓿芽","price":10},{"name":"+美生菜","price":10},{"name":"+蛋沙拉","price":25},{"name":"+辣椒丁","price":10},{"name":"🍞一片系列","price":0},{"name":"+一片白吐司(不烤)","price":5},{"name":"+一片果醬吐司","price":10},{"name":"+一片巧克力吐司","price":13},{"name":"+一片蘿蔔糕","price":20},{"name":"🍔麵包主食","price":0},{"name":"吐司換全麥","price":0},{"name":"+沙拉吐司","price":15},{"name":"+漢堡","price":20},{"name":"+燒餅","price":30},{"name":"+亞朵包","price":40},{"name":"+蝸牛堡","price":35},{"name":"+丹尼酥","price":50}]},{"id":"-OnoC9q0RfseeHP0twhK","name":"4號原卡脆雞堡套餐","shortName":"4號(原)腿堡套餐","printName":"4號(原)腿堡套餐","price":95,"category":"套餐","active":true,"optionGroups":[{"baseValue":0,"choices":[{"name":"+全熟蛋","price":15},{"name":"+半熟蛋","price":15},{"name":"+散蛋","price":15},{"name":"不加蛋","price":0}],"defaultIdx":0,"groupName":"加蛋","pricing":"addDelta","type":"radio"},{"baseValue":0,"choices":[{"name":"去冰","price":0},{"name":"冰","price":0},{"name":"少冰","price":0},{"name":"溫","price":0}],"defaultIdx":0,"groupName":"溫度","pricing":"addDelta","type":"radio"},{"baseValue":30,"choices":[{"name":"錫蘭紅茶(大杯)","price":25},{"name":"錫蘭奶茶(大杯)","price":30},{"name":"錫蘭(鮮)奶茶(中杯)","price":35},{"name":"錫蘭(鮮)奶茶(大杯)","price":45},{"name":"美式咖啡(無糖無奶)(中杯)","price":40},{"name":"美式咖啡(無糖無奶)(大杯)","price":50},{"name":"鮮奶咖啡(無糖)(中杯)","price":50},{"name":"鮮奶咖啡(無糖)(大杯)","price":60},{"name":"三合一咖啡(大杯)","price":30},{"name":"巧克力可可(中杯)","price":25},{"name":"巧克力可可(大杯)","price":35},{"name":"柳橙汁(大杯)","price":30},{"name":"豆漿(大杯)","price":30},{"name":"鴛鴦奶茶(中杯)","price":35},{"name":"鴛鴦奶茶(大杯)","price":40},{"name":"柳橙紅茶(大杯)","price":30},{"name":"紅茶豆漿(大杯)","price":30}],"defaultIdx":1,"groupName":"套餐飲料","pricing":"mealUpgrade","type":"radio"}],"options":[{"name":"+起司","price":10}],"posExtras":[{"name":"不要菜","price":0},{"name":"不要胡椒","price":0},{"name":"不要醬","price":0},{"name":"不要番茄醬","price":0},{"name":"不要千島醬","price":0},{"name":"不要白沙拉","price":0},{"name":"不要芥末醬","price":0},{"name":"不要照燒醬","price":0},{"name":"不要小黃瓜","price":0},{"name":"不要九層塔","price":0},{"name":"不要焦","price":0},{"name":"不要烤","price":0},{"name":"不要切","price":0},{"name":"♨️酥/🔪切","price":0},{"name":"烤酥","price":0},{"name":"煎酥","price":0},{"name":"對切","price":0},{"name":"同一盒","price":0},{"name":"註記 _________","price":0},{"name":"🐔雞肉","price":0},{"name":"+燻雞35g","price":20},{"name":"+辣卡脆雞(無骨)","price":50},{"name":"+原卡脆雞(無骨)","price":50},{"name":"+卡疆雞腿(辣)","price":55},{"name":"+香雞","price":20},{"name":"🐷豬/🐂牛","price":0},{"name":"+里肌","price":30},{"name":"+培根","price":20},{"name":"+肉鬆20g","price":10},{"name":"+奇亞籽漢堡肉","price":20},{"name":"+單片豬肉","price":25},{"name":"+2片豬肉","price":50},{"name":"+青花椒豬肉片","price":35},{"name":"+牛肉(不含起司)","price":55},{"name":"🦀海鮮 🦐","price":0},{"name":"+鮪魚30g","price":20},{"name":"+辣椒鮪魚","price":25},{"name":"+虱目魚排(含醬)","price":30},{"name":"+蝦排(含醬)","price":50},{"name":"🥬蔬菜","price":0},{"name":"+玉米30g","price":10},{"name":"+九層塔10g","price":10},{"name":"+苜蓿芽","price":10},{"name":"+美生菜","price":10},{"name":"+蛋沙拉","price":25},{"name":"+辣椒丁","price":10},{"name":"🍞一片系列","price":0},{"name":"+一片白吐司(不烤)","price":5},{"name":"+一片果醬吐司","price":10},{"name":"+一片巧克力吐司","price":13},{"name":"+一片蘿蔔糕","price":20},{"name":"🍔麵包主食","price":0},{"name":"吐司換全麥","price":0},{"name":"+沙拉吐司","price":15},{"name":"+漢堡","price":20},{"name":"+燒餅","price":30},{"name":"+亞朵包","price":40},{"name":"+蝸牛堡","price":35},{"name":"+丹尼酥","price":50}]},{"id":"-OniaJpidq1i_gsiG2t1","name":"6號招牌總匯套餐","price":79,"category":"套餐","active":true,"optionGroups":[{"baseValue":0,"choices":[{"name":"+全熟蛋","price":15},{"name":"+散蛋","price":15},{"name":"不加蛋","price":0}],"defaultIdx":0,"groupName":"加蛋","pricing":"addDelta","type":"radio"},{"baseValue":0,"choices":[{"name":"去冰","price":0},{"name":"冰","price":0},{"name":"少冰","price":0},{"name":"溫","price":0}],"defaultIdx":0,"groupName":"溫度","pricing":"addDelta","type":"radio"},{"baseValue":30,"choices":[{"name":"錫蘭紅茶(大杯)","price":25},{"name":"錫蘭奶茶(大杯)","price":30},{"name":"錫蘭(鮮)奶茶(中杯)","price":35},{"name":"錫蘭(鮮)奶茶(大杯)","price":45},{"name":"美式咖啡(無糖無奶)(中杯)","price":40},{"name":"美式咖啡(無糖無奶)(大杯)","price":50},{"name":"鮮奶咖啡(無糖)(中杯)","price":50},{"name":"鮮奶咖啡(無糖)(大杯)","price":60},{"name":"三合一咖啡(大杯)","price":30},{"name":"巧克力可可(中杯)","price":25},{"name":"巧克力可可(大杯)","price":35},{"name":"柳橙汁(大杯)","price":30},{"name":"豆漿(大杯)","price":30},{"name":"鴛鴦奶茶(中杯)","price":35},{"name":"鴛鴦奶茶(大杯)","price":40},{"name":"柳橙紅茶(大杯)","price":30},{"name":"紅茶豆漿(大杯)","price":30}],"defaultIdx":1,"groupName":"套餐飲料","pricing":"mealUpgrade","type":"radio"}],"posExtras":[{"name":"不要菜","price":0},{"name":"不要胡椒","price":0},{"name":"不要醬","price":0},{"name":"不要番茄醬","price":0},{"name":"不要千島醬","price":0},{"name":"不要白沙拉","price":0},{"name":"不要芥末醬","price":0},{"name":"不要照燒醬","price":0},{"name":"不要小黃瓜","price":0},{"name":"不要九層塔","price":0},{"name":"不要焦","price":0},{"name":"不要烤","price":0},{"name":"不要切","price":0},{"name":"♨️酥/🔪切","price":0},{"name":"烤酥","price":0},{"name":"煎酥","price":0},{"name":"對切","price":0},{"name":"同一盒","price":0},{"name":"註記 _________","price":0},{"name":"🐔雞肉","price":0},{"name":"+燻雞35g","price":20},{"name":"+辣卡脆雞(無骨)","price":50},{"name":"+原卡脆雞(無骨)","price":50},{"name":"+卡疆雞腿(辣)","price":55},{"name":"+香雞","price":20},{"name":"🐷豬/🐂牛","price":0},{"name":"+里肌","price":30},{"name":"+培根","price":20},{"name":"+肉鬆20g","price":10},{"name":"+奇亞籽漢堡肉","price":20},{"name":"+單片豬肉","price":25},{"name":"+2片豬肉","price":50},{"name":"+青花椒豬肉片","price":35},{"name":"+牛肉(不含起司)","price":55},{"name":"🦀海鮮 🦐","price":0},{"name":"+鮪魚30g","price":20},{"name":"+辣椒鮪魚","price":25},{"name":"+虱目魚排(含醬)","price":30},{"name":"+蝦排(含醬)","price":50},{"name":"🥬蔬菜","price":0},{"name":"+玉米30g","price":10},{"name":"+九層塔10g","price":10},{"name":"+苜蓿芽","price":10},{"name":"+美生菜","price":10},{"name":"+蛋沙拉","price":25},{"name":"+辣椒丁","price":10},{"name":"🍞一片系列","price":0},{"name":"+一片白吐司(不烤)","price":5},{"name":"+一片果醬吐司","price":10},{"name":"+一片巧克力吐司","price":13},{"name":"+一片蘿蔔糕","price":20},{"name":"🍔麵包主食","price":0},{"name":"吐司換全麥","price":0},{"name":"+沙拉吐司","price":15},{"name":"+漢堡","price":20},{"name":"+燒餅","price":30},{"name":"+亞朵包","price":40},{"name":"+蝸牛堡","price":35},{"name":"+丹尼酥","price":50}]},{"id":"-Oniad6YRF6Oo3J1h-Be","name":"7號元氣蛋餅套餐","price":79,"category":"套餐","active":true,"optionGroups":[{"baseValue":0,"choices":[{"name":"去冰","price":0},{"name":"冰","price":0},{"name":"少冰","price":0},{"name":"溫","price":0}],"defaultIdx":0,"groupName":"溫度","pricing":"addDelta","type":"radio"},{"baseValue":30,"choices":[{"name":"錫蘭紅茶(大杯)","price":25},{"name":"錫蘭奶茶(大杯)","price":30},{"name":"錫蘭(鮮)奶茶(中杯)","price":35},{"name":"錫蘭(鮮)奶茶(大杯)","price":45},{"name":"美式咖啡(無糖無奶)(中杯)","price":40},{"name":"美式咖啡(無糖無奶)(大杯)","price":50},{"name":"鮮奶咖啡(無糖)(中杯)","price":50},{"name":"鮮奶咖啡(無糖)(大杯)","price":60},{"name":"三合一咖啡(大杯)","price":30},{"name":"巧克力可可(中杯)","price":25},{"name":"巧克力可可(大杯)","price":35},{"name":"柳橙汁(大杯)","price":30},{"name":"豆漿(大杯)","price":30},{"name":"鴛鴦奶茶(中杯)","price":35},{"name":"鴛鴦奶茶(大杯)","price":40},{"name":"柳橙紅茶(大杯)","price":30},{"name":"紅茶豆漿(大杯)","price":30}],"defaultIdx":1,"groupName":"套餐飲料","pricing":"mealUpgrade","type":"radio"}],"options":[{"name":"+起司","price":10},{"name":"+火腿","price":15},{"name":"+培根","price":20},{"name":"+玉米","price":10}],"posExtras":[{"name":"不要菜","price":0},{"name":"不要胡椒","price":0},{"name":"不要醬","price":0},{"name":"不要番茄醬","price":0},{"name":"不要千島醬","price":0},{"name":"不要白沙拉","price":0},{"name":"不要芥末醬","price":0},{"name":"不要照燒醬","price":0},{"name":"不要小黃瓜","price":0},{"name":"不要九層塔","price":0},{"name":"不要焦","price":0},{"name":"不要烤","price":0},{"name":"不要切","price":0},{"name":"♨️酥/🔪切","price":0},{"name":"烤酥","price":0},{"name":"煎酥","price":0},{"name":"對切","price":0},{"name":"同一盒","price":0},{"name":"註記 _________","price":0},{"name":"🐔雞肉","price":0},{"name":"+燻雞35g","price":20},{"name":"+辣卡脆雞(無骨)","price":50},{"name":"+原卡脆雞(無骨)","price":50},{"name":"+卡疆雞腿(辣)","price":55},{"name":"+香雞","price":20},{"name":"🐷豬/🐂牛","price":0},{"name":"+里肌","price":30},{"name":"+培根","price":20},{"name":"+肉鬆20g","price":10},{"name":"+奇亞籽漢堡肉","price":20},{"name":"+單片豬肉","price":25},{"name":"+2片豬肉","price":50},{"name":"+青花椒豬肉片","price":35},{"name":"+牛肉(不含起司)","price":55},{"name":"🦀海鮮 🦐","price":0},{"name":"+鮪魚30g","price":20},{"name":"+辣椒鮪魚","price":25},{"name":"+虱目魚排(含醬)","price":30},{"name":"+蝦排(含醬)","price":50},{"name":"🥬蔬菜","price":0},{"name":"+玉米30g","price":10},{"name":"+九層塔10g","price":10},{"name":"+苜蓿芽","price":10},{"name":"+美生菜","price":10},{"name":"+蛋沙拉","price":25},{"name":"+辣椒丁","price":10},{"name":"🍞一片系列","price":0},{"name":"+一片白吐司(不烤)","price":5},{"name":"+一片果醬吐司","price":10},{"name":"+一片巧克力吐司","price":13},{"name":"+一片蘿蔔糕","price":20},{"name":"🍔麵包主食","price":0},{"name":"吐司換全麥","price":0},{"name":"+沙拉吐司","price":15},{"name":"+漢堡","price":20},{"name":"+燒餅","price":30},{"name":"+亞朵包","price":40},{"name":"+蝸牛堡","price":35},{"name":"+丹尼酥","price":50}]},{"id":"-OnibO35ZHPy1TEQO_iT","name":"9號柴燒蛋餅套餐","price":79,"category":"套餐","active":true,"optionGroups":[{"baseValue":0,"choices":[{"name":"去冰","price":0},{"name":"冰","price":0},{"name":"少冰","price":0},{"name":"溫","price":0}],"defaultIdx":0,"groupName":"溫度","pricing":"addDelta","type":"radio"},{"baseValue":30,"choices":[{"name":"錫蘭紅茶(大杯)","price":25},{"name":"錫蘭奶茶(大杯)","price":30},{"name":"錫蘭(鮮)奶茶(中杯)","price":35},{"name":"錫蘭(鮮)奶茶(大杯)","price":45},{"name":"美式咖啡(無糖無奶)(中杯)","price":40},{"name":"美式咖啡(無糖無奶)(大杯)","price":50},{"name":"鮮奶咖啡(無糖)(中杯)","price":50},{"name":"鮮奶咖啡(無糖)(大杯)","price":60},{"name":"三合一咖啡(大杯)","price":30},{"name":"巧克力可可(中杯)","price":25},{"name":"巧克力可可(大杯)","price":35},{"name":"柳橙汁(大杯)","price":30},{"name":"豆漿(大杯)","price":30},{"name":"鴛鴦奶茶(中杯)","price":35},{"name":"鴛鴦奶茶(大杯)","price":40},{"name":"柳橙紅茶(大杯)","price":30},{"name":"紅茶豆漿(大杯)","price":30}],"defaultIdx":1,"groupName":"套餐飲料","pricing":"mealUpgrade","type":"radio"}],"options":[{"name":"+起司","price":10}],"posExtras":[{"name":"不要菜","price":0},{"name":"不要胡椒","price":0},{"name":"不要醬","price":0},{"name":"不要番茄醬","price":0},{"name":"不要千島醬","price":0},{"name":"不要白沙拉","price":0},{"name":"不要芥末醬","price":0},{"name":"不要照燒醬","price":0},{"name":"不要小黃瓜","price":0},{"name":"不要九層塔","price":0},{"name":"不要焦","price":0},{"name":"不要烤","price":0},{"name":"不要切","price":0},{"name":"♨️酥/🔪切","price":0},{"name":"烤酥","price":0},{"name":"煎酥","price":0},{"name":"對切","price":0},{"name":"同一盒","price":0},{"name":"註記 _________","price":0},{"name":"🐔雞肉","price":0},{"name":"+燻雞35g","price":20},{"name":"+辣卡脆雞(無骨)","price":50},{"name":"+原卡脆雞(無骨)","price":50},{"name":"+卡疆雞腿(辣)","price":55},{"name":"+香雞","price":20},{"name":"🐷豬/🐂牛","price":0},{"name":"+里肌","price":30},{"name":"+培根","price":20},{"name":"+肉鬆20g","price":10},{"name":"+奇亞籽漢堡肉","price":20},{"name":"+單片豬肉","price":25},{"name":"+2片豬肉","price":50},{"name":"+青花椒豬肉片","price":35},{"name":"+牛肉(不含起司)","price":55},{"name":"🦀海鮮 🦐","price":0},{"name":"+鮪魚30g","price":20},{"name":"+辣椒鮪魚","price":25},{"name":"+虱目魚排(含醬)","price":30},{"name":"+蝦排(含醬)","price":50},{"name":"🥬蔬菜","price":0},{"name":"+玉米30g","price":10},{"name":"+九層塔10g","price":10},{"name":"+苜蓿芽","price":10},{"name":"+美生菜","price":10},{"name":"+蛋沙拉","price":25},{"name":"+辣椒丁","price":10},{"name":"🍞一片系列","price":0},{"name":"+一片白吐司(不烤)","price":5},{"name":"+一片果醬吐司","price":10},{"name":"+一片巧克力吐司","price":13},{"name":"+一片蘿蔔糕","price":20},{"name":"🍔麵包主食","price":0},{"name":"吐司換全麥","price":0},{"name":"+沙拉吐司","price":15},{"name":"+漢堡","price":20},{"name":"+燒餅","price":30},{"name":"+亞朵包","price":40},{"name":"+蝸牛堡","price":35},{"name":"+丹尼酥","price":50}]},{"id":"-OnjPgjuEgfg7Ie-aVLr","name":"台味經典拼盤套餐","price":99,"category":"套餐","active":true,"optionGroups":[{"baseValue":0,"choices":[{"name":"太陽蛋","price":0},{"name":"全熟蛋","price":0},{"name":"半熟蛋","price":0},{"name":"散蛋","price":0}],"defaultIdx":0,"groupName":"蛋品選擇","pricing":"addDelta","type":"radio"},{"baseValue":0,"choices":[{"name":"去冰","price":0},{"name":"冰","price":0},{"name":"少冰","price":0},{"name":"溫","price":0}],"defaultIdx":0,"groupName":"溫度","pricing":"addDelta","type":"radio"},{"baseValue":5,"choices":[{"name":"錫蘭紅茶(中杯)","price":20},{"name":"錫蘭紅茶(大杯)","price":25},{"name":"錫蘭奶茶(中杯)","price":25},{"name":"錫蘭奶茶(大杯)","price":30},{"name":"錫蘭(鮮)奶茶(中杯)","price":35},{"name":"錫蘭(鮮)奶茶(大杯)","price":45},{"name":"美式咖啡(無糖無奶)(中杯)","price":40},{"name":"美式咖啡(無糖無奶)(大杯)","price":50},{"name":"鮮奶咖啡(無糖)(中杯)","price":50},{"name":"鮮奶咖啡(無糖)(大杯)","price":60},{"name":"三合一咖啡(中杯)","price":25},{"name":"三合一咖啡(大杯)","price":30},{"name":"巧克力可可(中杯)","price":25},{"name":"巧克力可可(大杯)","price":35},{"name":"柳橙汁(中杯)","price":25},{"name":"柳橙汁(大杯)","price":30},{"name":"豆漿(中杯)","price":25},{"name":"豆漿(大杯)","price":30},{"name":"鴛鴦奶茶(中杯)","price":35},{"name":"鴛鴦奶茶(大杯)","price":40},{"name":"柳橙紅茶(中杯)","price":25},{"name":"柳橙紅茶(大杯)","price":30},{"name":"紅茶豆漿(中杯)","price":25},{"name":"紅茶豆漿(大杯)","price":30}],"defaultIdx":0,"groupName":"搭配飲料折5元","pricing":"mealUpgrade","type":"radio"}],"posExtras":[{"name":"不要菜","price":0},{"name":"不要胡椒","price":0},{"name":"不要醬","price":0},{"name":"不要番茄醬","price":0},{"name":"不要千島醬","price":0},{"name":"不要白沙拉","price":0},{"name":"不要芥末醬","price":0},{"name":"不要照燒醬","price":0},{"name":"不要小黃瓜","price":0},{"name":"不要九層塔","price":0},{"name":"不要焦","price":0},{"name":"不要烤","price":0},{"name":"不要切","price":0},{"name":"♨️酥/🔪切","price":0},{"name":"烤酥","price":0},{"name":"煎酥","price":0},{"name":"對切","price":0},{"name":"同一盒","price":0},{"name":"註記 _________","price":0},{"name":"🐔雞肉","price":0},{"name":"+燻雞35g","price":20},{"name":"+辣卡脆雞(無骨)","price":50},{"name":"+原卡脆雞(無骨)","price":50},{"name":"+卡疆雞腿(辣)","price":55},{"name":"+香雞","price":20},{"name":"🐷豬/🐂牛","price":0},{"name":"+里肌","price":30},{"name":"+培根","price":20},{"name":"+肉鬆20g","price":10},{"name":"+奇亞籽漢堡肉","price":20},{"name":"+單片豬肉","price":25},{"name":"+2片豬肉","price":50},{"name":"+青花椒豬肉片","price":35},{"name":"+牛肉(不含起司)","price":55},{"name":"🦀海鮮 🦐","price":0},{"name":"+鮪魚30g","price":20},{"name":"+辣椒鮪魚","price":25},{"name":"+虱目魚排(含醬)","price":30},{"name":"+蝦排(含醬)","price":50},{"name":"🥬蔬菜","price":0},{"name":"+玉米30g","price":10},{"name":"+九層塔10g","price":10},{"name":"+苜蓿芽","price":10},{"name":"+美生菜","price":10},{"name":"+蛋沙拉","price":25},{"name":"+辣椒丁","price":10},{"name":"🍞一片系列","price":0},{"name":"+一片白吐司(不烤)","price":5},{"name":"+一片果醬吐司","price":10},{"name":"+一片巧克力吐司","price":13},{"name":"+一片蘿蔔糕","price":20},{"name":"🍔麵包主食","price":0},{"name":"吐司換全麥","price":0},{"name":"+沙拉吐司","price":15},{"name":"+漢堡","price":20},{"name":"+燒餅","price":30},{"name":"+亞朵包","price":40},{"name":"+蝸牛堡","price":35},{"name":"+丹尼酥","price":50}]},{"id":"-OmE4QuC_n9r8EcOLugb","name":"里肌漢堡","price":55,"category":"漢堡、蝸牛堡","active":true,"optionGroups":[{"baseValue":0,"choices":[{"name":"+全熟蛋","price":15},{"name":"+半熟蛋","price":15},{"name":"+散蛋","price":15},{"name":"不加蛋","price":0}],"defaultIdx":0,"groupName":"加蛋","pricing":"addDelta","type":"radio"}],"options":[{"name":"+起司","price":10},{"name":"+火腿","price":15},{"name":"+培根","price":20},{"name":"換蝸牛堡","price":15}]},{"id":"-Orf3UWw-uJK9fVZ-gy9","name":"香雞漢堡","price":40,"category":"漢堡、蝸牛堡","active":true,"optionGroups":[{"baseValue":0,"choices":[{"name":"+全熟蛋","price":15},{"name":"+半熟蛋","price":15},{"name":"+散蛋","price":15},{"name":"不加蛋","price":0}],"defaultIdx":0,"groupName":"加蛋","pricing":"addDelta","type":"radio"}],"options":[{"name":"+起司","price":10},{"name":"+火腿","price":15},{"name":"+培根","price":20},{"name":"換蝸牛堡","price":15}]},{"id":"-OreyhGxf1VmpJlP43QC","name":"辣卡脆雞蝸牛堡","price":90,"category":"漢堡、蝸牛堡","active":true,"optionGroups":[{"baseValue":0,"choices":[{"name":"+全熟蛋","price":15},{"name":"+半熟蛋","price":15},{"name":"+散蛋","price":15},{"name":"不加蛋","price":0}],"defaultIdx":0,"groupName":"加蛋","pricing":"addDelta","type":"radio"}],"options":[{"name":"+起司","price":10},{"name":"+火腿","price":15},{"name":"+培根","price":20}]},{"id":"-OmDzN-vlUYN4aMr7FAS","name":"原味蛋餅","price":30,"category":"蛋餅、燒餅","active":true,"options":[{"name":"+起司","price":10},{"name":"+火腿","price":15},{"name":"+培根","price":20},{"name":"加肉鬆20g","price":10},{"name":"加薯餅","price":25},{"name":"加里肌","price":30}],"posExtras":[{"name":"不要菜","price":0},{"name":"不要胡椒","price":0},{"name":"不要醬","price":0},{"name":"不要番茄醬","price":0},{"name":"不要千島醬","price":0},{"name":"不要白沙拉","price":0},{"name":"不要芥末醬","price":0},{"name":"不要照燒醬","price":0},{"name":"不要小黃瓜","price":0},{"name":"不要九層塔","price":0},{"name":"不要焦","price":0},{"name":"不要烤","price":0},{"name":"不要切","price":0},{"name":"♨️酥/🔪切","price":0},{"name":"烤酥","price":0},{"name":"煎酥","price":0},{"name":"對切","price":0},{"name":"同一盒","price":0},{"name":"註記 _________","price":0},{"name":"🐔雞肉","price":0},{"name":"+燻雞35g","price":20},{"name":"+辣卡脆雞(無骨)","price":50},{"name":"+原卡脆雞(無骨)","price":50},{"name":"+卡疆雞腿(辣)","price":55},{"name":"+香雞","price":20},{"name":"🐷豬/🐂牛","price":0},{"name":"+里肌","price":30},{"name":"+培根","price":20},{"name":"+肉鬆20g","price":10},{"name":"+奇亞籽漢堡肉","price":20},{"name":"+單片豬肉","price":25},{"name":"+2片豬肉","price":50},{"name":"+青花椒豬肉片","price":35},{"name":"+牛肉(不含起司)","price":55},{"name":"🦀海鮮 🦐","price":0},{"name":"+鮪魚30g","price":20},{"name":"+辣椒鮪魚","price":25},{"name":"+虱目魚排(含醬)","price":30},{"name":"+蝦排(含醬)","price":50},{"name":"🥬蔬菜","price":0},{"name":"+玉米30g","price":10},{"name":"+九層塔10g","price":10},{"name":"+苜蓿芽","price":10},{"name":"+美生菜","price":10},{"name":"+蛋沙拉","price":25},{"name":"+辣椒丁","price":10},{"name":"🍞一片系列","price":0},{"name":"+一片白吐司(不烤)","price":5},{"name":"+一片果醬吐司","price":10},{"name":"+一片巧克力吐司","price":13},{"name":"+一片蘿蔔糕","price":20},{"name":"🍔麵包主食","price":0},{"name":"吐司換全麥","price":0},{"name":"+沙拉吐司","price":15},{"name":"+漢堡","price":20},{"name":"+燒餅","price":30},{"name":"+亞朵包","price":40},{"name":"+蝸牛堡","price":35},{"name":"+丹尼酥","price":50}]},{"id":"-OmE-5XSQtRvuqdXIFrT","name":"玉米蛋餅","price":40,"category":"蛋餅、燒餅","active":true,"options":[{"name":"加起司","price":10},{"name":"加火腿","price":15}]},{"id":"-OramlwHeZS5yb9vNruz","name":"培根蛋餅","price":45,"category":"蛋餅、燒餅","active":true,"options":[{"name":"加起司","price":10}]},{"id":"-OranSRcyA7bEejzNMhj","name":"九層塔蛋餅","price":35,"category":"蛋餅、燒餅","active":true,"options":[{"name":"加起司","price":10}]},{"id":"-OrfOth6aPeHQpJ_o1hD","name":"火腿吐司","price":30,"category":"吐司、厚片","active":true,"optionGroups":[{"baseValue":0,"choices":[{"name":"+全熟蛋","price":15},{"name":"+半熟蛋","price":15},{"name":"+散蛋","price":15},{"name":"不加蛋","price":0}],"defaultIdx":0,"groupName":"加蛋","pricing":"addDelta","type":"radio"}],"options":[{"name":"+起司","price":10},{"name":"+火腿","price":15},{"name":"+培根","price":20},{"name":"+薯餅","price":25},{"name":"+苜蓿芽","price":10},{"name":"切邊","price":0},{"name":"吐司換全麥","price":0}]},{"id":"-OrfPj7xTANfcp8GGBuR","name":"肉鬆吐司","price":30,"category":"吐司、厚片","active":true,"optionGroups":[{"baseValue":0,"choices":[{"name":"+全熟蛋","price":15},{"name":"+半熟蛋","price":15},{"name":"+散蛋","price":15},{"name":"不加蛋","price":0}],"defaultIdx":0,"groupName":"加蛋","pricing":"addDelta","type":"radio"}],"options":[{"name":"+起司","price":10},{"name":"+火腿","price":15},{"name":"+培根","price":20},{"name":"+薯餅","price":25},{"name":"+苜蓿芽","price":10},{"name":"切邊","price":0},{"name":"吐司換全麥","price":0}]},{"id":"-OrfFjDisu4ywnF_p9-r","name":"里肌總匯","price":85,"category":"吐司、厚片","active":true,"options":[{"name":"加起司","price":10},{"name":"加培根","price":20},{"name":"吐司換全麥","price":0}],"posExtras":[{"name":"不要菜","price":0},{"name":"不要胡椒","price":0},{"name":"不要醬","price":0},{"name":"不要番茄醬","price":0},{"name":"不要千島醬","price":0},{"name":"不要白沙拉","price":0},{"name":"不要芥末醬","price":0},{"name":"不要照燒醬","price":0},{"name":"不要小黃瓜","price":0},{"name":"不要九層塔","price":0},{"name":"不要焦","price":0},{"name":"不要烤","price":0},{"name":"不要切","price":0},{"name":"♨️酥/🔪切","price":0},{"name":"烤酥","price":0},{"name":"煎酥","price":0},{"name":"對切","price":0},{"name":"同一盒","price":0},{"name":"註記 _________","price":0},{"name":"🐔雞肉","price":0},{"name":"+燻雞35g","price":20},{"name":"+辣卡脆雞(無骨)","price":50},{"name":"+原卡脆雞(無骨)","price":50},{"name":"+卡疆雞腿(辣)","price":55},{"name":"+香雞","price":20},{"name":"🐷豬/🐂牛","price":0},{"name":"+里肌","price":30},{"name":"+培根","price":20},{"name":"+肉鬆20g","price":10},{"name":"+奇亞籽漢堡肉","price":20},{"name":"+單片豬肉","price":25},{"name":"+2片豬肉","price":50},{"name":"+青花椒豬肉片","price":35},{"name":"+牛肉(不含起司)","price":55},{"name":"🦀海鮮 🦐","price":0},{"name":"+鮪魚30g","price":20},{"name":"+辣椒鮪魚","price":25},{"name":"+虱目魚排(含醬)","price":30},{"name":"+蝦排(含醬)","price":50},{"name":"🥬蔬菜","price":0},{"name":"+玉米30g","price":10},{"name":"+九層塔10g","price":10},{"name":"+苜蓿芽","price":10},{"name":"+美生菜","price":10},{"name":"+蛋沙拉","price":25},{"name":"+辣椒丁","price":10},{"name":"🍞一片系列","price":0},{"name":"+一片白吐司(不烤)","price":5},{"name":"+一片果醬吐司","price":10},{"name":"+一片巧克力吐司","price":13},{"name":"+一片蘿蔔糕","price":20},{"name":"🍔麵包主食","price":0},{"name":"吐司換全麥","price":0},{"name":"+沙拉吐司","price":15},{"name":"+漢堡","price":20},{"name":"+燒餅","price":30},{"name":"+亞朵包","price":40},{"name":"+蝸牛堡","price":35},{"name":"+丹尼酥","price":50}]},{"id":"-OmE6A_sL4LwfjI1UYWc","name":"蘿蔔糕","price":40,"category":"其它、飲品","active":true,"optionGroups":[{"baseValue":0,"choices":[{"name":"+全熟蛋","price":15},{"name":"+半熟蛋","price":15},{"name":"+散蛋","price":15},{"name":"不加蛋","price":0}],"defaultIdx":0,"groupName":"加蛋","pricing":"addDelta","type":"radio"}]},{"id":"-OrfYKLQeGw7HUNCWsA2","name":"薯餅","price":25,"category":"其它、飲品","active":true,"options":[{"name":"加胡椒*粒*","price":0},{"name":"加番茄醬","price":0}]},{"id":"-OmE5vIfT7oXzenaIPmP","name":"麥克雞塊","price":40,"category":"其它、飲品","active":true,"options":[{"name":"加胡椒粉","price":0},{"name":"加番茄醬","price":0}]},{"id":"-OmE6LKiO3ff38JkeLyJ","name":"錫蘭紅茶","shortName":"紅茶","printName":"紅茶","price":20,"category":"其它、飲品","active":true,"optionGroups":[{"baseValue":0,"choices":[{"name":"中杯","price":20},{"name":"大杯","price":25}],"defaultIdx":0,"groupName":"容量","pricing":"setPrice","type":"radio"},{"baseValue":0,"choices":[{"name":"去冰","price":0},{"name":"冰","price":0},{"name":"少冰","price":0},{"name":"溫","price":0}],"defaultIdx":0,"groupName":"溫度","pricing":"addDelta","type":"radio"}]},{"id":"-OmE6H2i0Jgp4ZR-pc1q","name":"錫蘭奶茶","price":25,"category":"其它、飲品","active":true,"optionGroups":[{"baseValue":0,"choices":[{"name":"中杯","price":25},{"name":"大杯","price":30}],"defaultIdx":0,"groupName":"容量","pricing":"setPrice","type":"radio"},{"baseValue":0,"choices":[{"name":"去冰","price":0},{"name":"冰","price":0},{"name":"少冰","price":0},{"name":"溫","price":0}],"defaultIdx":0,"groupName":"溫度","pricing":"addDelta","type":"radio"}]},{"id":"-OpjZSB-wSxHO-Qzh08a","name":"錫蘭鮮奶茶","shortName":"(鮮)奶茶","printName":"(鮮)奶茶","price":35,"category":"其它、飲品","active":true,"optionGroups":[{"baseValue":0,"choices":[{"name":"中杯","price":35},{"name":"大杯","price":45}],"defaultIdx":0,"groupName":"容量","pricing":"setPrice","type":"radio"},{"baseValue":0,"choices":[{"name":"去冰","price":0},{"name":"冰","price":0},{"name":"少冰","price":0},{"name":"溫","price":0}],"defaultIdx":0,"groupName":"溫度","pricing":"addDelta","type":"radio"}]},{"id":"-OpjaIjy88qEjXZwErDA","name":"豆漿","price":25,"category":"其它、飲品","active":true,"optionGroups":[{"baseValue":0,"choices":[{"name":"中杯","price":25},{"name":"大杯","price":30}],"defaultIdx":0,"groupName":"容量","pricing":"setPrice","type":"radio"},{"baseValue":0,"choices":[{"name":"去冰","price":0},{"name":"冰","price":0},{"name":"少冰","price":0},{"name":"溫","price":0}],"defaultIdx":0,"groupName":"溫度","pricing":"addDelta","type":"radio"}]},{"id":"-Opj_3KsX48fSJicrSPh","name":"美式咖啡(無糖無奶)","price":40,"category":"其它、飲品","active":true,"optionGroups":[{"baseValue":0,"choices":[{"name":"中杯","price":40},{"name":"大杯","price":50}],"defaultIdx":0,"groupName":"容量","pricing":"setPrice","type":"radio"},{"baseValue":0,"choices":[{"name":"去冰","price":0},{"name":"冰","price":0},{"name":"少冰","price":0},{"name":"溫","price":0}],"defaultIdx":0,"groupName":"溫度","pricing":"addDelta","type":"radio"}],"options":[{"name":"加糖","price":0},{"name":"加奶","price":0}]},{"id":"-OrfHU-1S3BnK6_Wo9gq","name":"日式厚切炸豬排吐司","shortName":"炸豬排吐司","printName":"炸豬排吐司","price":80,"category":"吐司、厚片","active":false,"optionGroups":[{"baseValue":0,"choices":[{"name":"全熟蛋","price":0},{"name":"半熟蛋","price":0},{"name":"散蛋","price":0},{"name":"太陽蛋","price":0}],"defaultIdx":0,"groupName":"蛋品選擇","pricing":"addDelta","type":"radio"}],"posExtras":[{"name":"不要菜","price":0},{"name":"不要胡椒","price":0},{"name":"不要醬","price":0},{"name":"不要番茄醬","price":0},{"name":"不要千島醬","price":0},{"name":"不要白沙拉","price":0},{"name":"不要芥末醬","price":0},{"name":"不要照燒醬","price":0},{"name":"不要小黃瓜","price":0},{"name":"不要九層塔","price":0},{"name":"不要焦","price":0},{"name":"不要烤","price":0},{"name":"不要切","price":0},{"name":"♨️酥/🔪切","price":0},{"name":"烤酥","price":0},{"name":"煎酥","price":0},{"name":"對切","price":0},{"name":"同一盒","price":0},{"name":"註記 _________","price":0},{"name":"🐔雞肉","price":0},{"name":"+燻雞35g","price":20},{"name":"+辣卡脆雞(無骨)","price":50},{"name":"+原卡脆雞(無骨)","price":50},{"name":"+卡疆雞腿(辣)","price":55},{"name":"+香雞","price":20},{"name":"🐷豬/🐂牛","price":0},{"name":"+里肌","price":30},{"name":"+培根","price":20},{"name":"+肉鬆20g","price":10},{"name":"+奇亞籽漢堡肉","price":20},{"name":"+單片豬肉","price":25},{"name":"+2片豬肉","price":50},{"name":"+青花椒豬肉片","price":35},{"name":"+牛肉(不含起司)","price":55},{"name":"🦀海鮮 🦐","price":0},{"name":"+鮪魚30g","price":20},{"name":"+辣椒鮪魚","price":25},{"name":"+虱目魚排(含醬)","price":30},{"name":"+蝦排(含醬)","price":50},{"name":"🥬蔬菜","price":0},{"name":"+玉米30g","price":10},{"name":"+九層塔10g","price":10},{"name":"+苜蓿芽","price":10},{"name":"+美生菜","price":10},{"name":"+蛋沙拉","price":25},{"name":"+辣椒丁","price":10},{"name":"🍞一片系列","price":0},{"name":"+一片白吐司(不烤)","price":5},{"name":"+一片果醬吐司","price":10},{"name":"+一片巧克力吐司","price":13},{"name":"+一片蘿蔔糕","price":20},{"name":"🍔麵包主食","price":0},{"name":"吐司換全麥","price":0},{"name":"+沙拉吐司","price":15},{"name":"+漢堡","price":20},{"name":"+燒餅","price":30},{"name":"+亞朵包","price":40},{"name":"+蝸牛堡","price":35},{"name":"+丹尼酥","price":50}]}];
+  // 台灣口語 → 菜單正式名稱（第三欄：順便帶入的選項）。店內 manage 的 menu_alias 會一起載入、優先使用。
+  var BUILTIN_ALIASES = [
+    ['大冰奶', '錫蘭奶茶', ['大杯', '冰']], ['中冰奶', '錫蘭奶茶', ['中杯', '冰']], ['冰奶', '錫蘭奶茶', ['冰']],
+    ['大冰紅', '錫蘭紅茶', ['大杯', '冰']], ['冰紅', '錫蘭紅茶', ['冰']],
+    ['奶茶', '錫蘭奶茶'], ['紅茶', '錫蘭紅茶'], ['鮮奶茶', '錫蘭鮮奶茶'],
+    ['美式', '美式咖啡(無糖無奶)'], ['美式咖啡', '美式咖啡(無糖無奶)']
+  ];
+  var Menu = { items: [], active: [], aliases: [], source: '', error: '' };
+  var Settings = {};
+
+  function prepItem(it) {
+    it._names = [it.name, it.shortName, it.printName].map(norm).filter(function (v, i, a) { return v && a.indexOf(v) === i; });
+    var seen = {}, extras = [];
+    (it.options || []).concat(it.posExtras || []).forEach(function (o) {
+      if (!o || !o.name || seen[o.name]) return;
+      seen[o.name] = 1; extras.push(o);
+    });
+    it._extras = extras;
+    return it;
+  }
+  function parseAliases(data) {
+    var rows = [];
+    if (Array.isArray(data)) data.forEach(function (r) { if (r) rows.push([r.alias || r.key || r.name, r.official || r.canonical || r.value]); });
+    else if (data && typeof data === 'object') Object.keys(data).forEach(function (k) {
+      var v = data[k]; rows.push([k, v && typeof v === 'object' ? (v.official || v.canonical || v.value) : v]);
+    });
+    return rows;
+  }
+  function setMenu(items, aliasData) {
+    Menu.items = (items || []).filter(function (it) { return it && it.name; }).map(prepItem);
+    Menu.active = Menu.items.filter(function (it) { return it.active !== false; });
+    var byName = {};
+    Menu.items.forEach(function (it) { it._names.forEach(function (n) { if (!byName[n]) byName[n] = it; }); });
+    Menu.aliases = parseAliases(aliasData).concat(BUILTIN_ALIASES).map(function (r) {
+      var to = byName[norm(r[1])];
+      return to ? { from: norm(r[0]), to: to, implied: r[2] || [] } : null;
+    }).filter(function (r) { return r && r.from; }).sort(function (a, b) { return b.from.length - a.from.length; });
+  }
+
+  var SIZE_WORDS = { '大杯': '大杯', '大的': '大杯', '大': '大杯', '中杯': '中杯', '中的': '中杯', '中': '中杯', '小杯': '中杯', '小': '中杯' };
+  var TEMP_WORDS = { '去冰': '去冰', '少冰': '少冰', '微冰': '少冰', '冰的': '冰', '冰': '冰', '溫的': '溫', '溫': '溫', '熱的': '溫', '熱': '溫', '常溫': '溫' };
+  function stripImplied(n) {
+    // 只拆「開頭／結尾」的大小杯、冰溫字，留下核心名稱
+    var stages = [{ text: n, implied: [] }], cur = n, implied = [], changed = true, guard = 0;
+    var keys = Object.keys(SIZE_WORDS).concat(Object.keys(TEMP_WORDS)).sort(function (a, b) { return b.length - a.length; });
+    while (changed && guard++ < 4) {
+      changed = false;
+      for (var i = 0; i < keys.length; i++) {
+        var k = keys[i];
+        if (cur.length > k.length + 1 && cur.indexOf(k) === 0) { cur = cur.slice(k.length); implied.push(SIZE_WORDS[k] || TEMP_WORDS[k]); changed = true; break; }
+        if (cur.length > k.length + 1 && cur.slice(-k.length) === k) { cur = cur.slice(0, -k.length); implied.push(SIZE_WORDS[k] || TEMP_WORDS[k]); changed = true; break; }
+      }
+      if (changed) stages.push({ text: cur, implied: implied.slice() });
+    }
+    return stages;
+  }
+  function exactItem(n) {
+    for (var i = 0; i < Menu.items.length; i++) if (Menu.items[i]._names.indexOf(n) !== -1) return { it: Menu.items[i], implied: [] };
+    for (var j = 0; j < Menu.aliases.length; j++) if (Menu.aliases[j].from === n) return { it: Menu.aliases[j].to, implied: Menu.aliases[j].implied };
+    return null;
+  }
+  function scoreItem(q, it) {
+    var best = 0;
+    it._names.forEach(function (nm) {
+      var s;
+      if (nm === q) s = 1;
+      else if (q.length >= 2 && nm.indexOf(q) !== -1) s = 0.55 + 0.4 * q.length / nm.length;
+      else if (nm.length >= 3 && q.indexOf(nm) !== -1) s = 0.55 + 0.4 * nm.length / q.length;
+      else s = similarity(q, nm) * 0.9;
+      if (s > best) best = s;
+    });
+    if (it.active === false) best -= 0.02;
+    return best;
+  }
+  function rankItems(q, includeInactive) {
+    return Menu.items.filter(function (it) { return includeInactive || it.active !== false; })
+      .map(function (it) { return { it: it, s: scoreItem(q, it) }; })
+      .filter(function (r) { return r.s >= 0.5; })
+      .sort(function (a, b) { return b.s - a.s; });
+  }
+  function findItem(said) {
+    var n = norm(said);
+    if (!n) return { candidates: [] };
+    var stages = stripImplied(n);
+    for (var i = 0; i < stages.length; i++) {
+      var hit = exactItem(stages[i].text);
+      if (hit) return pack(hit.it, stages[i].implied.concat(hit.implied));
+    }
+    var core = stages[stages.length - 1];
+    var num = /^(\d+)號(套餐|餐)?$/.exec(core.text);
+    if (num) {
+      var list = Menu.active.filter(function (it) { return it._names[0].indexOf(num[1] + '號') === 0 && it._names[0].indexOf('套餐') !== -1; });
+      if (list.length === 1) return pack(list[0], core.implied);
+      if (list.length > 1) return { candidates: list.slice(0, 3) };
+    }
+    // 原話與去掉大小杯/冰溫後的核心名稱都比一次，取各品項較高的分數
+    var best = {};
+    rankItems(n, true).forEach(function (r) { best[r.it.name] = { it: r.it, s: r.s, implied: [] }; });
+    if (core.text !== n) rankItems(core.text, true).forEach(function (r) {
+      var cur = best[r.it.name];
+      if (!cur || r.s > cur.s) best[r.it.name] = { it: r.it, s: r.s, implied: core.implied };
+    });
+    var ranked = Object.keys(best).map(function (k) { return best[k]; }).sort(function (a, b) { return b.s - a.s; });
+    if (!ranked.length) return { candidates: [] };
+    var top = ranked[0], second = ranked[1];
+    if (top.s >= 0.97 || (top.s >= 0.62 && (!second || top.s - second.s >= 0.1))) return pack(top.it, top.implied);
+    return { candidates: ranked.slice(0, 3).map(function (r) { return r.it; }) };
+    function pack(it, implied) { return it.active === false ? { soldOut: true, item: it } : { item: it, implied: implied || [] }; }
+  }
+  function itemPriceLabel(it) {
+    var g = (it.optionGroups || []).filter(function (x) { return x.pricing === 'setPrice'; })[0];
+    if (g && (g.choices || []).length) return g.choices.map(function (c) { return c.name + c.price; }).join('/');
+    return String(Number(it.price) || 0);
+  }
+  function briefItem(it) { return { name: it.name, price: Number(it.price) || 0, available: it.active !== false }; }
+
+  /* ═════════ 點餐單 ═════════ */
+  var Order = { lines: [], seq: 0, changedId: 0, changeSeq: 0 };
+  function markChanged(line) { Order.changedId = line.id; Order.changeSeq++; }
+  function clampIdx(i, len) { i = Number(i) || 0; return i >= 0 && i < len ? i : 0; }
+  function clampQty(q) { q = Math.round(Number(q)); return q >= 1 ? Math.min(q, 20) : 1; }
+  function isEggGroup(g) { return /蛋/.test(g.groupName || '') && (g.choices || []).some(function (c) { return /不加蛋/.test(c.name); }); }
+  function eggGroupIdx(line) {
+    var gs = line.item.optionGroups || [];
+    for (var i = 0; i < gs.length; i++) if (gs[i].type !== 'checkbox' && isEggGroup(gs[i])) return i;
+    return -1;
+  }
+  function indexWhere(arr, re) { for (var i = 0; i < arr.length; i++) if (re.test(arr[i].name)) return i; return -1; }
+  function newLine(item) {
+    var line = { id: ++Order.seq, item: item, qty: 1, sel: {}, answered: {}, extras: [], note: '' };
+    (item.optionGroups || []).forEach(function (g, gi) {
+      var ch = g.choices || [];
+      if (g.type === 'checkbox') { line.sel[gi] = []; line.answered[gi] = true; return; }
+      if (!ch.length) { line.answered[gi] = true; return; }
+      var idx = clampIdx(g.defaultIdx, ch.length);
+      if (isEggGroup(g)) idx = indexWhere(ch, /不加蛋/);   // 沒說要蛋就不加，價錢不先算進去
+      line.sel[gi] = idx;
+      line.answered[gi] = ch.length === 1;
+    });
+    return line;
+  }
+  function drinkBase(name) { return norm(String(name).replace(/[(（](大杯|中杯|小杯)[)）]/g, '').replace(/^錫蘭/, '')); }
+  function choiceScore(t, name) {
+    var n = normChoice(name);
+    if (!n || !t) return 0;
+    if (n === t) return 1;
+    if ((/大/.test(t) && /中杯/.test(n)) || (/中/.test(t) && /大杯/.test(n))) return 0;
+    var tFresh = /鮮/.test(t), nFresh = /鮮/.test(n);
+    if (tFresh && !nFresh) return 0;
+    // 「紅茶」「大杯鮮奶茶」對到「錫蘭紅茶(大杯)」「錫蘭(鮮)奶茶(大杯)」：去掉杯型與錫蘭後完全相同
+    var tCore = t.replace(/^(大杯|中杯|大|中)|(大杯|中杯)$/g, '');
+    if (tCore && drinkBase(name) === tCore) return 0.95;
+    var s;
+    if (n.indexOf(t) !== -1) s = 0.75 + 0.2 * t.length / n.length;
+    else if (t.indexOf(n) !== -1) s = 0.7 + 0.2 * n.length / t.length;
+    else { var hit = 0; for (var i = 0; i < t.length; i++) if (n.indexOf(t.charAt(i)) !== -1) hit++; s = hit / t.length * 0.9; }
+    if (nFresh && !tFresh) s -= 0.08;
+    return s;
+  }
+  function splitCompound(raw) {
+    var n = norm(raw), parts = [];
+    var temps = Object.keys(TEMP_WORDS).sort(function (a, b) { return b.length - a.length; });
+    for (var i = 0; i < temps.length; i++) {
+      var k = temps[i];
+      if (n.length > k.length + 1 && n.slice(-k.length) === k) { parts.push(n.slice(0, -k.length)); parts.push(k); return parts; }
+    }
+    return [n];
+  }
+  function applyOne(line, raw) {
+    var full = norm(raw), t = normChoice(raw), groups = line.item.optionGroups || [], gi, g;
+    if (!full) return true;
+    if (/^(不加蛋|不要蛋|不用蛋|免蛋|沒有蛋|不用加蛋|不要加蛋|蛋不要)$/.test(full)) {
+      gi = eggGroupIdx(line);
+      if (gi >= 0) { line.sel[gi] = indexWhere(groups[gi].choices, /不加蛋/); line.answered[gi] = true; return true; }
+      line.extras = line.extras.filter(function (o) { return !/蛋/.test(o.name); });
+      return true;
+    }
+    if (/^(加蛋|要蛋|蛋|要加蛋|一顆蛋|加一顆蛋|加顆蛋|要加|加一顆|好加蛋|要加一顆蛋)$/.test(full)) {
+      gi = eggGroupIdx(line);
+      if (gi >= 0) {
+        g = groups[gi];
+        var idx = clampIdx(g.defaultIdx, g.choices.length);
+        if (/不加蛋/.test(g.choices[idx].name)) idx = indexWhere(g.choices, /^(?!.*不加蛋)/);
+        line.sel[gi] = idx; line.answered[gi] = true; return true;
+      }
+      var eggs = line.item._extras.filter(function (o) { return /蛋/.test(o.name) && !/不加蛋/.test(o.name); });
+      if (eggs.length) { addExtra(line, eggs[0]); return true; }
+      return false;
+    }
+    if (TEMP_WORDS[full]) t = TEMP_WORDS[full];
+    else if (SIZE_WORDS[full]) t = SIZE_WORDS[full];
+    var cands = [];
+    groups.forEach(function (gr, gIndex) {
+      (gr.choices || []).forEach(function (c, ci) { cands.push({ kind: 'group', gi: gIndex, ci: ci, name: c.name, s: choiceScore(t, c.name) }); });
+    });
+    line.item._extras.forEach(function (o) { cands.push({ kind: 'extra', o: o, name: o.name, s: choiceScore(t, o.name) }); });
+    cands.sort(function (a, b) { return (b.s - a.s) || (a.name.length - b.name.length); });
+    var top = cands[0], next = cands[1];
+    if (!top || top.s < 0.72) return false;
+    if (next && Math.abs(next.s - top.s) < 0.001 && next.name.length === top.name.length && next.name !== top.name) return false;
+    if (top.kind === 'extra') { addExtra(line, top.o); return true; }
+    g = groups[top.gi];
+    if (g.type === 'checkbox') { if (line.sel[top.gi].indexOf(top.ci) === -1) line.sel[top.gi].push(top.ci); }
+    else { line.sel[top.gi] = top.ci; line.answered[top.gi] = true; }
+    return true;
+  }
+  function removeOne(line, raw) {
+    var t = normChoice(raw), done = false, groups = line.item.optionGroups || [];
+    if (/蛋/.test(t)) {
+      var gi = eggGroupIdx(line);
+      if (gi >= 0) { line.sel[gi] = indexWhere(groups[gi].choices, /不加蛋/); line.answered[gi] = true; done = true; }
+    }
+    var before = line.extras.length;
+    line.extras = line.extras.filter(function (o) { return choiceScore(t, o.name) < 0.85; });
+    if (line.extras.length !== before) done = true;
+    groups.forEach(function (g, gIndex) {
+      if (g.type !== 'checkbox') return;
+      line.sel[gIndex] = line.sel[gIndex].filter(function (ci) { var keep = choiceScore(t, g.choices[ci].name) < 0.85; if (!keep) done = true; return keep; });
+    });
+    return done;
+  }
+  function addExtra(line, o) { if (!line.extras.some(function (x) { return x.name === o.name; })) line.extras.push(o); }
+  function applySelections(line, adds, removes) {
+    var unmatched = [];
+    (Array.isArray(adds) ? adds : []).forEach(function (raw) {
+      if (raw == null || raw === '') return;
+      splitCompound(String(raw)).forEach(function (p) { if (!applyOne(line, p)) unmatched.push(toTrad(p)); });
+    });
+    (Array.isArray(removes) ? removes : []).forEach(function (raw) { if (raw && !removeOne(line, String(raw))) unmatched.push('不要' + toTrad(raw)); });
+    return unmatched;
+  }
+  function calcLine(line) {
+    var it = line.item, bp = Number(it.price) || 0, ex = 0;
+    (it.optionGroups || []).forEach(function (g, gi) {
+      var ch = g.choices || [], s = line.sel[gi];
+      (Array.isArray(s) ? s : (s == null || s < 0 ? [] : [s])).forEach(function (idx) {
+        var c = ch[idx]; if (!c) return;
+        var p = Number(c.price) || 0;
+        if (g.pricing === 'setPrice') bp = p;
+        else if (g.pricing === 'mealUpgrade') ex += Math.max(0, p - (Number(g.baseValue) || 0));
+        else ex += p;
+      });
+    });
+    line.extras.forEach(function (o) { ex += Number(o.price) || 0; });
+    return { unit: bp + ex, total: (bp + ex) * line.qty };
+  }
+  function missingOf(line) {
+    var out = [];
+    (line.item.optionGroups || []).forEach(function (g, gi) {
+      if (g.type === 'checkbox' || line.answered[gi]) return;
+      out.push({ question: g.groupName || '選項', options: (g.choices || []).map(function (c) { return c.name; }) });
+    });
+    return out;
+  }
+  function chosenNames(line) {
+    var out = [];
+    (line.item.optionGroups || []).forEach(function (g, gi) {
+      var s = line.sel[gi];
+      if (Array.isArray(s)) s.forEach(function (ci) { if (g.choices[ci]) out.push(g.choices[ci].name); });
+      else if (line.answered[gi] && s != null && s >= 0 && g.choices[s] && (g.choices || []).length > 1) out.push(g.choices[s].name);
+    });
+    line.extras.forEach(function (o) { out.push(o.name); });
+    return out;
+  }
+  function orderTotal() { return Order.lines.reduce(function (sum, l) { return sum + calcLine(l).total; }, 0); }
+  function lineNo(line) { return Order.lines.indexOf(line) + 1; }
+  function lineInfo(line) {
+    var p = calcLine(line), info = { line: lineNo(line), name: line.item.name, quantity: line.qty, selected: chosenNames(line), unit_price: p.unit, price: p.total };
+    var miss = missingOf(line);
+    if (miss.length) info.missing = miss;
+    if (line.note) info.note = line.note;
+    return info;
+  }
+  function sameLine(a, b) {
+    return a.item === b.item && JSON.stringify(a.sel) === JSON.stringify(b.sel) && a.note === b.note &&
+      JSON.stringify(a.extras.map(function (o) { return o.name; })) === JSON.stringify(b.extras.map(function (o) { return o.name; }));
+  }
+  function joinNote(a, list) { return [String(a || '').trim()].concat(list || []).filter(Boolean).map(toTrad).join('、'); }
+  function getLine(n) { n = Math.round(Number(n)); return n >= 1 && n <= Order.lines.length ? Order.lines[n - 1] : null; }
+  function resetOrder() { Order.lines = []; Order.changedId = 0; renderOrder(); }
+
+  /* ═════════ 工具（給 Grok 呼叫） ═════════ */
+  var TOOLS_SPEC = [
+    { type: 'function', name: 'add_items', description: '把顧客點的一或多樣餐點加到點餐單。同一句點了好幾樣就放在同一次呼叫。',
+      parameters: { type: 'object', properties: { items: { type: 'array', items: { type: 'object', properties: {
+        name: { type: 'string', description: '餐點名稱：盡量用菜單上的正式名稱（繁體中文）；不確定就照顧客原話' },
+        quantity: { type: 'integer', minimum: 1, maximum: 20 },
+        selections: { type: 'array', items: { type: 'string' }, description: '顧客說出的選項，一個一格，例如：加蛋、不加蛋、大杯、去冰、大杯鮮奶茶、加起司' },
+        note: { type: 'string', description: '其他備註，例如：不要醬、切邊；沒有就空字串' }
+      }, required: ['name', 'quantity'] } } }, required: ['items'] } },
+    { type: 'function', name: 'update_item', description: '修改點餐單上某一項：補上選項、改數量（0 = 刪掉）、拿掉加料、改備註。line 是畫面上的項次。',
+      parameters: { type: 'object', properties: {
+        line: { type: 'integer', minimum: 1 },
+        quantity: { type: 'integer', minimum: 0, maximum: 20 },
+        selections: { type: 'array', items: { type: 'string' }, description: '要設定或加上的選項，盡量用 missing.options 裡的原文' },
+        remove_selections: { type: 'array', items: { type: 'string' }, description: '要拿掉的加料，例如：起司' },
+        note: { type: 'string' }
+      }, required: ['line'] } },
+    { type: 'function', name: 'remove_item', description: '把點餐單上的某一項整個刪掉。',
+      parameters: { type: 'object', properties: { line: { type: 'integer', minimum: 1 } }, required: ['line'] } },
+    { type: 'function', name: 'get_order', description: '取得目前點餐單的明細與總價。', parameters: { type: 'object', properties: {} } },
+    { type: 'function', name: 'search_menu', description: '查菜單：有沒有某樣餐點、多少錢、今天賣完了沒。',
+      parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] } },
+    { type: 'function', name: 'finish_order', description: '顧客說點好了、這樣就好、沒有了，或按了「我點好了」時呼叫。', parameters: { type: 'object', properties: {} } }
+  ];
+
+  function runTool(name, args) {
+    args = args || {};
+    var result;
+    try {
+      if (name === 'add_items') result = toolAddItems(args);
+      else if (name === 'update_item') result = toolUpdateItem(args);
+      else if (name === 'remove_item') result = toolRemoveItem(args);
+      else if (name === 'get_order') result = { ok: true, lines: Order.lines.map(lineInfo), order_total: orderTotal() };
+      else if (name === 'search_menu') result = toolSearchMenu(args);
+      else if (name === 'finish_order') result = toolFinish();
+      else result = { ok: false, message: '沒有這個工具：' + name };
+    } catch (e) {
+      console.error('[kiosk] tool error', name, e);
+      result = { ok: false, message: '系統處理失敗，請顧客再說一次' };
+    }
+    renderOrder();
+    return result;
+  }
+  function toolAddItems(args) {
+    var specs = Array.isArray(args.items) ? args.items : (args.name ? [args] : []);
+    var results = [];
+    specs.slice(0, 12).forEach(function (spec) {
+      var said = String(spec && spec.name || '').trim();
+      if (!said) { results.push({ ok: false, message: '沒有餐點名稱' }); return; }
+      var f = findItem(said);
+      if (f.soldOut) { results.push({ ok: false, said: toTrad(said), name: f.item.name, sold_out: true, message: '今天賣完了' }); return; }
+      if (!f.item) {
+        results.push({ ok: false, said: toTrad(said), candidates: f.candidates.map(briefItem).filter(function (c) { return c.available; }),
+          message: f.candidates.length ? '請顧客從候選中選一個' : '菜單上找不到，請顧客再說一次或換別的' });
+        return;
+      }
+      var line = newLine(f.item);
+      line.qty = clampQty(spec.quantity);
+      applySelections(line, f.implied || [], []);            // 從名稱推得的大杯/冰：這項沒有該選項就略過
+      var unmatched = applySelections(line, Array.isArray(spec.selections) ? spec.selections : [], []);
+      line.note = joinNote(spec.note, unmatched);
+      var target = null;
+      if (!missingOf(line).length) Order.lines.forEach(function (l) { if (!target && !missingOf(l).length && sameLine(l, line)) target = l; });
+      if (target) target.qty = Math.min(20, target.qty + line.qty);
+      else { Order.lines.push(line); target = line; }
+      markChanged(target);
+      var info = lineInfo(target);
+      info.ok = true;
+      if (unmatched.length) info.unmatched = unmatched;
+      results.push(info);
+    });
+    return { results: results, order_total: orderTotal(), lines_count: Order.lines.length };
+  }
+  function toolUpdateItem(args) {
+    var line = getLine(args.line);
+    if (!line) return { ok: false, message: '點餐單上沒有第' + args.line + '項', lines: Order.lines.map(lineInfo) };
+    if (args.quantity !== undefined && args.quantity !== null && Number(args.quantity) <= 0) return toolRemoveItem(args);
+    if (args.quantity !== undefined && args.quantity !== null) line.qty = clampQty(args.quantity);
+    var unmatched = applySelections(line, args.selections, args.remove_selections);
+    if (typeof args.note === 'string' && args.note.trim()) line.note = joinNote(args.note, []);
+    if (unmatched.length) line.note = joinNote(line.note, unmatched);
+    markChanged(line);
+    var info = lineInfo(line);
+    info.ok = true;
+    if (unmatched.length) info.unmatched = unmatched;
+    info.order_total = orderTotal();
+    return info;
+  }
+  function toolRemoveItem(args) {
+    var line = getLine(args.line);
+    if (!line) return { ok: false, message: '點餐單上沒有第' + args.line + '項' };
+    Order.lines.splice(Order.lines.indexOf(line), 1);
+    return { ok: true, removed: line.item.name, lines: Order.lines.map(lineInfo), order_total: orderTotal() };
+  }
+  function toolSearchMenu(args) {
+    var q = norm(args.query || '');
+    var ranked = q ? rankItems(stripImplied(q).pop().text, true) : [];
+    return { ok: true, results: ranked.slice(0, 6).map(function (r) { return briefItem(r.it); }) };
+  }
+  function toolFinish() {
+    if (!Order.lines.length) return { ok: false, message: '還沒有點任何餐點' };
+    var pending = Order.lines.filter(function (l) { return missingOf(l).length; }).map(function (l) {
+      return { line: lineNo(l), name: l.item.name, missing: missingOf(l) };
+    });
+    if (pending.length) return { ok: false, pending: pending, message: '還有選項沒確認，先問完再結束' };
+    Session.finishing = true;
+    armFinishFallback();
+    return { ok: true, order_total: orderTotal(), lines: Order.lines.map(lineInfo) };
+  }
+
+  /* ═════════ 給 Grok 的指示 ═════════ */
+  var GREETING = '早安！想吃什麼呢？直接說餐點名稱就可以喔。';
+  function buildInstructions() {
+    var cats = {}, order = [];
+    Menu.active.forEach(function (it) {
+      var c = it.category || '其他';
+      if (!cats[c]) { cats[c] = []; order.push(c); }
+      cats[c].push(it.name + ' ' + itemPriceLabel(it));
+    });
+    return [
+      '你是早餐店菜單看板旁點餐平板上的點餐員，顧客多半是長輩。',
+      '【說話】台灣華語，用字一律繁體中文；親切、有耐心、慢慢講；每次只講一兩句，一次只問一件事。',
+      '【開場】只說：「' + GREETING + '」',
+      '【點餐】',
+      '1. 顧客說出餐點就立刻呼叫 add_items；同一句點好幾樣放在同一次呼叫。name 用下方菜單的正式名稱；不確定就照顧客原話傳，系統會比對。',
+      '2. 工具回傳後，先用一句話複誦，例如「好的，一份4號辣卡脆雞堡套餐。」',
+      '3. 結果有 missing 時，只問第一個，白話問：加蛋→「要加蛋嗎？」；套餐飲料→「飲料要大杯奶茶，還是換別的？」；溫度→「冰的還是溫的？」；容量→「大杯還是中杯？」。顧客回答後呼叫 update_item，selections 用 options 裡的原文。',
+      '4. 有 candidates 時，念出兩三個讓顧客選，不要自己決定；sold_out 時說「不好意思，這個今天賣完了」，請顧客換別的。',
+      '5. 顧客要改數量、改選項、不要某樣，用 update_item 或 remove_item（line 是畫面上的項次）。',
+      '6. 顧客說「這樣就好」「沒有了」「好了」，或系統告訴你顧客按了「我點好了」，呼叫 finish_order。成功後只說：「好的，總共○○元，請到櫃台結帳，謝謝您！」金額用 order_total。回傳 pending 就先把沒確認的問完。',
+      '7. 價錢只念工具回傳的數字，不要自己加總。',
+      '8. 聽不清楚就說「不好意思，可以再說一次嗎？」；顧客講台語也盡量聽懂，用華語回答。',
+      '【不可以】推銷、一次介紹很多餐點；答應付款、外送、折扣；聊和點餐無關的事（簡短帶回點餐）。',
+      '【今日菜單】（品名 價格；沒列出的就是今天沒有）',
+      order.map(function (c) { return '〔' + c + '〕' + cats[c].join('、'); }).join('\n')
+    ].join('\n');
+  }
+  function buildKeyterms(aliasData) {
+    var pri = ['套餐', '漢堡', '蝸牛堡', '蛋餅', '燒餅', '吐司', '厚片', '其它', '飲品', '單點', '食材'];
+    var rank = function (it) { var c = it.category || ''; for (var i = 0; i < pri.length; i++) if (c.indexOf(pri[i]) !== -1) return i; return pri.length; };
+    var out = [], seen = {};
+    function add(t) { t = String(t || '').trim(); if (!t || t.length > 50 || seen[t]) return; seen[t] = 1; out.push(t); }
+    Menu.active.slice().sort(function (a, b) { return rank(a) - rank(b); }).forEach(function (it) {
+      add(String(it.name).replace(/^單點-/, '').replace(/^\d+號/, '').replace(/(套餐|單點)$/, '').replace(/\(.*?\)/g, ''));
+    });
+    parseAliases(aliasData).forEach(function (r) { add(r[0]); });
+    return out.slice(0, 100);
+  }
+  function sessionUpdate(tok, minimal) {
+    var s = {
+      instructions: buildInstructions(),
+      voice: (tok && tok.voice) || CONFIG.voice,
+      turn_detection: { type: 'server_vad' },
+      audio: {
+        input: { format: { type: 'audio/pcm', rate: 24000 } },
+        output: { format: { type: 'audio/pcm', rate: 24000 } }
+      },
+      tools: TOOLS_SPEC
+    };
+    if (!minimal) {
+      s.reasoning = { effort: CONFIG.reasoningEffort };
+      s.turn_detection.idle_timeout_ms = CONFIG.serverIdlePromptMs;
+      s.audio.input.transcription = { model: 'grok-transcribe', language_hint: 'zh', keyterms: buildKeyterms(tok && tok.aliases) };
+      s.audio.output.speed = CONFIG.speechSpeed;
+    }
+    return { type: 'session.update', session: s };
+  }
+
+  /* ═════════ 麥克風／喇叭 ═════════ */
+  var AudioIO = {
+    ctx: null, stream: null, source: null, node: null, sink: null,
+    playHead: 0, sources: [], tailUntil: 0, rsPrev: 0, rsT: 0, acc: null, accLen: 0, onChunk: null,
+    unlock: function () {
+      var AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      if (!this.ctx || this.ctx.state === 'closed') {
+        try { this.ctx = new AC({ sampleRate: 24000 }); } catch (_) { this.ctx = new AC(); }
+      }
+      if (this.ctx.state === 'suspended') this.ctx.resume();
+    },
+    startMic: function (onChunk) {
+      var self = this;
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return Promise.reject(new Error('no_getusermedia'));
+      if (!this.ctx) return Promise.reject(new Error('no_audiocontext'));
+      this.onChunk = onChunk; this.acc = new Float32Array(2400); this.accLen = 0; this.rsT = 0; this.rsPrev = 0;
+      return navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } })
+        .then(function (stream) {
+          self.stream = stream;
+          self.source = self.ctx.createMediaStreamSource(stream);
+          self.sink = self.ctx.createGain(); self.sink.gain.value = 0; self.sink.connect(self.ctx.destination);
+          var useWorklet = self.ctx.audioWorklet && window.AudioWorkletNode;
+          return (useWorklet ? self.ctx.audioWorklet.addModule(CONFIG.workletUrl).then(function () {
+            self.node = new AudioWorkletNode(self.ctx, 'kiosk-mic');
+            self.node.port.onmessage = function (e) { self.feed(e.data); };
+          }) : Promise.reject(new Error('no_worklet'))).catch(function () {
+            var sp = self.ctx.createScriptProcessor(4096, 1, 1);
+            sp.onaudioprocess = function (e) { self.feed(new Float32Array(e.inputBuffer.getChannelData(0))); };
+            self.node = sp;
+          }).then(function () { self.source.connect(self.node); self.node.connect(self.sink); });
+        });
+    },
+    feed: function (buf) {
+      var from = this.ctx.sampleRate, data = buf;
+      if (from !== 24000) {
+        var ratio = from / 24000, src = new Float32Array(buf.length + 1), out = [], t = this.rsT;
+        src[0] = this.rsPrev; src.set(buf, 1);
+        while (t <= src.length - 2) { var i = Math.floor(t), f = t - i; out.push(src[i] * (1 - f) + src[i + 1] * f); t += ratio; }
+        this.rsT = t - (src.length - 1); this.rsPrev = src[src.length - 1];
+        data = out;
+      }
+      for (var k = 0; k < data.length; k++) {
+        this.acc[this.accLen++] = data[k];
+        if (this.accLen === this.acc.length) { if (this.onChunk) this.onChunk(floatToB64(this.acc)); this.accLen = 0; }
+      }
+    },
+    stopMic: function () {
+      try { if (this.node) { this.node.disconnect(); if (this.node.port) this.node.port.onmessage = null; } } catch (_) {}
+      try { if (this.source) this.source.disconnect(); } catch (_) {}
+      try { if (this.stream) this.stream.getTracks().forEach(function (tr) { tr.stop(); }); } catch (_) {}
+      this.node = null; this.source = null; this.stream = null; this.onChunk = null;
+    },
+    play: function (b64) {
+      if (!this.ctx || !b64) return;
+      var f = b64ToFloat(b64);
+      if (!f.length) return;
+      var buf = this.ctx.createBuffer(1, f.length, 24000);
+      buf.getChannelData(0).set(f);
+      var s = this.ctx.createBufferSource(), self = this, now = this.ctx.currentTime;
+      s.buffer = buf; s.connect(this.ctx.destination);
+      if (this.playHead < now + 0.03) this.playHead = now + 0.08;
+      s.start(this.playHead);
+      this.playHead += buf.duration;
+      this.sources.push(s);
+      s.onended = function () { var i = self.sources.indexOf(s); if (i !== -1) self.sources.splice(i, 1); };
+    },
+    stopPlayback: function () {
+      this.sources.forEach(function (s) { try { s.stop(); } catch (_) {} });
+      this.sources = []; this.playHead = 0;
+    },
+    isPlaying: function () { return !!(this.ctx && this.playHead > this.ctx.currentTime + 0.02); },
+    micGated: function () {
+      if (CONFIG.bargeIn) return false;
+      if (this.isPlaying()) { this.tailUntil = Date.now() + 350; return true; }
+      return Date.now() < this.tailUntil;
+    },
+    whenIdle: function () {
+      var self = this;
+      return new Promise(function (res) { (function chk() { if (!self.isPlaying()) res(); else setTimeout(chk, 80); })(); });
+    }
+  };
+  function floatToB64(f32) {
+    var u8 = new Uint8Array(f32.length * 2), dv = new DataView(u8.buffer);
+    for (var i = 0; i < f32.length; i++) { var s = Math.max(-1, Math.min(1, f32[i])); dv.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true); }
+    var bin = '';
+    for (var j = 0; j < u8.length; j += 0x8000) bin += String.fromCharCode.apply(null, u8.subarray(j, j + 0x8000));
+    return btoa(bin);
+  }
+  function b64ToFloat(b64) {
+    var bin = atob(b64), n = bin.length >> 1, out = new Float32Array(n);
+    for (var i = 0; i < n; i++) { var v = bin.charCodeAt(2 * i) | (bin.charCodeAt(2 * i + 1) << 8); if (v & 0x8000) v -= 0x10000; out[i] = v / 32768; }
+    return out;
+  }
+
+  /* ═════════ Grok 即時語音連線 ═════════ */
+  var Session = {
+    ws: null, active: false, ready: false, finishing: false, demo: false,
+    pendingFollowup: false, responseActive: false, queueResponse: false, awaiting: false,
+    userSpeaking: false, calls: {}, agentText: '', startedAt: 0, lastActivity: 0,
+    timers: {}, updateAttempt: 0, token: null
+  };
+  function clearTimer(name) { if (Session.timers[name]) { clearTimeout(Session.timers[name]); Session.timers[name] = 0; } }
+  function send(obj) { if (Session.ws && Session.ws.readyState === 1) Session.ws.send(JSON.stringify(obj)); }
+  function touch() { Session.lastActivity = Date.now(); }
+
+  function resolvePiBase() {
+    return String(CONFIG.piBase || storeGet('kiosk_pi_base') || Settings.linePayServerUrl || '').replace(/\/+$/, '');
+  }
+  function fetchToken() {
+    var key = storeGet('kiosk_voice_key'), base = resolvePiBase();
+    if (!key) { var e1 = new Error('no_kiosk_key'); e1.kind = 'key'; return Promise.reject(e1); }
+    if (!base) { var e2 = new Error('no_pi_base'); e2.kind = 'pi'; return Promise.reject(e2); }
+    var ctl = window.AbortController ? new AbortController() : null;
+    var timer = setTimeout(function () { if (ctl) ctl.abort(); }, 8000);
+    return fetch(base + CONFIG.tokenPath, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Kiosk-Key': key }, body: '{}', cache: 'no-store', signal: ctl ? ctl.signal : undefined })
+      .then(function (res) {
+        return res.text().then(function (txt) {
+          var d = {}; try { d = txt ? JSON.parse(txt) : {}; } catch (_) {}
+          if (!res.ok || !d.value) { var e = new Error(d.error || ('HTTP ' + res.status)); e.kind = res.status === 401 ? 'keybad' : (res.status === 429 ? 'busy' : 'token'); throw e; }
+          return d;
+        });
+      }, function (err) { err.kind = 'token'; throw err; })
+      .then(function (d) { clearTimeout(timer); return d; }, function (e) { clearTimeout(timer); throw e; });
+  }
+
+  function startLive() {
+    if (!Menu.active.length) { showError(Menu.error ? '菜單沒有載入成功。' : '菜單還沒載入完成，請稍等一下再按。'); return; }
+    AudioIO.unlock();
+    beginSessionUI();
+    var mic = AudioIO.startMic(onMicChunk).catch(function (e) { e.kind = 'mic'; throw e; });
+    var tok = fetchToken();
+    Promise.all([tok, mic]).then(function (r) { if (Session.active) openSocket(r[0]); })
+      .catch(function (e) { failSession(e); });
+  }
+  function beginSessionUI() {
+    resetOrder();
+    Session.active = true; Session.ready = false; Session.finishing = false; Session.pendingFollowup = false;
+    Session.responseActive = false; Session.queueResponse = false; Session.awaiting = false; Session.userSpeaking = false;
+    Session.calls = {}; Session.agentText = ''; Session.updateAttempt = 0;
+    Session.startedAt = Date.now(); touch();
+    setAgent('正在幫您接通點餐員，請稍等…'); setUser('');
+    setStatus('connecting');
+    showScreen('screen-order');
+    startTick();
+  }
+  function openSocket(tok) {
+    Session.token = tok;
+    var ws;
+    try { ws = new WebSocket(CONFIG.wsUrl + '?model=' + encodeURIComponent(tok.model || CONFIG.model), ['xai-client-secret.' + tok.value]); }
+    catch (e) { e.kind = 'ws'; failSession(e); return; }
+    Session.ws = ws;
+    Session.timers.connect = later(12000, function () { if (!Session.ready) { var e = new Error('connect_timeout'); e.kind = 'ws'; failSession(e); } });
+    ws.onopen = function () {
+      send(sessionUpdate(tok, false));
+      Session.timers.ready = later(3000, function () { if (!Session.ready) onReady(); });
+    };
+    ws.onmessage = function (m) {
+      if (typeof m.data !== 'string') return;
+      var ev; try { ev = JSON.parse(m.data); } catch (_) { return; }
+      handleEvent(ev);
+    };
+    ws.onclose = function (e) {
+      if (Session.ws !== ws) return;
+      Session.ws = null;
+      if (Session.active && !Session.finishing) { var err = new Error('closed ' + e.code + ' ' + (e.reason || '')); err.kind = 'ws'; failSession(err); }
+    };
+  }
+  function onReady() {
+    if (Session.ready) return;
+    Session.ready = true;
+    clearTimer('ready'); clearTimer('connect');
+    touch();
+    Session.awaiting = true;
+    requestResponse({ instructions: '現在只說開場白：「' + GREETING + '」' });
+  }
+  function requestResponse(resp) {
+    if (Session.responseActive) { Session.queueResponse = true; return; }
+    Session.responseActive = true;
+    clearTimer('resp');
+    Session.timers.resp = later(15000, function () { Session.responseActive = false; });   // 沒收到 response.done 時解鎖
+    send(resp ? { type: 'response.create', response: resp } : { type: 'response.create' });
+  }
+  function onMicChunk(b64) {
+    if (!Session.ready || !Session.ws || Session.ws.readyState !== 1) return;
+    if (AudioIO.micGated()) return;
+    send({ type: 'input_audio_buffer.append', audio: b64 });
+  }
+  function handleEvent(ev) {
+    var type = ev.type || '';
+    switch (type) {
+      case 'session.updated':
+        onReady(); return;
+      case 'response.created':
+        Session.responseActive = true; Session.agentText = ''; return;
+      case 'response.output_audio.delta':
+      case 'response.audio.delta':
+        Session.awaiting = false; touch(); AudioIO.play(ev.delta); return;
+      case 'response.output_audio_transcript.delta':
+      case 'response.audio_transcript.delta':
+      case 'response.output_text.delta':
+      case 'response.text.delta':
+        Session.agentText += String(ev.delta || ''); setAgent(Session.agentText); return;
+      case 'response.output_audio_transcript.done':
+      case 'response.audio_transcript.done':
+        if (ev.transcript) setAgent(String(ev.transcript)); return;
+      case 'conversation.item.input_audio_transcription.updated':
+      case 'conversation.item.input_audio_transcription.completed':
+        setUser(String(ev.transcript || ev.text || '')); return;
+      case 'conversation.item.input_audio_transcription.delta':
+        setUser((Session.userLine || '') + String(ev.delta || '')); return;
+      case 'input_audio_buffer.speech_started':
+        Session.userSpeaking = true; Session.userLine = ''; touch();
+        if (CONFIG.bargeIn) AudioIO.stopPlayback();
+        return;
+      case 'input_audio_buffer.speech_stopped':
+        Session.userSpeaking = false; Session.awaiting = true; touch(); return;
+      case 'response.function_call_arguments.done':
+        onToolCall(ev.name, ev.call_id, ev.arguments); return;
+      case 'response.output_item.done':
+        if (ev.item && ev.item.type === 'function_call') onToolCall(ev.item.name, ev.item.call_id, ev.item.arguments);
+        return;
+      case 'response.done':
+        onResponseDone(ev.response || {}); return;
+      case 'error':
+        onServerError(ev.error || ev); return;
+      default:
+        return;
+    }
+  }
+  function onToolCall(name, callId, rawArgs) {
+    if (!callId || Session.calls[callId]) return;
+    Session.calls[callId] = true;
+    touch();
+    var args = {};
+    try { args = typeof rawArgs === 'string' ? JSON.parse(rawArgs || '{}') : (rawArgs || {}); } catch (_) {}
+    var result = runTool(name, args);
+    send({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output: JSON.stringify(result) } });
+    Session.pendingFollowup = true;
+  }
+  function onResponseDone(resp) {
+    Session.responseActive = false;
+    clearTimer('resp');
+    if (Session.pendingFollowup) {
+      Session.pendingFollowup = false;
+      Session.awaiting = true;
+      AudioIO.whenIdle().then(function () { if (Session.active && !Session.userSpeaking) requestResponse(); });
+      return;
+    }
+    if (Session.queueResponse) { Session.queueResponse = false; requestResponse(); return; }
+    if (Session.finishing) AudioIO.whenIdle().then(function () { later(500, goDone); });
+  }
+  function onServerError(err) {
+    var msg = String(err && (err.message || err.code) || '');
+    console.warn('[kiosk] server error:', msg, err);
+    if (/active response|already has an active/i.test(msg)) { Session.queueResponse = true; return; }
+    if (!Session.ready && Session.updateAttempt === 0) {   // 欄位不被接受時，退回最精簡設定再試一次
+      Session.updateAttempt = 1;
+      send(sessionUpdate(Session.token, true));
+    }
+  }
+  function armFinishFallback() {
+    clearTimer('finish');
+    Session.timers.finish = later(15000, function () { if (Session.active && Session.finishing) goDone(); });
+  }
+  function userPressedDone() {
+    if (Session.demo) { demoFinish(); return; }
+    if (Session.ready && Session.ws) {
+      touch();
+      send({ type: 'conversation.item.create', item: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '（顧客按了「我點好了」按鈕）' }] } });
+      Session.awaiting = true;
+      requestResponse();
+      return;
+    }
+    var r = toolFinish();
+    if (r.ok) goDone();
+  }
+  function teardown() {
+    Session.active = false; Session.ready = false;
+    Object.keys(Session.timers).forEach(clearTimer);
+    stopTick();
+    var ws = Session.ws; Session.ws = null;
+    if (ws) { try { ws.close(1000, 'kiosk_end'); } catch (_) {} }
+    AudioIO.stopMic(); AudioIO.stopPlayback();
+    demoStop();
+  }
+  function failSession(e) {
+    if (!Session.active) return;
+    console.warn('[kiosk] session failed', e);
+    var kind = e && e.kind, why = '連不到語音服務。';
+    if (kind === 'mic') why = '麥克風沒有開啟，或沒有插好。';
+    else if (kind === 'key') why = '這台平板還沒設定點餐金鑰。';
+    else if (kind === 'keybad') why = '這台平板的點餐金鑰不正確。';
+    else if (kind === 'busy') why = '剛剛使用太頻繁，請稍等一分鐘再按。';
+    else if (kind === 'pi') why = '找不到店內主機位址。';
+    else if (kind === 'ws' && Session.ready) why = '語音連線中斷了。';
+    var hadLines = Order.lines.length > 0 && Session.ready;
+    teardown();
+    if (hadLines) { goDone(true); return; }
+    showError(why);
+  }
+
+  /* 狀態與逾時 */
+  var tickTimer = 0;
+  function startTick() { stopTick(); tickTimer = setInterval(tick, 150); }
+  function stopTick() { if (tickTimer) clearInterval(tickTimer); tickTimer = 0; }
+  function tick() {
+    if (!Session.active || Session.demo) return;
+    if (!Session.ready) setStatus('connecting');
+    else if (AudioIO.isPlaying()) { setStatus('speaking'); touch(); }
+    else if (Session.userSpeaking) setStatus('listening');
+    else if (Session.awaiting || Session.responseActive) setStatus('thinking');
+    else setStatus('listening');
+    var now = Date.now();
+    if (Session.ready && !AudioIO.isPlaying() && now - Session.lastActivity > CONFIG.idleEndMs) endQuietly();
+    else if (now - Session.startedAt > CONFIG.maxSessionMs) endQuietly();
+  }
+  function endQuietly() { if (Order.lines.length) goDone(); else goHome(); }
+
+  /* ═════════ 預覽：模擬對話（離線） ═════════ */
+  var DEMO_SCRIPT = [
+    { agent: GREETING },
+    { user: '我要一個四號辣卡脆雞堡套餐', tool: ['add_items', { items: [{ name: '4号辣卡脆鸡堡套餐', quantity: 1, selections: [], note: '' }] }] },
+    { agent: '好的，一份4號辣卡脆雞堡套餐。要加蛋嗎？' },
+    { user: '要，加蛋', tool: ['update_item', { line: 1, selections: ['加蛋'] }] },
+    { agent: '好，加一顆蛋。飲料要大杯奶茶，還是換別的？' },
+    { user: '換大杯鮮奶茶，去冰', tool: ['update_item', { line: 1, selections: ['大杯鲜奶茶', '去冰'] }] },
+    { agent: '好的，大杯鮮奶茶、去冰。還需要什麼嗎？' },
+    { user: '再一個蘿蔔糕', tool: ['add_items', { items: [{ name: '萝卜糕', quantity: 1, selections: [], note: '' }] }] },
+    { agent: '蘿蔔糕一份。要加蛋嗎？' },
+    { user: '不用', tool: ['update_item', { line: 2, selections: ['不加蛋'] }] },
+    { agent: '好，不加蛋。還需要什麼嗎？' },
+    { user: '這樣就好', tool: ['finish_order', {}] },
+    { agent: '好的，總共{total}元，請到櫃台結帳，謝謝您！', finish: true }
+  ];
+  var Demo = { running: false, step: 0, timer: 0, typing: 0 };
+  function startDemo() {
+    beginSessionUI();
+    Session.demo = true;
+    Demo.running = true; Demo.step = 0;
+    Demo.timer = later(900, demoNext);
+  }
+  function demoStop() {
+    Demo.running = false;
+    clearTimeout(Demo.timer); clearInterval(Demo.typing);
+    try { if (window.speechSynthesis) window.speechSynthesis.cancel(); } catch (_) {}
+  }
+  function demoNext() {
+    if (!Demo.running) return;
+    var st = DEMO_SCRIPT[Demo.step++];
+    if (!st) return;
+    if (st.agent) {
+      var text = st.agent.replace('{total}', String(orderTotal()));
+      setStatus('speaking'); setAgent(text);
+      speak(text).then(function () {
+        if (!Demo.running) return;
+        if (st.finish) { Demo.timer = later(700, goDone); return; }
+        setStatus('listening'); setUser('');
+        Demo.timer = later(900, demoNext);
+      });
+    } else if (st.user) {
+      setStatus('listening');
+      var i = 0;
+      Demo.typing = setInterval(function () {
+        i++; setUser(st.user.slice(0, i));
+        if (i >= st.user.length) {
+          clearInterval(Demo.typing);
+          setStatus('thinking');
+          Demo.timer = later(650, function () {
+            if (!Demo.running) return;
+            if (st.tool) runTool(st.tool[0], st.tool[1]);
+            Demo.timer = later(300, demoNext);
+          });
+        }
+      }, 110);
+    }
+  }
+  function demoFinish() {
+    demoStop();
+    var r = toolFinish();
+    if (r.ok) { goDone(); return; }
+    var first = r.pending && r.pending[0];
+    setAgent(first ? ('第' + first.line + '項還要確認：' + first.missing[0].question + '。') : '還沒有點任何餐點喔，請直接說出想吃的餐點。');
+    setStatus('listening');
+  }
+  var zhVoice = null;
+  function pickVoice() {
+    try {
+      var vs = window.speechSynthesis.getVoices() || [];
+      zhVoice = vs.filter(function (v) { return /zh[-_]TW/i.test(v.lang); })[0] || vs.filter(function (v) { return /^zh/i.test(v.lang); })[0] || null;
+    } catch (_) { zhVoice = null; }
+  }
+  function speak(text) {
+    var est = Math.max(1400, text.length * 230);
+    return new Promise(function (res) {
+      var done = false, finish = function () { if (!done) { done = true; res(); } };
+      if (!TTS_ON || !window.speechSynthesis || !window.SpeechSynthesisUtterance) { later(est, finish); return; }
+      try {
+        var u = new SpeechSynthesisUtterance(text);
+        u.lang = 'zh-TW'; u.rate = 0.95;
+        if (zhVoice) u.voice = zhVoice;
+        u.onend = finish; u.onerror = finish;
+        window.speechSynthesis.cancel(); window.speechSynthesis.speak(u);
+        later(est + 4000, finish);
+      } catch (_) { later(est, finish); }
+    });
+  }
+
+  /* ═════════ 畫面 ═════════ */
+  var STATUS_TEXT = { connecting: '接通中…', listening: '請說話', speaking: '點餐員說話中', thinking: '處理中…' };
+  var lastStatus = '';
+  function setStatus(s) {
+    if (s === lastStatus) return;
+    lastStatus = s;
+    $('status').setAttribute('data-state', s);
+    $('status-text').textContent = STATUS_TEXT[s] || '';
+  }
+  function setAgent(t) { $('agent-line').textContent = toTrad(t); }
+  function setUser(t) {
+    Session.userLine = t;
+    $('user-text').innerHTML = t ? '<strong>您說</strong>' + esc(toTrad(t)) : '';
+  }
+  function rowsHtml(withAsk) {
+    return Order.lines.map(function (l, i) {
+      var p = calcLine(l), opts = chosenNames(l), miss = missingOf(l);
+      var optText = opts.join('、') + (l.note ? (opts.length ? '　' : '') + '備註：' + l.note : '');
+      return '<div class="row cols' + (l.id === Order.changedId && withAsk ? ' is-new' : '') + '" data-id="' + l.id + '">' +
+        '<span class="r-no">' + (i + 1) + '</span>' +
+        '<div><div class="r-name">' + esc(l.item.name) + '</div>' +
+        (optText ? '<div class="r-opts">' + esc(optText) + '</div>' : '') +
+        (withAsk && miss.length ? '<span class="r-ask">還要確認：' + esc(miss.map(function (m) { return m.question; }).join('、')) + '</span>' : '') +
+        '</div>' +
+        '<span class="r-qty">' + l.qty + '</span>' +
+        '<span class="r-amt">$' + p.total + '</span></div>';
+    }).join('');
+  }
+  var EMPTY_HTML = '<div class="empty"><svg viewBox="0 0 120 100" aria-hidden="true"><path fill="#EFE6CF" d="M58 6c18-1 34 5 46 16 12 10 16 24 14 38-3 16-14 28-30 34-16 6-36 6-52 0C20 88 6 76 3 60 0 46 6 32 18 22 29 12 42 7 58 6z"/><circle cx="60" cy="50" r="18" fill="#FFB000"/></svg><p>說出想吃的餐點，<br>就會出現在這張點餐單上</p></div>';
+  var renderedSeq = 0;
+  function renderOrder() {
+    var rows = $('order-rows');
+    var animate = Order.changeSeq !== renderedSeq;
+    rows.innerHTML = Order.lines.length ? rowsHtml(true) : EMPTY_HTML;
+    if (!animate) Array.prototype.forEach.call(rows.querySelectorAll('.is-new'), function (el) { el.classList.remove('is-new'); });
+    renderedSeq = Order.changeSeq;
+    var count = Order.lines.reduce(function (s, l) { return s + l.qty; }, 0);
+    $('order-count').textContent = count ? ('共 ' + count + ' 份') : '';
+    $('order-total').innerHTML = '<small>$</small>' + orderTotal();
+    var changed = rows.querySelector('[data-id="' + Order.changedId + '"]');
+    if (changed && changed.scrollIntoView) { try { changed.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (_) { changed.scrollIntoView(false); } }
+  }
+  var screens = ['screen-home', 'screen-order', 'screen-done', 'screen-error'];
+  function showScreen(id) { screens.forEach(function (s) { $(s).classList.toggle('is-active', s === id); }); }
+
+  var homeTimer = 0;
+  function goHome() {
+    teardown();
+    clearInterval(homeTimer); homeTimer = 0;
+    resetOrder();
+    setGreeting();
+    showScreen('screen-home');
+    Session.demo = false;
+  }
+  function goDone(interrupted) {
+    if (!Order.lines.length) { goHome(); return; }
+    teardown();
+    var snapshot = { lines: Order.lines.map(lineInfo), total: orderTotal(), interrupted: !!interrupted, at: new Date().toISOString() };
+    $('done-rows').innerHTML = rowsHtml(false);
+    $('done-total').textContent = '$' + snapshot.total;
+    var count = Order.lines.reduce(function (s, l) { return s + l.qty; }, 0);
+    $('done-items').textContent = '共 ' + count + ' 份';
+    showScreen('screen-done');
+    if (typeof window.kioskSubmitOrder === 'function' && !DEMO) {
+      // 之後要接訂單管線（列印出單）時，在這裡實作 window.kioskSubmitOrder(snapshot)
+      try { window.kioskSubmitOrder(snapshot); } catch (e) { console.warn('[kiosk] submit hook failed', e); }
+    }
+    countdown('done-count', CONFIG.doneReturnMs, '秒後回到首頁');
+  }
+  function showError(why) {
+    teardown();
+    $('error-why').textContent = why || '';
+    showScreen('screen-error');
+    countdown(null, CONFIG.errorReturnMs);
+  }
+  function countdown(elId, ms, suffix) {
+    clearInterval(homeTimer);
+    var end = Date.now() + ms;
+    var upd = function () {
+      var left = Math.max(0, Math.ceil((end - Date.now()) / 1000));
+      if (elId) $(elId).textContent = left + ' ' + suffix;
+      if (left <= 0) goHome();
+    };
+    upd();
+    homeTimer = setInterval(upd, 1000);
+  }
+  function setGreeting() {
+    var h = new Date().getHours();
+    $('greet').textContent = h < 11 ? '早安！' : (h < 17 ? '午安！' : '您好！');
+  }
+  function homeStatus() {
+    var el = $('home-status');
+    if (DEMO) { el.textContent = '預覽模式　菜單 ' + Menu.active.length + ' 項'; return; }
+    if (Menu.error && !Menu.active.length) { el.textContent = '菜單載入失敗：' + Menu.error; return; }
+    if (!storeGet('kiosk_voice_key')) { el.textContent = '尚未設定點餐金鑰（網址加 ?kioskKey=）'; return; }
+    el.textContent = Menu.active.length ? ('菜單 ' + Menu.active.length + ' 項，已就緒') : '菜單載入中…';
+  }
+
+  /* ═════════ 載入菜單（正式） ═════════ */
+  var dynImport = null;
+  try { dynImport = new Function('u', 'return import(u)'); } catch (_) {}
+  function loadLiveMenu() {
+    if (!dynImport) { Menu.error = '瀏覽器太舊'; homeStatus(); return Promise.resolve(); }
+    return dynImport(CONFIG.writerModule).then(function (W) {
+      return Promise.resolve(W.readSettingsFromPocketBase({ timeoutMs: 4000 })).catch(function () { return {}; }).then(function (sr) {
+        if (sr && sr.settings) Settings = sr.settings;
+        return W.listMenuItemsFromPocketBase({ settings: Settings, activeOnly: false, timeoutMs: 5000 });
+      });
+    }).then(function (res) {
+      if (!res || !Array.isArray(res.items) || !res.items.length) throw new Error((res && (res.message || res.reason)) || 'menu_empty');
+      setMenu(res.items, Settings.menu_alias || Settings.menuAlias);
+      Menu.source = res.backend || 'pocketbase'; Menu.error = '';
+    }).catch(function (e) {
+      console.warn('[kiosk] menu load failed', e);
+      Menu.error = String(e && e.message || e);
+    }).then(homeStatus);
+  }
+
+  /* ═════════ 綁定 ═════════ */
+  var cancelArmed = 0;
+  $('btn-start').addEventListener('click', function () {
+    keepAwake();
+    if (DEMO) startDemo(); else startLive();
+  });
+  $('btn-done').addEventListener('click', userPressedDone);
+  $('btn-cancel').addEventListener('click', function () {
+    var b = $('btn-cancel');
+    if (!cancelArmed) {
+      b.textContent = '再按一次確定取消'; b.classList.add('is-confirm');
+      cancelArmed = later(4000, function () { cancelArmed = 0; b.textContent = '取消重來'; b.classList.remove('is-confirm'); });
+      return;
+    }
+    clearTimeout(cancelArmed); cancelArmed = 0; b.textContent = '取消重來'; b.classList.remove('is-confirm');
+    goHome();
+  });
+  $('btn-home').addEventListener('click', goHome);
+  $('btn-error-home').addEventListener('click', goHome);
+
+  var wakeLock = null;
+  function keepAwake() {
+    try {
+      if (navigator.wakeLock && navigator.wakeLock.request && !wakeLock) {
+        navigator.wakeLock.request('screen').then(function (l) { wakeLock = l; l.addEventListener('release', function () { wakeLock = null; }); }).catch(function () {});
+      }
+    } catch (_) {}
+  }
+  document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'visible') keepAwake(); });
+
+  /* ═════════ 啟動 ═════════ */
+  if (CONFIG.storeLabel) { $('store-label').textContent = CONFIG.storeLabel; $('store-label').hidden = false; }
+  setGreeting();
+  renderOrder();
+  if (window.speechSynthesis) { pickVoice(); try { window.speechSynthesis.onvoiceschanged = pickVoice; } catch (_) {} }
+  if (DEMO) {
+    document.body.classList.add('is-demo');
+    setMenu(DEMO_MENU, null);
+    homeStatus();
+  } else {
+    homeStatus();
+    loadLiveMenu();
+    setInterval(function () { if ($('screen-home').classList.contains('is-active')) loadLiveMenu(); }, CONFIG.menuRefreshMs);
+    keepAwake();
+  }
+
+  // 測試用
+  window.__kiosk = { runTool: runTool, findItem: findItem, setMenu: setMenu, Order: Order, Menu: Menu, buildInstructions: buildInstructions, buildKeyterms: buildKeyterms, sessionUpdate: sessionUpdate, CONFIG: CONFIG, Session: Session, goHome: goHome, showError: showError, goDone: goDone };
+})();
+</script>
+</body>
+</html>
