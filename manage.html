@@ -22,6 +22,18 @@
         * { box-sizing: border-box; }
         body { font-family: 'Helvetica Neue', Arial, 'PingFang TC', 'Microsoft JhengHei', sans-serif; }
         .toggle-switch { position: relative; display: inline-block; width: 56px; height: 28px; flex: 0 0 56px; }
+        /* kiosk-voice-settings-20261031：語音點餐分頁 */
+        .kv-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #94a3b8; }
+        .kv-field > .kv-label { display: flex; justify-content: space-between; gap: 8px; }
+        .kv-field > .kv-label b { color: #e2e8f0; font-size: 13px; }
+        .kv-field textarea { width: 100%; resize: vertical; line-height: 1.6; min-height: 44px; }
+        .kv-field input:not([type=range]), .kv-field select { width: 100%; }
+        .kv-help { font-size: 12px; line-height: 1.6; color: #94a3b8; margin: 0; }
+        .kv-warn { color: #fcd34d; }
+        .kv-range { width: 100%; accent-color: #10b981; }
+        .kv-notice { border: 1px solid #065f46; background: rgba(6, 78, 59, .35); color: #6ee7b7; }
+        .kv-saved-at { margin-right: auto; }
+        .kv-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
         .toggle-switch input { opacity: 0; width: 0; height: 0; }
         .toggle-slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background: #374151; border-radius: 28px; transition: 0.3s; }
         .toggle-slider:before { position: absolute; content: ""; height: 22px; width: 22px; left: 3px; bottom: 3px; background: white; border-radius: 50%; transition: 0.3s; }
@@ -1433,6 +1445,123 @@
                     <span v-if="lwDirty" class="text-sm text-amber-300">有尚未儲存的變更</span>
                     <button type="button" @click="lwInitForm(true)" :disabled="lwSaving || !lwDirty" class="bg-slate-700 hover:bg-slate-600 disabled:opacity-40 text-white text-sm font-bold px-4 py-2 rounded-lg">還原</button>
                     <button type="button" @click="lwSave()" :disabled="lwSaving" class="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-sm font-black px-5 py-2 rounded-lg">{{ lwSaving ? '儲存中…' : '儲存轉盤設定' }}</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- ===== TAB: 語音點餐（kiosk-voice-settings-20261031）===== -->
+        <div v-if="activeTab === 'kioskVoice'" class="manage-tab-panel p-6 max-w-3xl">
+            <div class="flex items-center justify-between gap-3 mb-4 flex-wrap">
+                <div>
+                    <h2 class="text-xl font-bold text-white">🎙️ 語音點餐</h2>
+                    <p class="text-slate-400 text-sm mt-0.5">店內語音點餐平板的開場白、聲音和規則。儲存後，平板下一位客人按「開始點餐」時就會套用，不用重新整理平板。</p>
+                </div>
+                <span v-if="kvForm" :class="kvForm.enabled ? 'bg-emerald-900/60 text-emerald-300' : 'bg-amber-900/60 text-amber-300'" class="text-xs font-bold px-3 py-1 rounded-full">{{ kvForm.enabled ? '使用中' : '暫停中' }}</span>
+            </div>
+            <p v-if="kvError" class="rounded-lg border border-red-800 bg-red-900/30 px-3 py-2 text-sm text-red-300 mb-3">{{ kvError }}</p>
+            <p v-if="kvNotice" class="kv-notice rounded-lg px-3 py-2 text-sm mb-3">{{ kvNotice }}</p>
+            <div v-if="kvForm" class="flex flex-col gap-4">
+
+                <!-- 總開關：切換後立即儲存 -->
+                <div class="rounded-xl border border-slate-700 bg-slate-800 p-5 flex flex-col gap-4">
+                    <div class="flex items-center justify-between gap-4">
+                        <div>
+                            <p class="font-bold text-white">總開關</p>
+                            <p class="mt-1 text-sm text-slate-400">暫停時，平板首頁的「開始點餐」會變灰、按了沒反應，並顯示下面這句話。切換後馬上儲存。</p>
+                        </div>
+                        <label class="toggle-switch">
+                            <input type="checkbox" data-kv-enabled :checked="kvForm.enabled" :disabled="kvSaving" @change="kvToggleEnabled($event.target.checked)">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                    <label class="kv-field"><span class="kv-label"><b>暫停時顯示的文字</b><span>{{ kvCount('pausedText', 80) }}</span></span>
+                        <input v-model="kvForm.pausedText" @input="kvDirty=true" maxlength="80" class="rounded-lg border border-slate-600 bg-slate-900 px-2 py-1.5 text-sm text-white placeholder-slate-500"></label>
+                </div>
+
+                <!-- 說話內容 -->
+                <div class="rounded-xl border border-slate-700 bg-slate-800 p-5 flex flex-col gap-4">
+                    <p class="font-bold text-white">說話內容</p>
+                    <label class="kv-field"><span class="kv-label"><b>開場白</b><span>{{ kvCount('greeting', 80) }}</span></span>
+                        <input v-model="kvForm.greeting" @input="kvDirty=true" maxlength="80" data-kv-greeting class="rounded-lg border border-slate-600 bg-slate-900 px-2 py-1.5 text-sm text-white placeholder-slate-500">
+                        <span class="kv-help">接通後點餐員說的第一句話。</span></label>
+                    <label class="kv-field"><span class="kv-label"><b>店家資訊</b><span>{{ kvCount('storeFacts', 400) }}</span></span>
+                        <textarea v-model="kvForm.storeFacts" @input="kvDirty=true" maxlength="400" rows="3" class="rounded-lg border border-slate-600 bg-slate-900 px-2 py-1.5 text-sm text-white placeholder-slate-500"></textarea>
+                        <span class="kv-help">客人問店名、地址、營業時間、電話時，只照這裡回答；沒寫到的會請客人問櫃台。</span></label>
+                    <label class="kv-field"><span class="kv-label"><b>推薦餐點</b><span>{{ kvCount('recommend', 300) }}</span></span>
+                        <textarea v-model="kvForm.recommend" @input="kvDirty=true" maxlength="300" rows="2" placeholder="例：蘋果厚片、青花椒刀削麵" class="rounded-lg border border-slate-600 bg-slate-900 px-2 py-1.5 text-sm text-white placeholder-slate-500"></textarea>
+                        <span class="kv-help">客人問「有什麼推薦」時才說，一次最多兩樣，不會主動推銷。留空就不推薦特定餐點。</span></label>
+                    <label class="kv-field"><span class="kv-label"><b>附加規則</b><span>{{ kvCount('extraRules', 1500) }}</span></span>
+                        <textarea v-model="kvForm.extraRules" @input="kvDirty=true" maxlength="1500" rows="5" placeholder="一行一條，例如：&#10;今天鮮奶茶暫停供應。&#10;有蛋有肉的鐵板麵，蛋可以免費換成半熟蛋或太陽蛋。" class="rounded-lg border border-slate-600 bg-slate-900 px-2 py-1.5 text-sm text-white placeholder-slate-500"></textarea>
+                        <span class="kv-help">補充店內做法或今天的狀況。<span class="kv-warn">不要寫和核心規則相反的話（例如「鐵板麵直接當有蛋有肉，不用問」），點餐員會不知道聽誰的。</span>賣完的餐點請到「菜單管理」下架，平板會自動不賣。</span></label>
+                    <label class="flex items-center gap-2 text-sm text-slate-200"><input type="checkbox" v-model="kvForm.askDineMode" @change="kvDirty=true">結束前問客人「內用還是外帶」（平板上也有按鈕可以按）</label>
+                </div>
+
+                <!-- 聲音 -->
+                <div class="rounded-xl border border-slate-700 bg-slate-800 p-5 flex flex-col gap-4">
+                    <p class="font-bold text-white">聲音</p>
+                    <div class="kv-grid">
+                        <label class="kv-field"><span class="kv-label"><b>聲音</b></span>
+                            <select v-model="kvForm.voice" @change="kvDirty=true" data-kv-voice class="rounded-lg border border-slate-600 bg-slate-900 px-2 py-1.5 text-sm text-white placeholder-slate-500">
+                                <option v-for="v in kvVoices" :key="v.id" :value="v.id">{{ v.label }}</option>
+                            </select>
+                            <span class="kv-help">xAI 提供的 5 種聲音，說明是 xAI 的描述；實際聽起來請在平板上試一次。</span></label>
+                        <label class="kv-field"><span class="kv-label"><b>語速</b><span>{{ Number(kvForm.speechSpeed).toFixed(2) }} 倍・{{ kvSpeedLabel(kvForm.speechSpeed) }}</span></span>
+                            <input type="range" min="0.7" max="1.5" step="0.01" v-model.number="kvForm.speechSpeed" @input="kvDirty=true" data-kv-speed class="kv-range">
+                            <span class="kv-help">0.7（最慢）～ 1.5（最快）。長輩建議 0.85～0.95。</span></label>
+                    </div>
+                    <div>
+                        <p class="kv-help mb-2"><b class="text-white text-sm">反應模式</b></p>
+                        <div class="grid grid-cols-2 gap-2 bg-slate-900/60 border border-slate-700 rounded-xl p-1">
+                            <button type="button" @click="kvForm.reasoningEffort='none'; kvDirty=true" :class="kvForm.reasoningEffort==='none' ? 'bg-emerald-600 text-white shadow' : 'text-slate-300 hover:bg-slate-700'" class="rounded-lg px-3 py-2 text-sm font-bold transition">快（建議）</button>
+                            <button type="button" @click="kvForm.reasoningEffort='high'; kvDirty=true" :class="kvForm.reasoningEffort==='high' ? 'bg-emerald-600 text-white shadow' : 'text-slate-300 hover:bg-slate-700'" class="rounded-lg px-3 py-2 text-sm font-bold transition">仔細</button>
+                        </div>
+                        <p class="kv-help mt-2">「仔細」會先想過再回答，比較不容易點錯，但每句話會等比較久。聽得懂卻常點錯時再改成仔細。</p>
+                    </div>
+                </div>
+
+                <!-- 時間 -->
+                <div class="rounded-xl border border-slate-700 bg-slate-800 p-5 flex flex-col gap-4">
+                    <p class="font-bold text-white">時間</p>
+                    <div class="kv-grid">
+                        <label class="kv-field"><span class="kv-label"><b>客人沒說話幾秒後，主動問「還需要什麼嗎？」</b></span>
+                            <input type="number" min="5" max="60" step="1" v-model.number="kvForm.idlePromptSec" @input="kvDirty=true" class="rounded-lg border border-slate-600 bg-slate-900 px-2 py-1.5 text-sm text-white placeholder-slate-500">
+                            <span class="kv-help">5～60 秒</span></label>
+                        <label class="kv-field"><span class="kv-label"><b>完全沒聲音幾秒後自動結束</b></span>
+                            <input type="number" min="20" max="300" step="5" v-model.number="kvForm.idleEndSec" @input="kvDirty=true" class="rounded-lg border border-slate-600 bg-slate-900 px-2 py-1.5 text-sm text-white placeholder-slate-500">
+                            <span class="kv-help">20～300 秒，至少比上一格多 10 秒。已點的餐會照常送出到「點好了」畫面。</span></label>
+                        <label class="kv-field"><span class="kv-label"><b>一次點餐最長幾分鐘</b></span>
+                            <input type="number" min="2" max="15" step="1" v-model.number="kvForm.maxSessionMin" @input="kvDirty=true" class="rounded-lg border border-slate-600 bg-slate-900 px-2 py-1.5 text-sm text-white placeholder-slate-500">
+                            <span class="kv-help">2～15 分鐘。語音按連線時間計費，避免有人一直佔著。</span></label>
+                        <label class="kv-field"><span class="kv-label"><b>「點好了」畫面停留幾秒</b></span>
+                            <input type="number" min="10" max="180" step="5" v-model.number="kvForm.doneReturnSec" @input="kvDirty=true" class="rounded-lg border border-slate-600 bg-slate-900 px-2 py-1.5 text-sm text-white placeholder-slate-500">
+                            <span class="kv-help">10～180 秒，之後回到首頁。</span></label>
+                    </div>
+                </div>
+
+                <!-- 辨識 -->
+                <div class="rounded-xl border border-slate-700 bg-slate-800 p-5 flex flex-col gap-4">
+                    <p class="font-bold text-white">辨識</p>
+                    <label class="kv-field"><span class="kv-label"><b>加強辨識詞</b><span>{{ kvTermCount() }} / 40 個</span></span>
+                        <textarea v-model="kvForm.keyterms" @input="kvDirty=true" rows="3" placeholder="一行一個，或用頓號分開，例如：&#10;蘋果厚片、青花椒刀削麵、丹尼酥" class="rounded-lg border border-slate-600 bg-slate-900 px-2 py-1.5 text-sm text-white placeholder-slate-500"></textarea>
+                        <span class="kv-help">新品名稱、常被聽錯的字。菜單上的品名本來就會自動加入，不用重打；這裡填的會排在最前面。<span v-if="kvTermCount() > 40" class="kv-warn">超過 40 個，只會存前 40 個。</span></span></label>
+                </div>
+
+                <!-- 核心規則（唯讀） -->
+                <div class="rounded-xl border border-slate-700 bg-slate-800 p-5 flex flex-col gap-3">
+                    <p class="font-bold text-white">核心規則（不能改）</p>
+                    <p class="kv-help">加品項、先問套餐／單點、有蛋有肉／無蛋無肉、加蛋加肉、改口換版本、算價錢、送單，這幾條寫在平板程式裡，這裡不能改，避免改錯一個字就點錯餐。品名和價錢一律用「菜單管理」的即時菜單。</p>
+                    <div class="flex flex-wrap items-center gap-3">
+                        <button type="button" @click="kvOpenPrompt" data-kv-prompt class="bg-slate-700 hover:bg-slate-600 text-white text-sm font-bold px-4 py-2 rounded-lg">查看平板目前的完整指示 ↗</button>
+                        <span class="kv-help">會開新分頁，顯示已儲存的設定（還沒儲存的修改不會出現）。</span>
+                    </div>
+                </div>
+
+                <div class="sticky bottom-0 flex items-center justify-end gap-3 py-3 flex-wrap" style="background:linear-gradient(transparent,#0f172a 30%);">
+                    <span class="kv-saved-at text-xs text-slate-400">{{ kvSavedAtText() }}</span>
+                    <span v-if="kvDirty" class="text-sm text-amber-300">有尚未儲存的變更</span>
+                    <button type="button" @click="kvResetDefaults()" :disabled="kvSaving" class="bg-slate-700 hover:bg-slate-600 disabled:opacity-40 text-white text-sm font-bold px-4 py-2 rounded-lg">填回預設值</button>
+                    <button type="button" @click="kvInitForm(true)" :disabled="kvSaving || !kvDirty" class="bg-slate-700 hover:bg-slate-600 disabled:opacity-40 text-white text-sm font-bold px-4 py-2 rounded-lg">還原</button>
+                    <button type="button" @click="kvSave()" :disabled="kvSaving" data-kv-save class="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-sm font-black px-5 py-2 rounded-lg">{{ kvSaving ? '儲存中…' : '儲存語音點餐設定' }}</button>
                 </div>
             </div>
         </div>
@@ -2928,6 +3057,7 @@ window._resetCountUp = function() {
                     { id: 'presets',   label: '常客快速單', icon: '⭐' },
                     { id: 'members',   label: '會員名單', icon: '👥' },
                     { id: 'luckyWheel', label: '幸運轉盤', icon: '🎡' }, // lucky-wheel-20261025
+                    { id: 'kioskVoice', label: '語音點餐', icon: '🎙️' }, // kiosk-voice-settings-20261031
                     { id: 'settings',  label: '店面設定', icon: '⚙️' }
                 ],
                 lineMembers: [], lineMembersLoading: false, lineMembersError: '', linePushSettingSaving: false, lineMemberOrdersLoadingId: '', lineMemberOrdersMode: false, lineMemberOrdersMember: null,
@@ -2943,6 +3073,15 @@ window._resetCountUp = function() {
                 lwDrawsDay: '', // lucky-wheel-stats-20261025：參加紀錄要看的日期（空白＝今天）
                 lwAdd: { type: 'date', start: '', end: '', name: '' }, lwAddError: '',
                 lwEst: { orders: 15, ticket: 280 },
+                // kiosk-voice-settings-20261031：語音點餐平板設定（settings.kioskVoice；平板每位客人開始點餐時讀一次）
+                kvForm: null, kvDirty: false, kvSaving: false, kvError: '', kvNotice: '',
+                kvVoices: [
+                    { id: 'ara', label: 'ara：溫暖、親切（預設）' },
+                    { id: 'eve', label: 'eve：一般助理' },
+                    { id: 'leo', label: 'leo：沉穩、直接' },
+                    { id: 'rex', label: 'rex：活潑、有精神' },
+                    { id: 'sal', label: 'sal：獨特的聊天感' }
+                ],
                 onlineCustomers: [], onlineCustomersLoading: false, onlineCustomersLoaded: false, onlineCustomersError: '',
                 onlineCustomersMeta: { scannedOrders: 0, truncated: false }, onlineCustomerSearch: '', onlineCustomerOrdersLoadingId: '',
                 staffPresets: [], staffPresetsLoading: false, staffPresetsSaving: false, staffPresetsError: '', showStaffPresetModal: false,
@@ -3516,6 +3655,10 @@ window._resetCountUp = function() {
                     this.lineMemberOrdersMode = false;
                     this.lineMemberOrdersMember = null;
                     this.loadStaffPresets();
+                } else if (newTab === 'kioskVoice') {
+                    this.lineMemberOrdersMode = false;
+                    this.lineMemberOrdersMember = null;
+                    if (!this.kvForm || !this.kvDirty) this.kvInitForm();
                 } else if (newTab === 'luckyWheel') {
                     this.lineMemberOrdersMode = false;
                     this.lineMemberOrdersMember = null;
@@ -4605,6 +4748,148 @@ window._resetCountUp = function() {
                 }).finally(function() {
                     self.lwSaving = false;
                 });
+            },
+            // ── kiosk-voice-settings-20261031：語音點餐平板設定 ──
+            kvDefaultConfig: function() {
+                // 和 kiosk-voice.html 的 CONFIG 預設一致；平板收到空白或壞掉的欄位也會改用自己的預設
+                return {
+                    enabled: true,
+                    pausedText: '語音點餐暫停中，請到櫃台點餐，謝謝！',
+                    greeting: '早安！想吃什麼呢？直接說餐點名稱就可以喔。',
+                    storeFacts: '店名：元氣早午餐（善化中山店）；地址：台南市善化區中山路208-2號；營業時間：週一到週六約 06:00 到 13:00，週日公休。',
+                    recommend: '',
+                    extraRules: '',
+                    keyterms: '',
+                    askDineMode: true,
+                    voice: 'ara',
+                    speechSpeed: 0.92,
+                    reasoningEffort: 'none',
+                    idlePromptSec: 15,
+                    idleEndSec: 60,
+                    maxSessionMin: 6,
+                    doneReturnSec: 60
+                };
+            },
+            kvSavedConfig: function() {
+                var raw = this.settings && this.settings.kioskVoice;
+                if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { raw = null; } }
+                return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : null;
+            },
+            kvInitForm: function(force) {
+                var base = this.kvDefaultConfig();
+                var saved = this.kvSavedConfig() || {};
+                var voices = this.kvVoices;
+                var cfg = {};
+                Object.keys(base).forEach(function(k) {
+                    var v = saved[k], d = base[k];
+                    if (k === 'keyterms') cfg[k] = Array.isArray(v) ? v.join('\n') : (typeof v === 'string' ? v : d);
+                    else if (k === 'enabled') cfg[k] = v !== false;
+                    else if (k === 'voice') cfg[k] = voices.some(function(x) { return x.id === v; }) ? v : d;
+                    else if (k === 'reasoningEffort') cfg[k] = v === 'high' ? 'high' : 'none';
+                    else if (typeof d === 'string') cfg[k] = typeof v === 'string' && v.trim() ? v : d;
+                    else if (typeof d === 'boolean') cfg[k] = typeof v === 'boolean' ? v : d;
+                    else cfg[k] = v !== '' && v !== null && v !== undefined && isFinite(Number(v)) ? Number(v) : d;
+                });
+                this.kvForm = cfg;
+                this.kvDirty = false;
+                if (force) { this.kvNotice = ''; this.kvError = ''; }
+            },
+            kvNormalize: function(form) {
+                var f = form || {}, base = this.kvDefaultConfig();
+                function txt(v, max) { return String(v == null ? '' : v).replace(/\r\n?/g, '\n').trim().slice(0, max); }
+                function num(v, lo, hi, d) { var n = Number(v); if (v === '' || v === null || v === undefined || !isFinite(n)) n = d; return Math.min(hi, Math.max(lo, n)); }
+                var terms = [], seen = {};
+                String(f.keyterms == null ? '' : f.keyterms).split(/[\n,，、;；]+/).forEach(function(s) {
+                    s = s.trim().slice(0, 30);
+                    if (s && !seen[s]) { seen[s] = 1; terms.push(s); }
+                });
+                var cfg = {
+                    enabled: f.enabled !== false,
+                    pausedText: txt(f.pausedText, 80) || base.pausedText,
+                    greeting: txt(f.greeting, 80) || base.greeting,
+                    storeFacts: txt(f.storeFacts, 400) || base.storeFacts,
+                    recommend: txt(f.recommend, 300),
+                    extraRules: txt(f.extraRules, 1500),
+                    keyterms: terms.slice(0, 40),
+                    askDineMode: f.askDineMode !== false,
+                    voice: this.kvVoices.some(function(x) { return x.id === f.voice; }) ? f.voice : base.voice,
+                    speechSpeed: Math.round(num(f.speechSpeed, 0.7, 1.5, base.speechSpeed) * 100) / 100,
+                    reasoningEffort: f.reasoningEffort === 'high' ? 'high' : 'none',
+                    idlePromptSec: Math.round(num(f.idlePromptSec, 5, 60, base.idlePromptSec)),
+                    idleEndSec: Math.round(num(f.idleEndSec, 20, 300, base.idleEndSec)),
+                    maxSessionMin: Math.round(num(f.maxSessionMin, 2, 15, base.maxSessionMin)),
+                    doneReturnSec: Math.round(num(f.doneReturnSec, 10, 180, base.doneReturnSec))
+                };
+                if (cfg.idleEndSec < cfg.idlePromptSec + 10) cfg.idleEndSec = Math.min(300, cfg.idlePromptSec + 10);
+                cfg.updatedAt = new Date().toISOString();
+                return cfg;
+            },
+            kvSave: function(configOverride, okText) {
+                var self = this;
+                if (self.kvSaving) return Promise.resolve();
+                var cfg = configOverride || self.kvNormalize(self.kvForm);
+                if (configOverride) cfg.updatedAt = new Date().toISOString();
+                var keepDirty = !!configOverride && self.kvDirty;
+                self.kvSaving = true; self.kvError = ''; self.kvNotice = '';
+                var patch = { kioskVoice: cfg };
+                return self.writeSettingsPrimary(patch, function() { return update(ref(db, 'settings'), patch); }).then(function(result) {
+                    if (self.settings) self.settings.kioskVoice = JSON.parse(JSON.stringify(cfg));
+                    if (!configOverride) self.kvInitForm();          // 顯示正規化後的值（例如秒數被調整到範圍內）
+                    else if (keepDirty) self.kvDirty = true;
+                    if (result && result.fallback) {
+                        // PocketBase 沒寫到、只寫到 Firebase 備援：平板只讀 PocketBase，這次修改平板讀不到
+                        self.kvError = 'PocketBase 這次沒有存到（只存到 Firebase 備援），平板讀不到這次的修改。請等 PocketBase 恢復後再按一次「儲存語音點餐設定」。';
+                        return;
+                    }
+                    self.kvNotice = okText || '已儲存。平板下一位客人按「開始點餐」時就會套用。';
+                }).catch(function(err) {
+                    if (configOverride && self.kvForm) self.kvForm.enabled = !cfg.enabled;
+                    self.kvError = '語音點餐設定儲存失敗：' + String((err && err.message) || err || '未知錯誤');
+                }).finally(function() {
+                    self.kvSaving = false;
+                });
+            },
+            kvToggleEnabled: function(checked) {
+                // 總開關：只切換 enabled 並立即儲存（其他未儲存的修改不會一起送出）
+                var saved = this.kvSavedConfig();
+                saved = saved ? JSON.parse(JSON.stringify(saved)) : this.kvNormalize(this.kvDefaultConfig());
+                saved.enabled = checked === true;
+                this.kvForm.enabled = checked === true;
+                return this.kvSave(saved, checked
+                    ? '已開啟語音點餐。'
+                    : '已暫停語音點餐：平板最慢 5 分鐘內在首頁顯示暫停文字；這段時間有人按「開始點餐」也不會接通。');
+            },
+            kvResetDefaults: function() {
+                var enabled = this.kvForm ? this.kvForm.enabled : true;
+                this.kvForm = Object.assign(this.kvDefaultConfig(), { enabled: enabled });
+                this.kvDirty = true;
+                this.kvError = '';
+                this.kvNotice = '已填回預設值（總開關不變），按「儲存語音點餐設定」才會生效。';
+            },
+            kvSpeedLabel: function(v) {
+                var n = Number(v) || 1;
+                if (n < 0.85) return '慢';
+                if (n < 0.97) return '稍慢（適合長輩）';
+                if (n <= 1.05) return '正常';
+                if (n <= 1.25) return '稍快';
+                return '快';
+            },
+            kvCount: function(field, max) {
+                return String((this.kvForm && this.kvForm[field]) || '').length + ' / ' + max;
+            },
+            kvTermCount: function() {
+                var seen = {}, n = 0;
+                String((this.kvForm && this.kvForm.keyterms) || '').split(/[\n,，、;；]+/).forEach(function(s) { s = s.trim(); if (s && !seen[s]) { seen[s] = 1; n++; } });
+                return n;
+            },
+            kvSavedAtText: function() {
+                var saved = this.kvSavedConfig();
+                var d = saved && saved.updatedAt ? new Date(saved.updatedAt) : null;
+                if (!d || isNaN(d.getTime())) return '還沒存過，平板使用預設值';
+                return '上次儲存：' + d.toLocaleString('zh-TW', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
+            },
+            kvOpenPrompt: function() {
+                window.open('./kiosk-voice.html?view=prompt&t=' + Date.now(), '_blank', 'noopener');
             },
             formatMemberDate: function(value) {
                 var date = new Date(value);
@@ -9971,9 +10256,13 @@ window._resetCountUp = function() {
                         tabletEntries: Array.isArray(s.tabletEntries) ? self.normalizeTabletEntries(s.tabletEntries) : self.defaultTabletEntries(),
                         // lucky-wheel-20261025：幸運轉盤設定（這一頁只讀，儲存走「幸運轉盤」頁）
                         luckyWheel: (s.luckyWheel && typeof s.luckyWheel === 'object' && !Array.isArray(s.luckyWheel)) ? s.luckyWheel
-                            : (typeof s.luckyWheel === 'string' && s.luckyWheel ? s.luckyWheel : (prev.luckyWheel || null))
+                            : (typeof s.luckyWheel === 'string' && s.luckyWheel ? s.luckyWheel : (prev.luckyWheel || null)),
+                        // kiosk-voice-settings-20261031：語音點餐設定（這一頁只讀，儲存走「語音點餐」頁）
+                        kioskVoice: (s.kioskVoice && typeof s.kioskVoice === 'object' && !Array.isArray(s.kioskVoice)) ? s.kioskVoice
+                            : (typeof s.kioskVoice === 'string' && s.kioskVoice ? s.kioskVoice : (prev.kioskVoice || null))
                     };
                     if (self.activeTab === 'luckyWheel' && !self.lwDirty && !self.lwSaving) self.lwInitForm();
+                    if (self.activeTab === 'kioskVoice' && !self.kvDirty && !self.kvSaving) self.kvInitForm();
                     self.announcementsTouched = false;
                     self.settingsReadBackend = backend || 'pocketbase';
                     self.syncCategoryShapeFromMenu();

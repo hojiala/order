@@ -85,6 +85,11 @@ button:focus-visible{outline:.35rem solid var(--yolk-light);outline-offset:.3rem
 .steps li + li::before{content:"";width:2.4rem;border-top:.28rem dotted rgba(255,253,245,.55);margin-right:.8rem}
 .step-no{display:inline-flex;align-items:center;justify-content:center;width:2.2rem;height:2.2rem;border-radius:50%;background:var(--white);color:var(--green);font-size:1.25rem;font-weight:900}
 .home > .home-status{position:absolute;right:2.2vmin;top:1.6vmin;z-index:1;font-size:.8rem;opacity:.6;margin:0}
+.paused-msg{display:none;margin:0;max-width:46rem;font-size:2.3rem;font-weight:900;line-height:1.35;color:var(--yolk)}
+body.is-paused .paused-msg{display:block}
+body.is-paused .steps{display:none}
+body.is-paused .egg{filter:grayscale(.85);opacity:.5;pointer-events:none}
+body.is-paused .yolk{animation:none}
 .decor{position:absolute;z-index:0;pointer-events:none}
 .decor-toast{left:-3vmin;bottom:-5vmin;width:26vmin;transform:rotate(-14deg)}
 .decor-cup{right:-1vmin;bottom:-2vmin;width:22vmin}
@@ -202,6 +207,12 @@ button:focus-visible{outline:.35rem solid var(--yolk-light);outline-offset:.3rem
 .error-do{margin:0;font-size:2.3rem;font-weight:900;color:var(--yolk)}
 .error-diag{margin:0;font-size:1rem;opacity:.7}
 .error-diag:empty{display:none}
+/* 完整指示（唯讀）：manage「語音點餐」→ 查看完整指示 */
+.prompt-view{flex-direction:column;gap:1.4rem;padding:2rem max(1rem,4vmin) 3rem;overflow-y:auto;background:var(--green-deep)}
+.prompt-view h2{margin:0;font-size:1.8rem;font-weight:900}
+.prompt-meta{margin:0;font-size:1rem;line-height:1.7;opacity:.85;white-space:pre-line}
+.prompt-view h3{margin:.6rem 0 0;font-size:1.2rem;font-weight:900;color:var(--yolk)}
+.prompt-view pre{margin:0;padding:1.2rem 1.4rem;border-radius:.9rem;background:var(--white);color:var(--ink);font:inherit;font-size:1rem;line-height:1.75;white-space:pre-wrap;word-break:break-word;-webkit-user-select:text;user-select:text}
 .error .btn{min-width:15rem;margin-top:1vmin}
 
 .demo-badge{display:none;position:fixed;left:50%;top:1.4vmin;transform:translateX(-50%);z-index:50;background:var(--yolk);color:var(--ink);font-size:.95rem;font-weight:900;padding:.3rem 1rem;border-radius:999px;box-shadow:0 .3rem 0 rgba(0,0,0,.2)}
@@ -246,6 +257,7 @@ body.is-demo .demo-chip{display:inline-block}
       <span class="yolk-text">開始點餐</span>
     </span>
   </button>
+  <p id="paused-msg" class="paused-msg" role="status"></p>
   <ol class="steps">
     <li><span class="step-no">1</span>按蛋黃開始</li>
     <li><span class="step-no">2</span>說出想吃的餐點</li>
@@ -328,6 +340,16 @@ body.is-demo .demo-chip{display:inline-block}
   <button id="btn-error-home" class="btn btn-done" type="button">回到首頁</button>
 </section>
 
+<!-- 完整指示（唯讀）：kiosk-voice.html?view=prompt -->
+<section id="screen-prompt" class="screen prompt-view" aria-label="完整指示">
+  <h2>語音點餐員目前的完整指示（唯讀）</h2>
+  <p id="prompt-meta" class="prompt-meta">讀取中…</p>
+  <h3>送給 Grok 的指示</h3>
+  <pre id="prompt-text"></pre>
+  <h3>加強辨識詞（前 100 個，另外會加上 Pi 的別名字典）</h3>
+  <pre id="prompt-terms"></pre>
+</section>
+
 <div id="demo-badge" class="demo-badge">預覽模式：模擬對話，不會連線</div>
 
 <script>
@@ -336,14 +358,19 @@ body.is-demo .demo-chip{display:inline-block}
 
   /* ═════════ 設定 ═════════ */
   var CONFIG = {
-    // ── 點餐員的開場白與店家資訊：直接改這裡（Grok 網頁上的 instruction / welcome message 不會用在這個頁面）──
-    greeting: '早安！想吃什麼呢？直接說餐點名稱就可以喔。',
-    storeFacts: '店名：元氣早午餐（善化中山店）；地址：台南市善化區中山路208-2號；營業時間：週一到週六約 06:00 到 13:00，週日公休。',
-    extraRules: '',                   // 想多交代點餐員的事，例如：「今天鮮奶茶暫停供應」；沒有就留空
+    // ── 下面標 ★ 的欄位是「預設值」：manage →「🎙️ 語音點餐」存的設定（PocketBase settings.kioskVoice）會蓋過它們，
+    //    每位客人按「開始點餐」時重新讀一次；manage 留空的欄位就用這裡的預設。（Grok 網頁上的 instruction / welcome message 不會用在這個頁面）
+    enabled: true,                    // ★ 總開關
+    pausedText: '語音點餐暫停中，請到櫃台點餐，謝謝！',   // ★ 暫停時首頁顯示
+    greeting: '早安！想吃什麼呢？直接說餐點名稱就可以喔。',   // ★
+    storeFacts: '店名：元氣早午餐（善化中山店）；地址：台南市善化區中山路208-2號；營業時間：週一到週六約 06:00 到 13:00，週日公休。',   // ★
+    recommend: '',                    // ★ 顧客問「有什麼推薦」時才說
+    extraRules: '',                   // ★ 想多交代點餐員的事，例如：「今天鮮奶茶暫停供應」；沒有就留空
+    keyterms: [],                     // ★ 加強辨識詞（新品名稱、常被聽錯的字），排在菜單名稱前面
     // ── 送單：點好了 → 進 POS / admin / manage（店內付款、廚房出單，和桌邊自助平板同一條流程）──
     submitOrders: true,               // false = 只顯示點餐單，請顧客到櫃台口述
     orderLabel: '語音點餐',            // 訂單卡片與出單上的「客戶」名稱
-    askDineMode: true,                // 結束前問「內用還是外帶」（也可以按畫面上的按鈕）
+    askDineMode: true,                // ★ 結束前問「內用還是外帶」（也可以按畫面上的按鈕）
     firebaseSdk: 'https://www.gstatic.com/firebasejs/9.22.0/',
     firebaseConfig: {
       apiKey: 'AIzaSyCQqI6p8e8-lxz3mOBRaWUPxyVES_83KBI',
@@ -358,14 +385,14 @@ body.is-demo .demo-chip{display:inline-block}
     tokenPath: '/api/kiosk/voice/token',
     wsUrl: 'wss://api.x.ai/v1/realtime',
     model: 'grok-voice-3.0',          // Pi 回傳的 model 優先
-    voice: 'ara',                     // Pi 回傳的 voice 優先（XAI_VOICE_NAME）
-    speechSpeed: 0.92,                // 長輩：稍微放慢（0.7–1.5）
-    reasoningEffort: 'none',          // 'none' 最快；聽懂但常點錯時改 'high'
+    voice: 'ara',                     // ★ manage 有選就用 manage 的；沒選才用 Pi 回傳的 voice（XAI_VOICE_NAME）
+    speechSpeed: 0.92,                // ★ 長輩：稍微放慢（0.7–1.5）
+    reasoningEffort: 'none',          // ★ 'none' 最快；聽懂但常點錯時改 'high'
     bargeIn: false,                   // false = 點餐員說話時不收音，避免喇叭回音打斷自己；?bargein=1 可測試插話
-    serverIdlePromptMs: 15000,        // 顧客沉默多久，點餐員主動問「還需要什麼嗎？」
-    idleEndMs: 60000,                 // 完全沒聲音多久自動結束
-    maxSessionMs: 6 * 60 * 1000,      // 單次點餐最長時間（控制費用）
-    doneReturnMs: 60000,              // 點好了畫面停留多久回首頁
+    serverIdlePromptMs: 15000,        // ★ 顧客沉默多久，點餐員主動問「還需要什麼嗎？」
+    idleEndMs: 60000,                 // ★ 完全沒聲音多久自動結束
+    maxSessionMs: 6 * 60 * 1000,      // ★ 單次點餐最長時間（控制費用）
+    doneReturnMs: 60000,              // ★ 點好了畫面停留多久回首頁
     failReturnMs: 180000,             // 送單失敗時畫面留久一點，讓店員看得到餐點
     errorReturnMs: 20000,
     menuRefreshMs: 5 * 60 * 1000,
@@ -374,7 +401,56 @@ body.is-demo .demo-chip{display:inline-block}
     storeLabel: ''
   };
 
+  /* ═════════ manage 的語音點餐設定（settings.kioskVoice）═════════ */
+  var VOICE_NAMES = ['ara', 'eve', 'leo', 'rex', 'sal'];
+  var VOICE_KEYS = ['enabled', 'pausedText', 'greeting', 'storeFacts', 'recommend', 'extraRules', 'keyterms', 'askDineMode',
+    'voice', 'speechSpeed', 'reasoningEffort', 'serverIdlePromptMs', 'idleEndMs', 'maxSessionMs', 'doneReturnMs'];
+  var DEFAULTS = {};
+  VOICE_KEYS.forEach(function (k) { DEFAULTS[k] = Array.isArray(CONFIG[k]) ? CONFIG[k].slice() : CONFIG[k]; });
+  var Remote = { loaded: false, voice: false, updatedAt: '' };
+  function cfgText(x, max) { return typeof x === 'string' ? x.replace(/\r\n?/g, '\n').replace(/[ \t]+\n/g, '\n').trim().slice(0, max) : ''; }
+  function cfgNum(x, lo, hi) {
+    if (x === null || x === undefined || x === '' || typeof x === 'boolean') return null;
+    var n = Number(x);
+    return isFinite(n) ? Math.min(hi, Math.max(lo, n)) : null;
+  }
+  function termList(x) {
+    var raw = Array.isArray(x) ? x : String(typeof x === 'string' ? x : '').split(/[\n,，、;；]+/);
+    var out = [], seen = {};
+    raw.forEach(function (s) { s = String(s == null ? '' : s).trim().slice(0, 30); if (s && !seen[s]) { seen[s] = 1; out.push(s); } });
+    return out.slice(0, 40);
+  }
+  // 每個值都檢查型別、夾範圍；壞掉或留空的欄位用 CONFIG 的預設
+  function applyVoiceSettings(raw) {
+    var v = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+    VOICE_KEYS.forEach(function (k) { CONFIG[k] = Array.isArray(DEFAULTS[k]) ? DEFAULTS[k].slice() : DEFAULTS[k]; });
+    var s, n;
+    CONFIG.enabled = v.enabled !== false;
+    if ((s = cfgText(v.pausedText, 80))) CONFIG.pausedText = s;
+    if ((s = cfgText(v.greeting, 80))) CONFIG.greeting = s;
+    if ((s = cfgText(v.storeFacts, 400))) CONFIG.storeFacts = s;
+    if ((s = cfgText(v.recommend, 300))) CONFIG.recommend = s;
+    if ((s = cfgText(v.extraRules, 1500))) CONFIG.extraRules = s;
+    if (v.keyterms !== undefined) CONFIG.keyterms = termList(v.keyterms);
+    if (typeof v.askDineMode === 'boolean') CONFIG.askDineMode = v.askDineMode;
+    s = cfgText(v.voice, 20).toLowerCase();
+    Remote.voice = VOICE_NAMES.indexOf(s) !== -1;
+    if (Remote.voice) CONFIG.voice = s;
+    if ((n = cfgNum(v.speechSpeed, 0.7, 1.5)) !== null) CONFIG.speechSpeed = Math.round(n * 100) / 100;
+    if (v.reasoningEffort === 'none' || v.reasoningEffort === 'high') CONFIG.reasoningEffort = v.reasoningEffort;
+    if ((n = cfgNum(v.idlePromptSec, 5, 60)) !== null) CONFIG.serverIdlePromptMs = Math.round(n) * 1000;
+    if ((n = cfgNum(v.idleEndSec, 20, 300)) !== null) CONFIG.idleEndMs = Math.round(n) * 1000;
+    CONFIG.idleEndMs = Math.max(CONFIG.idleEndMs, CONFIG.serverIdlePromptMs + 10000);   // 先主動問，再結束
+    if ((n = cfgNum(v.maxSessionMin, 2, 15)) !== null) CONFIG.maxSessionMs = Math.round(n * 60) * 1000;
+    if ((n = cfgNum(v.doneReturnSec, 10, 180)) !== null) CONFIG.doneReturnMs = Math.round(n) * 1000;
+    GREETING = CONFIG.greeting;
+    Remote.loaded = !!raw;
+    Remote.updatedAt = cfgText(v.updatedAt, 40);
+    renderPaused();
+  }
+
   var params = new URLSearchParams(location.search);
+  var VIEW_PROMPT = params.get('view') === 'prompt';
   var DEMO = params.get('demo') === '1' || (location.protocol === 'file:' && params.get('demo') !== '0');
   var TTS_ON = params.get('tts') !== '0';
   if (params.get('bargein') === '1') CONFIG.bargeIn = true;
@@ -1233,6 +1309,7 @@ body.is-demo .demo-chip{display:inline-block}
       '10. 顧客身體不舒服、有緊急狀況或要客訴，請他直接找櫃台店員。',
       '【不可以】推銷、一次介紹很多餐點；答應付款、外送、折扣或免費；聊和點餐無關的事（簡短帶回點餐）。',
       CONFIG.storeFacts ? '【店家】' + CONFIG.storeFacts : '',
+      CONFIG.recommend ? '【推薦】顧客問「有什麼推薦」「什麼好吃」時才介紹，一次最多說兩樣：' + CONFIG.recommend : '',
       CONFIG.extraRules ? '【今天特別注意】' + CONFIG.extraRules : '',
       '【今日菜單】（品名 價格；沒列出的就是今天沒有）',
       order.map(function (c) { return '〔' + c + '〕' + cats[c].join('、'); }).join('\n')
@@ -1243,6 +1320,7 @@ body.is-demo .demo-chip{display:inline-block}
     var rank = function (it) { var c = it.category || ''; for (var i = 0; i < pri.length; i++) if (c.indexOf(pri[i]) !== -1) return i; return pri.length; };
     var out = [], seen = {};
     function add(t) { t = String(t || '').trim(); if (!t || t.length > 50 || seen[t]) return; seen[t] = 1; out.push(t); }
+    (CONFIG.keyterms || []).forEach(add);
     Menu.active.slice().sort(function (a, b) { return rank(a) - rank(b); }).forEach(function (it) {
       add(speakName(String(it.name).replace(/^單點-/, '').replace(/^\d+號/, '').replace(/(套餐|單點)$/, '').replace(/\(.*?\)/g, '')).replace(/\s+/g, ''));
     });
@@ -1252,7 +1330,7 @@ body.is-demo .demo-chip{display:inline-block}
   function sessionUpdate(tok, minimal) {
     var s = {
       instructions: buildInstructions(),
-      voice: (tok && tok.voice) || CONFIG.voice,
+      voice: Remote.voice ? CONFIG.voice : ((tok && tok.voice) || CONFIG.voice),
       turn_detection: { type: 'server_vad' },
       audio: {
         input: { format: { type: 'audio/pcm', rate: 24000 } },
@@ -1396,6 +1474,7 @@ body.is-demo .demo-chip{display:inline-block}
   }
 
   function startLive() {
+    if (!CONFIG.enabled) { renderPaused(); return; }
     if (!Menu.active.length) { showError(Menu.error ? '菜單沒有載入成功。' : '菜單還沒載入完成，請稍等一下再按。'); return; }
     if (CONFIG.submitOrders) {
       if (!(storeGet('kiosk_voice_device') && storeGet('kiosk_voice_sig'))) { showError('這台平板還沒完成安全註冊。'); return; }
@@ -1408,8 +1487,13 @@ body.is-demo .demo-chip{display:inline-block}
     beginSessionUI();
     var mic = AudioIO.startMic(onMicChunk).catch(function (e) { e.kind = 'mic'; throw e; });
     var tok = fetchToken();
-    Promise.all([tok, mic]).then(function (r) { if (Session.active) openSocket(r[0]); })
-      .catch(function (e) { failSession(e); });
+    // 和拿 token 同時重讀 manage 設定（最多等 2.6 秒；讀不到就用上一次的設定），所以存檔後下一位客人就套用
+    var cfg = Promise.race([refreshSettings(2500), new Promise(function (r) { setTimeout(r, 2600); })]);
+    Promise.all([tok, mic, cfg]).then(function (r) {
+      if (!Session.active) return;
+      if (!CONFIG.enabled) { var p = new Error('paused'); p.kind = 'paused'; failSession(p); return; }
+      openSocket(r[0]);
+    }).catch(function (e) { failSession(e); });
   }
   function beginSessionUI() {
     resetOrder();
@@ -1584,6 +1668,7 @@ body.is-demo .demo-chip{display:inline-block}
     else if (kind === 'keybad') why = '這台平板的點餐金鑰不正確。';
     else if (kind === 'busy') why = '剛剛使用太頻繁，請稍等一分鐘再按。';
     else if (kind === 'pi') why = '找不到店內主機位址。';
+    else if (kind === 'paused') why = CONFIG.pausedText;
     else if (kind === 'ws' && Session.ready) why = '語音連線中斷了。';
     var hadLines = Order.lines.length > 0 && Session.ready, finishing = Session.finishing;
     teardown();
@@ -1762,7 +1847,7 @@ body.is-demo .demo-chip{display:inline-block}
     var changed = rows.querySelector('[data-id="' + Order.changedId + '"]');
     if (changed && changed.scrollIntoView) { try { changed.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (_) { changed.scrollIntoView(false); } }
   }
-  var screens = ['screen-home', 'screen-order', 'screen-done', 'screen-error'];
+  var screens = ['screen-home', 'screen-order', 'screen-done', 'screen-error', 'screen-prompt'];
   function showScreen(id) { screens.forEach(function (s) { $(s).classList.toggle('is-active', s === id); }); }
 
   var homeTimer = 0;
@@ -1774,6 +1859,7 @@ body.is-demo .demo-chip{display:inline-block}
     setGreeting();
     showScreen('screen-home');
     Session.demo = false;
+    refreshSettings(4000);
   }
   var doneReason = '';
   function goDone(reason) {
@@ -1844,6 +1930,7 @@ body.is-demo .demo-chip{display:inline-block}
     return dynImport(CONFIG.writerModule).then(function (W) {
       return Promise.resolve(W.readSettingsFromPocketBase({ timeoutMs: 4000 })).catch(function () { return {}; }).then(function (sr) {
         if (sr && sr.settings) Settings = sr.settings;
+        if (usableSettings(sr)) applyVoiceSettings(Settings.kioskVoice);
         return W.listMenuItemsFromPocketBase({ settings: Settings, activeOnly: false, timeoutMs: 5000 });
       });
     }).then(function (res) {
@@ -1856,9 +1943,54 @@ body.is-demo .demo-chip{display:inline-block}
     }).then(homeStatus);
   }
 
+  function usableSettings(sr) { return !!(sr && sr.settings && typeof sr.settings === 'object' && Object.keys(sr.settings).length); }
+  function refreshSettings(timeoutMs) {
+    if (DEMO || !dynImport) return Promise.resolve(false);
+    return dynImport(CONFIG.writerModule).then(function (W) {
+      return W.readSettingsFromPocketBase({ timeoutMs: timeoutMs || 4000 });
+    }).then(function (sr) {
+      if (!usableSettings(sr)) return false;
+      Settings = sr.settings;
+      applyVoiceSettings(Settings.kioskVoice);
+      return true;
+    }).catch(function () { return false; });
+  }
+  function renderPaused() {
+    var off = !DEMO && !VIEW_PROMPT && CONFIG.enabled === false;
+    document.body.classList.toggle('is-paused', off);
+    $('paused-msg').textContent = off ? CONFIG.pausedText : '';
+    $('btn-start').setAttribute('aria-disabled', off ? 'true' : 'false');
+  }
+
+  /* ═════════ 完整指示（唯讀檢視）═════════ */
+  function localTime(iso) {
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return String(iso || '');
+    var p = function (n) { return (n < 10 ? '0' : '') + n; };
+    return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+  }
+  function renderPromptView() {
+    var voiceNote = Remote.voice ? CONFIG.voice : (CONFIG.voice + '（manage 沒選，實際以 Pi 的 XAI_VOICE_NAME 為準）');
+    var meta = [
+      DEMO ? '預覽菜單（離線）' : (Remote.loaded ? ('manage 設定' + (Remote.updatedAt ? '：' + localTime(Remote.updatedAt) + ' 存檔' : '')) : 'manage 還沒存過語音點餐設定，使用預設值'),
+      '總開關：' + (CONFIG.enabled ? '開' : '暫停'),
+      '今日菜單 ' + Menu.active.length + ' 項',
+      '聲音 ' + voiceNote,
+      '語速 ' + CONFIG.speechSpeed + ' 倍',
+      '反應 ' + (CONFIG.reasoningEffort === 'high' ? '仔細' : '快'),
+      '沉默 ' + Math.round(CONFIG.serverIdlePromptMs / 1000) + ' 秒主動問、' + Math.round(CONFIG.idleEndMs / 1000) + ' 秒沒聲音結束',
+      '單次最長 ' + Math.round(CONFIG.maxSessionMs / 60000) + ' 分鐘',
+      '問內用外帶：' + (CONFIG.askDineMode ? '要' : '不問')
+    ];
+    $('prompt-meta').textContent = Menu.error && !Menu.active.length ? ('菜單載入失敗：' + Menu.error) : meta.join('\n');
+    $('prompt-text').textContent = buildInstructions();
+    $('prompt-terms').textContent = buildKeyterms(null).join('、');
+  }
+
   /* ═════════ 綁定 ═════════ */
   var cancelArmed = 0;
   $('btn-start').addEventListener('click', function () {
+    if (!CONFIG.enabled && !DEMO) { renderPaused(); return; }
     keepAwake();
     if (DEMO) startDemo(); else startLive();
   });
@@ -1894,7 +2026,11 @@ body.is-demo .demo-chip{display:inline-block}
   setGreeting();
   renderOrder();
   if (window.speechSynthesis) { pickVoice(); try { window.speechSynthesis.onvoiceschanged = pickVoice; } catch (_) {} }
-  if (DEMO) {
+  if (VIEW_PROMPT) {
+    showScreen('screen-prompt');
+    if (DEMO) { setMenu(DEMO_MENU, null); renderPromptView(); }
+    else loadLiveMenu().then(renderPromptView);
+  } else if (DEMO) {
     document.body.classList.add('is-demo');
     setMenu(DEMO_MENU, null);
     homeStatus();
@@ -1906,7 +2042,7 @@ body.is-demo .demo-chip{display:inline-block}
   }
 
   // 測試用
-  window.__kiosk = { runTool: runTool, findItem: findItem, setMenu: setMenu, Order: Order, Menu: Menu, buildInstructions: buildInstructions, buildKeyterms: buildKeyterms, sessionUpdate: sessionUpdate, CONFIG: CONFIG, Session: Session, goHome: goHome, showError: showError, goDone: goDone, Submit: Submit, buildOrderData: buildOrderData, speakName: speakName, submitOrder: submitOrder, businessWindow: businessWindow };
+  window.__kiosk = { runTool: runTool, findItem: findItem, setMenu: setMenu, Order: Order, Menu: Menu, buildInstructions: buildInstructions, buildKeyterms: buildKeyterms, sessionUpdate: sessionUpdate, CONFIG: CONFIG, Session: Session, goHome: goHome, showError: showError, goDone: goDone, Submit: Submit, buildOrderData: buildOrderData, speakName: speakName, submitOrder: submitOrder, businessWindow: businessWindow, applyVoiceSettings: applyVoiceSettings, refreshSettings: refreshSettings, Remote: Remote, renderPromptView: renderPromptView };
 })();
 </script>
 </body>
