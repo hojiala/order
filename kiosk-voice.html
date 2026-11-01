@@ -84,6 +84,9 @@ button:focus-visible{outline:.35rem solid var(--yolk-light);outline-offset:.3rem
 .steps li{display:flex;align-items:center;gap:.55rem;font-size:1.45rem;font-weight:800}
 .steps li + li::before{content:"";width:2.4rem;border-top:.28rem dotted rgba(255,253,245,.55);margin-right:.8rem}
 .step-no{display:inline-flex;align-items:center;justify-content:center;width:2.2rem;height:2.2rem;border-radius:50%;background:var(--white);color:var(--green);font-size:1.25rem;font-weight:900}
+.record-notice{margin:0;font-size:1.05rem;font-weight:700;opacity:.8}
+.record-notice[hidden]{display:none}
+body.is-paused .record-notice{display:none}
 .home > .home-status{position:absolute;right:2.2vmin;top:1.6vmin;z-index:1;font-size:.8rem;opacity:.6;margin:0}
 .paused-msg{display:none;margin:0;max-width:46rem;font-size:2.3rem;font-weight:900;line-height:1.35;color:var(--yolk)}
 body.is-paused .paused-msg{display:block}
@@ -259,10 +262,11 @@ body.is-demo .demo-chip{display:inline-block}
   </button>
   <p id="paused-msg" class="paused-msg" role="status"></p>
   <ol class="steps">
-    <li><span class="step-no">1</span>按蛋黃開始</li>
-    <li><span class="step-no">2</span>說出想吃的餐點</li>
-    <li><span class="step-no">3</span>到櫃台結帳</li>
+    <li><span class="step-no">1</span><span class="step-text">按蛋黃開始</span></li>
+    <li><span class="step-no">2</span><span class="step-text">說出想吃的餐點</span></li>
+    <li><span class="step-no">3</span><span class="step-text">到櫃台結帳</span></li>
   </ol>
+  <p id="record-notice" class="record-notice" hidden></p>
   <p id="home-status" class="home-status"></p>
   <svg class="decor decor-toast" viewBox="0 0 200 200" aria-hidden="true">
     <path fill="#9C5F27" d="M38 178V86C14 80 8 56 20 38 34 16 66 8 100 8s66 8 80 30c12 18 6 42-18 48v92z"/>
@@ -368,7 +372,16 @@ body.is-demo .demo-chip{display:inline-block}
     extraRules: '',                   // ★ 想多交代點餐員的事，例如：「今天鮮奶茶暫停供應」；沒有就留空
     keyterms: [],                     // ★ 加強辨識詞（新品名稱、常被聽錯的字），排在菜單名稱前面
     // ── 送單：點好了 → 進 POS / admin / manage（店內付款、廚房出單，和桌邊自助平板同一條流程）──
-    submitOrders: true,               // false = 只顯示點餐單，請顧客到櫃台口述
+    submitOrders: true,               // ★ false = 試營運：只顯示點餐單，請顧客到櫃台口述
+    submitIncomplete: false,          // ★ 顧客沒說「點好了」就結束（時間到、走開、斷線）時，已點的餐點也送單（備註「請和客人確認」）
+    homeSteps: ['按蛋黃開始', '說出想吃的餐點', '到櫃台結帳'],   // ★ 首頁三個步驟
+    closingText: '請到櫃台結帳，謝謝您！',   // ★「點好了」畫面和點餐員最後一句話
+    volume: 1,                        // ★ 點餐員聲音放大倍數 0.5–3（平板音量開到最大還不夠時）
+    logText: true,                    // ★ 對話文字存到 Pi（manage →「點餐紀錄」看）
+    logAudio: false,                  // ★ 錄音（麥克風＋點餐員）存到 Pi
+    recordNotice: '本服務會錄音，以確認您的餐點',   // ★ 錄音時首頁顯示的告知
+    logPath: '/api/kiosk/voice/log',
+    wrapUpGraceMs: 60000,             // 單次時間到：先請點餐員確認並結束，最多再等這麼久
     orderLabel: '語音點餐',            // 訂單卡片與出單上的「客戶」名稱
     askDineMode: true,                // ★ 結束前問「內用還是外帶」（也可以按畫面上的按鈕）
     firebaseSdk: 'https://www.gstatic.com/firebasejs/9.22.0/',
@@ -407,7 +420,8 @@ body.is-demo .demo-chip{display:inline-block}
   var VOICE_NAMES = ['ara', 'eve', 'leo', 'rex', 'sal'];
   var VOICE_KEYS = ['enabled', 'pausedText', 'greeting', 'storeFacts', 'recommend', 'extraRules', 'keyterms', 'askDineMode',
     'voice', 'speechSpeed', 'reasoningEffort', 'serverIdlePromptMs', 'idleEndMs', 'maxSessionMs', 'doneReturnMs',
-    'bargeIn', 'vadSilenceMs', 'vadThreshold'];
+    'bargeIn', 'vadSilenceMs', 'vadThreshold',
+    'submitOrders', 'submitIncomplete', 'homeSteps', 'closingText', 'volume', 'logText', 'logAudio', 'recordNotice'];
   var DEFAULTS = {};
   VOICE_KEYS.forEach(function (k) { DEFAULTS[k] = Array.isArray(CONFIG[k]) ? CONFIG[k].slice() : CONFIG[k]; });
   var Remote = { loaded: false, voice: false, updatedAt: '' };
@@ -450,7 +464,13 @@ body.is-demo .demo-chip{display:inline-block}
     if (BARGE_PARAM) CONFIG.bargeIn = true;
     if ((n = cfgNum(v.vadSilenceMs, 0, 2000)) !== null) CONFIG.vadSilenceMs = n >= 100 ? Math.round(n) : 0;
     if ((n = cfgNum(v.vadThreshold, 0, 0.95)) !== null) CONFIG.vadThreshold = n >= 0.1 ? Math.round(n * 100) / 100 : 0;
+    if (Array.isArray(v.homeSteps)) CONFIG.homeSteps = DEFAULTS.homeSteps.map(function (d, i) { return cfgText(v.homeSteps[i], 16) || d; });
+    if ((s = cfgText(v.closingText, 40))) CONFIG.closingText = s;
+    if ((n = cfgNum(v.volume, 0.5, 3)) !== null) CONFIG.volume = Math.round(n * 10) / 10;
+    ['submitOrders', 'submitIncomplete', 'logText', 'logAudio'].forEach(function (k) { if (typeof v[k] === 'boolean') CONFIG[k] = v[k]; });
+    if ((s = cfgText(v.recordNotice, 60))) CONFIG.recordNotice = s;
     GREETING = CONFIG.greeting;
+    renderHomeText();
     Remote.loaded = !!raw;
     Remote.updatedAt = cfgText(v.updatedAt, 40);
     renderPaused();
@@ -1070,7 +1090,7 @@ body.is-demo .demo-chip{display:inline-block}
   }
   function joinNote(a, list) { return [String(a || '').trim()].concat(list || []).filter(Boolean).map(toTrad).join('、'); }
   function getLine(n) { n = Math.round(Number(n)); return n >= 1 && n <= Order.lines.length ? Order.lines[n - 1] : null; }
-  function resetOrder() { Order.lines = []; Order.changedId = 0; Order.dineMode = ''; Order.askingMode = false; Turn.adds = {}; Turn.warned = {}; resetSubmit(); renderOrder(); }
+  function resetOrder() { Order.lines = []; Order.changedId = 0; Order.dineMode = ''; Order.askingMode = false; Order.incomplete = ''; Turn.adds = {}; Turn.warned = {}; resetSubmit(); renderOrder(); }
 
   /* ═════════ 工具（給 Grok 呼叫） ═════════ */
   var TOOLS_SPEC = [
@@ -1246,7 +1266,7 @@ body.is-demo .demo-chip{display:inline-block}
     Session.finishing = true;
     armFinishFallback();
     var done = { ok: true, order_total: orderTotal(), dine_mode: dineModeLabel(Order.dineMode), lines: Order.lines.map(lineInfo) };
-    if (!CONFIG.submitOrders) return done;
+    if (!CONFIG.submitOrders) { done.trial = true; done.message = '試營運：不送單，請顧客到櫃台告訴店員餐點'; return done; }
     return submitOrder().then(function (r) {
       done.submitted = true;
       if (r.orderNo) done.order_no = r.orderNo;
@@ -1294,6 +1314,15 @@ body.is-demo .demo-chip{display:inline-block}
       itemTotal: p.total
     };
   }
+  var END_REASON_TEXT = { idle: '客人沒有再說話', timeup: '點餐時間到', interrupted: '連線中斷' };
+  function incompleteNote() {
+    if (!Order.incomplete) return '';
+    var miss = Order.lines.filter(function (l) { return missingOf(l).length; }).map(function (l) {
+      return lineNo(l) + '.' + l.item.name + '（未選：' + missingOf(l).map(function (m) { return m.question; }).join('、') + '）';
+    });
+    return '⚠️ 語音點餐沒有完成（' + (END_REASON_TEXT[Order.incomplete] || '沒說點好了') + '），請和客人確認餐點' +
+      (Order.dineMode ? '' : '、內用或外帶') + (miss.length ? '。' + miss.join('；') : '');
+  }
   function buildOrderData() {
     var now = new Date(), today = ymd(now), takeout = Order.dineMode !== 'dinein';
     return {
@@ -1302,7 +1331,7 @@ body.is-demo .demo-chip{display:inline-block}
       source: 'dinein', tableDevice: storeGet('kiosk_voice_device'), tableLabel: CONFIG.orderLabel, tableType: 'voice_kiosk',
       paymentMethod: 'store', paymentStatus: '',
       items: Order.lines.map(toOrderItem), stationMap: [], total: orderTotal(),
-      status: 'new', timestamp: now.getTime(), orderNote: '', orderDateKey: today,
+      status: 'new', timestamp: now.getTime(), orderNote: incompleteNote(), orderDateKey: today,
       print_task: 'kitchen_' + now.getTime()
     };
   }
@@ -1411,7 +1440,8 @@ body.is-demo .demo-chip{display:inline-block}
       '5. 顧客改口一律在同一項上改，不要新增一項，也不要寫進備註：改成有蛋有肉、無蛋無肉、套餐或單點，用 update_item 的 name 填這幾個字；換別的餐點也用 update_item 的 name；改數量、不要某樣用 update_item 或 remove_item（line 是畫面上的項次）。',
       '5-1. 結果有 auto_upgraded 或 meat_added 時，用一句話照內容告訴顧客。結果有 unmatched 時，那幾個字沒有對應的選項：顧客的回答請換成 options 裡的原文再送一次；真的是備註（例如不要醬）就放 note。',
       '6. 顧客說「這樣就好」「沒有了」「好了」，或系統告訴你顧客按了「我點好了」，呼叫 finish_order。回傳 pending 就先把沒確認的問完；回傳 need_dine_mode 就問「請問內用還是外帶？」，顧客回答（或系統說顧客按了按鈕）後再呼叫 finish_order，dine_mode 填「內用」或「外帶」。',
-      '6-1. finish_order 成功後只說一句：有 order_no 就說「好的，總共○○元，您的號碼是○○號，請到櫃台結帳，謝謝您！」；沒有 order_no 就說「好的，總共○○元，請到櫃台結帳，謝謝您！」；submitted 是 false 就說「不好意思，訂單沒有送出成功，請到櫃台告訴店員您的餐點」。金額用 order_total，號碼用 order_no。',
+      '6-1. finish_order 成功後只說一句：有 order_no 就說「好的，總共○○元，您的號碼是○○號，' + CONFIG.closingText + '」；沒有 order_no 就說「好的，總共○○元，' + CONFIG.closingText + '」；submitted 是 false 就說「不好意思，訂單沒有送出成功，請到櫃台告訴店員您的餐點」；trial 是 true 就說「好的，總共○○元，請到櫃台告訴店員您的餐點，謝謝您！」。金額用 order_total，號碼用 order_no。',
+      '6-2. 系統說點餐時間到了，就照系統說的收尾，不要再問新的問題。',
       '7. 價錢只念工具回傳的數字，不要自己加總。',
       '8. 聽不清楚就說「不好意思，可以再說一次嗎？」；顧客講台語也盡量聽懂，用華語回答。',
       '9. 店名、地址、營業時間只用【店家】寫的回答；不知道的就說「這個要麻煩問一下櫃台店員」，不要猜。',
@@ -1461,6 +1491,109 @@ body.is-demo .demo-chip{display:inline-block}
     return { type: 'session.update', session: s };
   }
 
+  /* ═════════ 錄音（麥克風＋點餐員混在一起，Opus 約 24kbps）═════════ */
+  var Rec = {
+    rec: null, dest: null, chunks: [], done: null, mime: '',
+    start: function (io) {
+      this.rec = null; this.dest = null; this.chunks = []; this.done = null; this.mime = '';
+      if (!window.MediaRecorder || !io.ctx.createMediaStreamDestination) return;
+      try {
+        var self = this, mime = '';
+        ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/mp4', 'audio/webm'].some(function (m) {
+          if (MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m)) { mime = m; return true; } return false;
+        });
+        this.dest = io.ctx.createMediaStreamDestination();
+        io.source.connect(this.dest);
+        var opts = { audioBitsPerSecond: 24000 };
+        if (mime) opts.mimeType = mime;
+        var r = new MediaRecorder(this.dest.stream, opts);
+        this.mime = r.mimeType || mime || 'audio/webm';
+        r.ondataavailable = function (e) { if (e.data && e.data.size) self.chunks.push(e.data); };
+        this.done = new Promise(function (res) {
+          r.onstop = function () { res(self.chunks.length ? new Blob(self.chunks, { type: self.mime.split(';')[0] }) : null); };
+          r.onerror = function () { res(null); };
+        });
+        r.start(1000);
+        this.rec = r;
+      } catch (e) { console.warn('[kiosk] recorder unavailable', e); this.rec = null; this.dest = null; this.done = null; }
+    },
+    stop: function () {   // 回傳這次錄音（沒有錄就是 null）；錄完把 dest 拿掉，下一位客人重新開始
+      var r = this.rec, done = this.done;
+      this.rec = null; this.dest = null; this.done = null;
+      if (r && r.state !== 'inactive') { try { r.stop(); } catch (_) {} }
+      return done ? Promise.race([done, new Promise(function (res) { setTimeout(function () { res(null); }, 4000); })]) : Promise.resolve(null);
+    }
+  };
+  function extOf(mime) { return /ogg/.test(mime) ? 'ogg' : (/mp4|aac|m4a/.test(mime) ? 'm4a' : 'webm'); }
+
+  /* ═════════ 對話紀錄（每位客人一份，結束後連同錄音上傳 Pi）═════════ */
+  var Log = {
+    cur: null, turn: 0,
+    begin: function () {
+      var now = new Date();
+      this.turn = 0;
+      this.cur = { id: ymd(now).replace(/-/g, '') + '-' + ('0' + now.getHours()).slice(-2) + ('0' + now.getMinutes()).slice(-2) + ('0' + now.getSeconds()).slice(-2) + '-' + Math.random().toString(36).slice(2, 6),
+        t0: Date.now(), startedAt: now.toISOString(), events: [], users: {}, agentLogged: false };
+    },
+    add: function (role, text, extra) {
+      if (!this.cur) return null;
+      var e = { t: Math.round((Date.now() - this.cur.t0) / 100) / 10, role: role, text: String(text == null ? '' : text).slice(0, 2000) };
+      if (extra) Object.keys(extra).forEach(function (k) { e[k] = extra[k]; });
+      this.cur.events.push(e);
+      return e;
+    },
+    user: function (key, text) {   // 同一句話的辨識會更新好幾次：只留最後一版
+      if (!this.cur) return;
+      key = key || ('turn' + this.turn);
+      text = toTrad(String(text || '')).trim();
+      if (!text) return;
+      var e = this.cur.users[key];
+      if (e) e.text = text.slice(0, 2000); else this.cur.users[key] = this.add('customer', text);
+    },
+    agent: function (text, cut) {
+      if (!this.cur || this.cur.agentLogged || !String(text || '').trim()) return;
+      this.cur.agentLogged = true;
+      this.add('agent', text, cut ? { cut_off: true } : null);
+    },
+    close: function (reason) {   // 結束：停錄音、等送單結果、上傳；同一位客人只做一次
+      var c = this.cur;
+      if (!c) return;
+      this.cur = null;
+      var wantText = CONFIG.logText, wantAudio = CONFIG.logAudio;
+      var audioP = Rec.stop();
+      if (!wantText && !wantAudio) return;
+      var order = { lines: Order.lines.map(function (l, i) { return { line: i + 1, name: l.item.name, qty: l.qty, price: calcLine(l).total, options: chosenNames(l), note: l.note || '', missing: missingOf(l).map(function (m) { return m.question; }) }; }),
+        total: orderTotal(), dine_mode: Order.dineMode ? dineModeLabel(Order.dineMode) : '' };
+      var meta = { id: c.id, device: storeGet('kiosk_voice_device') || '', started_at: c.startedAt, ended_at: new Date().toISOString(),
+        seconds: Math.round((Date.now() - c.t0) / 1000), end_reason: reason || 'unknown', order: order,
+        settings: { voice: Remote.voice ? CONFIG.voice : '(Pi)', speed: CONFIG.speechSpeed, barge_in: CONFIG.bargeIn, submit_orders: CONFIG.submitOrders,
+          submit_incomplete: CONFIG.submitIncomplete, session_level: Session.updateAttempt, saved_at: Remote.updatedAt },
+        page: 'kiosk-voice-logs-20261101', ua: String(navigator.userAgent || '').slice(0, 160) };
+      if (wantText) meta.events = c.events;
+      var submitP = Submit.promise ? Submit.promise.then(function (r) { return { status: 'ok', order_no: r.orderNo || null }; }, function (e) { return { status: 'fail', error: String(e && e.message || e).slice(0, 200) }; })
+        : Promise.resolve(Submit.status === 'ok' ? { status: 'ok', order_no: Submit.orderNo } : { status: CONFIG.submitOrders ? 'not_sent' : 'trial' });
+      var waitSubmit = Promise.race([submitP, new Promise(function (res) { setTimeout(function () { res({ status: 'pending' }); }, 25000); })]);
+      Promise.all([wantAudio ? audioP : Promise.resolve(null), waitSubmit]).then(function (r) {
+        meta.submit = r[1];
+        uploadLog(meta, r[0], 0);
+      });
+    }
+  };
+  function uploadLog(meta, blob, attempt) {
+    var base = resolvePiBase(), key = storeGet('kiosk_voice_key');
+    window.__lastLog = { meta: meta, audioBytes: blob ? blob.size : 0, audioType: blob ? blob.type : '' };
+    if (DEMO || !base || !key) return;
+    var fd = new FormData();
+    fd.append('meta', JSON.stringify(meta));
+    if (blob) fd.append('audio', blob, 'audio.' + extOf(blob.type));
+    fetch(base + CONFIG.logPath, { method: 'POST', headers: { 'X-Kiosk-Key': key }, body: fd, cache: 'no-store' })
+      .then(function (res) { if (!res.ok && res.status >= 500 && attempt < 2) throw new Error('HTTP ' + res.status); window.__lastLog.uploaded = res.status; })
+      .catch(function (e) {
+        console.warn('[kiosk] log upload failed', e);
+        if (attempt < 2) setTimeout(function () { uploadLog(meta, blob, attempt + 1); }, 5000 * (attempt + 1));
+      });
+  }
+
   /* ═════════ 麥克風／喇叭 ═════════ */
   var AudioIO = {
     ctx: null, stream: null, source: null, node: null, sink: null,
@@ -1491,7 +1624,10 @@ body.is-demo .demo-chip{display:inline-block}
             var sp = self.ctx.createScriptProcessor(4096, 1, 1);
             sp.onaudioprocess = function (e) { self.feed(new Float32Array(e.inputBuffer.getChannelData(0))); };
             self.node = sp;
-          }).then(function () { self.source.connect(self.node); self.node.connect(self.sink); });
+          }).then(function () {
+            self.source.connect(self.node); self.node.connect(self.sink);
+            if (CONFIG.logAudio && !DEMO) Rec.start(self);
+          });
         });
     },
     feed: function (buf) {
@@ -1521,12 +1657,31 @@ body.is-demo .demo-chip{display:inline-block}
       var buf = this.ctx.createBuffer(1, f.length, 24000);
       buf.getChannelData(0).set(f);
       var s = this.ctx.createBufferSource(), self = this, now = this.ctx.currentTime;
-      s.buffer = buf; s.connect(this.ctx.destination);
+      s.buffer = buf; s.connect(this.out());
+      if (Rec.dest) { try { s.connect(Rec.dest); } catch (_) {} }
       if (this.playHead < now + 0.03) this.playHead = now + 0.08;
       s.start(this.playHead);
       this.playHead += buf.duration;
       this.sources.push(s);
       s.onended = function () { var i = self.sources.indexOf(s); if (i !== -1) self.sources.splice(i, 1); };
+    },
+    out: function () {
+      var vol = Number(CONFIG.volume) || 1;
+      if (!this.outGain || this.outCtx !== this.ctx) {
+        this.outCtx = this.ctx; this.outGain = this.ctx.createGain(); this.outVol = null;
+        this.outComp = this.ctx.createDynamicsCompressor ? this.ctx.createDynamicsCompressor() : null;
+        if (this.outComp) {
+          this.outComp.threshold.value = -8; this.outComp.knee.value = 6; this.outComp.ratio.value = 12;
+          this.outComp.attack.value = 0.003; this.outComp.release.value = 0.2;
+          this.outComp.connect(this.ctx.destination);
+        }
+      }
+      if (this.outVol !== vol) {
+        try { this.outGain.disconnect(); } catch (_) {}
+        this.outGain.connect(vol > 1 && this.outComp ? this.outComp : this.ctx.destination);   // 放大才經過壓縮，原音量不變
+        this.outGain.gain.value = vol; this.outVol = vol;
+      }
+      return this.outGain;
     },
     stopPlayback: function () {
       this.sources.forEach(function (s) { try { s.stop(); } catch (_) {} });
@@ -1613,8 +1768,9 @@ body.is-demo .demo-chip{display:inline-block}
     resetOrder();
     Session.active = true; Session.ready = false; Session.finishing = false; Session.pendingFollowup = false;
     Session.responseActive = false; Session.queueResponse = false; Session.awaiting = false; Session.userSpeaking = false;
-    Session.calls = {}; Session.agentText = ''; Session.updateAttempt = 0;
+    Session.calls = {}; Session.agentText = ''; Session.updateAttempt = 0; Session.wrapUpAt = 0; Session.cutOff = false;
     Session.startedAt = Date.now(); touch();
+    if (!Session.demo) Log.begin();
     setAgent('正在幫您接通點餐員，請稍等…'); setUser('');
     setStatus('connecting');
     showScreen('screen-order');
@@ -1668,7 +1824,9 @@ body.is-demo .demo-chip{display:inline-block}
       case 'session.updated':
         onReady(); return;
       case 'response.created':
-        Session.responseActive = true; Session.agentText = ''; Session.cutOff = false; return;
+        Session.responseActive = true; Session.agentText = ''; Session.cutOff = false;
+        if (Log.cur) Log.cur.agentLogged = false;
+        return;
       case 'response.output_audio.delta':
       case 'response.audio.delta':
         Session.awaiting = false; touch();
@@ -1681,16 +1839,20 @@ body.is-demo .demo-chip{display:inline-block}
         Session.agentText += String(ev.delta || ''); setAgent(Session.agentText); return;
       case 'response.output_audio_transcript.done':
       case 'response.audio_transcript.done':
-        if (ev.transcript) setAgent(String(ev.transcript)); return;
+        if (ev.transcript) { setAgent(String(ev.transcript)); Log.agent(String(ev.transcript), Session.cutOff); }
+        return;
       case 'conversation.item.input_audio_transcription.updated':
       case 'conversation.item.input_audio_transcription.completed':
-        setUser(String(ev.transcript || ev.text || '')); return;
+        setUser(String(ev.transcript || ev.text || '')); Log.user(ev.item_id, Session.userLine); return;
       case 'conversation.item.input_audio_transcription.delta':
-        setUser((Session.userLine || '') + String(ev.delta || '')); return;
+        setUser((Session.userLine || '') + String(ev.delta || '')); Log.user(ev.item_id, Session.userLine); return;
       case 'input_audio_buffer.speech_started':
         Session.userSpeaking = true; Session.userLine = ''; touch();
-        Turn.adds = {};
-        if (CONFIG.bargeIn && (AudioIO.isPlaying() || Session.responseActive)) { Session.cutOff = true; AudioIO.stopPlayback(); }
+        Turn.adds = {}; Log.turn++;
+        if (CONFIG.bargeIn && (AudioIO.isPlaying() || Session.responseActive)) {
+          if (!Session.cutOff) Log.add('system', '顧客插話，點餐員停下來');
+          Session.cutOff = true; AudioIO.stopPlayback();
+        }
         return;
       case 'input_audio_buffer.speech_stopped':
         Session.userSpeaking = false; Session.awaiting = true; touch(); return;
@@ -1715,11 +1877,14 @@ body.is-demo .demo-chip{display:inline-block}
     try { args = typeof rawArgs === 'string' ? JSON.parse(rawArgs || '{}') : (rawArgs || {}); } catch (_) {}
     Session.pendingFollowup = true;
     Session.toolWaits.push(Promise.resolve(runTool(name, args)).then(function (result) {
-      send({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output: JSON.stringify(result) } });
+      var out = JSON.stringify(result);
+      Log.add('tool', name, { args: JSON.stringify(args).slice(0, 800), result: out.slice(0, 1500) });
+      send({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output: out } });
     }));
   }
   function onResponseDone(resp) {
     Session.responseActive = false;
+    Log.agent(Session.agentText, Session.cutOff);
     clearTimer('resp');
     if (Session.pendingFollowup) {
       Session.pendingFollowup = false;
@@ -1734,6 +1899,7 @@ body.is-demo .demo-chip{display:inline-block}
   function onServerError(err) {
     var msg = String(err && (err.message || err.code) || '');
     console.warn('[kiosk] server error:', msg, err);
+    Log.add('error', 'xAI：' + msg.slice(0, 300));
     if (/active response|already has an active/i.test(msg)) { Session.queueResponse = true; return; }
     if (!Session.ready && Session.updateAttempt < 2) {   // 欄位不被接受時退一級再試：先拿掉停頓／靈敏度，再不行用最精簡設定
       Session.updateAttempt += (Session.updateAttempt === 0 && !(CONFIG.vadSilenceMs || CONFIG.vadThreshold)) ? 2 : 1;
@@ -1748,6 +1914,7 @@ body.is-demo .demo-chip{display:inline-block}
     if (Session.demo) { demoFinish(); return; }
     if (Session.ready && Session.ws) {
       touch();
+      Log.add('system', '顧客按了「我點好了」');
       send({ type: 'conversation.item.create', item: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '（顧客按了「我點好了」按鈕）' }] } });
       Session.awaiting = true;
       requestResponse();
@@ -1760,6 +1927,7 @@ body.is-demo .demo-chip{display:inline-block}
     if (Session.demo) { demoFinish(); return; }
     if (Session.ready && Session.ws) {
       touch();
+      Log.add('system', '顧客按了「' + dineModeLabel(mode) + '」');
       send({ type: 'conversation.item.create', item: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '（顧客按了「' + dineModeLabel(mode) + '」按鈕）' }] } });
       Session.awaiting = true;
       requestResponse();
@@ -1773,6 +1941,7 @@ body.is-demo .demo-chip{display:inline-block}
     stopTick();
     var ws = Session.ws; Session.ws = null;
     if (ws) { try { ws.close(1000, 'kiosk_end'); } catch (_) {} }
+    if (Rec.rec) { try { Rec.rec.requestData(); } catch (_) {} }
     AudioIO.stopMic(); AudioIO.stopPlayback();
     demoStop();
   }
@@ -1788,8 +1957,10 @@ body.is-demo .demo-chip{display:inline-block}
     else if (kind === 'paused') why = CONFIG.pausedText;
     else if (kind === 'ws' && Session.ready) why = '語音連線中斷了。';
     var hadLines = Order.lines.length > 0 && Session.ready, finishing = Session.finishing;
+    Log.add('error', (kind || 'error') + '：' + String(e && (e.message || e.status) || '').slice(0, 200));
     teardown();
     if (hadLines) { goDone(finishing ? 'finished' : 'interrupted'); return; }
+    Log.close('error_' + (kind || 'unknown'));
     showError(why);
     if (kind === 'keybad' || kind === 'key') {
       keyFingerprint(storeGet('kiosk_voice_key')).then(function (fp) {   // 給店員比對 Pi log 的「平板金鑰指紋」
@@ -1821,10 +1992,25 @@ body.is-demo .demo-chip{display:inline-block}
     else if (Session.awaiting || Session.responseActive) setStatus('thinking');
     else setStatus('listening');
     var now = Date.now();
-    if (Session.ready && !AudioIO.isPlaying() && now - Session.lastActivity > CONFIG.idleEndMs) endQuietly();
-    else if (now - Session.startedAt > CONFIG.maxSessionMs) endQuietly();
+    if (Session.ready && !AudioIO.isPlaying() && now - Session.lastActivity > CONFIG.idleEndMs) endQuietly('idle');
+    else if (now - Session.startedAt > CONFIG.maxSessionMs) {
+      if (!Session.wrapUpAt && !Session.finishing && Order.lines.length && Session.ready && Session.ws) wrapUp();
+      else if (!Session.wrapUpAt || now - Session.wrapUpAt > CONFIG.wrapUpGraceMs) endQuietly('timeup');
+    }
   }
-  function endQuietly() { if (Session.finishing) goDone('finished'); else if (Order.lines.length) goDone('idle'); else goHome(); }
+  function wrapUp() {   // 單次點餐時間到：請點餐員念一次餐點、問對不對，然後 finish_order；最多再給 wrapUpGraceMs
+    Session.wrapUpAt = Date.now();
+    Log.add('system', '點餐時間到，請點餐員確認餐點並結束');
+    send({ type: 'conversation.item.create', item: { type: 'message', role: 'user', content: [{ type: 'input_text',
+      text: '（系統：點餐時間到了。請用一句話念出目前的餐點和總金額，問顧客這樣對不對；顧客說對、或沒有回答，就呼叫 finish_order。不要再問其他問題。）' }] } });
+    Session.awaiting = true;
+    requestResponse();
+  }
+  function endQuietly(why) {
+    if (Session.finishing) goDone('finished');
+    else if (Order.lines.length) goDone(why || 'idle');
+    else { Session.endHint = why === 'timeup' ? 'timeup_empty' : 'idle_empty'; goHome(); }
+  }
 
   /* ═════════ 預覽：模擬對話（離線） ═════════ */
   var DEMO_SCRIPT = [
@@ -1969,6 +2155,8 @@ body.is-demo .demo-chip{display:inline-block}
 
   var homeTimer = 0;
   function goHome() {
+    if (Log.cur) Log.close(Session.endHint || (Order.lines.length ? 'cancelled' : 'no_order'));
+    Session.endHint = '';
     teardown();
     doneShownState = '';
     clearInterval(homeTimer); homeTimer = 0;
@@ -1989,15 +2177,23 @@ body.is-demo .demo-chip{display:inline-block}
     $('done-items').textContent = '共 ' + count + ' 份' + (Order.dineMode ? '，' + dineModeLabel(Order.dineMode) : '');
     showScreen('screen-done');
     if (doneReason === 'finished' && CONFIG.submitOrders && Submit.status === 'idle') submitOrder().catch(function () {});
+    else if (doneReason !== 'finished' && CONFIG.submitOrders && CONFIG.submitIncomplete && Submit.status === 'idle') {
+      Order.incomplete = doneReason;          // 顧客沒說點好了：照樣送單，備註請店員確認
+      submitOrder().catch(function () {});
+    }
     renderDoneStatus();
+    Log.close(doneReason);
   }
   var doneShownState = '';
   function renderDoneStatus() {
     if (!$('screen-done').classList.contains('is-active')) return;
-    var st = doneReason !== 'finished' ? 'incomplete' : (!CONFIG.submitOrders ? 'nosubmit' : Submit.status);
-    var title = '點好了！', go = '請到櫃台結帳，<br>謝謝您！', showNo = false, retry = false, ms = CONFIG.doneReturnMs;
+    var st = (doneReason !== 'finished' && !Order.incomplete) ? 'incomplete' : (!CONFIG.submitOrders ? 'nosubmit' : Submit.status);
+    var closing = esc(CONFIG.closingText).replace('，', '，<br>');
+    var title = '點好了！', go = closing, showNo = false, retry = false, ms = CONFIG.doneReturnMs;
     if (st === 'sending') { title = '送出訂單中…'; go = '請稍等一下'; }
-    else if (st === 'ok') { showNo = !!Submit.orderNo; go = (Order.dineMode ? dineModeLabel(Order.dineMode) + '，' : '') + '請到櫃台結帳，<br>謝謝您！'; }
+    else if (st === 'nosubmit') { go = '請到櫃台告訴店員<br>您的餐點，謝謝！'; }
+    else if (st === 'ok' && Order.incomplete) { title = '已幫您送出點餐單'; showNo = !!Submit.orderNo; go = '請到櫃台跟店員<br>確認您的餐點，謝謝！'; }
+    else if (st === 'ok') { showNo = !!Submit.orderNo; go = (Order.dineMode ? dineModeLabel(Order.dineMode) + '，' : '') + closing; }
     else if (st === 'fail') { title = '訂單還沒送出'; go = '請到櫃台告訴店員<br>您的餐點'; retry = true; ms = CONFIG.failReturnMs; }
     else if (st === 'incomplete') { title = '點餐還沒完成'; go = '需要幫忙的話，<br>請找櫃台店員'; }
     $('done-title').textContent = title;
@@ -2036,7 +2232,7 @@ body.is-demo .demo-chip{display:inline-block}
     if (Menu.error && !Menu.active.length) { el.textContent = '菜單載入失敗：' + Menu.error; return; }
     if (!storeGet('kiosk_voice_key')) { el.textContent = '尚未設定點餐金鑰（網址加 ?kioskKey=）'; return; }
     if (CONFIG.submitOrders && !(storeGet('kiosk_voice_device') && storeGet('kiosk_voice_sig'))) { el.textContent = '尚未完成平板安全註冊（manage → 店內平板安全註冊）'; return; }
-    el.textContent = Menu.active.length ? ('菜單 ' + Menu.active.length + ' 項，已就緒' + (storeGet('kiosk_voice_device') ? '（' + storeGet('kiosk_voice_device') + '）' : '')) : '菜單載入中…';
+    el.textContent = Menu.active.length ? ('菜單 ' + Menu.active.length + ' 項，已就緒' + (storeGet('kiosk_voice_device') ? '（' + storeGet('kiosk_voice_device') + '）' : '') + (CONFIG.submitOrders ? '' : '　試營運：點完不送單')) : '菜單載入中…';
   }
 
   /* ═════════ 載入菜單（正式） ═════════ */
@@ -2072,6 +2268,13 @@ body.is-demo .demo-chip{display:inline-block}
       return true;
     }).catch(function () { return false; });
   }
+  function renderHomeText() {
+    var lis = document.querySelectorAll('#screen-home .steps .step-text');
+    for (var i = 0; i < lis.length; i++) lis[i].textContent = CONFIG.homeSteps[i] || '';
+    var rn = $('record-notice');
+    rn.hidden = !(CONFIG.logAudio && !DEMO);
+    rn.textContent = rn.hidden ? '' : '🎙️ ' + CONFIG.recordNotice;
+  }
   function renderPaused() {
     var off = !DEMO && !VIEW_PROMPT && CONFIG.enabled === false;
     document.body.classList.toggle('is-paused', off);
@@ -2099,7 +2302,10 @@ body.is-demo .demo-chip{display:inline-block}
       '單次最長 ' + Math.round(CONFIG.maxSessionMs / 60000) + ' 分鐘',
       '問內用外帶：' + (CONFIG.askDineMode ? '要' : '不問'),
       '顧客插話：' + (CONFIG.bargeIn ? '可以（點餐員說話時也收音）' : '不行（點餐員說話時不收音）'),
-      '停頓多久算講完：' + (CONFIG.vadSilenceMs ? (CONFIG.vadSilenceMs / 1000) + ' 秒' : 'xAI 預設') + '　收音門檻：' + (CONFIG.vadThreshold || 'xAI 預設')
+      '停頓多久算講完：' + (CONFIG.vadSilenceMs ? (CONFIG.vadSilenceMs / 1000) + ' 秒' : 'xAI 預設') + '　收音門檻：' + (CONFIG.vadThreshold || 'xAI 預設'),
+      '送單：' + (CONFIG.submitOrders ? '會送進 POS' : '試營運，不送單') + '　沒說點好了：' + (CONFIG.submitIncomplete ? '照樣送單（請店員確認）' : '不送單'),
+      '音量 ' + CONFIG.volume + ' 倍　紀錄：' + (CONFIG.logText ? '對話文字' : '不存文字') + '、' + (CONFIG.logAudio ? '錄音' : '不錄音'),
+      '首頁：' + CONFIG.homeSteps.join(' → ') + '　結尾：' + CONFIG.closingText
     ];
     $('prompt-meta').textContent = Menu.error && !Menu.active.length ? ('菜單載入失敗：' + Menu.error) : meta.join('\n');
     $('prompt-text').textContent = buildInstructions();
@@ -2122,6 +2328,7 @@ body.is-demo .demo-chip{display:inline-block}
       return;
     }
     clearTimeout(cancelArmed); cancelArmed = 0; b.textContent = '取消重來'; b.classList.remove('is-confirm');
+    Session.endHint = 'cancelled';
     goHome();
   });
   $('btn-home').addEventListener('click', goHome);
@@ -2161,7 +2368,7 @@ body.is-demo .demo-chip{display:inline-block}
   }
 
   // 測試用
-  window.__kiosk = { runTool: runTool, findItem: findItem, setMenu: setMenu, Order: Order, Menu: Menu, buildInstructions: buildInstructions, buildKeyterms: buildKeyterms, sessionUpdate: sessionUpdate, CONFIG: CONFIG, Session: Session, goHome: goHome, showError: showError, goDone: goDone, Submit: Submit, buildOrderData: buildOrderData, speakName: speakName, submitOrder: submitOrder, businessWindow: businessWindow, applyVoiceSettings: applyVoiceSettings, refreshSettings: refreshSettings, Remote: Remote, renderPromptView: renderPromptView, choiceAsk: choiceAsk, Turn: Turn, handleEvent: handleEvent };
+  window.__kiosk = { runTool: runTool, findItem: findItem, setMenu: setMenu, Order: Order, Menu: Menu, buildInstructions: buildInstructions, buildKeyterms: buildKeyterms, sessionUpdate: sessionUpdate, CONFIG: CONFIG, Session: Session, goHome: goHome, showError: showError, goDone: goDone, Submit: Submit, buildOrderData: buildOrderData, speakName: speakName, submitOrder: submitOrder, businessWindow: businessWindow, applyVoiceSettings: applyVoiceSettings, refreshSettings: refreshSettings, Remote: Remote, renderPromptView: renderPromptView, choiceAsk: choiceAsk, Turn: Turn, handleEvent: handleEvent, Log: Log, Rec: Rec, AudioIO: AudioIO, tick: tick, renderHomeText: renderHomeText };
 })();
 </script>
 </body>
