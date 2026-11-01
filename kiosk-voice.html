@@ -388,7 +388,9 @@ body.is-demo .demo-chip{display:inline-block}
     voice: 'ara',                     // ★ manage 有選就用 manage 的；沒選才用 Pi 回傳的 voice（XAI_VOICE_NAME）
     speechSpeed: 0.92,                // ★ 長輩：稍微放慢（0.7–1.5）
     reasoningEffort: 'none',          // ★ 'none' 最快；聽懂但常點錯時改 'high'
-    bargeIn: false,                   // false = 點餐員說話時不收音，避免喇叭回音打斷自己；?bargein=1 可測試插話
+    bargeIn: false,                   // ★ false = 點餐員說話時不收音，避免喇叭回音打斷自己；?bargein=1 可測試插話
+    vadSilenceMs: 0,                  // ★ 顧客停頓多久算講完（毫秒）；0 = 不送，用 xAI 預設
+    vadThreshold: 0,                  // ★ 收音靈敏度門檻 0.1～0.95（越高越不容易被雜音觸發）；0 = 不送，用 xAI 預設
     serverIdlePromptMs: 15000,        // ★ 顧客沉默多久，點餐員主動問「還需要什麼嗎？」
     idleEndMs: 60000,                 // ★ 完全沒聲音多久自動結束
     maxSessionMs: 6 * 60 * 1000,      // ★ 單次點餐最長時間（控制費用）
@@ -404,7 +406,8 @@ body.is-demo .demo-chip{display:inline-block}
   /* ═════════ manage 的語音點餐設定（settings.kioskVoice）═════════ */
   var VOICE_NAMES = ['ara', 'eve', 'leo', 'rex', 'sal'];
   var VOICE_KEYS = ['enabled', 'pausedText', 'greeting', 'storeFacts', 'recommend', 'extraRules', 'keyterms', 'askDineMode',
-    'voice', 'speechSpeed', 'reasoningEffort', 'serverIdlePromptMs', 'idleEndMs', 'maxSessionMs', 'doneReturnMs'];
+    'voice', 'speechSpeed', 'reasoningEffort', 'serverIdlePromptMs', 'idleEndMs', 'maxSessionMs', 'doneReturnMs',
+    'bargeIn', 'vadSilenceMs', 'vadThreshold'];
   var DEFAULTS = {};
   VOICE_KEYS.forEach(function (k) { DEFAULTS[k] = Array.isArray(CONFIG[k]) ? CONFIG[k].slice() : CONFIG[k]; });
   var Remote = { loaded: false, voice: false, updatedAt: '' };
@@ -443,6 +446,10 @@ body.is-demo .demo-chip{display:inline-block}
     CONFIG.idleEndMs = Math.max(CONFIG.idleEndMs, CONFIG.serverIdlePromptMs + 10000);   // 先主動問，再結束
     if ((n = cfgNum(v.maxSessionMin, 2, 15)) !== null) CONFIG.maxSessionMs = Math.round(n * 60) * 1000;
     if ((n = cfgNum(v.doneReturnSec, 10, 180)) !== null) CONFIG.doneReturnMs = Math.round(n) * 1000;
+    if (typeof v.bargeIn === 'boolean') CONFIG.bargeIn = v.bargeIn;
+    if (BARGE_PARAM) CONFIG.bargeIn = true;
+    if ((n = cfgNum(v.vadSilenceMs, 0, 2000)) !== null) CONFIG.vadSilenceMs = n >= 100 ? Math.round(n) : 0;
+    if ((n = cfgNum(v.vadThreshold, 0, 0.95)) !== null) CONFIG.vadThreshold = n >= 0.1 ? Math.round(n * 100) / 100 : 0;
     GREETING = CONFIG.greeting;
     Remote.loaded = !!raw;
     Remote.updatedAt = cfgText(v.updatedAt, 40);
@@ -453,7 +460,8 @@ body.is-demo .demo-chip{display:inline-block}
   var VIEW_PROMPT = params.get('view') === 'prompt';
   var DEMO = params.get('demo') === '1' || (location.protocol === 'file:' && params.get('demo') !== '0');
   var TTS_ON = params.get('tts') !== '0';
-  if (params.get('bargein') === '1') CONFIG.bargeIn = true;
+  var BARGE_PARAM = params.get('bargein') === '1';
+  if (BARGE_PARAM) CONFIG.bargeIn = true;
   if (params.get('pi')) storeSet('kiosk_pi_base', params.get('pi'));
   if (params.get('kioskKey')) storeSet('kiosk_voice_key', params.get('kioskKey'));
   (function () {
@@ -697,6 +705,68 @@ body.is-demo .demo-chip{display:inline-block}
     if (sets.length && singles.length) return '請問要套餐（' + priceText(sets, true) + '）還是單點（' + priceText(singles) + '）？';
     return '請問要' + list.map(function (it) { var v = variantOf(it); return (v.label || speakName(it.name)) + '（' + (Number(it.price) || 0) + '元）'; }).join('還是') + '？';
   }
+  // 4號有辣卡／原卡、1號有三種捲：顧客只說「4號餐」時，候選名稱去掉相同的頭尾，問「要辣卡脆雞堡還是原卡脆雞堡」
+  function diffSegments(names) {
+    var a = names.map(function (n) { return String(n || ''); });
+    var min = Math.min.apply(null, a.map(function (s) { return s.length; })), pre = 0, suf = 0;
+    while (pre < min && a.every(function (s) { return s.charAt(pre) === a[0].charAt(pre); })) pre++;
+    while (suf < min - pre && a.every(function (s) { return s.charAt(s.length - 1 - suf) === a[0].charAt(a[0].length - 1 - suf); })) suf++;
+    return { prefix: a[0].slice(0, pre), suffix: a[0].slice(a[0].length - suf), segs: a.map(function (s) { return s.slice(pre, s.length - suf); }) };
+  }
+  function choiceAsk(list) {
+    list = (list || []).filter(Boolean).slice(0, 3);
+    if (!list.length) return '';
+    if (list.length === 1) return '請問是' + speakName(list[0].name) + '嗎？';
+    var d = diffSegments(list.map(function (x) { return x.name; }));
+    var core = d.suffix.replace(/(套餐|單點)$/, '');
+    var neat = (d.prefix || d.suffix) && d.segs.every(function (s) { return s && s.length <= 8 && !/^\d/.test(s); });
+    var samePrice = list.every(function (x) { return Number(x.price) === Number(list[0].price); });
+    var opts = list.map(function (x, i) {
+      var label = neat ? d.segs[i] + core : speakName(x.name);
+      return speakName(label) + (samePrice ? '' : '（' + (Number(x.price) || 0) + '元）');
+    });
+    var head = neat && /\d+號$/.test(d.prefix) ? speakName(d.prefix) : '';
+    return '請問' + head + '要' + (opts.length === 2 ? opts[0] + '，還是' + opts[1] : opts.slice(0, -1).join('、') + '，還是' + opts[opts.length - 1]) + '？';
+  }
+  // 同一個餐號的不同口味（4號辣卡／4號原卡）：顧客這句話沒有分別講到，就不能一次全部加
+  function numberedKey(name) {
+    var n = norm(name), m = n.match(/^(\d+)號/);
+    return m ? m[1] + '號' + (/單點/.test(n) ? '單點' : (/套餐/.test(n) ? '套餐' : '')) : '';
+  }
+  function segKeys(items) {   // 每一種「別人沒有的字」：辣卡脆雞 → 辣、原卡脆雞 → 原、青檸白蝦 → 青檸白蝦
+    var segs = diffSegments(items.map(function (x) { return x.name; })).segs.map(norm);
+    return segs.map(function (seg, i) {
+      var others = segs.filter(function (s, j) { return j !== i; }).join(''), u = '';
+      for (var k = 0; k < seg.length; k++) { var c = seg.charAt(k); if (others.indexOf(c) === -1 && u.indexOf(c) === -1) u += c; }
+      return u;
+    });
+  }
+  function mentionedIdx(items, text) {
+    var said = norm(text || '').replace(/不辣/g, '原'), keys = segKeys(items), hit = [];
+    keys.forEach(function (k, i) {
+      for (var j = 0; j < k.length; j++) if (said.indexOf(k.charAt(j)) !== -1) { hit.push(i); return; }
+    });
+    return hit;
+  }
+  function mentionedAll(items, text) { return items.length >= 2 && mentionedIdx(items, text).length === items.length; }
+  // 「4號」「四號辣的」「1號白蝦單點」：同一個餐號有好幾種口味時，先依套餐／單點、再依講到的口味縮小；講不出是哪一種就問
+  function numberedGroup(said, text) {
+    var m = norm(said).match(/^(\d+)號/);
+    if (!m) return null;
+    var all = Menu.active.filter(function (x) { return x.active !== false && norm(x.name).indexOf(m[1] + '號') === 0; });
+    var flavors = {};
+    all.forEach(function (x) { flavors[norm(x.name).replace(/^\d+號/, '').replace(/(套餐|單點)$/, '')] = 1; });
+    if (Object.keys(flavors).length < 2) return null;            // 只有一種口味（例如 6號）：照原本的套餐／單點規則
+    var kind = wantsFrom(text).kind;
+    var pool = narrowFamily(all, { kind: kind || '套餐' });
+    if (!pool.length) pool = all;
+    if (pool.length === 1) return { item: pool[0], implied: [], exact: false };
+    var hit = mentionedIdx(pool, text);
+    if (hit.length === 1) return { item: pool[hit[0]], implied: [], exact: false };
+    var c = hit.length ? hit.map(function (i) { return pool[i]; }) : pool;
+    return { candidates: c, ask: choiceAsk(c) };
+  }
+  var Turn = { adds: {}, warned: {} };   // 顧客每說一句話重算 adds；warned 整張單只擋一次
   function familyByText(text) {
     var k = familyKey(text).replace(VARIANT_WORDS_RE, '');
     return k ? Menu.active.filter(function (x) { return familyKey(x.name) === k; }) : [];
@@ -708,7 +778,16 @@ body.is-demo .demo-chip{display:inline-block}
       if (left.length === 1) return { item: left[0], implied: [], exact: left[0]._names.indexOf(norm(said)) !== -1 };
       if (left.length > 1) return { candidates: left, ask: familyAsk(left), family: true };
     }
-    return resolveFamily(findItem(said), text);
+    var base = findItem(said);
+    if (!(base.item && base.exact)) { var ng = numberedGroup(said, text); if (ng) return ng; }
+    var r = resolveFamily(base, text);
+    if (!r.item && !r.soldOut && r.candidates && r.candidates.length > 1) {   // 「4號單點」：先用套餐／單點縮小
+      var byKind = narrowFamily(r.candidates, { kind: wantsFrom(text).kind });
+      if (byKind.length === 1) return { item: byKind[0], implied: [], exact: false };
+      if (byKind.length) r = Object.assign({}, r, { candidates: byKind, ask: r.ask && byKind.length === r.candidates.length ? r.ask : '' });
+    }
+    if (!r.item && !r.soldOut && r.candidates && r.candidates.length && !r.ask) r.ask = choiceAsk(r.candidates.filter(function (c) { return c.active !== false; }));
+    return r;
   }
   function resolveFamily(f, text) {
     var base = f.item || (f.candidates && f.candidates[0]);
@@ -991,7 +1070,7 @@ body.is-demo .demo-chip{display:inline-block}
   }
   function joinNote(a, list) { return [String(a || '').trim()].concat(list || []).filter(Boolean).map(toTrad).join('、'); }
   function getLine(n) { n = Math.round(Number(n)); return n >= 1 && n <= Order.lines.length ? Order.lines[n - 1] : null; }
-  function resetOrder() { Order.lines = []; Order.changedId = 0; Order.dineMode = ''; Order.askingMode = false; resetSubmit(); renderOrder(); }
+  function resetOrder() { Order.lines = []; Order.changedId = 0; Order.dineMode = ''; Order.askingMode = false; Turn.adds = {}; Turn.warned = {}; resetSubmit(); renderOrder(); }
 
   /* ═════════ 工具（給 Grok 呼叫） ═════════ */
   var TOOLS_SPEC = [
@@ -1042,12 +1121,40 @@ body.is-demo .demo-chip{display:inline-block}
   function toolAddItems(args) {
     var specs = Array.isArray(args.items) ? args.items : (args.name ? [args] : []);
     var results = [];
-    specs.slice(0, 12).forEach(function (spec) {
+    specs = specs.slice(0, 12);
+    var found = specs.map(function (spec) {
+      var said = String(spec && spec.name || '').trim();
+      return said ? findDish(said, (Array.isArray(spec.selections) ? spec.selections : []).filter(isVariantWord).join(' ')) : null;
+    });
+    // 4號辣卡＋4號原卡（這句話或同一句話的前一次呼叫）：顧客沒分別講到兩種 → 先問，第一次擋下
+    var groups = {}, blocked = {};
+    Object.keys(Turn.adds).forEach(function (k) { groups[k] = Turn.adds[k].slice(); });
+    found.forEach(function (f, i) {
+      var k = f && f.item && !f.soldOut ? numberedKey(f.item.name) : '';
+      if (!k) return;
+      (groups[k] = groups[k] || []);
+      if (groups[k].every(function (x) { return x.name !== f.item.name; })) groups[k].push(f.item);
+    });
+    Object.keys(groups).forEach(function (k) {
+      var g = groups[k];
+      if (g.length < 2 || Turn.warned[k] || mentionedAll(g, Session.userLine)) return;
+      Turn.warned[k] = true;
+      blocked[k] = g;
+    });
+    specs.forEach(function (spec, i) {
       var said = String(spec && spec.name || '').trim();
       if (!said) { results.push({ ok: false, message: '沒有餐點名稱' }); return; }
       var sels = Array.isArray(spec.selections) ? spec.selections : [];
-      var variantSels = sels.filter(isVariantWord);
-      var f = findDish(said, variantSels.join(' '));
+      var f = found[i];
+      var bk = f.item ? numberedKey(f.item.name) : '';
+      if (bk && blocked[bk]) {
+        var already = Order.lines.filter(function (l) { return blocked[bk].indexOf(l.item) !== -1 && (Turn.adds[bk] || []).indexOf(l.item) !== -1; })[0];
+        results.push({ ok: false, said: toTrad(said), not_added: true, ask: choiceAsk(blocked[bk]), candidates: candidateList(blocked[bk]),
+          message: already
+            ? '這句話已經加了「' + speakName(already.item.name) + '」（第' + lineNo(already) + '項），顧客沒有說兩種都要，這項沒有加入。照 ask 問：要原本那種就不用動；要另一種就用 update_item 把第' + lineNo(already) + '項的 name 換掉；兩種都要再呼叫一次 add_items'
+            : '顧客沒有說要哪一種，這項沒有加入。照 ask 問顧客，只加顧客選的那一種；顧客說兩種都要，再呼叫一次 add_items' });
+        return;
+      }
       if (f.soldOut) { results.push({ ok: false, said: toTrad(said), name: f.item.name, sold_out: true, message: '今天賣完了' }); return; }
       if (!f.item) {
         var miss = { ok: false, said: toTrad(said), candidates: candidateList(f.candidates),
@@ -1065,6 +1172,8 @@ body.is-demo .demo-chip{display:inline-block}
       if (!missingOf(line).length) Order.lines.forEach(function (l) { if (!target && !missingOf(l).length && sameLine(l, line)) target = l; });
       if (target) target.qty = Math.min(20, target.qty + line.qty);
       else { Order.lines.push(line); target = line; }
+      var tk = numberedKey(target.item.name);
+      if (tk) { Turn.adds[tk] = Turn.adds[tk] || []; if (Turn.adds[tk].indexOf(target.item) === -1) Turn.adds[tk].push(target.item); }
       var settled = settleLine(target);
       markChanged(target);
       var info = Object.assign(lineInfo(target), settled);
@@ -1298,7 +1407,7 @@ body.is-demo .demo-chip{display:inline-block}
       '2. 工具回傳後，先用一句話複誦。餐點名稱一律念工具回傳的 say，不要用顧客的說法、也不要自己改字或改數字，例如「好的，一份四號辣卡脆雞堡套餐。」',
       '2-1. 結果有 number_mismatch（顧客說的數字和菜單不同，例如顧客說六入、菜單只有兩入）時，先確認：「我們的是爆漿奶油餐包兩入，一份兩個，請問要幾份？」，再用 update_item 改數量。',
       '3. 結果有 missing 時，只問第一個，白話問：加蛋→「要加蛋嗎？」；套餐飲料→「飲料要大杯奶茶，還是換別的？」；溫度→「冰的還是溫的？」；容量→「大杯還是中杯？」。missing 裡有 ask 就照 ask 問。顧客回答後呼叫 update_item，selections 用 options 裡的原文。',
-      '4. 結果有 ask（同一道餐有不同版本，例如套餐／單點、有蛋有肉／無蛋無肉）時，照 ask 問，不要自己決定；顧客選好後，用 candidates 裡對應的 name 再呼叫 add_items。沒有 ask 的 candidates，念出兩三個讓顧客選。sold_out 時說「不好意思，這個今天賣完了」，請顧客換別的。',
+      '4. 結果有 ask（顧客還沒說是哪一種，例如套餐／單點、辣卡／原卡、有蛋有肉／無蛋無肉）時，照 ask 問，不要自己決定，也絕對不可以把 candidates 全部加入；顧客選好後，只用他選的那一個 name 再呼叫 add_items。顧客明確說「兩種都要」「各一個」才分別加。sold_out 時說「不好意思，這個今天賣完了」，請顧客換別的。',
       '5. 顧客改口一律在同一項上改，不要新增一項，也不要寫進備註：改成有蛋有肉、無蛋無肉、套餐或單點，用 update_item 的 name 填這幾個字；換別的餐點也用 update_item 的 name；改數量、不要某樣用 update_item 或 remove_item（line 是畫面上的項次）。',
       '5-1. 結果有 auto_upgraded 或 meat_added 時，用一句話照內容告訴顧客。結果有 unmatched 時，那幾個字沒有對應的選項：顧客的回答請換成 options 裡的原文再送一次；真的是備註（例如不要醬）就放 note。',
       '6. 顧客說「這樣就好」「沒有了」「好了」，或系統告訴你顧客按了「我點好了」，呼叫 finish_order。回傳 pending 就先把沒確認的問完；回傳 need_dine_mode 就問「請問內用還是外帶？」，顧客回答（或系統說顧客按了按鈕）後再呼叫 finish_order，dine_mode 填「內用」或「外帶」。',
@@ -1328,6 +1437,7 @@ body.is-demo .demo-chip{display:inline-block}
     return out.slice(0, 100);
   }
   function sessionUpdate(tok, minimal) {
+    var level = minimal === true ? 2 : (Number(minimal) || 0);
     var s = {
       instructions: buildInstructions(),
       voice: Remote.voice ? CONFIG.voice : ((tok && tok.voice) || CONFIG.voice),
@@ -1338,11 +1448,15 @@ body.is-demo .demo-chip{display:inline-block}
       },
       tools: TOOLS_SPEC
     };
-    if (!minimal) {
+    if (level < 2) {
       s.reasoning = { effort: CONFIG.reasoningEffort };
       s.turn_detection.idle_timeout_ms = CONFIG.serverIdlePromptMs;
       s.audio.input.transcription = { model: 'grok-transcribe', language_hint: 'zh', keyterms: buildKeyterms(tok && tok.aliases) };
       s.audio.output.speed = CONFIG.speechSpeed;
+    }
+    if (level === 0) {   // xAI 進階參數：不被接受時 onServerError 會退一級（拿掉這兩個）再送
+      if (CONFIG.vadSilenceMs) s.turn_detection.silence_duration_ms = CONFIG.vadSilenceMs;
+      if (CONFIG.vadThreshold) s.turn_detection.threshold = CONFIG.vadThreshold;
     }
     return { type: 'session.update', session: s };
   }
@@ -1514,7 +1628,7 @@ body.is-demo .demo-chip{display:inline-block}
     Session.ws = ws;
     Session.timers.connect = later(12000, function () { if (!Session.ready) { var e = new Error('connect_timeout'); e.kind = 'ws'; failSession(e); } });
     ws.onopen = function () {
-      send(sessionUpdate(tok, false));
+      send(sessionUpdate(tok, 0));
       Session.timers.ready = later(3000, function () { if (!Session.ready) onReady(); });
     };
     ws.onmessage = function (m) {
@@ -1554,10 +1668,12 @@ body.is-demo .demo-chip{display:inline-block}
       case 'session.updated':
         onReady(); return;
       case 'response.created':
-        Session.responseActive = true; Session.agentText = ''; return;
+        Session.responseActive = true; Session.agentText = ''; Session.cutOff = false; return;
       case 'response.output_audio.delta':
       case 'response.audio.delta':
-        Session.awaiting = false; touch(); AudioIO.play(ev.delta); return;
+        Session.awaiting = false; touch();
+        if (!Session.cutOff) AudioIO.play(ev.delta);
+        return;
       case 'response.output_audio_transcript.delta':
       case 'response.audio_transcript.delta':
       case 'response.output_text.delta':
@@ -1573,7 +1689,8 @@ body.is-demo .demo-chip{display:inline-block}
         setUser((Session.userLine || '') + String(ev.delta || '')); return;
       case 'input_audio_buffer.speech_started':
         Session.userSpeaking = true; Session.userLine = ''; touch();
-        if (CONFIG.bargeIn) AudioIO.stopPlayback();
+        Turn.adds = {};
+        if (CONFIG.bargeIn && (AudioIO.isPlaying() || Session.responseActive)) { Session.cutOff = true; AudioIO.stopPlayback(); }
         return;
       case 'input_audio_buffer.speech_stopped':
         Session.userSpeaking = false; Session.awaiting = true; touch(); return;
@@ -1618,9 +1735,9 @@ body.is-demo .demo-chip{display:inline-block}
     var msg = String(err && (err.message || err.code) || '');
     console.warn('[kiosk] server error:', msg, err);
     if (/active response|already has an active/i.test(msg)) { Session.queueResponse = true; return; }
-    if (!Session.ready && Session.updateAttempt === 0) {   // 欄位不被接受時，退回最精簡設定再試一次
-      Session.updateAttempt = 1;
-      send(sessionUpdate(Session.token, true));
+    if (!Session.ready && Session.updateAttempt < 2) {   // 欄位不被接受時退一級再試：先拿掉停頓／靈敏度，再不行用最精簡設定
+      Session.updateAttempt += (Session.updateAttempt === 0 && !(CONFIG.vadSilenceMs || CONFIG.vadThreshold)) ? 2 : 1;
+      send(sessionUpdate(Session.token, Session.updateAttempt));
     }
   }
   function armFinishFallback() {
@@ -1980,7 +2097,9 @@ body.is-demo .demo-chip{display:inline-block}
       '反應 ' + (CONFIG.reasoningEffort === 'high' ? '仔細' : '快'),
       '沉默 ' + Math.round(CONFIG.serverIdlePromptMs / 1000) + ' 秒主動問、' + Math.round(CONFIG.idleEndMs / 1000) + ' 秒沒聲音結束',
       '單次最長 ' + Math.round(CONFIG.maxSessionMs / 60000) + ' 分鐘',
-      '問內用外帶：' + (CONFIG.askDineMode ? '要' : '不問')
+      '問內用外帶：' + (CONFIG.askDineMode ? '要' : '不問'),
+      '顧客插話：' + (CONFIG.bargeIn ? '可以（點餐員說話時也收音）' : '不行（點餐員說話時不收音）'),
+      '停頓多久算講完：' + (CONFIG.vadSilenceMs ? (CONFIG.vadSilenceMs / 1000) + ' 秒' : 'xAI 預設') + '　收音門檻：' + (CONFIG.vadThreshold || 'xAI 預設')
     ];
     $('prompt-meta').textContent = Menu.error && !Menu.active.length ? ('菜單載入失敗：' + Menu.error) : meta.join('\n');
     $('prompt-text').textContent = buildInstructions();
@@ -2042,7 +2161,7 @@ body.is-demo .demo-chip{display:inline-block}
   }
 
   // 測試用
-  window.__kiosk = { runTool: runTool, findItem: findItem, setMenu: setMenu, Order: Order, Menu: Menu, buildInstructions: buildInstructions, buildKeyterms: buildKeyterms, sessionUpdate: sessionUpdate, CONFIG: CONFIG, Session: Session, goHome: goHome, showError: showError, goDone: goDone, Submit: Submit, buildOrderData: buildOrderData, speakName: speakName, submitOrder: submitOrder, businessWindow: businessWindow, applyVoiceSettings: applyVoiceSettings, refreshSettings: refreshSettings, Remote: Remote, renderPromptView: renderPromptView };
+  window.__kiosk = { runTool: runTool, findItem: findItem, setMenu: setMenu, Order: Order, Menu: Menu, buildInstructions: buildInstructions, buildKeyterms: buildKeyterms, sessionUpdate: sessionUpdate, CONFIG: CONFIG, Session: Session, goHome: goHome, showError: showError, goDone: goDone, Submit: Submit, buildOrderData: buildOrderData, speakName: speakName, submitOrder: submitOrder, businessWindow: businessWindow, applyVoiceSettings: applyVoiceSettings, refreshSettings: refreshSettings, Remote: Remote, renderPromptView: renderPromptView, choiceAsk: choiceAsk, Turn: Turn, handleEvent: handleEvent };
 })();
 </script>
 </body>
