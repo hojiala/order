@@ -1743,6 +1743,15 @@
 
         <!-- ===== TAB: 店面設定 ===== -->
         <div v-if="activeTab === 'settings'" class="manage-tab-panel p-6 max-w-2xl">
+            <!-- printer-settings-guard-20261102：沒讀到管理設定時，警示並擋住整包儲存 -->
+            <div v-if="settingsReadBackend !== 'pocketbase_manage'" data-settings-guard
+                style="background:#450a0a;border:1px solid #ef4444;color:#fee2e2;border-radius:12px;padding:12px 14px;margin-bottom:16px;font-size:14px;line-height:1.7">
+                <b style="color:#fff">{{ settingsReadBackend === 'checking' ? '⏳ 正在讀取管理設定…' : '⚠️ 沒有讀到管理設定，下面顯示的可能是預設值' }}</b><br>
+                印表機 IP、列印份數、平板清單、QR 密碼要讀到管理設定才看得到。讀到之前不能按「儲存設定」，避免把正確的設定蓋成預設值（印表機會印不出來）。
+                <div v-if="settingsReadBackend !== 'checking'" style="margin-top:8px">
+                    <button type="button" @click="reloadManageSettings" style="background:#dc2626;color:#fff;font-weight:700;border-radius:8px;padding:6px 14px">重新讀取設定</button>
+                </div>
+            </div>
             <div class="mb-6">
                 <h2 class="text-xl font-bold text-white">店面設定</h2>
                 <p class="text-slate-400 text-sm mt-0.5">修改後點「儲存設定」即可更新前台</p>
@@ -10621,13 +10630,29 @@ window._resetCountUp = function() {
                     });
                 };
                 return readManageSettingsFromPocketBase(this.pocketBaseManageOptions({ timeoutMs: 15000, secureTimeoutMs: 15000 })).then(function(result) {
+                    if (!result || !result.settings || !Object.keys(result.settings).length) throw new Error('manage_settings_empty');
                     apply(result.settings, 'pocketbase_manage');
                 }).catch(function() {
-                    return loadPublicSettings().catch(function() {});
+                    return loadPublicSettings().catch(function() {}).then(function() {
+                        if (self.settingsReadBackend === 'checking') self.settingsReadBackend = 'unavailable';
+                    });
+                });
+            },
+            reloadManageSettings: function() {
+                // printer-settings-guard-20261102
+                var self = this;
+                self.settingsReadBackend = 'checking';
+                return Promise.resolve(self.loadSettings()).catch(function() {}).then(function() {
+                    if (self.settingsReadBackend === 'checking') self.settingsReadBackend = 'unavailable';
                 });
             },
             saveSettings: function() {
                 var self = this;
+                // printer-settings-guard-20261102：只讀到公開設定（或還在讀）時，整包儲存會把印表機 IP、份數、平板清單、QR 密碼存成預設值
+                if (self.settingsReadBackend !== 'pocketbase_manage') {
+                    alert('⚠️ 後台還沒讀到完整的管理設定，這次先不儲存。\n\n印表機 IP、列印份數、平板清單、QR 密碼這些設定沒有讀到，現在儲存會把它們改成預設值（印表機會印不出來）。\n\n請到「店面設定」按「重新讀取設定」，或重新整理頁面，讀到之後再儲存。');
+                    return;
+                }
                 var invalidStation = (self.settings.stations || []).find(function(st) {
                     return st.copies !== undefined && st.copies !== null && st.copies !== '' &&
                         (typeof st.copies === 'boolean' || !Number.isInteger(Number(st.copies)) || Number(st.copies) < 1 || Number(st.copies) > 5);
