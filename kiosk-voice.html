@@ -726,6 +726,61 @@ body.is-demo .demo-chip{display:inline-block}
     if (sets.length && singles.length) return '請問要套餐（' + priceText(sets, true) + '）還是單點（' + priceText(singles) + '）？';
     return '請問要' + list.map(function (it) { var v = variantOf(it); return (v.label || speakName(it.name)) + '（' + (Number(it.price) || 0) + '元）'; }).join('還是') + '？';
   }
+  /* ═════════ kiosk-voice-addons-20261102：套餐飲料加料、預設選項先問 ═════════ */
+  // 套餐飲料選「美式咖啡(無糖無奶)(中杯)」→ 菜單上「美式咖啡(無糖無奶)」的加料（加糖、加奶）；和桌邊點餐的 comboDrinkAddons 一樣
+  function drinkBaseName(name) { var m = String(name || '').match(/^(.+?)[（(]\s*(大杯|中杯|小杯)\s*[）)]\s*$/); return (m ? m[1] : String(name || '')).trim(); }
+  function drinkMenuItem(base) {
+    base = String(base || '').trim();
+    if (!base) return null;
+    for (var i = 0; i < Menu.items.length; i++) if (String(Menu.items[i].name || '').trim() === base) return Menu.items[i];
+    return null;
+  }
+  function drinkAddonOptions(line) {
+    var gi = drinkGroupIdx(line.item);
+    if (gi < 0) return [];
+    var c = (line.item.optionGroups[gi].choices || [])[line.sel[gi]], m = c && drinkMenuItem(drinkBaseName(c.name));
+    return m ? (m._extras || m.options || []).filter(function (o) { return o && o.name; }) : [];
+  }
+  function pruneDrinkAddons(line) {
+    if (!line.drinkAddons || !line.drinkAddons.length) return;
+    var ok = {};
+    drinkAddonOptions(line).forEach(function (o) { ok[o.name] = 1; });
+    line.drinkAddons = line.drinkAddons.filter(function (o) { return ok[o.name]; });
+  }
+  // 果醬（高鈣乳酪餅預設沙拉）、蛋品選擇（鐵板麵全熟蛋）：店家設定的預設通常就是最多人選的，先問預設
+  function plainDefault(g) {
+    var ch = g.choices || [];
+    if (g.type === 'checkbox' || ch.length < 2 || isEggGroup(g) || /飲料|容量|溫度|冰/.test(g.groupName || '') || g.pricing === 'setPrice' || g.pricing === 'mealUpgrade') return -1;
+    return clampIdx(g.defaultIdx, ch.length);
+  }
+  function defaultAsk(g, di) {
+    var ch = g.choices || [], def = ch[di], label = String(g.groupName || '').replace(/選擇$/, '').replace(/^蛋品$/, '蛋') || '這個';
+    var others = ch.filter(function (c, i) { return i !== di && c && c.name; });
+    if (others.length > 8) return label + '要' + def.name + '嗎？還是換別的？';
+    var neg = others.filter(function (c) { return /^(不|無|免)/.test(c.name); }), rest = others.filter(function (c) { return neg.indexOf(c) === -1; });
+    var buckets = [], byDiff = {};
+    rest.forEach(function (c) {
+      var d = Math.max(0, (Number(c.price) || 0) - (Number(def.price) || 0));
+      if (!byDiff[d]) { byDiff[d] = { d: d, names: [] }; buckets.push(byDiff[d]); }
+      byDiff[d].names.push(c.name);
+    });
+    buckets.sort(function (a, b) { return a.d - b.d; });
+    var parts = buckets.map(function (b) { return b.names.join('、') + (b.d > 0 ? '（加' + b.d + '元）' : ''); });
+    var text = parts.join('，');
+    if (neg.length) text += (text ? '，或' : '') + neg.map(function (c) { return c.name; }).join('、');
+    return label + '要' + def.name + '嗎？' + (text ? '也可以換' + text + '。' : '');
+  }
+  function firstDefaultMissing(line) {   // 第一個沒問完的是「果醬」這種有預設的選項
+    var gs = line.item.optionGroups || [];
+    for (var gi = 0; gi < gs.length; gi++) {
+      if (gs[gi].type === 'checkbox' || line.answered[gi]) continue;
+      var di = plainDefault(gs[gi]);
+      return di >= 0 ? { gi: gi, idx: di } : null;
+    }
+    return null;
+  }
+  var YES_RE = /^(好|好啊|好阿|好的|好喔|好呀|對|對啊|對的|嗯|嗯嗯|要|要啊|要的|可以|是|是的|沒問題|就這個|就這樣|就好|預設|一樣)$/;
+
   /* ═════════ 主餐＋飲料 → 套餐（和電話點餐一樣：說了飲料，飲料就是套餐飲料）═════════ */
   function drinkGroupIdx(item) {   // 「套餐飲料」「搭配飲料折5元」
     var gs = (item && item.optionGroups) || [];
@@ -895,7 +950,7 @@ body.is-demo .demo-chip{display:inline-block}
   function replaceItem(line, item) {
     var carried = chosenNames(line), toNoEgg = variantOf(item).variant === '無蛋無肉';
     var fresh = newLine(item);
-    line.item = item; line.sel = fresh.sel; line.answered = fresh.answered; line.extras = [];
+    line.item = item; line.sel = fresh.sel; line.answered = fresh.answered; line.extras = []; line.drinkAddons = [];
     carried.forEach(function (n) {
       if (/不加蛋/.test(n) || (toNoEgg && /蛋/.test(n))) return;
       if (!applyOne(line, n)) applyOne(line, String(n).replace(/^\+/, ''));
@@ -971,7 +1026,7 @@ body.is-demo .demo-chip{display:inline-block}
   }
   function indexWhere(arr, re) { for (var i = 0; i < arr.length; i++) if (re.test(arr[i].name)) return i; return -1; }
   function newLine(item) {
-    var line = { id: ++Order.seq, item: item, qty: 1, sel: {}, answered: {}, extras: [], note: '' };
+    var line = { id: ++Order.seq, item: item, qty: 1, sel: {}, answered: {}, extras: [], drinkAddons: [], note: '' };
     (item.optionGroups || []).forEach(function (g, gi) {
       var ch = g.choices || [];
       if (g.type === 'checkbox') { line.sel[gi] = []; line.answered[gi] = true; return; }
@@ -1003,10 +1058,16 @@ body.is-demo .demo-chip{display:inline-block}
   }
   function splitCompound(raw) {
     var n = norm(raw), parts = [];
+    if (/^(加[^加]{1,4}){2,4}$/.test(n)) return n.match(/加[^加]{1,4}/g);   // 加糖加奶、加蛋加起司
+    if (/^加[^加]{1,3}[跟和及][^加]{1,3}$/.test(n)) return ['加' + n.slice(1).split(/[跟和及]/)[0], '加' + n.slice(1).split(/[跟和及]/)[1]];   // 加糖跟奶
     var temps = Object.keys(TEMP_WORDS).sort(function (a, b) { return b.length - a.length; });
     for (var i = 0; i < temps.length; i++) {
       var k = temps[i];
       if (n.length > k.length + 1 && n.slice(-k.length) === k) { parts.push(n.slice(0, -k.length)); parts.push(k); return parts; }
+    }
+    for (var j = 0; j < temps.length; j++) {   // 「中杯溫的美式咖啡」「溫的中杯美式」：溫度字在中間或開頭
+      var w = temps[j], at = n.indexOf(w);
+      if (w.length >= 2 && at >= 0 && n.length - w.length >= 2) return [n.slice(0, at) + n.slice(at + w.length), w];
     }
     return [n];
   }
@@ -1053,11 +1114,16 @@ body.is-demo .demo-chip{display:inline-block}
       (gr.choices || []).forEach(function (c, ci) { cands.push({ kind: 'group', gi: gIndex, ci: ci, name: c.name, s: choiceScore(t, c.name) }); });
     });
     line.item._extras.forEach(function (o) { cands.push({ kind: 'extra', o: o, name: o.name, s: choiceScore(t, o.name) }); });
+    drinkAddonOptions(line).forEach(function (o) { cands.push({ kind: 'drinkAddon', o: o, name: o.name, s: choiceScore(t, o.name) }); });
     cands.sort(function (a, b) { return (b.s - a.s) || (a.name.length - b.name.length); });
     var top = cands[0], next = cands[1];
     if (!top || top.s < 0.72) return false;
     if (next && Math.abs(next.s - top.s) < 0.001 && next.name.length === top.name.length && next.name !== top.name) return false;
     if (top.kind === 'extra') { addExtra(line, top.o); return true; }
+    if (top.kind === 'drinkAddon') {
+      if (!line.drinkAddons.some(function (x) { return x.name === top.o.name; })) line.drinkAddons.push({ name: top.o.name, price: Number(top.o.price) || 0 });
+      return true;
+    }
     g = groups[top.gi];
     if (g.type === 'checkbox') { if (line.sel[top.gi].indexOf(top.ci) === -1) line.sel[top.gi].push(top.ci); }
     else { line.sel[top.gi] = top.ci; line.answered[top.gi] = true; }
@@ -1069,9 +1135,10 @@ body.is-demo .demo-chip{display:inline-block}
       var gi = eggGroupIdx(line);
       if (gi >= 0) { line.sel[gi] = indexWhere(groups[gi].choices, /不加蛋/); line.answered[gi] = true; done = true; }
     }
-    var before = line.extras.length;
+    var before = line.extras.length + line.drinkAddons.length;
     line.extras = line.extras.filter(function (o) { return choiceScore(t, o.name) < 0.85; });
-    if (line.extras.length !== before) done = true;
+    line.drinkAddons = line.drinkAddons.filter(function (o) { return choiceScore(t, o.name) < 0.85; });
+    if (line.extras.length + line.drinkAddons.length !== before) done = true;
     groups.forEach(function (g, gIndex) {
       if (g.type !== 'checkbox') return;
       line.sel[gIndex] = line.sel[gIndex].filter(function (ci) { var keep = choiceScore(t, g.choices[ci].name) < 0.85; if (!keep) done = true; return keep; });
@@ -1080,12 +1147,15 @@ body.is-demo .demo-chip{display:inline-block}
   }
   function addExtra(line, o) { if (!line.extras.some(function (x) { return x.name === o.name; })) line.extras.push(o); }
   function applySelections(line, adds, removes) {
-    var unmatched = [];
+    var unmatched = [], retry = [];
     (Array.isArray(adds) ? adds : []).forEach(function (raw) {
       if (raw == null || raw === '') return;
-      splitCompound(String(raw)).forEach(function (p) { if (!applyOne(line, p)) unmatched.push(toTrad(p)); });
+      splitCompound(String(raw)).forEach(function (p) { if (!applyOne(line, p)) retry.push(p); });
     });
+    // kiosk-voice-addons-20261102：「加糖、美式咖啡」順序顛倒時，飲料換好再對一次
+    retry.forEach(function (p) { if (!applyOne(line, p)) unmatched.push(toTrad(p)); });
     (Array.isArray(removes) ? removes : []).forEach(function (raw) { if (raw && !removeOne(line, String(raw))) unmatched.push('不要' + toTrad(raw)); });
+    pruneDrinkAddons(line);
     return unmatched;
   }
   function calcLine(line) {
@@ -1101,6 +1171,7 @@ body.is-demo .demo-chip{display:inline-block}
       });
     });
     line.extras.forEach(function (o) { ex += Number(o.price) || 0; });
+    (line.drinkAddons || []).forEach(function (o) { ex += Number(o.price) || 0; });
     return { unit: bp + ex, total: (bp + ex) * line.qty };
   }
   function missingOf(line) {
@@ -1114,6 +1185,8 @@ body.is-demo .demo-chip{display:inline-block}
         entry.ask = mp ? '要另外加一顆蛋（' + (Number(egg && egg.price) || 0) + '元）或加一片肉（' + mp + '元）嗎？' : '要加一顆蛋（' + (Number(egg && egg.price) || 0) + '元）嗎？';
         if (mp) entry.options.push('加肉');
       }
+      var di = plainDefault(g);
+      if (di >= 0) { entry.default = g.choices[di].name; entry.ask = defaultAsk(g, di); }
       out.push(entry);
     });
     return out;
@@ -1126,6 +1199,7 @@ body.is-demo .demo-chip{display:inline-block}
       else if (line.answered[gi] && s != null && s >= 0 && g.choices[s] && (g.choices || []).length > 1) out.push(g.choices[s].name);
     });
     line.extras.forEach(function (o) { out.push(o.name); });
+    (line.drinkAddons || []).forEach(function (o) { out.push(o.name); });
     return out;
   }
   function orderTotal() { return Order.lines.reduce(function (sum, l) { return sum + calcLine(l).total; }, 0); }
@@ -1139,7 +1213,8 @@ body.is-demo .demo-chip{display:inline-block}
   }
   function sameLine(a, b) {
     return a.item === b.item && JSON.stringify(a.sel) === JSON.stringify(b.sel) && a.note === b.note &&
-      JSON.stringify(a.extras.map(function (o) { return o.name; })) === JSON.stringify(b.extras.map(function (o) { return o.name; }));
+      JSON.stringify(a.extras.map(function (o) { return o.name; })) === JSON.stringify(b.extras.map(function (o) { return o.name; })) &&
+      JSON.stringify((a.drinkAddons || []).map(function (o) { return o.name; })) === JSON.stringify((b.drinkAddons || []).map(function (o) { return o.name; }));
   }
   function joinNote(a, list) { return [String(a || '').trim()].concat(list || []).filter(Boolean).map(toTrad).join('、'); }
   function getLine(n) { n = Math.round(Number(n)); return n >= 1 && n <= Order.lines.length ? Order.lines[n - 1] : null; }
@@ -1333,6 +1408,10 @@ body.is-demo .demo-chip{display:inline-block}
         switched.auto_upgraded = '單點加飲料，已改成' + speakName(up.item.name) + '，飲料就是套餐飲料，比分開點划算';
       }
     }
+    if (!newName && !variantSels.length && plainSels.length && plainSels.every(function (x) { return YES_RE.test(norm(x)); })) {
+      var dm = firstDefaultMissing(line);
+      if (dm) { line.sel[dm.gi] = dm.idx; line.answered[dm.gi] = true; plainSels = []; }
+    }
     var unmatched = applySelections(line, plainSels, args.remove_selections);
     if (typeof args.note === 'string' && args.note.trim()) line.note = joinNote(args.note, []);
     if (noteWorthy(unmatched).length) line.note = joinNote(line.note, noteWorthy(unmatched));
@@ -1424,7 +1503,7 @@ body.is-demo .demo-chip{display:inline-block}
       price: Number(it.price) || 0, station: it.station || '', printStations: Array.isArray(it.printStations) ? it.printStations.slice() : [],
       qty: line.qty, note: line.note || '', drinkNote: '',
       options: line.extras.map(function (o) { return { name: o.name, price: Number(o.price) || 0 }; }),
-      comboDrinkAddons: [], optionGroupSelections: ogSels, optionSelections: picked, selectedOptions: Object.assign({}, picked),
+      comboDrinkAddons: (line.drinkAddons || []).map(function (o) { return { name: o.name, price: Number(o.price) || 0 }; }), optionGroupSelections: ogSels, optionSelections: picked, selectedOptions: Object.assign({}, picked),
       itemTotal: p.total
     };
   }
@@ -1551,9 +1630,10 @@ body.is-demo .demo-chip{display:inline-block}
       '【點餐】',
       '1. 顧客說出餐點就立刻呼叫 add_items；同一句點好幾樣放在同一次呼叫。name 用下方菜單的正式名稱；不確定就照顧客原話傳，系統會比對。',
       '1-1. 顧客點主餐時一起說了飲料（例如「三號牛肉堡，飲料改大杯少冰鮮奶茶」「蘑菇鐵板麵配大杯奶茶」）：那杯就是套餐飲料，放在主餐那一項的 selections（例如 大杯鮮奶茶、少冰），系統會自動配成套餐；不要再問套餐還是單點，也不要另外加一杯飲料。顧客說「再一杯」「另外一杯」的飲料才另外加一項。結果有 drink_separately（這道沒有套餐）時，那杯飲料用 add_items 另外加一項。',
+      '1-2. 飲料名稱裡的（無糖無奶）（無糖）只是原本的做法：顧客要加糖、加奶，照樣放在那一項的 selections（例如 加糖、加奶），系統會加上；不要自己說不能加，只有結果出現 unmatched 才是沒有這個選項。',
       '2. 工具回傳後，先用一句話複誦。餐點名稱一律念工具回傳的 say，不要用顧客的說法、也不要自己改字或改數字，例如「好的，一份四號辣卡脆雞堡套餐。」',
       '2-1. 結果有 number_mismatch（顧客說的數字和菜單不同，例如顧客說六入、菜單只有兩入）時，先確認：「我們的是爆漿奶油餐包兩入，一份兩個，請問要幾份？」，再用 update_item 改數量。',
-      '3. 結果有 missing 時，只問第一個，白話問：加蛋→「要加蛋嗎？」；套餐飲料→「飲料要大杯奶茶，還是換別的？」；溫度→「冰的還是溫的？」；容量→「大杯還是中杯？」。missing 裡有 ask 就照 ask 問。顧客回答後呼叫 update_item，selections 用 options 裡的原文。',
+      '3. 結果有 missing 時，只問第一個，白話問：加蛋→「要加蛋嗎？」；套餐飲料→「飲料要大杯奶茶，還是換別的？」；溫度→「冰的還是溫的？」；容量→「大杯還是中杯？」。missing 裡有 ask 就照 ask 問（例如「果醬要沙拉嗎？也可以換…」，預設的選項一定要說到）。顧客回答後呼叫 update_item，selections 用 options 裡的原文；顧客只說「好」「可以」就用 default。',
       '4. 結果有 ask（顧客還沒說是哪一種，例如套餐／單點、辣卡／原卡、有蛋有肉／無蛋無肉）時，照 ask 問，不要自己決定，也絕對不可以把 candidates 全部加入；顧客選好後，只用他選的那一個 name 再呼叫 add_items。顧客明確說「兩種都要」「各一個」才分別加。sold_out 時說「不好意思，這個今天賣完了」，請顧客換別的。',
       '5. 顧客改口一律在同一項上改，不要新增一項，也不要寫進備註：改成有蛋有肉、無蛋無肉、套餐或單點，用 update_item 的 name 填這幾個字；換別的餐點也用 update_item 的 name；改數量、不要某樣用 update_item 或 remove_item（line 是畫面上的項次）。',
       '5-1. 結果有 auto_upgraded 或 meat_added 時，用一句話照內容告訴顧客。結果有 unmatched 時，那幾個字沒有對應的選項：顧客的回答請換成 options 裡的原文再送一次；真的是備註（例如不要醬）就放 note。',
