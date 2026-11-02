@@ -382,6 +382,7 @@ body.is-demo .demo-chip{display:inline-block}
     recordNotice: '本服務會錄音，以確認您的餐點',   // ★ 錄音時首頁顯示的告知
     logPath: '/api/kiosk/voice/log',
     wrapUpGraceMs: 60000,             // 單次時間到：先請點餐員確認並結束，最多再等這麼久
+    finishWaitMs: 1500,               // 點好了：單號最多等這麼久就讓點餐員先說總金額（號碼顯示在螢幕上）
     orderLabel: '語音點餐',            // 訂單卡片與出單上的「客戶」名稱
     askDineMode: true,                // ★ 結束前問「內用還是外帶」（也可以按畫面上的按鈕）
     firebaseSdk: 'https://www.gstatic.com/firebasejs/9.22.0/',
@@ -725,6 +726,58 @@ body.is-demo .demo-chip{display:inline-block}
     if (sets.length && singles.length) return '請問要套餐（' + priceText(sets, true) + '）還是單點（' + priceText(singles) + '）？';
     return '請問要' + list.map(function (it) { var v = variantOf(it); return (v.label || speakName(it.name)) + '（' + (Number(it.price) || 0) + '元）'; }).join('還是') + '？';
   }
+  /* ═════════ 主餐＋飲料 → 套餐（和電話點餐一樣：說了飲料，飲料就是套餐飲料）═════════ */
+  function drinkGroupIdx(item) {   // 「套餐飲料」「搭配飲料折5元」
+    var gs = (item && item.optionGroups) || [];
+    for (var i = 0; i < gs.length; i++) if (/飲料/.test(gs[i].groupName || '') && (gs[i].choices || []).length > 1) return i;
+    return -1;
+  }
+  function isSetItem(it) { return !!it && variantOf(it).kind === '套餐' && drinkGroupIdx(it) >= 0; }
+  function isDrinkItem(it) { return !!it && !isSetItem(it) && (it.optionGroups || []).some(function (g) { return /容量/.test(g.groupName || ''); }); }
+  function drinkFits(item, sels) {   // 這些選項能不能回答這份套餐的飲料
+    var gi = drinkGroupIdx(item);
+    if (gi < 0 || !sels || !sels.length) return false;
+    var tmp = newLine(item);
+    applySelections(tmp, sels, []);
+    return !!tmp.answered[gi];
+  }
+  function sameDish(set, single) {   // 套餐和單點是同一道（鐵板麵還要同樣是有蛋有肉）
+    if (familyKey(set.name) !== familyKey(single.name)) return false;
+    var a = variantOf(set).variant, b = variantOf(single).variant;
+    return !a || !b || a === b;
+  }
+  function setTargets(f) {   // 這道主餐可以變成哪幾份套餐
+    if (!f || f.soldOut) return [];
+    if (f.item) {
+      if (isSetItem(f.item)) return [f.item];
+      if (variantOf(f.item).kind !== '單點') return [];
+      return familyOf(f.item).filter(function (s) { return s !== f.item && s.active !== false && isSetItem(s) && sameDish(s, f.item); });
+    }
+    return (f.candidates || []).filter(function (c) { return c.active !== false && isSetItem(c); });
+  }
+  function setPick(f, sels) {   // 有說飲料：選套餐（明說單點也改成套餐，比較划算）
+    if (!f || f.soldOut || !sels || !sels.length) return f;
+    if (f.item && isSetItem(f.item)) return f;
+    var sets = setTargets(f).filter(function (s) { return drinkFits(s, sels); });
+    if (!sets.length) return f;
+    if (f.item) return sets.length === 1 ? { item: sets[0], implied: f.implied || [], exact: false, upgraded_from: f.item.name } : f;
+    if (sets.length === 1) return { item: sets[0], implied: [], exact: false };
+    return { candidates: sets, ask: choiceAsk(sets), family: true };
+  }
+  function drinkTries(spec, item) {   // 另外點的「鮮奶茶＋大杯、少冰」→ 套餐飲料選項「大杯鮮奶茶」＋「少冰」
+    var size = '', rest = [];
+    (Array.isArray(spec.selections) ? spec.selections : []).forEach(function (s) {
+      var n = norm(s);
+      if (!size && /^(大杯|中杯|小杯|大|中|小)$/.test(n)) size = n.charAt(0) === '大' ? '大杯' : '中杯';
+      else rest.push(String(s));
+    });
+    var said = String(spec.name || '').trim(), names = [said, item.name].filter(function (x, i, a) { return x && a.indexOf(x) === i; });
+    var tries = [];
+    (size ? [size] : ['大杯', '中杯', '']).forEach(function (sz) { names.forEach(function (nm) { tries.push([sz + nm].concat(rest)); }); });
+    return tries;
+  }
+  var EXTRA_DRINK_RE = /再一杯|再來一杯|另外一杯|另一杯|還要一杯|加一杯|單點一杯|再點一杯|另外點/;
+
   // 4號有辣卡／原卡、1號有三種捲：顧客只說「4號餐」時，候選名稱去掉相同的頭尾，問「要辣卡脆雞堡還是原卡脆雞堡」
   function diffSegments(names) {
     var a = names.map(function (n) { return String(n || ''); });
@@ -1142,10 +1195,40 @@ body.is-demo .demo-chip{display:inline-block}
     var specs = Array.isArray(args.items) ? args.items : (args.name ? [args] : []);
     var results = [];
     specs = specs.slice(0, 12);
+    specs = specs.map(function (spec) { return Object.assign({}, spec, { selections: (Array.isArray(spec && spec.selections) ? spec.selections : []).slice() }); });
     var found = specs.map(function (spec) {
       var said = String(spec && spec.name || '').trim();
-      return said ? findDish(said, (Array.isArray(spec.selections) ? spec.selections : []).filter(isVariantWord).join(' ')) : null;
+      return said ? findDish(said, spec.selections.filter(isVariantWord).join(' ')) : null;
     });
+    // 主餐自己帶了飲料（selections）→ 套餐
+    found = found.map(function (f, i) { return setPick(f, specs[i].selections.filter(function (x) { return !isVariantWord(x); })); });
+    // 同一次另外點的飲料 → 併進還沒有飲料的套餐（顧客說「再一杯」「另外一杯」的不併）
+    var mergedInto = {}, takenMeal = {};
+    if (!EXTRA_DRINK_RE.test(norm(Session.userLine || ''))) {
+      specs.forEach(function (spec, di) {
+        var fd = found[di];
+        if (!fd || !fd.item || fd.soldOut || !isDrinkItem(fd.item)) return;
+        for (var mi = 0; mi < specs.length; mi++) {
+          if (mi === di || takenMeal[mi] || mergedInto[mi] !== undefined || !found[mi]) continue;
+          if (clampQty(specs[mi].quantity) !== clampQty(spec.quantity)) continue;
+          var msels = specs[mi].selections.filter(function (x) { return !isVariantWord(x); });
+          var targets = setTargets(found[mi]);
+          if (!targets.length || targets.some(function (s) { return drinkFits(s, msels); })) continue;   // 不是套餐、或已經說了套餐飲料
+          var hit = null;
+          drinkTries(spec, fd.item).some(function (tr) {
+            var r = setPick(found[mi], msels.concat(tr));
+            if (r !== found[mi] && (r.item || r.candidates)) { hit = { r: r, tr: tr }; return true; }
+            if (found[mi].item && isSetItem(found[mi].item) && drinkFits(found[mi].item, msels.concat(tr))) { hit = { r: found[mi], tr: tr }; return true; }
+            return false;
+          });
+          if (!hit) continue;
+          specs[mi].selections = specs[mi].selections.concat(hit.tr);
+          found[mi] = hit.r;
+          mergedInto[di] = mi; takenMeal[mi] = true;
+          break;
+        }
+      });
+    }
     // 4號辣卡＋4號原卡（這句話或同一句話的前一次呼叫）：顧客沒分別講到兩種 → 先問，第一次擋下
     var groups = {}, blocked = {};
     Object.keys(Turn.adds).forEach(function (k) { groups[k] = Turn.adds[k].slice(); });
@@ -1161,9 +1244,11 @@ body.is-demo .demo-chip{display:inline-block}
       Turn.warned[k] = true;
       blocked[k] = g;
     });
+    var lineOfSpec = {};
     specs.forEach(function (spec, i) {
       var said = String(spec && spec.name || '').trim();
       if (!said) { results.push({ ok: false, message: '沒有餐點名稱' }); return; }
+      if (mergedInto[i] !== undefined) { results.push({ merged_spec: i }); return; }   // 這杯飲料是套餐飲料，下面補說明
       var sels = Array.isArray(spec.selections) ? spec.selections : [];
       var f = found[i];
       var bk = f.item ? numberedKey(f.item.name) : '';
@@ -1187,6 +1272,8 @@ body.is-demo .demo-chip{display:inline-block}
       line.qty = clampQty(spec.quantity);
       applySelections(line, f.implied || [], []);            // 從名稱推得的大杯/冰：這項沒有該選項就略過
       var unmatched = applySelections(line, sels.filter(function (x) { return !isVariantWord(x); }), []);
+      var drinkWords = unmatched.filter(function (u) { var d = findItem(u); return d.item && isDrinkItem(d.item); });
+      unmatched = unmatched.filter(function (u) { return drinkWords.indexOf(u) === -1; });
       line.note = joinNote(spec.note, noteWorthy(unmatched));
       var target = null;
       if (!missingOf(line).length) Order.lines.forEach(function (l) { if (!target && !missingOf(l).length && sameLine(l, line)) target = l; });
@@ -1196,8 +1283,11 @@ body.is-demo .demo-chip{display:inline-block}
       if (tk) { Turn.adds[tk] = Turn.adds[tk] || []; if (Turn.adds[tk].indexOf(target.item) === -1) Turn.adds[tk].push(target.item); }
       var settled = settleLine(target);
       markChanged(target);
+      lineOfSpec[i] = target;
       var info = Object.assign(lineInfo(target), settled);
       info.ok = true;
+      if (f.upgraded_from) info.auto_upgraded = '單點又點了飲料，已改成' + speakName(target.item.name) + '，飲料就是套餐飲料，比分開點划算';
+      if (drinkWords.length) { info.drink_separately = drinkWords; info.message = '這道沒有套餐，飲料「' + drinkWords.join('、') + '」請用 add_items 另外加一項'; }
       if (unmatched.length) info.unmatched = unmatched;
       if (!f.exact) {
         info.corrected_from = toTrad(said);   // 顧客說法和菜單名稱不同：複誦時要念 say
@@ -1205,6 +1295,13 @@ body.is-demo .demo-chip{display:inline-block}
         if (saidDigits && saidDigits !== digitsOf(target.item._names[0])) info.number_mismatch = true;
       }
       results.push(info);
+    });
+    results = results.map(function (r) {
+      if (!r || r.merged_spec === undefined) return r;
+      var di = r.merged_spec, meal = lineOfSpec[mergedInto[di]];
+      return meal ? { ok: true, said: toTrad(specs[di].name), merged_into_line: lineNo(meal), name: meal.item.name,
+        message: '這杯飲料當作第' + lineNo(meal) + '項套餐的飲料，已經併進去，不另外加一項' }
+        : { ok: false, said: toTrad(specs[di].name), message: '套餐沒有加成功，這杯飲料也還沒加；先處理套餐，再問飲料' };
     });
     return { results: results, order_total: orderTotal(), lines_count: Order.lines.length };
   }
@@ -1226,13 +1323,24 @@ body.is-demo .demo-chip{display:inline-block}
       }
       if (switched.error) return { ok: false, line: lineNo(line), message: switched.error, current: lineInfo(line) };
     }
-    var unmatched = applySelections(line, sels.filter(function (x) { return !isVariantWord(x); }), args.remove_selections);
+    var plainSels = sels.filter(function (x) { return !isVariantWord(x); });
+    if (!newName && !variantSels.length && variantOf(line.item).kind === '單點') {
+      var up = setPick({ item: line.item }, plainSels);
+      if (up.item && up.item !== line.item) {
+        var fromName = line.item.name;
+        replaceItem(line, up.item);
+        switched.switched_from = fromName;
+        switched.auto_upgraded = '單點加飲料，已改成' + speakName(up.item.name) + '，飲料就是套餐飲料，比分開點划算';
+      }
+    }
+    var unmatched = applySelections(line, plainSels, args.remove_selections);
     if (typeof args.note === 'string' && args.note.trim()) line.note = joinNote(args.note, []);
     if (noteWorthy(unmatched).length) line.note = joinNote(line.note, noteWorthy(unmatched));
     var settled = settleLine(line);
     markChanged(line);
     var info = Object.assign(lineInfo(line), settled);
     if (switched.switched_from) info.switched_from = switched.switched_from;
+    if (switched.auto_upgraded && !info.auto_upgraded) info.auto_upgraded = switched.auto_upgraded;
     info.ok = true;
     if (unmatched.length) info.unmatched = unmatched;
     info.order_total = orderTotal();
@@ -1267,7 +1375,7 @@ body.is-demo .demo-chip{display:inline-block}
     armFinishFallback();
     var done = { ok: true, order_total: orderTotal(), dine_mode: dineModeLabel(Order.dineMode), lines: Order.lines.map(lineInfo) };
     if (!CONFIG.submitOrders) { done.trial = true; done.message = '試營運：不送單，請顧客到櫃台告訴店員餐點'; return done; }
-    return submitOrder().then(function (r) {
+    var settled = submitOrder().then(function (r) {
       done.submitted = true;
       if (r.orderNo) done.order_no = r.orderNo;
       return done;
@@ -1276,6 +1384,12 @@ body.is-demo .demo-chip{display:inline-block}
       done.message = '訂單沒有送出成功，請顧客到櫃台告訴店員餐點';
       return done;
     });
+    // 單號最多等 finishWaitMs：還沒好就先讓點餐員說總金額（號碼顯示在螢幕上），客人不用乾等
+    return Promise.race([settled, new Promise(function (res) {
+      setTimeout(function () {
+        res(Object.assign({}, done, { number_pending: true, message: '訂單正在送出，號碼會顯示在螢幕上' }));
+      }, CONFIG.finishWaitMs);
+    })]);
   }
 
   /* ═════════ 送單（和 dinein 自助平板同一條安全建單流程） ═════════ */
@@ -1356,6 +1470,7 @@ body.is-demo .demo-chip{display:inline-block}
     if (Submit.status === 'ok') return Promise.resolve({ orderId: Submit.orderId, orderNo: Submit.orderNo });
     Submit.status = 'sending'; Submit.error = '';
     Submit.orderId = Submit.orderId || pushId();     // 重送沿用同一個編號，伺服器不會重複建單
+    var submitT0 = Date.now();
     var orderData = buildOrderData();
     renderDoneStatus();
     var work;
@@ -1379,11 +1494,13 @@ body.is-demo .demo-chip{display:inline-block}
       var rec = (result.pocketBase && result.pocketBase.record) || result.record || {};
       var no = Number(rec.order_no || rec.orderNo || result.orderNo || 0);
       Submit.status = 'ok'; Submit.orderNo = no > 0 ? no : null; Submit.backend = result.backend || '';
+      Log.add('system', '送單完成' + (Submit.orderNo ? ' No.' + String(Submit.orderNo).padStart(3, '0') : '') + '（' + ((Date.now() - submitT0) / 1000).toFixed(1) + ' 秒）');
       renderDoneStatus();
       return { orderId: Submit.orderId, orderNo: Submit.orderNo };
     }).catch(function (e) {
       console.warn('[kiosk] order submit failed', e);
       Submit.status = 'fail'; Submit.error = String(e && e.message || e); Submit.promise = null;
+      Log.add('error', '送單失敗（' + ((Date.now() - submitT0) / 1000).toFixed(1) + ' 秒）：' + Submit.error.slice(0, 200));
       renderDoneStatus();
       throw e;
     });
@@ -1433,14 +1550,17 @@ body.is-demo .demo-chip{display:inline-block}
       '【身分】你是 AI 語音點餐員，不是真人店員；顧客問起就簡短說明，再繼續點餐。',
       '【點餐】',
       '1. 顧客說出餐點就立刻呼叫 add_items；同一句點好幾樣放在同一次呼叫。name 用下方菜單的正式名稱；不確定就照顧客原話傳，系統會比對。',
+      '1-1. 顧客點主餐時一起說了飲料（例如「三號牛肉堡，飲料改大杯少冰鮮奶茶」「蘑菇鐵板麵配大杯奶茶」）：那杯就是套餐飲料，放在主餐那一項的 selections（例如 大杯鮮奶茶、少冰），系統會自動配成套餐；不要再問套餐還是單點，也不要另外加一杯飲料。顧客說「再一杯」「另外一杯」的飲料才另外加一項。結果有 drink_separately（這道沒有套餐）時，那杯飲料用 add_items 另外加一項。',
       '2. 工具回傳後，先用一句話複誦。餐點名稱一律念工具回傳的 say，不要用顧客的說法、也不要自己改字或改數字，例如「好的，一份四號辣卡脆雞堡套餐。」',
       '2-1. 結果有 number_mismatch（顧客說的數字和菜單不同，例如顧客說六入、菜單只有兩入）時，先確認：「我們的是爆漿奶油餐包兩入，一份兩個，請問要幾份？」，再用 update_item 改數量。',
       '3. 結果有 missing 時，只問第一個，白話問：加蛋→「要加蛋嗎？」；套餐飲料→「飲料要大杯奶茶，還是換別的？」；溫度→「冰的還是溫的？」；容量→「大杯還是中杯？」。missing 裡有 ask 就照 ask 問。顧客回答後呼叫 update_item，selections 用 options 裡的原文。',
       '4. 結果有 ask（顧客還沒說是哪一種，例如套餐／單點、辣卡／原卡、有蛋有肉／無蛋無肉）時，照 ask 問，不要自己決定，也絕對不可以把 candidates 全部加入；顧客選好後，只用他選的那一個 name 再呼叫 add_items。顧客明確說「兩種都要」「各一個」才分別加。sold_out 時說「不好意思，這個今天賣完了」，請顧客換別的。',
       '5. 顧客改口一律在同一項上改，不要新增一項，也不要寫進備註：改成有蛋有肉、無蛋無肉、套餐或單點，用 update_item 的 name 填這幾個字；換別的餐點也用 update_item 的 name；改數量、不要某樣用 update_item 或 remove_item（line 是畫面上的項次）。',
       '5-1. 結果有 auto_upgraded 或 meat_added 時，用一句話照內容告訴顧客。結果有 unmatched 時，那幾個字沒有對應的選項：顧客的回答請換成 options 裡的原文再送一次；真的是備註（例如不要醬）就放 note。',
-      '6. 顧客說「這樣就好」「沒有了」「好了」，或系統告訴你顧客按了「我點好了」，呼叫 finish_order。回傳 pending 就先把沒確認的問完；回傳 need_dine_mode 就問「請問內用還是外帶？」，顧客回答（或系統說顧客按了按鈕）後再呼叫 finish_order，dine_mode 填「內用」或「外帶」。',
-      '6-1. finish_order 成功後只說一句：有 order_no 就說「好的，總共○○元，您的號碼是○○號，' + CONFIG.closingText + '」；沒有 order_no 就說「好的，總共○○元，' + CONFIG.closingText + '」；submitted 是 false 就說「不好意思，訂單沒有送出成功，請到櫃台告訴店員您的餐點」；trial 是 true 就說「好的，總共○○元，請到櫃台告訴店員您的餐點，謝謝您！」。金額用 order_total，號碼用 order_no。',
+      CONFIG.askDineMode
+        ? '6. 顧客說「這樣就好」「沒有了」「好了」，或系統告訴你顧客按了「我點好了」：還不知道內用還是外帶，就直接問「請問內用還是外帶？」，這時先不要呼叫工具；顧客回答（或系統說顧客按了按鈕）後馬上呼叫 finish_order，dine_mode 填「內用」或「外帶」。已經知道內用外帶就直接呼叫 finish_order。回傳 pending 就先把沒確認的問完；回傳 need_dine_mode 就問「請問內用還是外帶？」。'
+        : '6. 顧客說「這樣就好」「沒有了」「好了」，或系統告訴你顧客按了「我點好了」，馬上呼叫 finish_order。回傳 pending 就先把沒確認的問完。',
+      '6-1. finish_order 成功後只說一句：有 order_no 就說「好的，總共○○元，您的號碼是○○號，' + CONFIG.closingText + '」；沒有 order_no 就說「好的，總共○○元，' + CONFIG.closingText + '」；submitted 是 false 就說「不好意思，訂單沒有送出成功，請到櫃台告訴店員您的餐點」；number_pending 是 true（號碼還在產生）就說「好的，總共○○元，號碼會顯示在螢幕上，' + CONFIG.closingText + '」；trial 是 true 就說「好的，總共○○元，請到櫃台告訴店員您的餐點，謝謝您！」。金額用 order_total，號碼用 order_no。',
       '6-2. 系統說點餐時間到了，就照系統說的收尾，不要再問新的問題。',
       '7. 價錢只念工具回傳的數字，不要自己加總。',
       '8. 聽不清楚就說「不好意思，可以再說一次嗎？」；顧客講台語也盡量聽懂，用華語回答。',
@@ -1836,7 +1956,9 @@ body.is-demo .demo-chip{display:inline-block}
       case 'response.audio_transcript.delta':
       case 'response.output_text.delta':
       case 'response.text.delta':
-        Session.agentText += String(ev.delta || ''); setAgent(Session.agentText); return;
+        Session.agentText += String(ev.delta || ''); setAgent(Session.agentText);
+        if (CONFIG.askDineMode && !Order.dineMode && !Order.askingMode && Order.lines.length && /內用還是外帶|外帶還是內用|內用或外帶/.test(Session.agentText)) { Order.askingMode = true; renderOrder(); }
+        return;
       case 'response.output_audio_transcript.done':
       case 'response.audio_transcript.done':
         if (ev.transcript) { setAgent(String(ev.transcript)); Log.agent(String(ev.transcript), Session.cutOff); }
