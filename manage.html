@@ -2539,6 +2539,10 @@
                 <span class="text-slate-400 text-sm">{{ statsLuckyWheel(viewingOrder) ? '訂單總額（折後）' : '訂單總額' }}</span>
                     <span class="text-red-400 font-black text-xl">${{ getDetailOrderTotal(viewingOrder) }}</span>
             </div>
+            <div v-if="isLinePayOrder(viewingOrder) && ['failed','cancelled'].indexOf(getLinePayState(viewingOrder)) >= 0 && linePayFailureDisplay(viewingOrder)"
+                 data-detail-linepay-failure class="mt-3 text-sm bg-red-900/30 border border-red-800 text-red-200 px-3 py-2 rounded-lg">
+                💳 LINE Pay 失敗原因：{{ linePayFailureDisplay(viewingOrder) }}
+            </div>
         </div>
     </div>
 </div>
@@ -5718,6 +5722,10 @@ window._resetCountUp = function() {
                 if (this.viewingOrder && base && this.viewingOrder.id === base.id) {
                     this.viewingOrder = enriched;
                 }
+                var withFailure = await this.loadLinePayFailureInfo(enriched);
+                if (withFailure !== enriched && this.viewingOrder && base && this.viewingOrder.id === base.id) {
+                    this.viewingOrder = withFailure;
+                }
             },
             getDetailItemQty: function(item) {
                 if (!item) return 1;
@@ -7314,6 +7322,63 @@ window._resetCountUp = function() {
                 if (failures.indexOf(payStatus) >= 0 || failures.indexOf(txnState) >= 0) return 'failed';
                 if (orderStatus === 'archived' && order.wasCancelled) return 'cancelled';
                 return 'pending';
+            },
+            // linepay-error-zh-20261103：與 Pi linepay_server.py 的 LINEPAY_ERROR_ZH 是同一份官方代碼對照（改一邊要同步改另一邊）
+            linePayErrorZh: function(code) {
+                var table = {"0121": "顧客取消付款，或 LINE Pay 認證等待逾時", "0122": "付款失敗", "1101": "顧客不是 LINE Pay 使用者", "1102": "顧客的 LINE Pay 帳戶目前無法交易", "1104": "本店 LINE Pay 憑證錯誤或未在商家中心註冊（系統設定問題，請聯絡管理者）", "1105": "本店目前無法使用 LINE Pay（請聯絡管理者）", "1106": "請求標頭資料錯誤（系統設定問題，請聯絡管理者）", "1110": "這張信用卡無法使用", "1124": "金額資料錯誤", "1133": "付款條碼無效或已過期，請顧客重新開啟 LINE Pay 條碼後再掃一次", "1141": "顧客 LINE Pay 帳戶狀態異常", "1142": "顧客 LINE Pay 餘額不足", "1145": "付款處理中，請稍候，勿重複掃碼或重複付款", "1150": "查無交易紀錄", "1152": "重複的交易", "1153": "請款金額與付款金額不符", "1154": "預先授權付款方式無法使用", "1155": "交易編號無效", "1159": "查無付款請求資料", "1163": "已超過可退款期限", "1164": "超過可退款金額", "1165": "這筆交易已經退款過", "1169": "顧客需在 LINE Pay 選擇付款方式並輸入密碼", "1170": "顧客帳戶餘額有變動，請重新付款", "1172": "相同訂單編號的交易已存在", "1177": "查詢筆數超過上限", "1178": "不支援的幣別", "1179": "LINE Pay 目前無法處理，請稍後再試", "1180": "付款時間已過期，請重新付款", "1183": "付款金額低於最低金額", "1184": "付款金額超過最高金額", "1190": "沒有預先授權付款金鑰", "1193": "預先授權付款金鑰已過期", "1194": "本店不支援預先授權付款", "1198": "重複送出的請求", "1199": "LINE Pay 內部錯誤，請稍後再試", "1280": "信用卡付款暫時錯誤", "1281": "信用卡付款錯誤", "1282": "信用卡授權失敗（被發卡行拒絕）", "1283": "疑似盜刷，被發卡行拒絕", "1284": "信用卡付款暫時停用", "1285": "缺少信用卡資料", "1286": "信用卡資料錯誤", "1287": "信用卡已過期", "1288": "信用卡額度不足", "1289": "超過信用卡額度", "1290": "超過信用卡單筆交易上限", "1291": "卡片被發卡行拒絕（已通報遺失或被盜）", "1292": "卡片已被停用", "1293": "信用卡安全碼（CVN）錯誤", "1294": "卡片被發卡行列入拒絕名單", "1295": "信用卡號碼錯誤", "1296": "此金額無法刷卡", "1298": "卡片被發卡行拒絕", "1999": "重試的請求內容與前次不同（系統問題）", "2101": "參數錯誤（系統問題，請聯絡管理者）", "2102": "資料格式錯誤（系統問題，請聯絡管理者）", "2103": "含有未授權的參數（系統問題，請聯絡管理者）", "2104": "無效的請求（系統問題，請聯絡管理者）", "9000": "LINE Pay 內部錯誤，請稍後再試"};
+                var customerCodes = ["1110", "1141", "1142", "1280", "1281", "1282", "1283", "1284", "1285", "1286", "1287", "1288", "1289", "1290", "1291", "1292", "1293", "1294", "1295", "1296", "1298"];
+                code = String(code || '').trim();
+                var zh = table[code] || (/^190\d$/.test(code) ? 'LINE Pay 暫時錯誤，請稍後再試' : '');
+                if (!zh) return '';
+                if (customerCodes.indexOf(code) >= 0) zh += '；請客人改用其他卡片或店內付款';
+                return zh + '（代碼 ' + code + '）';
+            },
+            linePayFailureText: function(order) {
+                if (!order) return '';
+                var reason = String(order.paymentFailureReason || '').trim();
+                if (reason) return reason;
+                var code = String(order.paymentFailureCode || '').trim();
+                var msg = String(order.paymentFailureMessage || '').trim();
+                if (!/^\d{4}$/.test(code)) {
+                    var m = msg.match(/(?:^|\D)(\d{4})(?!\d)/);
+                    code = m ? m[1] : '';
+                }
+                var zh = code ? this.linePayErrorZh(code) : '';
+                if (zh) return zh;
+                return msg || (code ? '付款失敗（代碼 ' + code + '）' : '');
+            },
+            // 統計列表來自 PocketBase，沒有失敗原因；打開明細時才唯讀 Firebase 原訂單（不讀交易紀錄，維持既有安全邊界）
+            loadLinePayFailureInfo: async function(order) {
+                if (!order || !order.id || !this.isLinePayOrder(order)) return order;
+                var state = this.getLinePayState(order);
+                if (state !== 'failed' && state !== 'cancelled') return order;
+                if (order.paymentFailureReason || order.paymentFailureMessage) return order;
+                var paths = [];
+                var addPath = function(path) { if (path && paths.indexOf(path) < 0) paths.push(path); };
+                addPath(this.resolveStatsSourceOrderPath(order));
+                if (String(order.source || '') === 'phone_ai') addPath('phone_ai/orders/' + order.id);
+                var dateKey = order.orderDateKey || order.pickupDate || '';
+                if (/^\d{4}-\d{2}-\d{2}$/.test(String(dateKey))) addPath('orders/' + dateKey + '/' + order.id);
+                var picked = {};
+                var keys = ['paymentFailureReason', 'paymentFailureCode', 'paymentFailureMessage', 'paymentFailedAt'];
+                for (var i = 0; i < paths.length; i++) {
+                    try {
+                        var snap = await get(ref(db, paths[i]));
+                        if (!snap.exists()) continue;
+                        var val = snap.val() || {};
+                        keys.forEach(function(k) { if (val[k] !== undefined && val[k] !== null && val[k] !== '') picked[k] = val[k]; });
+                        if (picked.paymentFailureReason || picked.paymentFailureMessage) break;
+                    } catch (e) {}
+                }
+                return Object.assign({}, order, picked, { _lpFailureChecked: true });
+            },
+            linePayFailureDisplay: function(order) {
+                var textValue = this.linePayFailureText(order);
+                if (textValue) return textValue;
+                if (order && order._lpFailureChecked && this.getLinePayState(order) === 'failed') {
+                    return '這筆訂單沒有記錄失敗原因（2026-11-03 更新前的訂單），可到 Pi 的 linepay.service log 查 returnCode';
+                }
+                return '';
             },
             linePayBadgeClass: function(order) {
                 var state = this.getLinePayState(order);
