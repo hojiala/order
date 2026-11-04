@@ -675,6 +675,21 @@ body.is-demo .demo-chip{display:inline-block}
     return String(Number(it.price) || 0);
   }
   function briefItem(it) { return { name: it.name, price: Number(it.price) || 0, available: it.active !== false }; }
+  // kiosk-voice-contents-20261104：菜單管理「描述」就是食材說明（線上點餐也顯示這一行）
+  function cleanContents(raw) {
+    var s = String(raw || '').replace(/\r?\n/g, '、');
+    s = s.replace(/[，,、。\s]*[（(]?\s*照片(僅|為|僅為)?(供參考|示意圖?)\s*[)）]?[。]?/g, '');
+    s = s.replace(/^\s*(食材內容|食材|內容物?|成分)\s*[:：]\s*/, '');
+    s = s.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\uFE0F]/gu, '').replace(/[｜|]/g, '、').replace(/、{2,}/g, '、');
+    s = s.replace(/^[、，,\s]+|[、，,\s]+$/g, '').trim();
+    return s.length > 200 ? s.slice(0, 200) + '…' : s;
+  }
+  function contentsOf(it) {
+    var own = cleanContents(it && (it.desc || it.description));
+    if (own) return { text: own, from: '' };
+    var sib = familyOf(it).filter(function (x) { return x !== it && cleanContents(x.desc || x.description); })[0];
+    return sib ? { text: cleanContents(sib.desc || sib.description), from: sib.name } : { text: '', from: '' };
+  }
 
   /* ═════════ 同一道餐的不同版本（套餐／單點、有蛋有肉／無蛋無肉） ═════════ */
   // 店內規則：鐵板麵名稱裡的「里肌」「肉醬」只是寫法不同 —
@@ -1241,7 +1256,7 @@ body.is-demo .demo-chip{display:inline-block}
     { type: 'function', name: 'remove_item', description: '把點餐單上的某一項整個刪掉。',
       parameters: { type: 'object', properties: { line: { type: 'integer', minimum: 1 } }, required: ['line'] } },
     { type: 'function', name: 'get_order', description: '取得目前點餐單的明細與總價。', parameters: { type: 'object', properties: {} } },
-    { type: 'function', name: 'search_menu', description: '查菜單：有沒有某樣餐點、多少錢、今天賣完了沒。',
+    { type: 'function', name: 'search_menu', description: '查菜單：有沒有某樣餐點、多少錢、今天賣完了沒、裡面有什麼食材（contents）。顧客問某道餐點裡面包什麼、有沒有某樣東西（例如洋蔥、辣、蛋）時用這個。',
       parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] } },
     { type: 'function', name: 'finish_order', description: '顧客說點好了、這樣就好、沒有了，或按了「我點好了」時呼叫；知道內用或外帶就填 dine_mode。成功會送出訂單並回傳號碼。',
       parameters: { type: 'object', properties: { dine_mode: { type: 'string', enum: ['內用', '外帶'], description: '顧客說內用（在店裡吃）或外帶' } } } }
@@ -1434,7 +1449,12 @@ body.is-demo .demo-chip{display:inline-block}
   function toolSearchMenu(args) {
     var q = norm(args.query || '');
     var ranked = q ? rankItems(stripImplied(q).pop().text, true) : [];
-    return { ok: true, results: ranked.slice(0, 6).map(function (r) { return briefItem(r.it); }) };
+    return { ok: true, results: ranked.slice(0, 6).map(function (r) {
+      var out = briefItem(r.it), c = contentsOf(r.it);
+      if (c.text) { out.contents = c.text; if (c.from) out.contents_from = c.from; }
+      else out.contents = '（菜單沒有寫食材）';
+      return out;
+    }) };
   }
   function toolFinish(args) {
     args = args || {};
@@ -1644,6 +1664,7 @@ body.is-demo .demo-chip{display:inline-block}
       '6-2. 系統說點餐時間到了，就照系統說的收尾，不要再問新的問題。',
       '7. 價錢只念工具回傳的數字，不要自己加總。',
       '8. 聽不清楚就說「不好意思，可以再說一次嗎？」；顧客講台語也盡量聽懂，用華語回答。',
+      '8-1. 顧客問某道餐點裡面有什麼、有沒有某樣食材（例如洋蔥、香菜、辣不辣）：先用 search_menu 查那一道，只照結果的 contents 回答，白話念出主要食材，例如「辣卡脆雞捲裡面有炸雞腿、生菜、番茄和酸黃瓜醬」。contents 沒提到顧客問的東西，就說「菜單上的食材沒有寫到○○，詳細要麻煩問一下櫃台店員」；contents 是「菜單沒有寫食材」，就說「這個要麻煩問一下櫃台店員」。絕對不要用一般常識猜。顧客提到過敏，最後加一句「如果會過敏，請再跟櫃台確認一下」。顧客說不要某樣食材（例如不要洋蔥），寫在那一項的 note。',
       '9. 店名、地址、營業時間只用【店家】寫的回答；不知道的就說「這個要麻煩問一下櫃台店員」，不要猜。',
       '10. 顧客身體不舒服、有緊急狀況或要客訴，請他直接找櫃台店員。',
       '【不可以】推銷、一次介紹很多餐點；答應付款、外送、折扣或免費；聊和點餐無關的事（簡短帶回點餐）。',
