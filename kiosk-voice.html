@@ -862,20 +862,41 @@ body.is-demo .demo-chip{display:inline-block}
   // 同一句話一起說的，照舊由 setPick 直接配成套餐。
   // 不同句才點飲料（或數量對不上）：點餐員問一次「要不要把○○和○○做成套餐？」，顧客說好才用 make_combo 合併。
   // 先點飲料、後點套餐（套餐飲料還沒選）也一樣問「剛剛點的○○要當套餐飲料嗎？」
-  var Offers = { asked: {}, lines: {}, kinds: {} };   // asked：問過的「主餐 id:飲料 id」；lines：問過的那幾項（顧客說不用，就不再拿它們來問）；kinds：問過套餐／單點的那道
-  function resetOffers() { Offers.asked = {}; Offers.lines = {}; Offers.kinds = {}; }
+  var Offers = { asked: {}, lines: {}, kinds: {}, variants: {} };   // asked：問過的「主餐 id:飲料 id」；lines：問過的那幾項（顧客說不用，就不再拿它們來問）；kinds：問過套餐／單點的那道
+  function resetOffers() { Offers.asked = {}; Offers.lines = {}; Offers.kinds = {}; Offers.variants = {}; }
   // kiosk-voice-posextras-20261105：點餐員直接傳了「4號辣卡脆雞堡單點」，但顧客只說「四號辣卡脆雞堡」（沒說套餐或單點）→ 先問一次
-  var KIND_WORD_RE = /套餐|單點|單的|不要套|不用套|不要飲料|不用飲料|沒有飲料|只要/;
-  function kindQuestion(item) {
-    if (variantOf(item).kind !== '單點' || KIND_WORD_RE.test(norm(Session.userLine || ''))) return null;
-    var key = familyKey(item.name);
-    if (Offers.kinds[key]) return null;
-    var list = narrowFamily(familyOf(item), { variant: variantOf(item).variant }).filter(function (x) { return x.active !== false; });
-    var sets = list.filter(function (x) { return isSetItem(x) && sameDish(x, item); });
-    if (!sets.length) return null;
-    list = sets.concat([item]);
-    Offers.kinds[key] = true;
-    return { ask: familyAsk(list), list: list };
+  var KIND_WORD_RE = /套餐|單點|單的|不要套|不用套|不要飲料|不用飲料|沒有飲料/;
+  // kiosk-voice-choiceguard-20261105：顧客這句話說了套餐／單點、有蛋有肉／無蛋無肉 → 這道記起來，不用再問
+  function markSaid(items) {
+    var said = norm(Session.userLine || ''), kind = KIND_WORD_RE.test(said), variant = !!wantsFrom(Session.userLine || '').variant;
+    (items || []).forEach(function (it) { if (!it) return; var k = familyKey(it.name); if (kind) Offers.kinds[k] = true; if (variant) Offers.variants[k] = true; });
+  }
+  function markAsked(list) {   // 系統已經問過（familyAsk）：問的是套餐／單點，還是有蛋有肉／無蛋無肉
+    list = (list || []).filter(Boolean);
+    if (!list.length) return;
+    var k = familyKey(list[0].name), kinds = {};
+    list.forEach(function (x) { kinds[variantOf(x).kind] = 1; });
+    if (Object.keys(kinds).length > 1) Offers.kinds[k] = true;
+    else { Offers.kinds[k] = true; Offers.variants[k] = true; }
+  }
+  function choiceQuestion(item, hasDrink) {   // 點餐員直接傳了正式名稱，但顧客沒說是哪一種 → 先問（每道每題只問一次）
+    var key = familyKey(item.name), v = variantOf(item);
+    var fam = familyOf(item).filter(function (x) { return x.active !== false && familyKey(x.name) === key; });
+    var sets = fam.filter(isSetItem), singles = fam.filter(function (x) { return variantOf(x).kind === '單點'; });
+    if (Offers.variants[key] && v.variant) sets = sets.filter(function (x) { return sameDish(x, item); });   // 說了「無蛋無肉」：沒有套餐，不用問
+    if (!Offers.kinds[key] && !hasDrink && sets.length && singles.length) {   // 1) 套餐還是單點
+      var list = sets.concat(singles);
+      Offers.kinds[key] = true;
+      return { ask: familyAsk(list), list: list };
+    }
+    if (v.kind === '單點' && v.variant && !Offers.variants[key]) {   // 2) 單點：有蛋有肉還是無蛋無肉
+      var vs = singles.filter(function (x) { return variantOf(x).variant; });
+      if (vs.length >= 2 && vs.some(function (x) { return variantOf(x).variant !== v.variant; })) {
+        Offers.variants[key] = true;
+        return { ask: familyAsk(vs), list: vs };
+      }
+    }
+    return null;
   }
   function plainName(name) {   // 念給顧客聽的短名稱：單點-黑胡椒里肌鐵板麵(有蛋+有肉) → 黑胡椒里肌鐵板麵
     return speakName(String(name || '').replace(/^單點-/, '').replace(/[（(][^）)]*[）)]/g, '').replace(/(單點|套餐)$/, '')).replace(/\s+/g, '');
@@ -1613,9 +1634,11 @@ body.is-demo .demo-chip{display:inline-block}
     var results = [];
     specs = specs.slice(0, 12);
     specs = specs.map(function (spec) { return Object.assign({}, spec, { selections: (Array.isArray(spec && spec.selections) ? spec.selections : []).slice() }); });
+    var lineWants = specs.length === 1 ? wantsFrom(Session.userLine || '') : {};
+    var lineExtra = [lineWants.kind || '', lineWants.variant || ''].join(' ');
     var found = specs.map(function (spec) {
       var said = String(spec && spec.name || '').trim();
-      return said ? findDish(said, spec.selections.filter(isVariantWord).join(' ')) : null;
+      return said ? findDish(said, spec.selections.filter(isVariantWord).join(' ') + ' ' + lineExtra) : null;
     });
     // 主餐自己帶了飲料（selections）→ 套餐
     found = found.map(function (f, i) { return setPick(f, specs[i].selections.filter(function (x) { return !isVariantWord(x); })); });
@@ -1678,14 +1701,16 @@ body.is-demo .demo-chip{display:inline-block}
         return;
       }
       if (f.soldOut) { results.push({ ok: false, said: toTrad(said), name: f.item.name, sold_out: true, message: '今天賣完了' }); return; }
-      var kindAsk = f.item && !f.upgraded_from ? kindQuestion(f.item) : null;   // kiosk-voice-posextras-20261105
+      markSaid(f.item ? [f.item] : f.candidates);
+      var hasDrink = !!f.upgraded_from || !!takenMeal[i] || (!!f.item && isSetItem(f.item) && drinkFits(f.item, sels.filter(function (x) { return !isVariantWord(x); })));
+      var kindAsk = f.item ? choiceQuestion(f.item, hasDrink) : null;   // kiosk-voice-choiceguard-20261105
       if (kindAsk) {
         results.push({ ok: false, said: toTrad(said), not_added: true, ask: kindAsk.ask, candidates: candidateList(kindAsk.list),
-          message: '顧客沒有說要套餐還是單點，這項沒有加入。照 ask 問；顧客選好後，用 candidates 裡對應的 name 再呼叫 add_items（其他選項照樣放 selections）' });
+          message: '顧客沒有說是哪一種，這項沒有加入。照 ask 問；顧客選好後，用 candidates 裡對應的 name 再呼叫 add_items（其他選項照樣放 selections）' });
         return;
       }
       if (!f.item) {
-        if (f.family && f.candidates && f.candidates.length) Offers.kinds[familyKey(f.candidates[0].name)] = true;
+        if (f.family && f.candidates && f.candidates.length) markAsked(f.candidates);
         var miss = { ok: false, said: toTrad(said), candidates: candidateList(f.candidates),
           message: f.candidates.length ? '請顧客從候選中選一個' : '菜單上找不到，請顧客再說一次或換別的' };
         if (f.ask) { miss.ask = f.ask; miss.message = '照 ask 問顧客；顧客選好後，用 candidates 裡對應的 name 再呼叫 add_items（其他選項照樣放 selections）'; }
@@ -2054,7 +2079,7 @@ body.is-demo .demo-chip{display:inline-block}
       '【開場】只說：「' + GREETING + '」',
       '【身分】你是 AI 語音點餐員，不是真人店員；顧客問起就簡短說明，再繼續點餐。',
       '【點餐】',
-      '1. 顧客說出餐點就立刻呼叫 add_items；同一句點好幾樣放在同一次呼叫。name 用下方菜單的正式名稱；不確定就照顧客原話傳，系統會比對。',
+      '1. 顧客說出餐點就立刻呼叫 add_items；同一句點好幾樣放在同一次呼叫。name 用下方菜單的正式名稱，但顧客沒說的不要自己補：顧客沒說套餐或單點、有蛋有肉或無蛋無肉、辣卡或原卡，就照顧客說的傳（例如「一號」「黑胡椒鐵板麵」「單點黑胡椒鐵板麵」），系統會問；不確定就照顧客原話傳，系統會比對。',
       '1-1. 顧客點主餐時一起說了飲料（例如「三號牛肉堡，飲料改大杯少冰鮮奶茶」「蘑菇鐵板麵配大杯奶茶」）：那杯就是套餐飲料，放在主餐那一項的 selections（例如 大杯鮮奶茶、少冰），系統會自動配成套餐；不要再問套餐還是單點，也不要另外加一杯飲料。顧客說「再一杯」「另外一杯」的飲料才另外加一項。結果有 drink_separately（這道沒有套餐）時，那杯飲料用 add_items 另外加一項。',
       '1-2. 飲料名稱裡的（無糖無奶）（無糖）只是原本的做法：顧客要加糖、加奶，照樣放在那一項的 selections（例如 加糖、加奶），系統會加上；不要自己說不能加，只有結果出現 unmatched 才是沒有這個選項。',
       '1-3. 結果有 combo_offer（點餐單上的單點主餐和另外點的飲料可以做成套餐，比較便宜）：說「好的，」接著照 combo_offer.ask 問一次，例如「好的，要不要跟四號辣卡脆雞堡做成套餐？可以省10元。」同時還有 missing 或 ask，先問 combo_offer，再問其他。顧客說好，就呼叫 make_combo，meal_line、drink_line 填 combo_offer 的；顧客說要跟別的主餐做（例如「跟四號做套餐」），就呼叫 make_combo，meal_name 填顧客說的那一樣（例如 四號），drink_line 填 combo_offer 的；顧客說不用，就維持原樣，不要再問。',
