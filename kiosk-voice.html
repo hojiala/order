@@ -789,6 +789,10 @@ body.is-demo .demo-chip{display:inline-block}
     var gs = line.item.optionGroups || [];
     for (var gi = 0; gi < gs.length; gi++) {
       if (gs[gi].type === 'checkbox' || line.answered[gi]) continue;
+      if (isEggGroup(gs[gi])) {   // 「要加蛋嗎？」→「好」「要」：菜單預設的蛋
+        var de = variantOf(line.item).variant === '無蛋無肉' ? -1 : defaultEggIdx(gs[gi]);
+        return de >= 0 ? { gi: gi, idx: de } : null;
+      }
       var di = plainDefault(gs[gi]);
       return di >= 0 ? { gi: gi, idx: di } : null;
     }
@@ -941,11 +945,13 @@ body.is-demo .demo-chip{display:inline-block}
   }
   function comboDrink(l) { return !!l && !l.parentId && isDrinkItem(l.item); }
   function someText(meal, n) { return meal.qty > n ? (n === 1 ? '其中一份' : '其中' + zhNum(n, true) + '份') : ''; }
-  function offerInfo(meal, d, dr) {
+  function offerInfo(meal, d, dr, touched) {   // 問句越短越好：剛點的是飲料就提主餐，剛點的是主餐就提飲料
     var fill = isSetItem(meal.item), some = someText(meal, dr.n), ask;
-    if (fill) ask = '剛剛點的' + drinkSay(d) + '，要當' + some + speakName(meal.item.name) + '的飲料嗎？';
-    else ask = '要不要把' + some + plainName(meal.item.name) + '和' + drinkSay(d) + '做成套餐？' +
-      (dr.n > 1 ? zhNum(dr.n, true) + '份套餐總共' + dr.unit * dr.n : '套餐是' + dr.unit) + '元，比分開點省' + dr.save * dr.n + '元。';
+    var newMeal = !!touched && touched.indexOf(meal) !== -1, newDrink = !!touched && touched.indexOf(d) !== -1;
+    if (fill) ask = '剛剛的' + drinkSay(d) + '要當' + (some ? some + '的' : '') + '套餐飲料嗎？';
+    else ask = (newDrink && !newMeal ? '要不要跟' + some + plainName(meal.item.name) + '做成套餐？'
+      : newMeal && !newDrink ? '要不要' + (some ? '把' + some : '') + '跟剛剛的' + drinkSay(d) + '做成套餐？'
+      : '要不要把' + some + plainName(meal.item.name) + '和' + drinkSay(d) + '做成套餐？') + '可以省' + dr.save * dr.n + '元。';
     var out = { meal_line: lineNo(meal), drink_line: lineNo(d), combo: dr.set.name, combo_say: speakName(dr.set.name), ask: ask };
     if (!fill) { out.combo_price = dr.unit * dr.n; out.separate_price = dr.before * dr.n; out.save = dr.save * dr.n; }
     return out;
@@ -961,7 +967,7 @@ body.is-demo .demo-chip{display:inline-block}
         var dr = comboDraft(m, d);
         if (dr.error || (!isSetItem(m.item) && dr.save <= 0)) continue;
         Offers.asked[key] = true; Offers.lines[m.id] = Offers.lines[d.id] = true;
-        return offerInfo(m, d, dr);
+        return offerInfo(m, d, dr, touched);
       }
     }
     return null;
@@ -1169,6 +1175,16 @@ body.is-demo .demo-chip{display:inline-block}
   function clampIdx(i, len) { i = Number(i) || 0; return i >= 0 && i < len ? i : 0; }
   function clampQty(q) { q = Math.round(Number(q)); return q >= 1 ? Math.min(q, 20) : 1; }
   function isEggGroup(g) { return /蛋/.test(g.groupName || '') && (g.choices || []).some(function (c) { return /不加蛋/.test(c.name); }); }
+  // kiosk-voice-brief-20261105：「蛋品選擇」（全熟／半熟／散蛋／太陽蛋，沒有不加蛋）＝ 餐點本來就有蛋，用菜單預設，不問；顧客自己說半熟才換
+  function isEggStyleGroup(g) {
+    var ch = g.choices || [];
+    return g.type !== 'checkbox' && /蛋/.test(g.groupName || '') && ch.length > 1 && !isEggGroup(g) && ch.every(function (c) { return /蛋/.test(c.name || ''); });
+  }
+  function defaultEggIdx(g) {   // 「加蛋」的預設蛋（3號 → +全熟蛋）；預設是不加蛋就用第一個蛋
+    var ch = g.choices || [], idx = clampIdx(g.defaultIdx, ch.length);
+    if (ch[idx] && /不加蛋/.test(ch[idx].name)) idx = indexWhere(ch, /^(?!.*不加蛋)/);
+    return idx;
+  }
   function eggGroupIdx(line) {
     var gs = line.item.optionGroups || [];
     for (var i = 0; i < gs.length; i++) if (gs[i].type !== 'checkbox' && isEggGroup(gs[i])) return i;
@@ -1184,7 +1200,7 @@ body.is-demo .demo-chip{display:inline-block}
       var idx = clampIdx(g.defaultIdx, ch.length);
       if (isEggGroup(g)) idx = indexWhere(ch, /不加蛋/);   // 沒說要蛋就不加，價錢不先算進去
       line.sel[gi] = idx;
-      line.answered[gi] = ch.length === 1;
+      line.answered[gi] = ch.length === 1 || isEggStyleGroup(g);
     });
     return line;
   }
@@ -1337,6 +1353,10 @@ body.is-demo .demo-chip{display:inline-block}
       }
       var di = plainDefault(g);
       if (di >= 0) { entry.default = g.choices[di].name; entry.ask = defaultAsk(g, di); }
+      if (isEggGroup(g) && variantOf(line.item).variant !== '無蛋無肉') {
+        var de = defaultEggIdx(g);
+        if (de >= 0) { entry.ask = '要加蛋嗎？'; entry.default = g.choices[de].name; }
+      }
       out.push(entry);
     });
     return out;
@@ -1838,21 +1858,21 @@ body.is-demo .demo-chip{display:inline-block}
     });
     return [
       '你是早餐店菜單看板旁點餐平板上的點餐員，顧客多半是長輩。',
-      '【說話】台灣華語，用字一律繁體中文；親切、有耐心、慢慢講；每次只講一兩句，一次只問一件事。',
+      '【說話】台灣華語，用字一律繁體中文；親切、有耐心。回答越短越好（顧客等得少，也比較省錢）：不要重複顧客剛說的餐點和選項、不要念單項價錢（畫面上都看得到）、一次只問一件事。但是要問的、要告訴顧客的（下面規則寫到的）一定要說，不可以省略。',
       '【開場】只說：「' + GREETING + '」',
       '【身分】你是 AI 語音點餐員，不是真人店員；顧客問起就簡短說明，再繼續點餐。',
       '【點餐】',
       '1. 顧客說出餐點就立刻呼叫 add_items；同一句點好幾樣放在同一次呼叫。name 用下方菜單的正式名稱；不確定就照顧客原話傳，系統會比對。',
       '1-1. 顧客點主餐時一起說了飲料（例如「三號牛肉堡，飲料改大杯少冰鮮奶茶」「蘑菇鐵板麵配大杯奶茶」）：那杯就是套餐飲料，放在主餐那一項的 selections（例如 大杯鮮奶茶、少冰），系統會自動配成套餐；不要再問套餐還是單點，也不要另外加一杯飲料。顧客說「再一杯」「另外一杯」的飲料才另外加一項。結果有 drink_separately（這道沒有套餐）時，那杯飲料用 add_items 另外加一項。',
       '1-2. 飲料名稱裡的（無糖無奶）（無糖）只是原本的做法：顧客要加糖、加奶，照樣放在那一項的 selections（例如 加糖、加奶），系統會加上；不要自己說不能加，只有結果出現 unmatched 才是沒有這個選項。',
-      '1-3. 結果有 combo_offer（點餐單上的單點主餐和另外點的飲料可以做成套餐，比較便宜）：複誦後接著照 combo_offer.ask 問一次，例如「要不要把黑胡椒里肌鐵板麵和大杯紅茶豆漿做成套餐？套餐是124元，比分開點省5元。」同時還有 missing 或 ask，先問 combo_offer，再問其他。顧客說好，就呼叫 make_combo，meal_line、drink_line 填 combo_offer 的；顧客說不用，就維持原樣，不要再問。',
-      '1-4. 顧客自己問能不能把單點和飲料做成套餐、能不能算套餐價：一律先呼叫 make_combo（知道是哪兩項就填 meal_line、drink_line）。絕對不要自己說「套餐是套餐、單點是單點」「不能合併」；只有 make_combo 回傳 ok 是 false，才照 message 說明。成功時照 message 告訴顧客，有 saved 就說省了多少，再念 order_total。',
-      '2. 工具回傳後，先用一句話複誦。餐點名稱一律念工具回傳的 say，不要用顧客的說法、也不要自己改字或改數字，例如「好的，一份四號辣卡脆雞堡套餐。」',
+      '1-3. 結果有 combo_offer（點餐單上的單點主餐和另外點的飲料可以做成套餐，比較便宜）：說「好的，」接著照 combo_offer.ask 問一次，例如「好的，要不要跟黑胡椒里肌鐵板麵做成套餐？可以省5元。」同時還有 missing 或 ask，先問 combo_offer，再問其他。顧客說好，就呼叫 make_combo，meal_line、drink_line 填 combo_offer 的；顧客說不用，就維持原樣，不要再問。',
+      '1-4. 顧客自己問能不能把單點和飲料做成套餐、能不能算套餐價：一律先呼叫 make_combo（知道是哪兩項就填 meal_line、drink_line）。絕對不要自己說「套餐是套餐、單點是單點」「不能合併」；只有 make_combo 回傳 ok 是 false，才照 message 簡短說明。成功就說「好的，改成套餐了」，有 saved 就加「省○元」。',
+      '2. 工具回傳後：沒有要問的，只說「好的」或「好的，還要點其他的嗎？」，不要複誦餐點名稱、選項和價錢。有要問的（ask、missing、combo_offer），說「好的，」就直接問，例如「好的，要加蛋嗎？」。要說到餐點名稱時，一律念工具回傳的 say，不要用顧客的說法、也不要自己改字或改數字。',
       '2-1. 結果有 number_mismatch（顧客說的數字和菜單不同，例如顧客說六入、菜單只有兩入）時，先確認：「我們的是爆漿奶油餐包兩入，一份兩個，請問要幾份？」，再用 update_item 改數量。',
-      '3. 結果有 missing 時，只問第一個，白話問：加蛋→「要加蛋嗎？」；套餐飲料→「飲料要大杯奶茶，還是換別的？」；溫度→「冰的還是溫的？」；容量→「大杯還是中杯？」。missing 裡有 ask 就照 ask 問（例如「果醬要沙拉嗎？也可以換…」，預設的選項一定要說到）。顧客回答後呼叫 update_item，selections 用 options 裡的原文；顧客只說「好」「可以」就用 default。',
+      '3. 結果有 missing 時，只問第一個，白話問：missing 裡有 ask 就照 ask 問（例如「要加蛋嗎？」「果醬要沙拉嗎？也可以換…」，預設的選項一定要說到）；沒有 ask：套餐飲料→「飲料要大杯奶茶，還是換別的？」；溫度→「冰的還是溫的？」；容量→「大杯還是中杯？」。顧客回答後呼叫 update_item，selections 用 options 裡的原文；顧客只說「好」「要」「可以」就用 default。加蛋只問要不要：顧客說要，就用 default（菜單預設的蛋），不要再問要哪一種蛋；顧客自己說半熟蛋、散蛋、太陽蛋才照他說的。有蛋有肉的鐵板麵、拼盤本來就有蛋（用菜單預設的蛋），不要問要不要加蛋，也不要問要哪一種蛋；無蛋無肉的鐵板麵照 ask 問要不要加蛋或加肉。',
       '4. 結果有 ask（顧客還沒說是哪一種，例如套餐／單點、辣卡／原卡、有蛋有肉／無蛋無肉）時，照 ask 問，不要自己決定，也絕對不可以把 candidates 全部加入；顧客選好後，只用他選的那一個 name 再呼叫 add_items。顧客明確說「兩種都要」「各一個」才分別加。sold_out 時說「不好意思，這個今天賣完了」，請顧客換別的。',
       '5. 顧客改口一律在同一項上改，不要新增一項，也不要寫進備註：改成有蛋有肉、無蛋無肉、套餐或單點，用 update_item 的 name 填這幾個字；換別的餐點也用 update_item 的 name；改數量、不要某樣用 update_item 或 remove_item（line 是畫面上的項次）。',
-      '5-1. 結果有 auto_upgraded 或 meat_added 時，用一句話照內容告訴顧客。結果有 unmatched 時，那幾個字沒有對應的選項：顧客的回答請換成 options 裡的原文再送一次；真的是備註（例如不要醬）就放 note。',
+      '5-1. 結果有 auto_upgraded 或 meat_added 時，用一句短話告訴顧客，例如「好的，幫您改成套餐，比較划算」「好的，另外加一片肉，三十五元」。結果有 unmatched 時，那幾個字沒有對應的選項：顧客的回答請換成 options 裡的原文再送一次；真的是備註（例如不要醬）就放 note。',
       CONFIG.askDineMode
         ? '6. 顧客說「這樣就好」「沒有了」「好了」，或系統告訴你顧客按了「我點好了」：還不知道內用還是外帶，就直接問「請問內用還是外帶？」，這時先不要呼叫工具；顧客回答（或系統說顧客按了按鈕）後馬上呼叫 finish_order，dine_mode 填「內用」或「外帶」。已經知道內用外帶就直接呼叫 finish_order。回傳 pending 就先把沒確認的問完；回傳 need_dine_mode 就問「請問內用還是外帶？」。'
         : '6. 顧客說「這樣就好」「沒有了」「好了」，或系統告訴你顧客按了「我點好了」，馬上呼叫 finish_order。回傳 pending 就先把沒確認的問完。',
@@ -1860,7 +1880,7 @@ body.is-demo .demo-chip{display:inline-block}
       '6-2. 系統說點餐時間到了，就照系統說的收尾，不要再問新的問題。',
       '7. 價錢只念工具回傳的數字，不要自己加總。',
       '8. 聽不清楚就說「不好意思，可以再說一次嗎？」；顧客講台語也盡量聽懂，用華語回答。',
-      '8-1. 顧客問某道餐點裡面有什麼、有沒有某樣食材（例如洋蔥、香菜、辣不辣）：先用 search_menu 查那一道，只照結果的 contents 回答，白話念出主要食材，例如「辣卡脆雞捲裡面有炸雞腿、生菜、番茄和酸黃瓜醬」。contents 沒提到顧客問的東西，就說「菜單上的食材沒有寫到○○，詳細要麻煩問一下櫃台店員」；contents 是「菜單沒有寫食材」，就說「這個要麻煩問一下櫃台店員」。絕對不要用一般常識猜。顧客提到過敏，最後加一句「如果會過敏，請再跟櫃台確認一下」。顧客說不要某樣食材（例如不要洋蔥），寫在那一項的 note。',
+      '8-1. 顧客問某道餐點裡面有什麼、有沒有某樣食材（例如洋蔥、香菜、辣不辣）：先用 search_menu 查那一道，只照結果的 contents 回答。問「有沒有○○」：contents 有寫到就說「有喔」，沒寫到就只說「沒有喔」，不要多說別的。問「裡面有什麼」：白話念出主要食材，例如「裡面有炸雞腿、生菜、番茄和酸黃瓜醬」。contents 是「菜單沒有寫食材」，就說「這個要麻煩問一下櫃台店員」。絕對不要用一般常識猜。顧客提到過敏，最後加一句「如果會過敏，請再跟櫃台確認一下」。顧客說不要某樣食材（例如不要洋蔥），寫在那一項的 note。',
       '9. 店名、地址、營業時間只用【店家】寫的回答；不知道的就說「這個要麻煩問一下櫃台店員」，不要猜。',
       '10. 顧客身體不舒服、有緊急狀況或要客訴，請他直接找櫃台店員。',
       '【不可以】推銷、一次介紹很多餐點（combo_offer 問一次不算推銷）；答應付款、外送、折扣或免費（單點和飲料做成套餐是菜單上的價錢，不算折扣）；聊和點餐無關的事（簡短帶回點餐）。',
@@ -2435,15 +2455,15 @@ body.is-demo .demo-chip{display:inline-block}
   var DEMO_SCRIPT = [
     { agent: GREETING },
     { user: '我要一個四號辣卡脆雞堡套餐', tool: ['add_items', { items: [{ name: '4号辣卡脆鸡堡套餐', quantity: 1, selections: [], note: '' }] }] },
-    { agent: '好的，一份4號辣卡脆雞堡套餐。要加蛋嗎？' },
+    { agent: '好的，要加蛋嗎？' },
     { user: '要，加蛋', tool: ['update_item', { line: 1, selections: ['加蛋'] }] },
-    { agent: '好，加一顆蛋。飲料要大杯奶茶，還是換別的？' },
+    { agent: '好的，飲料要大杯奶茶，還是換別的？' },
     { user: '換大杯鮮奶茶，去冰', tool: ['update_item', { line: 1, selections: ['大杯鲜奶茶', '去冰'] }] },
-    { agent: '好的，大杯鮮奶茶、去冰。還需要什麼嗎？' },
+    { agent: '好的，還要點其他的嗎？' },
     { user: '再一個蘿蔔糕', tool: ['add_items', { items: [{ name: '萝卜糕', quantity: 1, selections: [], note: '' }] }] },
-    { agent: '蘿蔔糕一份。要加蛋嗎？' },
+    { agent: '好的，要加蛋嗎？' },
     { user: '不用', tool: ['update_item', { line: 2, selections: ['不加蛋'] }] },
-    { agent: '好，不加蛋。還需要什麼嗎？' },
+    { agent: '好的，還要點其他的嗎？' },
     { user: '這樣就好', tool: ['finish_order', {}] },
     { agent: '好的，請問內用還是外帶？' },
     { user: '外帶', tool: ['finish_order', { dine_mode: '外帶' }] },
