@@ -844,19 +844,19 @@ body.is-demo .demo-chip{display:inline-block}
     if (sets.length === 1) return { item: sets[0], implied: [], exact: false };
     return { candidates: sets, ask: choiceAsk(sets), family: true };
   }
-  function drinkTries(spec, item) {   // 另外點的「鮮奶茶＋大杯、少冰」→ 套餐飲料選項「大杯鮮奶茶」＋「少冰」
+  function drinkTries(spec, item, implied) {   // 另外點的「鮮奶茶＋大杯、少冰」→ 套餐飲料選項「大杯鮮奶茶」＋「少冰」；名稱裡的「中杯溫」也算
     var size = '', rest = [];
-    (Array.isArray(spec.selections) ? spec.selections : []).forEach(function (s) {
+    (Array.isArray(spec.selections) ? spec.selections : []).concat(implied || []).forEach(function (s) {
       var n = norm(s);
       if (!size && /^(大杯|中杯|小杯|大|中|小)$/.test(n)) size = n.charAt(0) === '大' ? '大杯' : '中杯';
       else rest.push(String(s));
     });
-    var said = String(spec.name || '').trim(), names = [said, item.name].filter(function (x, i, a) { return x && a.indexOf(x) === i; });
+    var said = String(spec.name || '').trim(), names = (implied && implied.length ? [item.name] : [said, item.name]).filter(function (x, i, a) { return x && a.indexOf(x) === i; });
     var tries = [];
     (size ? [size] : ['大杯', '中杯', '']).forEach(function (sz) { names.forEach(function (nm) { tries.push([sz + nm].concat(rest)); }); });
     return tries;
   }
-  var EXTRA_DRINK_RE = /再[一1]杯|再來[一1]杯|另外[一1]杯|另[一1]杯|還要[一1]杯|加[一1]杯|單點[一1]杯|再點[一1]杯|另外點/;   // norm() 會把「一杯」變成「1杯」
+  var EXTRA_DRINK_RE = /再[一1]杯|再來[一1]杯|另外[一1]杯|另[一1]杯|單點[一1]杯|再點[一1]杯|另外點/;   // 「然後加一杯中杯溫鮮奶茶」是套餐飲料，不算另外點   // norm() 會把「一杯」變成「1杯」
 
   /* ═════════ kiosk-voice-combo-offer-20261105：單點主餐＋另外點的飲料 → 主動問要不要做成套餐 ═════════ */
   // 同一句話一起說的，照舊由 setPick 直接配成套餐。
@@ -1229,6 +1229,30 @@ body.is-demo .demo-chip{display:inline-block}
     var ch = g.choices || [];
     return g.type !== 'checkbox' && /蛋/.test(g.groupName || '') && ch.length > 1 && !isEggGroup(g) && ch.every(function (c) { return /蛋/.test(c.name || ''); });
   }
+  var EGG_SAID = { '全熟': /全熟/, '半熟': /半熟/, '散': /散蛋|炒蛋/, '太陽': /太陽|荷包/ };
+  function eggStyleTarget(item, sel) {   // 這個選項是不是要換「蛋品選擇」；是的話回傳那個選項名稱
+    var t = normChoice(sel), hit = '';
+    if (!t || t.length < 2) return '';
+    (item.optionGroups || []).forEach(function (g) {
+      if (hit || !isEggStyleGroup(g)) return;
+      (g.choices || []).forEach(function (c) { var n = normChoice(c.name); if (!hit && (n === t || n.indexOf(t) !== -1)) hit = c.name; });
+    });
+    return hit;
+  }
+  function eggSaid(choiceName) {
+    var core = norm(choiceName).replace(/蛋$/, ''), re = EGG_SAID[core], said = norm(Session.userLine || '');
+    return re ? re.test(said) : said.indexOf(core) !== -1;
+  }
+  function guardEggStyle(item, sels) {   // 點餐員把別題的「+全熟蛋」塞進拼盤：顧客這句沒說要換蛋，蛋照菜單預設
+    var keep = [], dropped = [];
+    (sels || []).forEach(function (x) { var c = eggStyleTarget(item, x); if (c && !eggSaid(c)) dropped.push(String(x)); else keep.push(x); });
+    return { keep: keep, dropped: dropped };
+  }
+  function eggKeptText(line, dropped) {
+    var gi = -1; (line.item.optionGroups || []).forEach(function (g, i) { if (gi < 0 && isEggStyleGroup(g)) gi = i; });
+    var cur = gi >= 0 ? ((line.item.optionGroups[gi].choices || [])[line.sel[gi]] || {}).name : '';
+    return '「' + dropped.join('、') + '」沒有用在第' + lineNo(line) + '項：這道本來就有蛋，顧客這句沒有說要換，照菜單預設（' + cur + '）。如果那是回答別一項的問題，請用 update_item 改那一項';
+  }
   function defaultEggIdx(g) {   // 「加蛋」的預設蛋（3號 → +全熟蛋）；預設是不加蛋就用第一個蛋
     var ch = g.choices || [], idx = clampIdx(g.defaultIdx, ch.length);
     if (ch[idx] && /不加蛋/.test(ch[idx].name)) idx = indexWhere(ch, /^(?!.*不加蛋)/);
@@ -1292,7 +1316,22 @@ body.is-demo .demo-chip{display:inline-block}
       var w = temps[j], at = n.indexOf(w);
       if (w.length >= 2 && at >= 0 && n.length - w.length >= 2) return [n.slice(0, at) + n.slice(at + w.length), w];
     }
+    for (var k2 = 0; k2 < temps.length; k2++) {   // kiosk-voice-eggfix-20261105：「中杯溫鮮奶茶」「溫鮮奶茶」單字溫度，剩下的是飲料才拆（「加熱狗」不拆）
+      var w1 = temps[k2], at1 = n.indexOf(w1), rest1 = at1 >= 0 ? n.slice(0, at1) + n.slice(at1 + w1.length) : '';
+      if (w1.length === 1 && at1 >= 0 && rest1.length >= 2 && DRINK_HINT_RE.test(rest1)) return [rest1, w1];
+    }
     return [n];
+  }
+  var DRINK_HINT_RE = /茶|咖啡|可可|豆漿|柳橙|果汁|拿鐵|奶/;
+  // 「中杯、溫、鮮奶茶」分開說：杯型併到飲料上，不然「中杯」會先對到別的飲料（例如鴛鴦奶茶）
+  function mergeCupWords(list) {
+    var sizes = [], rest = [], di = -1;
+    list.forEach(function (x) { var n = norm(x); if (SIZE_WORDS[n]) sizes.push(SIZE_WORDS[n]); else rest.push(x); });
+    if (sizes.length !== 1) return list;
+    rest.forEach(function (x, i) { var n = norm(x); if (di < 0 && DRINK_HINT_RE.test(n) && !/大杯|中杯|小杯/.test(n) && !/^(加|不要|不加)/.test(n)) di = i; });
+    if (di < 0) return list;
+    rest[di] = sizes[0] + norm(rest[di]);
+    return rest;
   }
   var LEAD_FILLER_RE = /^(好啊|好阿|好喔|好的|好|對啊|對|嗯|可以|那就|那)(?=.)/;
   var REPLY_ONLY_RE = /^(好|好啊|好阿|好的|好喔|對|對啊|嗯|要|要啊|不用|不要|可以|沒有|沒關係|都可以|都不要|隨便|是|不是)$/;
@@ -1338,6 +1377,15 @@ body.is-demo .demo-chip{display:inline-block}
     }
     if (TEMP_WORDS[full]) t = TEMP_WORDS[full];
     else if (SIZE_WORDS[full]) t = SIZE_WORDS[full];
+    var dgi = drinkGroupIdx(line.item);
+    if (SIZE_WORDS[full] && dgi >= 0 && !groups.some(function (gr) { return (gr.choices || []).some(function (c) { return norm(c.name) === t; }); })) {
+      if (!line.answered[dgi]) { line.cupPref = t; return true; }
+      var dch = groups[dgi].choices || [], curBase = drinkBase((dch[line.sel[dgi]] || {}).name || ''), hitIdx = -1;
+      dch.forEach(function (c, ci) { if (hitIdx < 0 && drinkBase(c.name) === curBase && cupSize(c.name) === t) hitIdx = ci; });
+      if (hitIdx < 0) return false;
+      line.sel[dgi] = hitIdx; pruneDrinkAddons(line);
+      return true;
+    }
     var cands = [];
     groups.forEach(function (gr, gIndex) {
       (gr.choices || []).forEach(function (c, ci) { cands.push({ kind: 'group', gi: gIndex, ci: ci, name: c.name, s: choiceScore(t, c.name) }); });
@@ -1347,7 +1395,14 @@ body.is-demo .demo-chip{display:inline-block}
     cands.sort(function (a, b) { return (b.s - a.s) || (a.name.length - b.name.length); });
     var top = cands[0], next = cands[1];
     if (!top || top.s < 0.72) return false;
-    if (next && Math.abs(next.s - top.s) < 0.001 && next.name.length === top.name.length && next.name !== top.name) return false;
+    if (next && Math.abs(next.s - top.s) < 0.001 && next.name.length === top.name.length && next.name !== top.name) {
+      // 「鮮奶茶」對到中杯、大杯兩個：前面說過杯型就用那個，沒說就不猜
+      var pick = line.cupPref && top.kind === 'group' && top.gi === dgi ? cands.filter(function (c) {
+        return c.kind === 'group' && c.gi === dgi && Math.abs(c.s - top.s) < 0.001 && cupSize(c.name) === line.cupPref;
+      })[0] : null;
+      if (!pick) return false;
+      top = pick;
+    }
     if (top.kind === 'extra') { addExtra(line, top.o); return true; }
     if (top.kind === 'drinkAddon') {
       if (!line.drinkAddons.some(function (x) { return x.name === top.o.name; })) line.drinkAddons.push({ name: top.o.name, price: Number(top.o.price) || 0 });
@@ -1383,6 +1438,7 @@ body.is-demo .demo-chip{display:inline-block}
   function addExtra(line, o) { if (!line.extras.some(function (x) { return x.name === o.name; })) line.extras.push(o); }
   function applySelections(line, adds, removes) {
     var unmatched = [], retry = [];
+    if (Array.isArray(adds) && drinkGroupIdx(line.item) >= 0) adds = mergeCupWords(adds);
     (Array.isArray(adds) ? adds : []).forEach(function (raw) {
       if (raw == null || raw === '') return;
       splitCompound(String(raw)).forEach(function (p) { if (!applyOne(line, p)) retry.push(p); });
@@ -1457,7 +1513,7 @@ body.is-demo .demo-chip{display:inline-block}
   }
   function joinNote(a, list) { return [String(a || '').trim()].concat(list || []).filter(Boolean).map(toTrad).join('、'); }
   function getLine(n) { n = Math.round(Number(n)); return n >= 1 && n <= Order.lines.length ? Order.lines[n - 1] : null; }
-  function resetOrder() { Order.lines = []; Order.changedId = 0; Order.dineMode = ''; Order.askingMode = false; Order.incomplete = ''; Turn.adds = {}; Turn.warned = {}; resetOffers(); resetSubmit(); renderOrder(); }
+  function resetOrder() { Order.lines = []; Order.changedId = 0; Order.dineMode = ''; Order.askingMode = false; Order.incomplete = ''; Turn.adds = {}; Turn.warned = {}; resetOffers(); Pending.egg = null; resetSubmit(); renderOrder(); }
 
   /* ═════════ 工具（給 Grok 呼叫） ═════════ */
   var TOOLS_SPEC = [
@@ -1493,9 +1549,43 @@ body.is-demo .demo-chip{display:inline-block}
       parameters: { type: 'object', properties: { dine_mode: { type: 'string', enum: ['內用', '外帶'], description: '顧客說內用（在店裡吃）或外帶' } } } }
   ];
 
+  // kiosk-voice-eggfix-20261105：記住點餐員這次要問的是不是「要加蛋嗎？」；顧客下一句用「好／要／不用」開頭，
+  //   點餐員卻去加別的餐點或點好了，就把這句當成那一題的答案（和點餐員自己 update_item 一樣）
+  var Pending = { egg: null };
+  // 「好，好啊。然後再一個拼盤」「要啊再來…」「不用，再一個…」才算；「要一個拼盤」不算（要後面接的是新餐點）
+  var EGG_YES_RE = /^\s*(好|要|可以|對|嗯+|要加蛋|加蛋|要加)(啊|阿|喔|呀|的|啦)?(?=$|[\s，,。！!、]|然後|然后|那|再|還|我)/;
+  var EGG_NO_RE = /^\s*(不用|不要|不加|免|沒關係)(了|啊|阿|喔|啦)?(?=$|[\s，,。！!、]|然後|然后|那|再|還|我|蛋|加蛋)/;
+  function eggLineFromResult(name, r) {
+    if (!r || r.combo_offer || r.ask || r.need_dine_mode) return null;
+    var first = null;
+    if (Array.isArray(r.results)) r.results.some(function (x) { if (x && (x.ask || (x.ok && x.missing))) { first = x; return true; } return false; });
+    else if (Array.isArray(r.pending)) first = r.pending[0];
+    else first = r;
+    if (!first || first.ask || !first.missing || !first.missing.length || first.missing[0].ask !== '要加蛋嗎？') return null;
+    var l = getLine(first.line);
+    return l ? l.id : null;
+  }
+  function answerPendingEgg(exceptLine) {
+    var p = Pending.egg;
+    if (!p || p.said === (Session.userLine || '')) return null;
+    Pending.egg = null;
+    var l = Order.lines.filter(function (x) { return x.id === p.lineId; })[0], said = toTrad(String(Session.userLine || ''));
+    if (!l || l === exceptLine) return null;
+    var gi = eggGroupIdx(l);
+    if (gi < 0 || l.answered[gi]) return null;
+    var no = EGG_NO_RE.test(said), yes = !no && EGG_YES_RE.test(said);
+    if (!yes && !no) return null;
+    var g = l.item.optionGroups[gi];
+    l.sel[gi] = no ? indexWhere(g.choices || [], /不加蛋/) : defaultEggIdx(g);
+    l.answered[gi] = true;
+    markChanged(l);
+    return '顧客這句開頭的「' + (Session.userLine || '').slice(0, 6) + '」是回答第' + lineNo(l) + '項「要加蛋嗎？」，已經' + (no ? '不加蛋' : '加' + g.choices[l.sel[gi]].name) + '，不用再問';
+  }
   function runTool(name, args) {
     args = args || {};
-    var result;
+    var result, eggAnswered = null;
+    if (name === 'add_items' || name === 'finish_order' || name === 'make_combo') eggAnswered = answerPendingEgg(null);
+    else if (name === 'update_item') eggAnswered = answerPendingEgg(getLine(args.line));
     try {
       if (name === 'add_items') result = toolAddItems(args);
       else if (name === 'update_item') result = toolUpdateItem(args);
@@ -1508,6 +1598,11 @@ body.is-demo .demo-chip{display:inline-block}
     } catch (e) {
       console.error('[kiosk] tool error', name, e);
       result = { ok: false, message: '系統處理失敗，請顧客再說一次' };
+    }
+    if (eggAnswered && result && typeof result === 'object' && typeof result.then !== 'function') result.answered_previous = eggAnswered;
+    if (result && typeof result.then !== 'function' && name !== 'get_order' && name !== 'search_menu') {
+      var pl = eggLineFromResult(name, result);
+      Pending.egg = pl ? { lineId: pl, said: Session.userLine || '' } : null;
     }
     renderOrder();
     if (result && typeof result.then === 'function') return result.then(function (r) { renderOrder(); return r; });
@@ -1537,7 +1632,7 @@ body.is-demo .demo-chip{display:inline-block}
           var targets = setTargets(found[mi]);
           if (!targets.length || targets.some(function (s) { return drinkFits(s, msels); })) continue;   // 不是套餐、或已經說了套餐飲料
           var hit = null;
-          drinkTries(spec, fd.item).some(function (tr) {
+          drinkTries(spec, fd.item, fd.implied).some(function (tr) {
             var r = setPick(found[mi], msels.concat(tr));
             if (r !== found[mi] && (r.item || r.candidates)) { hit = { r: r, tr: tr }; return true; }
             if (found[mi].item && isSetItem(found[mi].item) && drinkFits(found[mi].item, msels.concat(tr))) { hit = { r: found[mi], tr: tr }; return true; }
@@ -1600,7 +1695,8 @@ body.is-demo .demo-chip{display:inline-block}
       var line = newLine(f.item);
       line.qty = clampQty(spec.quantity);
       applySelections(line, f.implied || [], []);            // 從名稱推得的大杯/冰：這項沒有該選項就略過
-      var unmatched = applySelections(line, sels.filter(function (x) { return !isVariantWord(x); }), []);
+      var eggGuard = guardEggStyle(f.item, sels.filter(function (x) { return !isVariantWord(x); }));
+      var unmatched = applySelections(line, eggGuard.keep, []);
       var drinkWords = unmatched.filter(function (u) { var d = findItem(u); return d.item && isDrinkItem(d.item); });
       unmatched = unmatched.filter(function (u) { return drinkWords.indexOf(u) === -1; });
       line.note = joinNote(spec.note, noteWorthy(unmatched));
@@ -1616,6 +1712,7 @@ body.is-demo .demo-chip{display:inline-block}
       if (extraTurn && isDrinkItem(target.item)) target.extraDrink = true;
       var info = Object.assign(lineInfo(target), settled);
       info.ok = true;
+      if (eggGuard.dropped.length) info.egg_kept = eggKeptText(target, eggGuard.dropped);
       if (f.upgraded_from) info.auto_upgraded = '單點又點了飲料，已改成' + speakName(target.item.name) + '，飲料就是套餐飲料，比分開點划算';
       if (drinkWords.length) { info.drink_separately = drinkWords; info.message = '這道沒有套餐，飲料「' + drinkWords.join('、') + '」請用 add_items 另外加一項'; }
       if (unmatched.length) info.unmatched = unmatched;
@@ -1670,6 +1767,8 @@ body.is-demo .demo-chip{display:inline-block}
       var dm = firstDefaultMissing(line);
       if (dm) { line.sel[dm.gi] = dm.idx; line.answered[dm.gi] = true; plainSels = []; }
     }
+    var eggGuardU = guardEggStyle(line.item, plainSels);
+    plainSels = eggGuardU.keep;
     var unmatched = applySelections(line, plainSels, args.remove_selections);
     if (typeof args.note === 'string' && args.note.trim()) line.note = joinNote(args.note, []);
     if (noteWorthy(unmatched).length) line.note = joinNote(line.note, noteWorthy(unmatched));
@@ -1678,6 +1777,7 @@ body.is-demo .demo-chip{display:inline-block}
     var info = Object.assign(lineInfo(line), settled);
     if (switched.switched_from) info.switched_from = switched.switched_from;
     if (switched.auto_upgraded && !info.auto_upgraded) info.auto_upgraded = switched.auto_upgraded;
+    if (eggGuardU.dropped.length) info.egg_kept = eggKeptText(line, eggGuardU.dropped);
     info.ok = true;
     if (unmatched.length) info.unmatched = unmatched;
     info.order_total = orderTotal();
@@ -1764,12 +1864,12 @@ body.is-demo .demo-chip{display:inline-block}
   function toolFinish(args) {
     args = args || {};
     if (!Order.lines.length) return { ok: false, message: '還沒有點任何餐點' };
+    var mode = normDineMode(args.dine_mode || args.dineMode || '');
+    if (mode) setDineMode(mode);
     var pending = Order.lines.filter(function (l) { return missingOf(l).length; }).map(function (l) {
       return { line: lineNo(l), name: l.item.name, missing: missingOf(l) };
     });
-    if (pending.length) return { ok: false, pending: pending, message: '還有選項沒確認，先問完再結束' };
-    var mode = normDineMode(args.dine_mode || args.dineMode || '');
-    if (mode) setDineMode(mode);
+    if (pending.length) return { ok: false, pending: pending, message: '還有選項沒確認，先問完再結束' + (Order.dineMode ? '（' + dineModeLabel(Order.dineMode) + '已經記下來，問完直接呼叫 finish_order）' : '') };
     if (CONFIG.askDineMode && !Order.dineMode) {
       Order.askingMode = true; renderOrder();
       return { ok: false, need_dine_mode: true, message: '請問顧客內用還是外帶，回答後再呼叫 finish_order 並填 dine_mode' };
@@ -1961,7 +2061,7 @@ body.is-demo .demo-chip{display:inline-block}
       '1-4. 顧客自己問能不能把單點和飲料做成套餐、能不能算套餐價、要跟哪一樣做套餐：一律先呼叫 make_combo（知道項次就填 meal_line、drink_line；只知道顧客說的名稱就填 meal_name、drink_name）。不要自己算價錢、自己比較哪個划算，也絕對不要自己說「套餐是套餐、單點是單點」「不能合併」「系統只支援」；只有 make_combo 回傳 ok 是 false，才照 message 簡短說明。成功就說「好的，改成套餐了」，有 saved 就加「省○元」。',
       '2. 工具回傳後：沒有要問的，只說「好的」或「好的，還要點其他的嗎？」，不要複誦餐點名稱、選項和價錢。有要問的（ask、missing、combo_offer），說「好的，」就直接問，例如「好的，要加蛋嗎？」。要說到餐點名稱時，一律念工具回傳的 say，不要用顧客的說法、也不要自己改字或改數字。',
       '2-1. 結果有 number_mismatch（顧客說的數字和菜單不同，例如顧客說六入、菜單只有兩入）時，先確認：「我們的是爆漿奶油餐包兩入，一份兩個，請問要幾份？」，再用 update_item 改數量。',
-      '3. 結果有 missing 時，只問第一個，白話問：missing 裡有 ask 就照 ask 問（例如「要加蛋嗎？」「果醬要沙拉嗎？也可以換…」，預設的選項一定要說到）；沒有 ask：套餐飲料→「飲料要大杯奶茶，還是換別的？」；溫度→「冰的還是溫的？」；容量→「大杯還是中杯？」。顧客回答後呼叫 update_item，selections 用 options 裡的原文；顧客只說「好」「要」「可以」就用 default。加蛋只問要不要：顧客說要，就用 default（菜單預設的蛋），不要再問要哪一種蛋；顧客自己說半熟蛋、散蛋、太陽蛋才照他說的。有蛋有肉的鐵板麵、拼盤本來就有蛋（用菜單預設的蛋），不要問要不要加蛋，也不要問要哪一種蛋；無蛋無肉的鐵板麵照 ask 問要不要加蛋或加肉。',
+      '3. 結果有 missing 時，只問第一個，白話問：missing 裡有 ask 就照 ask 問（例如「要加蛋嗎？」「果醬要沙拉嗎？也可以換…」，預設的選項一定要說到）；沒有 ask：套餐飲料→「飲料要大杯奶茶，還是換別的？」；溫度→「冰的還是溫的？」；容量→「大杯還是中杯？」。顧客回答後呼叫 update_item 改「問的那一項」（line 用那一項的項次），selections 用 options 裡的原文；顧客只說「好」「要」「可以」就用 default。顧客回答後又接著點新的餐點（例如「好啊，再一個拼盤」），要分開：答案用 update_item 給問的那一項，新的餐點用 add_items，絕對不要把答案放進新餐點的 selections。加蛋只問要不要：顧客說要，就用 default（菜單預設的蛋），不要再問要哪一種蛋；顧客自己說半熟蛋、散蛋、太陽蛋才照他說的。有蛋有肉的鐵板麵、拼盤本來就有蛋（用菜單預設的蛋），不要問要不要加蛋，也不要問要哪一種蛋；無蛋無肉的鐵板麵照 ask 問要不要加蛋或加肉。結果有 answered_previous，表示系統已經幫那一題記好，不要再問；有 egg_kept 照它說的處理。',
       '4. 結果有 ask（顧客還沒說是哪一種，例如套餐／單點、辣卡／原卡、有蛋有肉／無蛋無肉）時，照 ask 問，不要自己決定，也絕對不可以把 candidates 全部加入；顧客選好後，只用他選的那一個 name 再呼叫 add_items。顧客明確說「兩種都要」「各一個」才分別加。sold_out 時說「不好意思，這個今天賣完了」，請顧客換別的。',
       '5. 顧客改口一律在同一項上改，不要新增一項，也不要寫進備註：改成有蛋有肉、無蛋無肉、套餐或單點，用 update_item 的 name 填這幾個字；換別的餐點也用 update_item 的 name；改數量、不要某樣用 update_item 或 remove_item（line 是畫面上的項次）。',
       '5-1. 結果有 auto_upgraded 或 meat_added 時，用一句短話告訴顧客，例如「好的，幫您改成套餐，比較划算」「好的，另外加一片肉，三十五元」。結果有 unmatched 時，那幾個字沒有對應的選項：顧客的回答請換成 options 裡的原文再送一次；真的是備註（例如不要醬）就放 note。',
@@ -2899,7 +2999,7 @@ body.is-demo .demo-chip{display:inline-block}
   }
 
   // 測試用
-  window.__kiosk = { runTool: runTool, findItem: findItem, setMenu: setMenu, Order: Order, Menu: Menu, buildInstructions: buildInstructions, buildKeyterms: buildKeyterms, sessionUpdate: sessionUpdate, CONFIG: CONFIG, Session: Session, goHome: goHome, showError: showError, goDone: goDone, Submit: Submit, buildOrderData: buildOrderData, speakName: speakName, submitOrder: submitOrder, businessWindow: businessWindow, applyVoiceSettings: applyVoiceSettings, refreshSettings: refreshSettings, Remote: Remote, renderPromptView: renderPromptView, choiceAsk: choiceAsk, Turn: Turn, resetOffers: resetOffers, Offers: Offers, handleEvent: handleEvent, Log: Log, Rec: Rec, AudioIO: AudioIO, tick: tick, renderHomeText: renderHomeText };
+  window.__kiosk = { runTool: runTool, findItem: findItem, setMenu: setMenu, Order: Order, Menu: Menu, buildInstructions: buildInstructions, buildKeyterms: buildKeyterms, sessionUpdate: sessionUpdate, CONFIG: CONFIG, Session: Session, goHome: goHome, showError: showError, goDone: goDone, Submit: Submit, buildOrderData: buildOrderData, speakName: speakName, submitOrder: submitOrder, businessWindow: businessWindow, applyVoiceSettings: applyVoiceSettings, refreshSettings: refreshSettings, Remote: Remote, renderPromptView: renderPromptView, choiceAsk: choiceAsk, Turn: Turn, resetOffers: resetOffers, Offers: Offers, Pending: Pending, handleEvent: handleEvent, Log: Log, Rec: Rec, AudioIO: AudioIO, tick: tick, renderHomeText: renderHomeText };
 })();
 </script>
 </body>
