@@ -382,7 +382,7 @@ body.is-demo .demo-chip{display:inline-block}
     recordNotice: '本服務會錄音，以確認您的餐點',   // ★ 錄音時首頁顯示的告知
     logPath: '/api/kiosk/voice/log',
     wrapUpGraceMs: 60000,             // 單次時間到：先請點餐員確認並結束，最多再等這麼久
-    finishWaitMs: 1500,               // 點好了：單號最多等這麼久就讓點餐員先說總金額（號碼顯示在螢幕上）
+    finishWaitMs: 0,                  // 點好了：單號最多等這麼久（0 = 不等，號碼好了就顯示在螢幕上；已經好了才念號碼）
     orderLabel: '語音點餐',            // 訂單卡片與出單上的「客戶」名稱
     askDineMode: true,                // ★ 結束前問「內用還是外帶」（也可以按畫面上的按鈕）
     firebaseSdk: 'https://www.gstatic.com/firebasejs/9.22.0/',
@@ -744,8 +744,11 @@ body.is-demo .demo-chip{display:inline-block}
   function familyAsk(list) {
     var sets = list.filter(function (it) { return variantOf(it).kind === '套餐'; });
     var singles = list.filter(function (it) { return variantOf(it).kind === '單點'; });
-    if (sets.length && singles.length) return '請問要套餐（' + priceText(sets, true) + '）還是單點（' + priceText(singles) + '）？';
-    return '請問要' + list.map(function (it) { var v = variantOf(it); return (v.label || speakName(it.name)) + '（' + (Number(it.price) || 0) + '元）'; }).join('還是') + '？';
+    // kiosk-voice-fastfinish-20261105：問句不念價錢（比較短，也省 token）；顧客問價錢再用 candidates 的 price 回答
+    if (sets.length && singles.length) return '請問要套餐還是單點？';
+    var labels = [];
+    list.forEach(function (it) { var v = variantOf(it), lb = v.label || speakName(it.name); if (labels.indexOf(lb) === -1) labels.push(lb); });
+    return '請問要' + labels.join('還是') + '？';
   }
   /* ═════════ kiosk-voice-addons-20261102：套餐飲料加料、預設選項先問 ═════════ */
   // 套餐飲料選「美式咖啡(無糖無奶)(中杯)」→ 菜單上「美式咖啡(無糖無奶)」的加料（加糖、加奶）；和桌邊點餐的 comboDrinkAddons 一樣
@@ -1061,7 +1064,7 @@ body.is-demo .demo-chip{display:inline-block}
     var samePrice = list.every(function (x) { return Number(x.price) === Number(list[0].price); });
     var opts = list.map(function (x, i) {
       var label = neat ? d.segs[i] + core : speakName(x.name);
-      return speakName(label) + (samePrice ? '' : '（' + (Number(x.price) || 0) + '元）');
+      return speakName(label);   // kiosk-voice-fastfinish-20261105：不念價錢
     });
     var head = neat && /\d+號$/.test(d.prefix) ? speakName(d.prefix) : '';
     return '請問' + head + '要' + (opts.length === 2 ? opts[0] + '，還是' + opts[1] : opts.slice(0, -1).join('、') + '，還是' + opts[opts.length - 1]) + '？';
@@ -1902,7 +1905,7 @@ body.is-demo .demo-chip{display:inline-block}
     if (!Order.dineMode) setDineMode('takeout');
     Session.finishing = true;
     armFinishFallback();
-    var done = { ok: true, order_total: orderTotal(), dine_mode: dineModeLabel(Order.dineMode), lines: Order.lines.map(lineInfo) };
+    var done = { ok: true, order_total: orderTotal(), dine_mode: dineModeLabel(Order.dineMode) };   // 不帶整份明細：點餐員只要念總金額，結果越短回得越快
     if (!CONFIG.submitOrders) { done.trial = true; done.message = '試營運：不送單，請顧客到櫃台告訴店員餐點'; return done; }
     var settled = submitOrder().then(function (r) {
       done.submitted = true;
@@ -1918,7 +1921,22 @@ body.is-demo .demo-chip{display:inline-block}
       setTimeout(function () {
         res(Object.assign({}, done, { number_pending: true, message: '訂單正在送出，號碼會顯示在螢幕上' }));
       }, CONFIG.finishWaitMs);
-    })]);
+    })]).then(function (r) { Session.closingLine = closingLine(r); return r; });
+  }
+  // kiosk-voice-fastfinish-20261105：結尾那句由平板組好，點餐員只要照念（和規則 6-1 一樣的句子）
+  function closingLine(r) {
+    if (!r || !r.ok) return '';
+    var total = '總共' + r.order_total + '元，';
+    if (r.trial) return '好的，' + total + '請到櫃台告訴店員您的餐點，謝謝您！';
+    if (r.submitted === false) return '不好意思，訂單沒有送出成功，請到櫃台告訴店員您的餐點';
+    if (r.order_no) return '好的，' + total + '您的號碼是' + Number(r.order_no) + '號，' + CONFIG.closingText;
+    if (r.number_pending) return '好的，' + total + '號碼會顯示在螢幕上，' + CONFIG.closingText;
+    return '好的，' + total + CONFIG.closingText;
+  }
+  function closingResponse() {   // 只給這一句的指示，不帶整份規則和菜單：點餐員想得少、開口快
+    var line = Session.closingLine;
+    Session.closingLine = '';
+    return line ? { instructions: '你是早餐店的點餐員。現在只說下面這一句，一個字都不要改，也不要多說別的話：「' + line + '」' } : undefined;
   }
 
   /* ═════════ 送單（和 dinein 自助平板同一條安全建單流程） ═════════ */
@@ -2367,7 +2385,7 @@ body.is-demo .demo-chip{display:inline-block}
 
   /* ═════════ Grok 即時語音連線 ═════════ */
   var Session = {
-    ws: null, active: false, ready: false, finishing: false, demo: false,
+    ws: null, active: false, ready: false, finishing: false, demo: false, closingLine: '',
     pendingFollowup: false, responseActive: false, queueResponse: false, awaiting: false,
     userSpeaking: false, calls: {}, agentText: '', startedAt: 0, lastActivity: 0,
     timers: {}, updateAttempt: 0, token: null, toolWaits: []
@@ -2546,7 +2564,7 @@ body.is-demo .demo-chip{display:inline-block}
       Session.pendingFollowup = false;
       Session.awaiting = true;
       var waits = Session.toolWaits.splice(0);
-      Promise.all(waits).then(function () { return AudioIO.whenIdle(); }).then(function () { if (Session.active && !Session.userSpeaking) requestResponse(); });
+      Promise.all(waits).then(function () { return AudioIO.whenIdle(); }).then(function () { if (Session.active && !Session.userSpeaking) requestResponse(closingResponse()); });
       return;
     }
     if (Session.queueResponse) { Session.queueResponse = false; requestResponse(); return; }
@@ -2581,6 +2599,18 @@ body.is-demo .demo-chip{display:inline-block}
   function pressDineMode(mode) {
     setDineMode(mode);
     if (Session.demo) { demoFinish(); return; }
+    if (Session.ready && Session.ws && !Session.finishing && Order.lines.length && !Order.lines.some(function (l) { return missingOf(l).length; })) {
+      touch();
+      Log.add('system', '顧客按了「' + dineModeLabel(mode) + '」，直接送單');
+      Promise.resolve(runTool('finish_order', { dine_mode: dineModeLabel(mode) })).then(function (r) {
+        Log.add('tool', 'finish_order', { args: JSON.stringify({ dine_mode: dineModeLabel(mode), by: 'button' }), result: JSON.stringify(r).slice(0, 1500) });
+        if (!r || !r.ok) { Session.closingLine = ''; return; }
+        send({ type: 'conversation.item.create', item: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '（顧客按了「' + dineModeLabel(mode) + '」按鈕，訂單已經送出）' }] } });
+        Session.awaiting = true;
+        requestResponse(closingResponse());
+      });
+      return;
+    }
     if (Session.ready && Session.ws) {
       touch();
       Log.add('system', '顧客按了「' + dineModeLabel(mode) + '」');
@@ -2970,9 +3000,14 @@ body.is-demo .demo-chip{display:inline-block}
 
   /* ═════════ 綁定 ═════════ */
   var cancelArmed = 0;
+  function warmSubmit() {   // kiosk-voice-fastfinish-20261105：送單要用的模組和匿名登入先準備好
+    if (DEMO || !dynImport || !CONFIG.submitOrders) return;
+    try { dynImport(CONFIG.writerModule).catch(function () {}); firebaseUser().catch(function () {}); } catch (_) {}
+  }
   $('btn-start').addEventListener('click', function () {
     if (!CONFIG.enabled && !DEMO) { renderPaused(); return; }
     keepAwake();
+    warmSubmit();
     if (DEMO) startDemo(); else startLive();
   });
   $('btn-done').addEventListener('click', userPressedDone);
@@ -3024,7 +3059,7 @@ body.is-demo .demo-chip{display:inline-block}
   }
 
   // 測試用
-  window.__kiosk = { runTool: runTool, findItem: findItem, setMenu: setMenu, Order: Order, Menu: Menu, buildInstructions: buildInstructions, buildKeyterms: buildKeyterms, sessionUpdate: sessionUpdate, CONFIG: CONFIG, Session: Session, goHome: goHome, showError: showError, goDone: goDone, Submit: Submit, buildOrderData: buildOrderData, speakName: speakName, submitOrder: submitOrder, businessWindow: businessWindow, applyVoiceSettings: applyVoiceSettings, refreshSettings: refreshSettings, Remote: Remote, renderPromptView: renderPromptView, choiceAsk: choiceAsk, Turn: Turn, resetOffers: resetOffers, Offers: Offers, Pending: Pending, handleEvent: handleEvent, Log: Log, Rec: Rec, AudioIO: AudioIO, tick: tick, renderHomeText: renderHomeText };
+  window.__kiosk = { runTool: runTool, findItem: findItem, setMenu: setMenu, Order: Order, Menu: Menu, buildInstructions: buildInstructions, buildKeyterms: buildKeyterms, sessionUpdate: sessionUpdate, CONFIG: CONFIG, Session: Session, goHome: goHome, showError: showError, goDone: goDone, Submit: Submit, buildOrderData: buildOrderData, speakName: speakName, submitOrder: submitOrder, businessWindow: businessWindow, applyVoiceSettings: applyVoiceSettings, refreshSettings: refreshSettings, Remote: Remote, renderPromptView: renderPromptView, choiceAsk: choiceAsk, Turn: Turn, resetOffers: resetOffers, Offers: Offers, Pending: Pending, closingLine: closingLine, closingResponse: closingResponse, pressDineMode: pressDineMode, handleEvent: handleEvent, Log: Log, Rec: Rec, AudioIO: AudioIO, tick: tick, renderHomeText: renderHomeText };
 })();
 </script>
 </body>
