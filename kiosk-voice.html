@@ -572,6 +572,12 @@ body.is-demo .demo-chip{display:inline-block}
       if (!o || !o.name || seen[o.name]) return;
       seen[o.name] = 1; extras.push(o);
     });
+    // kiosk-voice-posextras-20261105：POS 加料（posExtras）有價錢的也能加，和 POS 一樣；送單時放 posExtras（訂單伺服器照菜單核對）
+    //   價錢 0 的（不要醬、不要菜…）照舊寫備註；分類標題（🐷豬/🐂牛）跳過
+    (it.posExtras || []).forEach(function (o) {
+      if (!o || !o.name || seen[o.name] || o.isSection === true || !(Number(o.price) > 0)) return;
+      seen[o.name] = 1; extras.push({ name: o.name, price: Number(o.price) || 0, _pos: true });
+    });
     it._extras = extras;
     return it;
   }
@@ -754,7 +760,7 @@ body.is-demo .demo-chip{display:inline-block}
     var gi = drinkGroupIdx(line.item);
     if (gi < 0) return [];
     var c = (line.item.optionGroups[gi].choices || [])[line.sel[gi]], m = c && drinkMenuItem(drinkBaseName(c.name));
-    return m ? (m._extras || m.options || []).filter(function (o) { return o && o.name; }) : [];
+    return m ? (m._extras || m.options || []).filter(function (o) { return o && o.name && !o._pos; }) : [];
   }
   function pruneDrinkAddons(line) {
     if (!line.drinkAddons || !line.drinkAddons.length) return;
@@ -856,8 +862,21 @@ body.is-demo .demo-chip{display:inline-block}
   // 同一句話一起說的，照舊由 setPick 直接配成套餐。
   // 不同句才點飲料（或數量對不上）：點餐員問一次「要不要把○○和○○做成套餐？」，顧客說好才用 make_combo 合併。
   // 先點飲料、後點套餐（套餐飲料還沒選）也一樣問「剛剛點的○○要當套餐飲料嗎？」
-  var Offers = { asked: {}, lines: {} };   // asked：問過的「主餐 id:飲料 id」；lines：問過的那幾項（顧客說不用，就不再拿它們來問）
-  function resetOffers() { Offers.asked = {}; Offers.lines = {}; }
+  var Offers = { asked: {}, lines: {}, kinds: {} };   // asked：問過的「主餐 id:飲料 id」；lines：問過的那幾項（顧客說不用，就不再拿它們來問）；kinds：問過套餐／單點的那道
+  function resetOffers() { Offers.asked = {}; Offers.lines = {}; Offers.kinds = {}; }
+  // kiosk-voice-posextras-20261105：點餐員直接傳了「4號辣卡脆雞堡單點」，但顧客只說「四號辣卡脆雞堡」（沒說套餐或單點）→ 先問一次
+  var KIND_WORD_RE = /套餐|單點|單的|不要套|不用套|不要飲料|不用飲料|沒有飲料|只要/;
+  function kindQuestion(item) {
+    if (variantOf(item).kind !== '單點' || KIND_WORD_RE.test(norm(Session.userLine || ''))) return null;
+    var key = familyKey(item.name);
+    if (Offers.kinds[key]) return null;
+    var list = narrowFamily(familyOf(item), { variant: variantOf(item).variant }).filter(function (x) { return x.active !== false; });
+    var sets = list.filter(function (x) { return isSetItem(x) && sameDish(x, item); });
+    if (!sets.length) return null;
+    list = sets.concat([item]);
+    Offers.kinds[key] = true;
+    return { ask: familyAsk(list), list: list };
+  }
   function plainName(name) {   // 念給顧客聽的短名稱：單點-黑胡椒里肌鐵板麵(有蛋+有肉) → 黑胡椒里肌鐵板麵
     return speakName(String(name || '').replace(/^單點-/, '').replace(/[（(][^）)]*[）)]/g, '').replace(/(單點|套餐)$/, '')).replace(/\s+/g, '');
   }
@@ -957,7 +976,7 @@ body.is-demo .demo-chip{display:inline-block}
     return out;
   }
   function comboOffer(touched) {   // 這次新增／修改的項目能不能和點餐單上另一項做成套餐（一次只問一組，問過不再問）
-    var meals = Order.lines.filter(comboMeal), drinks = Order.lines.filter(comboDrink);
+    var meals = Order.lines.filter(comboMeal), drinks = Order.lines.filter(comboDrink), best = null;
     for (var i = 0; i < meals.length; i++) {
       for (var j = 0; j < drinks.length; j++) {
         var m = meals[i], d = drinks[j], key = m.id + ':' + d.id;
@@ -966,11 +985,25 @@ body.is-demo .demo-chip{display:inline-block}
         if (!drinkPicks(d).sizeAnswered) continue;          // 杯型還沒說，等說了再問
         var dr = comboDraft(m, d);
         if (dr.error || (!isSetItem(m.item) && dr.save <= 0)) continue;
-        Offers.asked[key] = true; Offers.lines[m.id] = Offers.lines[d.id] = true;
-        return offerInfo(m, d, dr, touched);
+        // kiosk-voice-posextras-20261105：好幾份主餐都能配這杯 → 挑省最多的；一樣多就挑最後點的那份
+        var gain = isSetItem(m.item) ? 1e6 : dr.save * dr.n;
+        if (!best || gain > best.gain || (gain === best.gain && i > best.i)) best = { m: m, d: d, dr: dr, gain: gain, i: i };
       }
     }
-    return null;
+    if (!best) return null;
+    Offers.asked[best.m.id + ':' + best.d.id] = true; Offers.lines[best.m.id] = Offers.lines[best.d.id] = true;
+    return offerInfo(best.m, best.d, best.dr, touched);
+  }
+  function linesNamed(text, lines) {   // 「四號」「鐵板麵」「拼盤」「鮮奶茶」→ 點餐單上對得到的那幾項
+    var t = norm(text).replace(/^(跟|和|把|用)/, '').replace(/(那份|那個|那杯|的|套餐|單點|餐)+$/, '');
+    if (!t) return [];
+    var num = (t.match(/^(\d+)號/) || [])[1], rest = num ? t.replace(/^\d+號/, '') : t;
+    return lines.filter(function (l) {
+      var n = norm(l.item.name), core = norm(plainName(l.item.name));
+      if (num && n.indexOf(num + '號') !== 0) return false;
+      if (!rest) return true;
+      return n.indexOf(rest) !== -1 || core.indexOf(rest) !== -1 || (core.length >= 2 && rest.indexOf(core) !== -1);
+    });
   }
   function noComboText(meal) {
     if (isSetItem(meal.item)) return '第' + lineNo(meal) + '項已經是套餐（' + speakName(meal.item.name) + '），飲料也選好了';
@@ -1086,13 +1119,18 @@ body.is-demo .demo-chip{display:inline-block}
     return { candidates: left, ask: familyAsk(left), family: true };
   }
   // 加肉：品項本身有肉的選項就用；無蛋無肉沒有的話，另外加一項「+里肌」；單點加蛋又加肉 → 直接換成有蛋有肉（比較便宜）
-  var MEAT_WORD_RE = /^(加肉|要肉|要加肉|肉|加里肌|里肌|要里肌|加一片肉|加片肉|加一片里肌|一片肉|加份肉)$/;
+  var MEAT_WORD_RE = /^(加肉|要肉|要加肉|肉|加里肌|里肌|要里肌|加[一1]片肉|加片肉|加[一1]片里肌|[一1]片肉|加份肉|加[一1]份肉|要[一1]片肉)$/;   // norm() 會把「一片」變成「1片」
   function meatAddonItem() {
     for (var i = 0; i < Menu.active.length; i++) { var n = norm(Menu.active[i].name); if (n === '里肌' || n === '加里肌') return Menu.active[i]; }
     return null;
   }
+  function isMeatExtra(o) { return !!o && !/無|不/.test(o.name) && (/里肌/.test(o.name) || (!o._pos && /肉/.test(o.name))); }
+  function meatOptFor(item) {   // 這道餐自己的「加肉」加料：先看線上加料，再看 POS 加料的 +里肌（不拿 +2片豬肉、+牛肉 這類）
+    var ex = item._extras || [];
+    return ex.filter(function (o) { return !o._pos && isMeatExtra(o); })[0] || ex.filter(function (o) { return o._pos && isMeatExtra(o); })[0] || null;
+  }
   function meatPrice(item) {
-    var opt = (item._extras || []).filter(function (o) { return /里肌|肉/.test(o.name) && !/無|不/.test(o.name); })[0];
+    var opt = meatOptFor(item);
     if (opt) return Number(opt.price) || 0;
     var m = meatAddonItem();
     return m && variantOf(item).variant === '無蛋無肉' ? Number(m.price) || 0 : 0;
@@ -1101,7 +1139,7 @@ body.is-demo .demo-chip{display:inline-block}
   function hasEgg(line) {
     var gi = eggGroupIdx(line);
     if (gi >= 0 && line.answered[gi] && !/不加蛋/.test((line.item.optionGroups[gi].choices[line.sel[gi]] || {}).name || '不加蛋')) return true;
-    return line.extras.some(function (o) { return /蛋/.test(o.name); });
+    return line.extras.some(function (o) { return !o._pos && /蛋/.test(o.name); });
   }
   function replaceItem(line, item) {
     var carried = chosenNames(line), toNoEgg = variantOf(item).variant === '無蛋無肉';
@@ -1113,21 +1151,32 @@ body.is-demo .demo-chip{display:inline-block}
     });
     if (variantOf(item).variant !== '無蛋無肉') meatChildren(line).forEach(function (c) { Order.lines.splice(Order.lines.indexOf(c), 1); });
   }
+  function meatAddedText(o) { return '加了一片肉（' + o.name + '，' + (Number(o.price) || 0) + '元），在同一項'; }
   function settleLine(line) {
-    var out = {};
-    if (variantOf(line.item).variant !== '無蛋無肉') { line.wantMeat = false; return out; }
+    var out = {}, fresh = line._meatNew;
+    line._meatNew = false;
+    var meatEx = line.extras.filter(isMeatExtra);
+    if (variantOf(line.item).variant !== '無蛋無肉') {
+      line.wantMeat = false;
+      if (fresh && meatEx.length) out.meat_added = meatAddedText(meatEx[0]);
+      return out;
+    }
     var kids = meatChildren(line);
-    if (!line.wantMeat && !kids.length) return out;
+    if (!line.wantMeat && !kids.length && !meatEx.length) return out;
     if (hasEgg(line)) {
       var up = narrowFamily(familyOf(line.item), { kind: variantOf(line.item).kind, variant: '有蛋有肉' });
       if (up.length === 1) {
-        var before = calcLine(line).unit + kids.reduce(function (s, k) { return s + calcLine(k).unit; }, 0);
+        var before = calcLine(line).unit + kids.reduce(function (s, k) { return s + calcLine(k).unit; }, 0) +
+          (line.wantMeat && !kids.length && !meatEx.length ? meatPrice(line.item) : 0);
+        line.extras = line.extras.filter(function (o) { return !isMeatExtra(o); });   // 有蛋有肉本來就有肉，不要再多一片
         replaceItem(line, up[0]);
         line.wantMeat = false;
         out.auto_upgraded = '單點加蛋又加肉，已換成' + speakName(up[0].name) + '（' + (Number(up[0].price) || 0) + '元），比分開加（' + before + '元）划算';
         return out;
       }
     }
+    if (meatEx.length) { line.wantMeat = false; if (fresh) out.meat_added = meatAddedText(meatEx[0]); return out; }
+    // 菜單上這道沒有加肉的加料（線上加料、POS 加料都沒有 +里肌）：訂單伺服器只收菜單上有的加料，所以另外加一項「+里肌」
     if (line.wantMeat && !kids.length) {
       var m = meatAddonItem();
       if (m) {
@@ -1222,6 +1271,14 @@ body.is-demo .demo-chip{display:inline-block}
     if (nFresh && !tFresh) s -= 0.08;
     return s;
   }
+  function posScore(t, name) {   // POS 加料：「培根」→ +培根、「玉米」→ +玉米30g；「豬肉」對到兩種（單片／2片）就不猜
+    var n = normChoice(name), s = 0;
+    if (!n || !t) return 0;
+    if (n === t) return 1;
+    if (t.length >= 2 && n.indexOf(t) !== -1) s = 0.75 + 0.2 * t.length / n.length;
+    else if (n.length >= 2 && t.indexOf(n) !== -1) s = 0.7 + 0.2 * n.length / t.length;
+    return s >= 0.8 ? s : 0;
+  }
   function splitCompound(raw) {
     var n = norm(raw), parts = [];
     if (/^(加[^加]{1,4}){2,4}$/.test(n)) return n.match(/加[^加]{1,4}/g);   // 加糖加奶、加蛋加起司
@@ -1258,13 +1315,19 @@ body.is-demo .demo-chip{display:inline-block}
         if (/不加蛋/.test(g.choices[idx].name)) idx = indexWhere(g.choices, /^(?!.*不加蛋)/);
         line.sel[gi] = idx; line.answered[gi] = true; return true;
       }
-      var eggs = line.item._extras.filter(function (o) { return /蛋/.test(o.name) && !/不加蛋/.test(o.name); });
+      var eggs = line.item._extras.filter(function (o) { return !o._pos && /蛋/.test(o.name) && !/不加蛋/.test(o.name); });   // POS 加料的 +蛋沙拉 不是蛋
       if (eggs.length) { addExtra(line, eggs[0]); return true; }
       return false;
     }
     if (MEAT_WORD_RE.test(full)) {
-      var meatOpt = line.item._extras.filter(function (o) { return /里肌|肉/.test(o.name) && !/無|不/.test(o.name); })[0];
-      if (meatOpt) { addExtra(line, meatOpt); return true; }
+      var meatOpt = meatOptFor(line.item);
+      if (meatOpt) {   // 菜單上這道有加肉的加料：和 POS 一樣加在同一項
+        if (!line.extras.some(function (x) { return x.name === meatOpt.name; })) line._meatNew = true;
+        addExtra(line, meatOpt);
+        gi = eggGroupIdx(line);
+        if (gi >= 0 && variantOf(line.item).variant === '無蛋無肉') line.answered[gi] = true;   // 「加蛋還是加肉」已經回答了
+        return true;
+      }
       if (variantOf(line.item).variant === '無蛋無肉' && meatAddonItem()) {
         line.wantMeat = true;
         gi = eggGroupIdx(line);
@@ -1279,7 +1342,7 @@ body.is-demo .demo-chip{display:inline-block}
     groups.forEach(function (gr, gIndex) {
       (gr.choices || []).forEach(function (c, ci) { cands.push({ kind: 'group', gi: gIndex, ci: ci, name: c.name, s: choiceScore(t, c.name) }); });
     });
-    line.item._extras.forEach(function (o) { cands.push({ kind: 'extra', o: o, name: o.name, s: choiceScore(t, o.name) }); });
+    line.item._extras.forEach(function (o) { cands.push({ kind: 'extra', o: o, name: o.name, s: o._pos ? posScore(t, o.name) : choiceScore(t, o.name) }); });
     drinkAddonOptions(line).forEach(function (o) { cands.push({ kind: 'drinkAddon', o: o, name: o.name, s: choiceScore(t, o.name) }); });
     cands.sort(function (a, b) { return (b.s - a.s) || (a.name.length - b.name.length); });
     var top = cands[0], next = cands[1];
@@ -1297,6 +1360,12 @@ body.is-demo .demo-chip{display:inline-block}
   }
   function removeOne(line, raw) {
     var t = normChoice(raw), done = false, groups = line.item.optionGroups || [];
+    if (MEAT_WORD_RE.test(norm(raw).replace(/^(不要|不用|拿掉|取消|去掉)/, ''))) {   // 「不要加肉了」
+      var nb = line.extras.length;
+      line.extras = line.extras.filter(function (o) { return !isMeatExtra(o); });
+      if (line.extras.length !== nb) done = true;
+      line.wantMeat = false;
+    }
     if (/蛋/.test(t)) {
       var gi = eggGroupIdx(line);
       if (gi >= 0) { line.sel[gi] = indexWhere(groups[gi].choices, /不加蛋/); line.answered[gi] = true; done = true; }
@@ -1411,7 +1480,9 @@ body.is-demo .demo-chip{display:inline-block}
     { type: 'function', name: 'make_combo', description: '把點餐單上的單點主餐和另外點的飲料做成套餐（套餐飲料還沒選的，把另外點的飲料當套餐飲料）。顧客同意 combo_offer、或自己問能不能做成套餐、能不能算套餐價時呼叫。',
       parameters: { type: 'object', properties: {
         meal_line: { type: 'integer', minimum: 1, description: '主餐那一項的項次（combo_offer.meal_line）' },
-        drink_line: { type: 'integer', minimum: 1, description: '飲料那一項的項次（combo_offer.drink_line）' }
+        drink_line: { type: 'integer', minimum: 1, description: '飲料那一項的項次（combo_offer.drink_line）' },
+        meal_name: { type: 'string', description: '顧客說要跟哪一樣主餐做套餐（例如：四號、鐵板麵、拼盤）；不知道項次時填這個' },
+        drink_name: { type: 'string', description: '顧客說的是哪一杯飲料（例如：鮮奶茶）；不知道項次時填這個' }
       } } },
     { type: 'function', name: 'remove_item', description: '把點餐單上的某一項整個刪掉。',
       parameters: { type: 'object', properties: { line: { type: 'integer', minimum: 1 } }, required: ['line'] } },
@@ -1512,7 +1583,14 @@ body.is-demo .demo-chip{display:inline-block}
         return;
       }
       if (f.soldOut) { results.push({ ok: false, said: toTrad(said), name: f.item.name, sold_out: true, message: '今天賣完了' }); return; }
+      var kindAsk = f.item && !f.upgraded_from ? kindQuestion(f.item) : null;   // kiosk-voice-posextras-20261105
+      if (kindAsk) {
+        results.push({ ok: false, said: toTrad(said), not_added: true, ask: kindAsk.ask, candidates: candidateList(kindAsk.list),
+          message: '顧客沒有說要套餐還是單點，這項沒有加入。照 ask 問；顧客選好後，用 candidates 裡對應的 name 再呼叫 add_items（其他選項照樣放 selections）' });
+        return;
+      }
       if (!f.item) {
+        if (f.family && f.candidates && f.candidates.length) Offers.kinds[familyKey(f.candidates[0].name)] = true;
         var miss = { ok: false, said: toTrad(said), candidates: candidateList(f.candidates),
           message: f.candidates.length ? '請顧客從候選中選一個' : '菜單上找不到，請顧客再說一次或換別的' };
         if (f.ask) { miss.ask = f.ask; miss.message = '照 ask 問顧客；顧客選好後，用 candidates 裡對應的 name 再呼叫 add_items（其他選項照樣放 selections）'; }
@@ -1625,6 +1703,19 @@ body.is-demo .demo-chip{display:inline-block}
   }
   function toolMakeCombo(args) {
     var meal = null, d = null;
+    if (!args.meal_line && args.meal_name) {   // 「跟四號做套餐」
+      var named = linesNamed(args.meal_name, Order.lines.filter(function (l) { return !l.parentId && !isDrinkItem(l.item); }));
+      if (!named.length) return { ok: false, message: '點餐單上沒有「' + toTrad(args.meal_name) + '」', lines: Order.lines.map(lineInfo) };
+      var namedOk = named.filter(comboMeal);
+      if (!namedOk.length) return { ok: false, line: lineNo(named[0]), message: noComboText(named[0]) };
+      if (namedOk.length > 1) return { ok: false, ask: '請問是哪一份：' + namedOk.slice(0, 3).map(function (l) { return '第' + lineNo(l) + '項' + plainName(l.item.name); }).join('，還是') + '？',
+        message: '照 ask 問；顧客選好再呼叫 make_combo，填 meal_line' };
+      args = Object.assign({}, args, { meal_line: lineNo(namedOk[0]) });
+    }
+    if (!args.drink_line && args.drink_name) {
+      var dn = linesNamed(args.drink_name, Order.lines.filter(comboDrink));
+      if (dn.length === 1) args = Object.assign({}, args, { drink_line: lineNo(dn[0]) });
+    }
     if (args.meal_line) { meal = getLine(args.meal_line); if (!meal) return { ok: false, message: '點餐單上沒有第' + args.meal_line + '項', lines: Order.lines.map(lineInfo) }; }
     if (args.drink_line) { d = getLine(args.drink_line); if (!d) return { ok: false, message: '點餐單上沒有第' + args.drink_line + '項', lines: Order.lines.map(lineInfo) }; }
     if (meal && comboDrink(meal) && (!d || !comboDrink(d))) { var sw = meal; meal = d; d = sw; }   // 項次填反了
@@ -1736,7 +1827,8 @@ body.is-demo .demo-chip{display:inline-block}
       id: it.id, name: it.name, shortName: String(it.shortName || '').trim(), printName: String(it.shortName || it.printName || '').trim(),
       price: Number(it.price) || 0, station: it.station || '', printStations: Array.isArray(it.printStations) ? it.printStations.slice() : [],
       qty: line.qty, note: line.note || '', drinkNote: '',
-      options: line.extras.map(function (o) { return { name: o.name, price: Number(o.price) || 0 }; }),
+      options: line.extras.filter(function (o) { return !o._pos; }).map(function (o) { return { name: o.name, price: Number(o.price) || 0 }; }),
+      posExtras: line.extras.filter(function (o) { return o._pos; }).map(function (o) { return { name: o.name, price: Number(o.price) || 0 }; }),
       comboDrinkAddons: (line.drinkAddons || []).map(function (o) { return { name: o.name, price: Number(o.price) || 0 }; }), optionGroupSelections: ogSels, optionSelections: picked, selectedOptions: Object.assign({}, picked),
       itemTotal: p.total
     };
@@ -1865,8 +1957,8 @@ body.is-demo .demo-chip{display:inline-block}
       '1. 顧客說出餐點就立刻呼叫 add_items；同一句點好幾樣放在同一次呼叫。name 用下方菜單的正式名稱；不確定就照顧客原話傳，系統會比對。',
       '1-1. 顧客點主餐時一起說了飲料（例如「三號牛肉堡，飲料改大杯少冰鮮奶茶」「蘑菇鐵板麵配大杯奶茶」）：那杯就是套餐飲料，放在主餐那一項的 selections（例如 大杯鮮奶茶、少冰），系統會自動配成套餐；不要再問套餐還是單點，也不要另外加一杯飲料。顧客說「再一杯」「另外一杯」的飲料才另外加一項。結果有 drink_separately（這道沒有套餐）時，那杯飲料用 add_items 另外加一項。',
       '1-2. 飲料名稱裡的（無糖無奶）（無糖）只是原本的做法：顧客要加糖、加奶，照樣放在那一項的 selections（例如 加糖、加奶），系統會加上；不要自己說不能加，只有結果出現 unmatched 才是沒有這個選項。',
-      '1-3. 結果有 combo_offer（點餐單上的單點主餐和另外點的飲料可以做成套餐，比較便宜）：說「好的，」接著照 combo_offer.ask 問一次，例如「好的，要不要跟黑胡椒里肌鐵板麵做成套餐？可以省5元。」同時還有 missing 或 ask，先問 combo_offer，再問其他。顧客說好，就呼叫 make_combo，meal_line、drink_line 填 combo_offer 的；顧客說不用，就維持原樣，不要再問。',
-      '1-4. 顧客自己問能不能把單點和飲料做成套餐、能不能算套餐價：一律先呼叫 make_combo（知道是哪兩項就填 meal_line、drink_line）。絕對不要自己說「套餐是套餐、單點是單點」「不能合併」；只有 make_combo 回傳 ok 是 false，才照 message 簡短說明。成功就說「好的，改成套餐了」，有 saved 就加「省○元」。',
+      '1-3. 結果有 combo_offer（點餐單上的單點主餐和另外點的飲料可以做成套餐，比較便宜）：說「好的，」接著照 combo_offer.ask 問一次，例如「好的，要不要跟四號辣卡脆雞堡做成套餐？可以省10元。」同時還有 missing 或 ask，先問 combo_offer，再問其他。顧客說好，就呼叫 make_combo，meal_line、drink_line 填 combo_offer 的；顧客說要跟別的主餐做（例如「跟四號做套餐」），就呼叫 make_combo，meal_name 填顧客說的那一樣（例如 四號），drink_line 填 combo_offer 的；顧客說不用，就維持原樣，不要再問。',
+      '1-4. 顧客自己問能不能把單點和飲料做成套餐、能不能算套餐價、要跟哪一樣做套餐：一律先呼叫 make_combo（知道項次就填 meal_line、drink_line；只知道顧客說的名稱就填 meal_name、drink_name）。不要自己算價錢、自己比較哪個划算，也絕對不要自己說「套餐是套餐、單點是單點」「不能合併」「系統只支援」；只有 make_combo 回傳 ok 是 false，才照 message 簡短說明。成功就說「好的，改成套餐了」，有 saved 就加「省○元」。',
       '2. 工具回傳後：沒有要問的，只說「好的」或「好的，還要點其他的嗎？」，不要複誦餐點名稱、選項和價錢。有要問的（ask、missing、combo_offer），說「好的，」就直接問，例如「好的，要加蛋嗎？」。要說到餐點名稱時，一律念工具回傳的 say，不要用顧客的說法、也不要自己改字或改數字。',
       '2-1. 結果有 number_mismatch（顧客說的數字和菜單不同，例如顧客說六入、菜單只有兩入）時，先確認：「我們的是爆漿奶油餐包兩入，一份兩個，請問要幾份？」，再用 update_item 改數量。',
       '3. 結果有 missing 時，只問第一個，白話問：missing 裡有 ask 就照 ask 問（例如「要加蛋嗎？」「果醬要沙拉嗎？也可以換…」，預設的選項一定要說到）；沒有 ask：套餐飲料→「飲料要大杯奶茶，還是換別的？」；溫度→「冰的還是溫的？」；容量→「大杯還是中杯？」。顧客回答後呼叫 update_item，selections 用 options 裡的原文；顧客只說「好」「要」「可以」就用 default。加蛋只問要不要：顧客說要，就用 default（菜單預設的蛋），不要再問要哪一種蛋；顧客自己說半熟蛋、散蛋、太陽蛋才照他說的。有蛋有肉的鐵板麵、拼盤本來就有蛋（用菜單預設的蛋），不要問要不要加蛋，也不要問要哪一種蛋；無蛋無肉的鐵板麵照 ask 問要不要加蛋或加肉。',
