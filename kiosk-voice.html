@@ -413,7 +413,7 @@ body.is-demo .demo-chip{display:inline-block}
     failReturnMs: 180000,             // 送單失敗時畫面留久一點，讓店員看得到餐點
     errorReturnMs: 20000,
     noReplyMs: 10000,
-    quietAfterAdd: true,              // 加餐、修改沒有要問的，就不再請點餐員說「還要點其他的嗎？」（kiosk-voice-fast2-20261106）
+    quietAfterAdd: false,             // 20:18 起恢復問「還要點其他的嗎？」；改 true 就是沒有要問的不再回覆              // 加餐、修改沒有要問的，就不再請點餐員說「還要點其他的嗎？」（kiosk-voice-fast2-20261106）
     localGreeting: true,              // 開場白存起來，按開始點餐馬上播、同時開始收音（kiosk-voice-fast2-20261106）
     localAckMs: 600,                  // 客人說完 0.6 秒、點餐員還沒出聲，平板先播存好的「好的」；0 = 不用（kiosk-voice-localack-20261106）
     ackHoldMs: 400,                   // 客人剛說完，點餐員第一聲先壓 0.4 秒：這段時間客人又開口就不播（kiosk-voice-ack-20261106）                 // 客人說完多久點餐員都沒開始回覆，就記錄並再請一次（kiosk-voice-crosscheck-20261106）
@@ -492,7 +492,8 @@ body.is-demo .demo-chip{display:inline-block}
   var DEMO = params.get('demo') === '1' || (location.protocol === 'file:' && params.get('demo') !== '0');
   var TTS_ON = params.get('tts') !== '0';
   var BARGE_PARAM = params.get('bargein') === '1';
-  var LITE = params.get('lite') === '1';   // kiosk-voice-fast2-20261106：測試用，不帶菜單清單、工具說明縮短
+  var LITE = params.get('lite') === '1';
+  var NOTX = params.get('notx') === '1';   // kiosk-voice-fast3-20261106：測試用，不開 xAI 轉文字   // kiosk-voice-fast2-20261106：測試用，不帶菜單清單、工具說明縮短
   if (BARGE_PARAM) CONFIG.bargeIn = true;
   if (params.get('pi')) storeSet('kiosk_pi_base', params.get('pi'));
   if (params.get('kioskKey')) storeSet('kiosk_voice_key', params.get('kioskKey'));
@@ -2486,7 +2487,7 @@ body.is-demo .demo-chip{display:inline-block}
     if (level < 2) {
       s.reasoning = { effort: CONFIG.reasoningEffort };
       s.turn_detection.idle_timeout_ms = CONFIG.serverIdlePromptMs;
-      s.audio.input.transcription = { model: 'grok-transcribe', language_hint: 'zh', keyterms: buildKeyterms(tok && tok.aliases) };
+      if (!NOTX) s.audio.input.transcription = { model: 'grok-transcribe', language_hint: 'zh', keyterms: buildKeyterms(tok && tok.aliases) };
       s.audio.output.speed = CONFIG.speechSpeed;
     }
     if (level === 0) {   // xAI 進階參數：不被接受時 onServerError 會退一級（拿掉這兩個）再送
@@ -2784,6 +2785,7 @@ body.is-demo .demo-chip{display:inline-block}
     Session.startedAt = Date.now(); touch();
     if (!Session.demo) Log.begin();
     if (LITE) Log.add('system', '精簡測試（?lite=1）：不帶菜單清單、工具說明縮短');
+    if (NOTX) Log.add('system', '不轉文字測試（?notx=1）：沒有「客人」那行字，錯字對照、口味判斷也用不到');
     setAgent('正在幫您接通點餐員，請稍等…'); setUser('');
     setStatus('connecting');
     showScreen('screen-order');
@@ -3072,6 +3074,7 @@ body.is-demo .demo-chip{display:inline-block}
       if (!clip || !Session.active || Session.userSpeaking || Session.cutOff || !Session.responseActive || Session.respAudio || this.asking(Session.userLine)) return;
       this.played = true;
       Tm.mark('lack');
+      Log.add('agent', '好的', { local: true });   // 紀錄：平板先說的好的
       clip.forEach(function (d) { AudioIO.play(d); });
     },
     keep: function (d) {   // 這次回覆的聲音先留著：整句只是「好的」就存起來
@@ -3091,7 +3094,8 @@ body.is-demo .demo-chip{display:inline-block}
       var buf = Hold.buf.splice(0);
       if (this.isAck(text)) {
         this.played = 'done'; Session.cutOff = true;
-        if (buf.length) Log.add('system', '點餐員的「好的」平板已經說過，不重複');
+        if (Log.cur) Log.cur.agentLogged = true;   // 點餐員這句好的沒有播：不要記成「好的（被客人打斷）」
+        if (buf.length) Log.add('system', '點餐員也說了「好的」，平板已經說過，不重複播');
         return;
       }
       this.played = false;
