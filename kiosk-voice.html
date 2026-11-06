@@ -591,6 +591,8 @@ body.is-demo .demo-chip{display:inline-block}
   }
   // kiosk-voice-noprice-20261106：同一個品名放在兩個分類（苜蓿芽蔬菜吐司在「吐司、厚片」和「其它、飲品」各一筆）
   //   → 只留一筆：有上架的優先，再挑選項最多的（吐司、厚片那筆有「加蛋」）。不然系統會一直問「請問要苜蓿芽蔬菜吐司？」
+  // 食材加點裡名稱只有數字的（1、5、9、10、50、100）是 POS 補差額用的，不是餐點
+  function isAmountItem(it) { return /^\s*[+＋$]?\s*\d+\s*元?\s*$/.test(String(it && it.name || '')); }
   function dedupeByName(items) {
     var best = {};
     function score(it) { return (it.active !== false ? 1000 : 0) + (it.optionGroups || []).length * 10 + (it.options || []).length + (it.posExtras || []).length / 1000; }
@@ -598,7 +600,7 @@ body.is-demo .demo-chip{display:inline-block}
     return items.filter(function (it) { return best[String(it.name).trim()] === it; });
   }
   function setMenu(items, aliasData) {
-    Menu.items = dedupeByName((items || []).filter(function (it) { return it && it.name; })).map(prepItem);
+    Menu.items = dedupeByName((items || []).filter(function (it) { return it && it.name && !isAmountItem(it); })).map(prepItem);
     Menu.active = Menu.items.filter(function (it) { return it.active !== false; });
     var byName = {};
     Menu.items.forEach(function (it) { it._names.forEach(function (n) { if (!byName[n]) byName[n] = it; }); });
@@ -724,11 +726,19 @@ body.is-demo .demo-chip{display:inline-block}
     s = s.replace(/^[、，,\s]+|[、，,\s]+$/g, '').trim();
     return s.length > 200 ? s.slice(0, 200) + '…' : s;
   }
+  // 描述裡「※注意事項：…」那幾行和食材分開（熔岩肉桂蘋果厚片：肉桂含香豆素…）
+  function splitNotice(raw) {
+    var food = [], notice = [];
+    String(raw || '').split(/\r?\n/).forEach(function (ln) { if (/^\s*※/.test(ln)) notice.push(ln.replace(/^\s*※\s*(注意事項\s*[:：])?\s*/, '').trim()); else food.push(ln); });
+    return { food: food.join('\n'), notice: notice.filter(Boolean).join(' ') };
+  }
   function contentsOf(it) {
-    var own = cleanContents(it && (it.desc || it.description));
-    if (own) return { text: own, from: '' };
-    var sib = familyOf(it).filter(function (x) { return x !== it && cleanContents(x.desc || x.description); })[0];
-    return sib ? { text: cleanContents(sib.desc || sib.description), from: sib.name } : { text: '', from: '' };
+    var sp = splitNotice(it && (it.desc || it.description)), own = cleanContents(sp.food);
+    if (own) return { text: own, from: '', notice: sp.notice };
+    var sib = familyOf(it).filter(function (x) { return x !== it && cleanContents(splitNotice(x.desc || x.description).food); })[0];
+    if (!sib) return { text: '', from: '', notice: sp.notice };
+    var sp2 = splitNotice(sib.desc || sib.description);
+    return { text: cleanContents(sp2.food), from: sib.name, notice: sp.notice || sp2.notice };
   }
 
   /* ═════════ 同一道餐的不同版本（套餐／單點、有蛋有肉／無蛋無肉） ═════════ */
@@ -1889,6 +1899,7 @@ body.is-demo .demo-chip{display:inline-block}
       var out = briefItem(r.it), c = contentsOf(r.it);
       if (c.text) { out.contents = c.text; if (c.from) out.contents_from = c.from; }
       else out.contents = '（菜單沒有寫食材）';
+      if (c.notice) out.notice = c.notice;   // 注意事項：顧客提到懷孕、吃藥、過敏、能不能吃時才說
       var setOf = isSetItem(r.it) ? r.it : (variantOf(r.it).kind === '單點' ? familyOf(r.it).filter(function (x) { return x.active !== false && isSetItem(x); })[0] : null);
       if (setOf && setIncludes(setOf)) out.set_includes = '套餐' + setIncludes(setOf);   // 「套餐有什麼」照這個說
       return out;
@@ -2181,7 +2192,7 @@ body.is-demo .demo-chip{display:inline-block}
       '7. 可以說的錢只有這幾種：加料要多收的錢（照 ask、meat_added）、combo_offer 可以省多少、套餐的「飲料折5元」「超過30元補差價」（照【套餐】或 set_includes）、最後總共多少（照 finish_order）。其他價錢一律不說，也不要自己加總。',
       '8. 聽不清楚就說「不好意思，可以再說一次嗎？」；顧客講台語也盡量聽懂，用華語回答。',
       '8-0. 顧客問「套餐有什麼」「套餐跟單點差在哪」：只說套餐多附的飲料，照【套餐】或 search_menu 結果的 set_includes 說，例如「套餐有附一杯飲料，飲料折五元」「套餐附一杯大杯錫蘭奶茶，可以換別的飲料，超過三十元要補差價」；不要念食材，也不要說餐點價錢。',
-      '8-1. 顧客問某道餐點裡面有什麼、有沒有某樣食材（例如洋蔥、香菜、辣不辣）：先用 search_menu 查那一道，只照結果的 contents 回答。問「有沒有○○」：contents 有寫到就說「有喔」，沒寫到就只說「沒有喔」，不要多說別的。問「裡面有什麼」：白話念出主要食材，例如「裡面有炸雞腿、生菜、番茄和酸黃瓜醬」。contents 是「菜單沒有寫食材」，就說「這個要麻煩問一下櫃台店員」。絕對不要用一般常識猜。顧客提到過敏，最後加一句「如果會過敏，請再跟櫃台確認一下」。顧客說不要某樣食材（例如不要洋蔥），寫在那一項的 note。',
+      '8-1. 顧客問某道餐點裡面有什麼、有沒有某樣食材（例如洋蔥、香菜、辣不辣）：先用 search_menu 查那一道，只照結果的 contents 回答。問「有沒有○○」：contents 有寫到就說「有喔」，沒寫到就只說「沒有喔」，不要多說別的。問「裡面有什麼」：白話念出主要食材，例如「裡面有炸雞腿、生菜、番茄和酸黃瓜醬」。contents 是「菜單沒有寫食材」，就說「這個要麻煩問一下櫃台店員」。絕對不要用一般常識猜。顧客提到過敏，最後加一句「如果會過敏，請再跟櫃台確認一下」。結果有 notice（注意事項）時：顧客問能不能吃、有沒有要注意的，或提到懷孕、哺乳、吃藥、肝腎、過敏，就用一句話照 notice 提醒；只問裡面有什麼就不用念。顧客說不要某樣食材（例如不要洋蔥），寫在那一項的 note。',
       '9. 店名、地址、營業時間只用【店家】寫的回答；不知道的就說「這個要麻煩問一下櫃台店員」，不要猜。',
       '10. 顧客身體不舒服、有緊急狀況或要客訴，請他直接找櫃台店員。',
       '【不可以】推銷、一次介紹很多餐點（combo_offer 問一次不算推銷）；答應付款、外送、折扣或免費（單點和飲料做成套餐是菜單上的價錢，不算折扣）；聊和點餐無關的事（簡短帶回點餐）。',
