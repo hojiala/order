@@ -413,6 +413,8 @@ body.is-demo .demo-chip{display:inline-block}
     failReturnMs: 180000,             // 送單失敗時畫面留久一點，讓店員看得到餐點
     errorReturnMs: 20000,
     noReplyMs: 10000,
+    quietAfterAdd: true,              // 加餐、修改沒有要問的，就不再請點餐員說「還要點其他的嗎？」（kiosk-voice-fast2-20261106）
+    localGreeting: true,              // 開場白存起來，按開始點餐馬上播、同時開始收音（kiosk-voice-fast2-20261106）
     localAckMs: 600,                  // 客人說完 0.6 秒、點餐員還沒出聲，平板先播存好的「好的」；0 = 不用（kiosk-voice-localack-20261106）
     ackHoldMs: 400,                   // 客人剛說完，點餐員第一聲先壓 0.4 秒：這段時間客人又開口就不播（kiosk-voice-ack-20261106）                 // 客人說完多久點餐員都沒開始回覆，就記錄並再請一次（kiosk-voice-crosscheck-20261106）
     menuRefreshMs: 5 * 60 * 1000,
@@ -490,6 +492,7 @@ body.is-demo .demo-chip{display:inline-block}
   var DEMO = params.get('demo') === '1' || (location.protocol === 'file:' && params.get('demo') !== '0');
   var TTS_ON = params.get('tts') !== '0';
   var BARGE_PARAM = params.get('bargein') === '1';
+  var LITE = params.get('lite') === '1';   // kiosk-voice-fast2-20261106：測試用，不帶菜單清單、工具說明縮短
   if (BARGE_PARAM) CONFIG.bargeIn = true;
   if (params.get('pi')) storeSet('kiosk_pi_base', params.get('pi'));
   if (params.get('kioskKey')) storeSet('kiosk_voice_key', params.get('kioskKey'));
@@ -1473,7 +1476,7 @@ body.is-demo .demo-chip{display:inline-block}
     return out;
   }
   function dishLabel(it) {   // 餐點名稱（不含套餐／單點、里肌／肉醬）：義大利鐵板麵、一號青檸白蝦捲
-    return speakName(String(it && it.name || '').replace(/^單點-/, '').replace(/[（(][^）)]*[）)]/g, '').replace(/(套餐|單點)$/, '').replace(/里肌|肉醬/g, function (w) { return /鐵板麵/.test(it.name) ? '' : w; })).replace(/[\s\-－]+/g, '');
+    return speakName(String(it && it.name || '').replace(/^單點-/, '').replace(/[（(]([^）)])[）)]/g, '$1').replace(/[（(][^）)]*[）)]/g, '').replace(/(套餐|單點)$/, '').replace(/里肌|肉醬/g, function (w) { return /鐵板麵/.test(it.name) ? '' : w; })).replace(/[\s\-－]+/g, '');
   }
 
   /* ═════════ 點餐單 ═════════ */
@@ -1766,9 +1769,15 @@ body.is-demo .demo-chip{display:inline-block}
   }
   function orderTotal() { return Order.lines.reduce(function (sum, l) { return sum + calcLine(l).total; }, 0); }
   function lineNo(line) { return Order.lines.indexOf(line) + 1; }
+  // kiosk-voice-dishask-20261106：點餐單兩項以上，要問的話帶餐點名稱（苜蓿芽蔬菜吐司要加蛋嗎？）
+  function dishMissing(line, miss) {
+    if (!line || !miss || !miss.length || Order.lines.length < 2 || miss.some(function (m) { return m.dish; })) return miss || [];
+    var dish = dishLabel(line.item);
+    return miss.map(function (m) { return Object.assign({}, m, { dish: dish }, m.ask ? { ask: dish + m.ask } : {}); });
+  }
   function lineInfo(line) {
     var p = calcLine(line), info = { line: lineNo(line), name: line.item.name, say: speakName(line.item.name), quantity: line.qty, selected: chosenNames(line), unit_price: p.unit, price: p.total };
-    var miss = missingOf(line);
+    var miss = dishMissing(line, missingOf(line));
     if (miss.length) info.missing = miss;
     if (line.note) info.note = line.note;
     return info;
@@ -1828,7 +1837,7 @@ body.is-demo .demo-chip{display:inline-block}
     if (Array.isArray(r.results)) r.results.some(function (x) { if (x && (x.ask || (x.ok && x.missing))) { first = x; return true; } return false; });
     else if (Array.isArray(r.pending)) first = r.pending[0];
     else first = r;
-    if (!first || first.ask || !first.missing || !first.missing.length || first.missing[0].ask !== '要加蛋嗎？') return null;
+    if (!first || first.ask || !first.missing || !first.missing.length || !/要加蛋嗎？$/.test(first.missing[0].ask || '')) return null;
     var l = getLine(first.line);
     return l ? l.id : null;
   }
@@ -2037,6 +2046,7 @@ body.is-demo .demo-chip{display:inline-block}
       var d = r.dish || '';   // kiosk-voice-crosscheck-20261106：不同的餐點（吐司／燒餅）不加，免得變成「請問苜蓿芽蔬菜吐司要吐司，還是燒餅？」
       if (d && /^請問要/.test(r.ask)) r.ask = '請問' + d + '要' + r.ask.slice(3);
     });
+    results.forEach(function (r) { if (r && r.ok && r.missing) r.missing = dishMissing(getLine(r.line), r.missing); });   // 同一句加了好幾樣：第一樣加的時候點餐單還只有一項
     var out = { results: results, order_total: orderTotal(), lines_count: Order.lines.length };
     var offer = comboOffer(Object.keys(lineOfSpec).map(function (k) { return lineOfSpec[k]; }));
     if (offer) out.combo_offer = offer;
@@ -2377,7 +2387,7 @@ body.is-demo .demo-chip{display:inline-block}
     return [
       '你是早餐店菜單看板旁點餐平板上的點餐員，顧客多半是長輩。',
       '【說話】台灣華語，用字一律繁體中文；親切、有耐心。回答越短越好（顧客等得少，也比較省錢）：不要重複顧客剛說的餐點和選項、不要說餐點的價錢（單點、套餐多少錢都不要說；顧客問價錢，就請他看旁邊的菜單看板，點了之後螢幕上也看得到）、一次只問一件事。但是要問的、要告訴顧客的（下面規則寫到的）一定要說，不可以省略。',
-      '【開場】只說：「' + GREETING + '」',
+      Session.localGreet ? '【開場】開場白「' + GREETING + '」平板已經說過了，不要再說，直接回應顧客。' : '【開場】只說：「' + GREETING + '」',
       '【身分】你是 AI 語音點餐員，不是真人店員；顧客問起就簡短說明，再繼續點餐。',
       '【點餐】',
       '0. 先說好的：要呼叫 add_items、update_item、remove_item、make_combo、finish_order 時，先說「好的」兩個字，接著馬上呼叫工具（同一次回覆裡，先說再呼叫，不要等）。這時只說「好的」，不要說餐點名稱、不要說別的、不要問問題。工具結果回來後的那句話，開頭不要再說「好的」，直接問或說下一句（例如「要加蛋嗎？」「還要點其他的嗎？」）。查菜單（search_menu）、看點餐單（get_order）、回答顧客的問題時，不用先說好的。',
@@ -2386,7 +2396,7 @@ body.is-demo .demo-chip{display:inline-block}
       '1-2. 飲料名稱裡的（無糖無奶）（無糖）只是原本的做法：顧客要加糖、加奶，照樣放在那一項的 selections（例如 加糖、加奶），系統會加上；不要自己說不能加，只有結果出現 unmatched 才是沒有這個選項。',
       '1-3. 結果有 combo_offer（點餐單上的單點主餐和另外點的飲料可以做成套餐，比較便宜）：照 combo_offer.ask 問一次，例如「要不要跟四號辣卡脆雞堡做成套餐？可以省10元。」同時還有 missing 或 ask，先問 combo_offer，再問其他。顧客說好，就呼叫 make_combo，meal_line、drink_line 填 combo_offer 的；顧客說要跟別的主餐做（例如「跟四號做套餐」），就呼叫 make_combo，meal_name 填顧客說的那一樣（例如 四號），drink_line 填 combo_offer 的；顧客說不用，就維持原樣，不要再問。',
       '1-4. 顧客自己問能不能把單點和飲料做成套餐、能不能算套餐價、要跟哪一樣做套餐：一律先呼叫 make_combo（知道項次就填 meal_line、drink_line；只知道顧客說的名稱就填 meal_name、drink_name）。不要自己算價錢、自己比較哪個划算，也絕對不要自己說「套餐是套餐、單點是單點」「不能合併」「系統只支援」；只有 make_combo 回傳 ok 是 false，才照 message 簡短說明。成功就說「改成套餐了」，有 saved 就加「省○元」。',
-      '2. 工具回傳後（「好的」呼叫工具前已經說過了）：沒有要問的，只說「還要點其他的嗎？」，不要複誦餐點名稱、選項和價錢。有要問的（ask、missing、combo_offer），直接問，例如「要加蛋嗎？」。要說到餐點名稱時，一律念工具回傳的 say，不要用顧客的說法、也不要自己改字或改數字。',
+      '2. 工具回傳後（「好的」呼叫工具前已經說過了）：沒有要問的，只說「還要點其他的嗎？」，不要複誦餐點名稱、選項和價錢。有要問的（ask、missing、combo_offer），直接照 ask 問，例如「要加蛋嗎？」「苜蓿芽蔬菜吐司要加蛋嗎？」：ask 裡有餐點名稱一定要念，顧客才知道是哪一項；missing 有 dish 而沒有 ask（套餐飲料、冰溫、大小杯），問的時候前面也加 dish（例如「三號牛肉起司漢堡的飲料要大杯奶茶，還是換別的？」）。要說到餐點名稱時，一律念工具回傳的 say，不要用顧客的說法、也不要自己改字或改數字。',
       '2-1. 結果有 number_mismatch（顧客說的數字和菜單不同，例如顧客說六入、菜單只有兩入）時，先確認：「我們的是爆漿奶油餐包兩入，一份兩個，請問要幾份？」，再用 update_item 改數量。',
       '3. 果醬（沙拉、草莓…）用菜單預設，不要問口味；顧客點的時候說了口味（例如「奶油的果醬燒餅」「巧克力抹醬丹尼酥」），口味一定要放進 selections；點完才說要換，用 update_item 換。結果有 missing 時，只問第一個，白話問：missing 裡有 ask 就照 ask 問（例如「要加蛋嗎？」，預設的選項一定要說到）；沒有 ask：套餐飲料→「飲料要大杯奶茶，還是換別的？」；溫度→「冰的還是溫的？」；容量→「大杯還是中杯？」。顧客回答後呼叫 update_item 改「問的那一項」（line 用那一項的項次），selections 用 options 裡的原文；顧客只說「好」「要」「可以」就用 default。顧客回答後又接著點新的餐點（例如「好啊，再一個拼盤」），要分開：答案用 update_item 給問的那一項，新的餐點用 add_items，絕對不要把答案放進新餐點的 selections。加蛋只問要不要：顧客說要，就用 default（菜單預設的蛋），不要再問要哪一種蛋；顧客自己說半熟蛋、散蛋、太陽蛋才照他說的。有蛋有肉的鐵板麵、拼盤本來就有蛋（用菜單預設的蛋），不要問要不要加蛋，也不要問要哪一種蛋；無蛋無肉的鐵板麵照 ask 問要不要加蛋或加肉。結果有 answered_previous，表示系統已經幫那一題記好，不要再問；有 egg_kept 照它說的處理。',
       '4. 結果有 ask（顧客還沒說是哪一種，例如套餐／單點、辣卡／原卡、有蛋有肉／無蛋無肉）時，照 ask 的原句問，其他一個字都不要加：不要加餐點名稱、不要解釋（例如不要說「有蛋有肉的里肌」「無蛋無肉的肉醬」），不要自己決定，也絕對不可以把 candidates 全部加入；顧客選好後，只用他選的那一個 name 再呼叫 add_items。顧客明確說「兩種都要」「各一個」才分別加。sold_out 時說「不好意思，這個今天賣完了」，請顧客換別的。',
@@ -2409,8 +2419,8 @@ body.is-demo .demo-chip{display:inline-block}
       CONFIG.recommend ? '【推薦】顧客問「有什麼推薦」「什麼好吃」時才介紹，一次最多說兩樣：' + CONFIG.recommend : '',
       CONFIG.extraRules ? '【今天特別注意】' + CONFIG.extraRules : '',
       setRulesText(),
-      '【今日菜單】（品名；飲料列出杯型；沒列出的就是今天沒有）',
-      order.map(function (c) { return '〔' + c + '〕' + cats[c].join('、'); }).join('\n')
+      LITE ? '【今日菜單】（精簡測試：不列出品名，照顧客說的名稱傳給 add_items，系統會對菜單）' : '【今日菜單】（品名；飲料列出杯型；沒列出的就是今天沒有）',
+      LITE ? '' : order.map(function (c) { return '〔' + c + '〕' + cats[c].join('、'); }).join('\n')
     ].filter(Boolean).join('\n');
   }
   function buildKeyterms(aliasData) {
@@ -2452,6 +2462,14 @@ body.is-demo .demo-chip{display:inline-block}
   function sessionVoice(tok, now) {
     return dayVoice(now) || (Remote.voice ? CONFIG.voice : ((tok && tok.voice) || CONFIG.voice));
   }
+  function liteTools() {   // 工具說明只留第一句、參數不帶說明
+    return TOOLS_SPEC.map(function (t) {
+      var c = JSON.parse(JSON.stringify(t));
+      c.description = String(c.description || '').split('。')[0];
+      (function strip(o) { if (!o || typeof o !== 'object') return; delete o.description; Object.keys(o).forEach(function (k) { strip(o[k]); }); })(c.parameters);
+      return c;
+    });
+  }
   function sessionUpdate(tok, minimal) {
     var level = minimal === true ? 2 : (Number(minimal) || 0);
     applyRemoteDict(tok);
@@ -2463,7 +2481,7 @@ body.is-demo .demo-chip{display:inline-block}
         input: { format: { type: 'audio/pcm', rate: 24000 } },
         output: { format: { type: 'audio/pcm', rate: 24000 } }
       },
-      tools: TOOLS_SPEC
+      tools: LITE ? liteTools() : TOOLS_SPEC
     };
     if (level < 2) {
       s.reasoning = { effort: CONFIG.reasoningEffort };
@@ -2705,7 +2723,7 @@ body.is-demo .demo-chip{display:inline-block}
   var Session = {
     ws: null, active: false, ready: false, finishing: false, demo: false, closingLine: '',
     pendingFollowup: false, responseActive: false, queueResponse: false, awaiting: false,
-    userSpeaking: false, calls: {}, agentText: '', startedAt: 0, lastActivity: 0,
+    userSpeaking: false, calls: {}, agentText: '', startedAt: 0, lastActivity: 0, toolResults: [],
     timers: {}, updateAttempt: 0, token: null, toolWaits: []
   };
   function clearTimer(name) { if (Session.timers[name]) { clearTimeout(Session.timers[name]); Session.timers[name] = 0; } }
@@ -2744,6 +2762,7 @@ body.is-demo .demo-chip{display:inline-block}
     }
     AudioIO.unlock();
     beginSessionUI();
+    Greet.playLocal();   // kiosk-voice-fast2-20261106
     var mic = AudioIO.startMic(onMicChunk).catch(function (e) { e.kind = 'mic'; throw e; });
     var tok = fetchToken();
     // 和拿 token 同時重讀 manage 設定（最多等 2.6 秒；讀不到就用上一次的設定），所以存檔後下一位客人就套用
@@ -2759,10 +2778,12 @@ body.is-demo .demo-chip{display:inline-block}
     Session.active = true; Session.ready = false; Session.finishing = false; Session.pendingFollowup = false;
     Session.responseActive = false; Session.queueResponse = false; Session.awaiting = false; Session.userSpeaking = false;
     Session.calls = {}; Session.agentText = ''; Session.updateAttempt = 0; Session.wrapUpAt = 0; Session.cutOff = false;
+    Session.toolResults = []; Session.localGreet = ''; Pre.buf = []; Pre.bytes = 0;
     Session.voice = '';   // 每位客人開始時重選（依當天星期）
     Tm.reset(); Hold.on = false; Hold.buf = []; Session.lastStop = 0; Session.expectFollow = false;
     Session.startedAt = Date.now(); touch();
     if (!Session.demo) Log.begin();
+    if (LITE) Log.add('system', '精簡測試（?lite=1）：不帶菜單清單、工具說明縮短');
     setAgent('正在幫您接通點餐員，請稍等…'); setUser('');
     setStatus('connecting');
     showScreen('screen-order');
@@ -2770,6 +2791,7 @@ body.is-demo .demo-chip{display:inline-block}
   }
   function openSocket(tok) {
     Session.token = tok;
+    if (tok && tok.voice) storeSet('kiosk_pi_voice', String(tok.voice));   // 下一位客人按下時，猜開場白用哪個聲音
     var ws;
     try { ws = new WebSocket(CONFIG.wsUrl + '?model=' + encodeURIComponent(tok.model || CONFIG.model), ['xai-client-secret.' + tok.value]); }
     catch (e) { e.kind = 'ws'; failSession(e); return; }
@@ -2795,9 +2817,42 @@ body.is-demo .demo-chip{display:inline-block}
     Session.ready = true;
     clearTimer('ready'); clearTimer('connect');
     touch();
+    if (Session.localGreet) {   // 開場白平板已經說了：把連線前收到的聲音送出去，等客人說
+      var pre = Pre.buf.splice(0); Pre.bytes = 0;
+      pre.forEach(function (b64) { send({ type: 'input_audio_buffer.append', audio: b64 }); Tm.sent(b64); });
+      Log.add('system', '連線好了（按下後 ' + ((Date.now() - Session.startedAt) / 1000).toFixed(1) + ' 秒），送出先收到的聲音 ' + (pre.length ? (Math.round(pre.reduce(function (n, b) { return n + b.length; }, 0) / 64000 * 10) / 10) + ' 秒' : '0 秒'));
+      return;
+    }
     Session.awaiting = true;
+    Session.greetPending = true;
     requestResponse({ instructions: '現在只說開場白：「' + GREETING + '」' });
   }
+  // 開場白的聲音：每個聲音、每種開場白各存一份（manage 改了開場白就重存）
+  var Greet = {
+    cap: false, chunks: [], bytes: 0,
+    key: function (voice) { var h = 0, t = String(GREETING || ''); for (var i = 0; i < t.length; i++) h = (h * 31 + t.charCodeAt(i)) | 0; return 'kiosk_greet_clip_' + voice + '_' + (h >>> 0).toString(36); },
+    get: function (voice) { var raw = storeGet(this.key(voice)); if (!raw) return null; try { var c = JSON.parse(raw); return Array.isArray(c) && c.length ? c : null; } catch (_) { return null; } },
+    voice: function () { return dayVoice() || (Remote.voice ? CONFIG.voice : (storeGet('kiosk_pi_voice') || CONFIG.voice)); },
+    playLocal: function () {
+      if (!CONFIG.localGreeting || DEMO) return;
+      var v = this.voice(), clip = this.get(v);
+      if (!clip) return;
+      Session.localGreet = v;
+      setAgent(GREETING);
+      clip.forEach(function (d) { AudioIO.play(d); });
+      Log.add('system', '平板先說開場白（存好的聲音，' + v + '），同時開始收音');
+    },
+    start: function () { this.cap = !!Session.greetPending; Session.greetPending = false; this.chunks = []; this.bytes = 0; },
+    keep: function (d) { if (this.cap && this.bytes < 600000) { this.chunks.push(d); this.bytes += String(d || '').length; } },
+    save: function (text) {
+      if (!this.cap) return;
+      this.cap = false;
+      var head = norm(GREETING).slice(0, 4);
+      if (!this.chunks.length || Session.cutOff || !head || norm(text || '').indexOf(head) === -1 || this.bytes < 32000 || !Session.voice || this.get(Session.voice)) return;
+      storeSet(this.key(Session.voice), JSON.stringify(this.chunks));
+      Log.add('system', '存下開場白的聲音（' + Session.voice + '），下一位客人按下就先說');
+    }
+  };
   function requestResponse(resp) {
     if (Session.responseActive) { Session.queueResponse = true; return; }
     Session.responseActive = true;
@@ -2805,8 +2860,13 @@ body.is-demo .demo-chip{display:inline-block}
     Session.timers.resp = later(15000, function () { Session.responseActive = false; });   // 沒收到 response.done 時解鎖
     send(resp ? { type: 'response.create', response: resp } : { type: 'response.create' });
   }
+  // kiosk-voice-fast2-20261106：平板先說了開場白，連線還沒好：客人說的話先存著，連上再送
+  var Pre = { buf: [], bytes: 0 };
   function onMicChunk(b64) {
-    if (!Session.ready || !Session.ws || Session.ws.readyState !== 1) return;
+    if (!Session.ready || !Session.ws || Session.ws.readyState !== 1) {
+      if (Session.active && Session.localGreet && !AudioIO.micGated() && Pre.bytes < 1500000) { Pre.buf.push(b64); Pre.bytes += String(b64 || '').length; }
+      return;
+    }
     if (AudioIO.micGated()) return;
     send({ type: 'input_audio_buffer.append', audio: b64 });
     Tm.sent(b64);
@@ -2852,6 +2912,7 @@ body.is-demo .demo-chip{display:inline-block}
       c.speak = Date.now();
       this.write();
     },
+    quiet: function () { var c = this.cur; if (!c || !c.stop || c.speak) return; c.quiet = Date.now(); this.write(); },
     done: function () {   // 回覆結束：沒有呼叫工具（直接回答）→ 第一個聲音就是開口
       var c = this.cur;
       if (!c || !c.stop || c.tool || c.speak || !c.ack) return;
@@ -2873,6 +2934,7 @@ body.is-demo .demo-chip{display:inline-block}
       step('送出' + tn, c.tool, 'tool');
       step('再回覆', c.follow, 'follow');
       step('點餐員開口', c.speak, 'speak');
+      if (c.quiet && !c.speak) { parts.push('沒有要問的，不再回覆'); data.quiet = 1; }
       data.total = Math.round((c.speak || prev) - base);
       var heard = c.lack || c.ack || c.speak;
       if (heard) data.heard = Math.round(heard - base);
@@ -2886,6 +2948,7 @@ body.is-demo .demo-chip{display:inline-block}
       case 'session.updated':
         onReady(); return;
       case 'response.created':
+        Greet.start();
         Session.respAudio = false;   // kiosk-voice-ack-20261106：這次回覆有沒有出聲（先說了好的）
         clearTimer('hold'); Hold.buf = [];
         Hold.on = CONFIG.ackHoldMs > 0 && !Session.expectFollow && Session.lastStop > 0 && Date.now() - Session.lastStop < 3000;   // 客人剛說完的那次回覆才壓
@@ -2901,7 +2964,7 @@ body.is-demo .demo-chip{display:inline-block}
         Session.respAudio = true;
         Session.awaiting = false; touch();
         if (Session.cutOff) return;
-        Ack.keep(ev.delta);
+        Ack.keep(ev.delta); Greet.keep(ev.delta);
         if (Ack.played) { Hold.buf.push(ev.delta); return; }   // 平板已經說了好的：等這句的字幕出來，只是「好的」就不播
         clearTimer('lack');
         if (Hold.on) { Hold.buf.push(ev.delta); if (!Session.timers.hold) Session.timers.hold = later(CONFIG.ackHoldMs, flushHold); return; }
@@ -2927,6 +2990,7 @@ body.is-demo .demo-chip{display:inline-block}
       case 'conversation.item.input_audio_transcription.delta':
         setUser((Session.userLine || '') + String(ev.delta || '')); Log.user(ev.item_id, Session.userLine); return;
       case 'input_audio_buffer.speech_started':
+        Session.expectFollow = false;   // 客人開口了：之前請的再回覆不算數（下一次回覆照「客人剛說完」處理）
         if (Hold.on && Session.responseActive) {   // 客人又開口：剛剛只是停一下，這次回覆的聲音（好的）不播
           if (Hold.buf.length || Session.timers.hold) Log.add('system', '客人還在說，點餐員先不出聲');
           clearTimer('hold'); Hold.buf = []; Hold.on = false; Session.cutOff = true;
@@ -2953,7 +3017,7 @@ body.is-demo .demo-chip{display:inline-block}
         if (ev.item && ev.item.type === 'function_call') { Tm.mark('first'); Tm.mark('firstType', 'tool'); Tm.mark('tool'); Tm.mark('toolName', ev.item.name); onToolCall(ev.item.name, ev.item.call_id, ev.item.arguments); }
         return;
       case 'response.done':
-        Ack.settle(Session.agentText); Ack.save(Session.agentText);
+        Ack.settle(Session.agentText); Ack.save(Session.agentText); Greet.save(Session.agentText);
         Tm.done();
         onResponseDone(ev.response || {}); return;
       case 'error':
@@ -2970,6 +3034,7 @@ body.is-demo .demo-chip{display:inline-block}
     try { args = typeof rawArgs === 'string' ? JSON.parse(rawArgs || '{}') : (rawArgs || {}); } catch (_) {}
     Session.pendingFollowup = true;
     Session.toolWaits.push(Promise.resolve(runTool(name, args)).then(function (result) {
+      Session.toolResults.push({ name: name, result: result });   // kiosk-voice-fast2-20261106：回覆結束後看要不要再說話
       var out = JSON.stringify(result);
       Log.add('tool', name, { args: JSON.stringify(args).slice(0, 800), result: out.slice(0, 1500) });
       send({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output: out } });
@@ -3043,6 +3108,29 @@ body.is-demo .demo-chip{display:inline-block}
     buf.forEach(function (d) { AudioIO.play(d); });
     if (!Session.responseActive) Tm.done();   // 回覆已經結束（直接回答，很短）
   }
+  // kiosk-voice-fast2-20261106：加餐、修改、刪除完全沒有要問的 → 不再請點餐員說「還要點其他的嗎？」
+  //   客人已經聽到「好的」（平板或點餐員說的），餐點在畫面上；畫面顯示「還要點其他的嗎？」，客人直接說下一句
+  var TALK_KEYS = ['ask', 'sold_out', 'auto_upgraded', 'meat_added', 'number_mismatch', 'unmatched', 'drink_separately', 'egg_kept', 'repeat', 'not_added', 'combo_offer', 'need_dine_mode', 'pending'];
+  function needsTalk(r) {
+    if (!r || typeof r !== 'object' || r.ok === false) return true;
+    if (r.missing && r.missing.length) return true;
+    if (TALK_KEYS.some(function (k) { return r[k] !== undefined && r[k] !== false && r[k] !== null; })) return true;
+    return Array.isArray(r.results) && r.results.some(needsTalk);
+  }
+  function quietAfterTools(list) {
+    if (!CONFIG.quietAfterAdd || !list.length) return false;
+    if (!list.every(function (x) { return /^(add_items|update_item|remove_item)$/.test(x.name) && !needsTalk(x.result); })) return false;
+    if (!(Ack.played || Session.respAudio)) {   // 這次客人還沒聽到任何聲音：補一聲好的；沒有存好的聲音就照舊請點餐員說
+      var clip = Ack.clip();
+      if (!clip) return false;
+      clip.forEach(function (d) { AudioIO.play(d); });
+    }
+    Session.awaiting = false;
+    setAgent('還要點其他的嗎？');
+    Log.add('system', '沒有要問的，點餐員不再回覆（畫面顯示：還要點其他的嗎？）');
+    Tm.quiet();
+    return true;
+  }
   function onResponseDone(resp) {
     var st = resp && resp.status;
     if (st && st !== 'completed' && st !== 'cancelled') {   // failed／incomplete：記下 xAI 給的原因（以前不會留下任何紀錄）
@@ -3055,7 +3143,11 @@ body.is-demo .demo-chip{display:inline-block}
       Session.pendingFollowup = false;
       Session.awaiting = true;
       var waits = Session.toolWaits.splice(0);
-      Promise.all(waits).then(function () { return AudioIO.whenIdle(); }).then(function () { if (Session.active && !Session.userSpeaking) { Tm.mark('follow'); Session.expectFollow = true; requestResponse(closingResponse()); } });
+      Promise.all(waits).then(function () { return AudioIO.whenIdle(); }).then(function () {
+        if (!Session.active || Session.userSpeaking) return;
+        if (quietAfterTools(Session.toolResults.splice(0))) return;   // kiosk-voice-fast2-20261106
+        Tm.mark('follow'); Session.expectFollow = true; requestResponse(closingResponse());
+      });
       return;
     }
     if (Session.queueResponse) { Session.queueResponse = false; requestResponse(); return; }
@@ -3167,7 +3259,7 @@ body.is-demo .demo-chip{display:inline-block}
   function stopTick() { if (tickTimer) clearInterval(tickTimer); tickTimer = 0; }
   function tick() {
     if (!Session.active || Session.demo) return;
-    if (!Session.ready) setStatus('connecting');
+    if (!Session.ready) setStatus(Session.localGreet ? (AudioIO.isPlaying() ? 'speaking' : 'listening') : 'connecting');
     else if (AudioIO.isPlaying()) { setStatus('speaking'); touch(); }
     else if (Session.userSpeaking) setStatus('listening');
     else if (Session.awaiting || Session.responseActive) setStatus('thinking');
@@ -3556,7 +3648,7 @@ body.is-demo .demo-chip{display:inline-block}
   }
 
   // 測試用
-  window.__kiosk = { runTool: runTool, findItem: findItem, setMenu: setMenu, Order: Order, Menu: Menu, buildInstructions: buildInstructions, buildKeyterms: buildKeyterms, fixTypos: fixTypos, applyRemoteDict: applyRemoteDict, Dict: Dict, sessionUpdate: sessionUpdate, CONFIG: CONFIG, Session: Session, goHome: goHome, showError: showError, goDone: goDone, Submit: Submit, buildOrderData: buildOrderData, speakName: speakName, submitOrder: submitOrder, businessWindow: businessWindow, applyVoiceSettings: applyVoiceSettings, transcriptDishes: transcriptDishes, showTypos: showTypos, Tm: Tm, Hold: Hold, Ack: Ack, flavorFromWords: flavorFromWords, onResponseDone: onResponseDone, dayVoice: dayVoice, sessionVoice: sessionVoice, refreshSettings: refreshSettings, Remote: Remote, renderPromptView: renderPromptView, choiceAsk: choiceAsk, Turn: Turn, resetOffers: resetOffers, Offers: Offers, Pending: Pending, closingLine: closingLine, closingResponse: closingResponse, pressDineMode: pressDineMode, handleEvent: handleEvent, Log: Log, Rec: Rec, AudioIO: AudioIO, tick: tick, renderHomeText: renderHomeText };
+  window.__kiosk = { runTool: runTool, findItem: findItem, setMenu: setMenu, Order: Order, Menu: Menu, buildInstructions: buildInstructions, buildKeyterms: buildKeyterms, fixTypos: fixTypos, applyRemoteDict: applyRemoteDict, Dict: Dict, sessionUpdate: sessionUpdate, CONFIG: CONFIG, Session: Session, goHome: goHome, showError: showError, goDone: goDone, Submit: Submit, buildOrderData: buildOrderData, speakName: speakName, submitOrder: submitOrder, businessWindow: businessWindow, applyVoiceSettings: applyVoiceSettings, transcriptDishes: transcriptDishes, showTypos: showTypos, Tm: Tm, Hold: Hold, Ack: Ack, Greet: Greet, Pre: Pre, onReady: onReady, onMicChunk: onMicChunk, needsTalk: needsTalk, quietAfterTools: quietAfterTools, startLive: startLive, flavorFromWords: flavorFromWords, onResponseDone: onResponseDone, dayVoice: dayVoice, sessionVoice: sessionVoice, refreshSettings: refreshSettings, Remote: Remote, renderPromptView: renderPromptView, choiceAsk: choiceAsk, Turn: Turn, resetOffers: resetOffers, Offers: Offers, Pending: Pending, closingLine: closingLine, closingResponse: closingResponse, pressDineMode: pressDineMode, handleEvent: handleEvent, Log: Log, Rec: Rec, AudioIO: AudioIO, tick: tick, renderHomeText: renderHomeText };
 })();
 </script>
 </body>
