@@ -699,6 +699,42 @@ body.is-demo .demo-chip{display:inline-block}
     }
     return out;
   }
+  // kiosk-voice-flavor-20261106：果醬這種用預設、不問的選項，顧客其實說了口味，點餐員卻沒放進 selections
+  //   → 先看點餐員說的品名（巧克力丹尼酥），再看客人原句裡講這道餐的那一段（奶油的果醬燒餅）；一段裡有兩種口味就不猜
+  function clausesFor(item, said) {
+    var raw = toTrad(String(Session.userLine || ''));
+    if (!raw) return [];
+    var keys = item._names.concat([norm(said)]).filter(function (k) { return k && k.length >= 2; });
+    return raw.split(/[，,。.、；;！!？?]|然後|還有|另外|再來/).map(function (c) { var n = norm(c), fx = fixTypos(n); return fx ? fx.text : n; })
+      .filter(function (n) { return keys.some(function (k) { return n.indexOf(k) !== -1; }); });
+  }
+  function flavorIn(text, item, ch) {
+    item._names.forEach(function (k) { text = text.split(k).join('|'); });   // 品名本身的字不算（抹醬丹尼酥的「醬」）
+    var hits = [];
+    ch.forEach(function (c, ci) {
+      var n = normChoice(c.name);
+      if (!n) return;
+      if (text.indexOf(n) !== -1 || (/^不抹醬$/.test(n) && /不要(抹)?醬|不抹/.test(text))) hits.push(ci);
+    });
+    hits = hits.filter(function (ci) {   // 「奶酥」「奶油」這種互相包含的，留長的
+      return !hits.some(function (cj) { return cj !== ci && normChoice(ch[cj].name).length > normChoice(ch[ci].name).length && normChoice(ch[cj].name).indexOf(normChoice(ch[ci].name)) !== -1; });
+    });
+    return hits.length === 1 ? hits[0] : -1;
+  }
+  function flavorFromWords(line, said, sels) {
+    var picked = [];
+    (line.item.optionGroups || []).forEach(function (g, gi) {
+      if (plainDefault(g) < 0) return;
+      var ch = g.choices || [];
+      if ((sels || []).some(function (x) { var n = normChoice(x); return ch.some(function (c) { return normChoice(c.name) === n; }); })) return;   // 點餐員已經給了
+      var texts = [norm(said)].concat(clausesFor(line.item, said));
+      for (var t = 0; t < texts.length; t++) {
+        var ci = flavorIn(texts[t], line.item, ch);
+        if (ci >= 0) { line.sel[gi] = ci; line.answered[gi] = true; picked.push(ch[ci].name); return; }
+      }
+    });
+    return picked;
+  }
   function crossCheck(specs, found) {
     var open = [];
     found.forEach(function (f, i) {
@@ -734,6 +770,18 @@ body.is-demo .demo-chip{display:inline-block}
       var h = hits[p.h];
       found[p.i] = { item: h.item, implied: [], exact: false, typo_from: String(specs[p.i].name || ''), typo_sure: true, cross: h.text };
     });
+    // kiosk-voice-flavor-20261106：其他都對上了，只剩一樣、原句也只剩同一個位置的那一道 → 就是它（木藤芽藝藥燕館 → 苜蓿芽蔬菜燒餅）
+    if (aligned) {
+      var leftSpecs = open.filter(function (i) { return !done[i]; }), leftHits = [];
+      hits.forEach(function (h, hi) { if (!taken[hi]) leftHits.push(hi); });
+      if (leftSpecs.length === 1 && leftHits.length === 1 && leftSpecs[0] === leftHits[0]) {
+        var li = leftSpecs[0], lh = hits[leftHits[0]], ls = norm(specs[li].name);
+        if (sameChars(ls, lh.text) >= 1 || Math.abs(ls.length - lh.text.length) <= 2) {
+          found[li] = { item: lh.item, implied: [], exact: false, typo_from: String(specs[li].name || ''), typo_sure: true, cross: lh.text };
+          n++;
+        }
+      }
+    }
     return n;
   }
   function applyRemoteDict(tok) {   // Pi 發 token 時一起給的字典
@@ -1938,6 +1986,7 @@ body.is-demo .demo-chip{display:inline-block}
       applySelections(line, f.implied || [], []);            // 從名稱推得的大杯/冰：這項沒有該選項就略過
       var eggGuard = guardEggStyle(f.item, sels.filter(function (x) { return !isVariantWord(x); }));
       var unmatched = applySelections(line, eggGuard.keep, []);
+      var flavors = flavorFromWords(line, said, eggGuard.keep);   // kiosk-voice-flavor-20261106
       var drinkWords = unmatched.filter(function (u) { var d = findItem(u); return d.item && isDrinkItem(d.item); });
       unmatched = unmatched.filter(function (u) { return drinkWords.indexOf(u) === -1; });
       line.note = joinNote(spec.note, noteWorthy(unmatched));
@@ -1958,6 +2007,7 @@ body.is-demo .demo-chip{display:inline-block}
       if (f.upgraded_from) info.auto_upgraded = '單點又點了飲料，已改成' + speakName(target.item.name) + '，飲料就是套餐飲料，比分開點划算';
       if (drinkWords.length) { info.drink_separately = drinkWords; info.message = '這道沒有套餐，飲料「' + drinkWords.join('、') + '」請用 add_items 另外加一項'; }
       if (unmatched.length) info.unmatched = unmatched;
+      if (flavors.length) info.flavor_heard = flavors.join('、') + '（顧客說的口味，已經選好）';
       if (!f.exact) {
         info.corrected_from = toTrad(said);   // 顧客說法和菜單名稱不同：複誦時要念 say
         var saidDigits = digitsOf(norm(said));
@@ -2334,7 +2384,7 @@ body.is-demo .demo-chip{display:inline-block}
       '1-4. 顧客自己問能不能把單點和飲料做成套餐、能不能算套餐價、要跟哪一樣做套餐：一律先呼叫 make_combo（知道項次就填 meal_line、drink_line；只知道顧客說的名稱就填 meal_name、drink_name）。不要自己算價錢、自己比較哪個划算，也絕對不要自己說「套餐是套餐、單點是單點」「不能合併」「系統只支援」；只有 make_combo 回傳 ok 是 false，才照 message 簡短說明。成功就說「好的，改成套餐了」，有 saved 就加「省○元」。',
       '2. 工具回傳後：沒有要問的，只說「好的」或「好的，還要點其他的嗎？」，不要複誦餐點名稱、選項和價錢。有要問的（ask、missing、combo_offer），說「好的，」就直接問，例如「好的，要加蛋嗎？」。要說到餐點名稱時，一律念工具回傳的 say，不要用顧客的說法、也不要自己改字或改數字。',
       '2-1. 結果有 number_mismatch（顧客說的數字和菜單不同，例如顧客說六入、菜單只有兩入）時，先確認：「我們的是爆漿奶油餐包兩入，一份兩個，請問要幾份？」，再用 update_item 改數量。',
-      '3. 果醬（沙拉、草莓…）用菜單預設，不要問口味；顧客自己說別的口味，才用 update_item 換。結果有 missing 時，只問第一個，白話問：missing 裡有 ask 就照 ask 問（例如「要加蛋嗎？」，預設的選項一定要說到）；沒有 ask：套餐飲料→「飲料要大杯奶茶，還是換別的？」；溫度→「冰的還是溫的？」；容量→「大杯還是中杯？」。顧客回答後呼叫 update_item 改「問的那一項」（line 用那一項的項次），selections 用 options 裡的原文；顧客只說「好」「要」「可以」就用 default。顧客回答後又接著點新的餐點（例如「好啊，再一個拼盤」），要分開：答案用 update_item 給問的那一項，新的餐點用 add_items，絕對不要把答案放進新餐點的 selections。加蛋只問要不要：顧客說要，就用 default（菜單預設的蛋），不要再問要哪一種蛋；顧客自己說半熟蛋、散蛋、太陽蛋才照他說的。有蛋有肉的鐵板麵、拼盤本來就有蛋（用菜單預設的蛋），不要問要不要加蛋，也不要問要哪一種蛋；無蛋無肉的鐵板麵照 ask 問要不要加蛋或加肉。結果有 answered_previous，表示系統已經幫那一題記好，不要再問；有 egg_kept 照它說的處理。',
+      '3. 果醬（沙拉、草莓…）用菜單預設，不要問口味；顧客點的時候說了口味（例如「奶油的果醬燒餅」「巧克力抹醬丹尼酥」），口味一定要放進 selections；點完才說要換，用 update_item 換。結果有 missing 時，只問第一個，白話問：missing 裡有 ask 就照 ask 問（例如「要加蛋嗎？」，預設的選項一定要說到）；沒有 ask：套餐飲料→「飲料要大杯奶茶，還是換別的？」；溫度→「冰的還是溫的？」；容量→「大杯還是中杯？」。顧客回答後呼叫 update_item 改「問的那一項」（line 用那一項的項次），selections 用 options 裡的原文；顧客只說「好」「要」「可以」就用 default。顧客回答後又接著點新的餐點（例如「好啊，再一個拼盤」），要分開：答案用 update_item 給問的那一項，新的餐點用 add_items，絕對不要把答案放進新餐點的 selections。加蛋只問要不要：顧客說要，就用 default（菜單預設的蛋），不要再問要哪一種蛋；顧客自己說半熟蛋、散蛋、太陽蛋才照他說的。有蛋有肉的鐵板麵、拼盤本來就有蛋（用菜單預設的蛋），不要問要不要加蛋，也不要問要哪一種蛋；無蛋無肉的鐵板麵照 ask 問要不要加蛋或加肉。結果有 answered_previous，表示系統已經幫那一題記好，不要再問；有 egg_kept 照它說的處理。',
       '4. 結果有 ask（顧客還沒說是哪一種，例如套餐／單點、辣卡／原卡、有蛋有肉／無蛋無肉）時，照 ask 的原句問，前面可以加「好的，」，其他一個字都不要加：不要加餐點名稱、不要解釋（例如不要說「有蛋有肉的里肌」「無蛋無肉的肉醬」），不要自己決定，也絕對不可以把 candidates 全部加入；顧客選好後，只用他選的那一個 name 再呼叫 add_items。顧客明確說「兩種都要」「各一個」才分別加。sold_out 時說「不好意思，這個今天賣完了」，請顧客換別的。',
       '5. 顧客改口一律在同一項上改，不要新增一項，也不要寫進備註：改成有蛋有肉、無蛋無肉、套餐或單點，用 update_item 的 name 填這幾個字；換別的餐點也用 update_item 的 name；改數量、不要某樣用 update_item 或 remove_item（line 是畫面上的項次）。',
       '5-1. 結果有 auto_upgraded 或 meat_added 時，用一句短話告訴顧客，例如「好的，幫您改成套餐，比較划算」「好的，另外加一片肉，○○元」（加肉要多收的錢照 meat_added 念）。結果有 unmatched 時，那幾個字沒有對應的選項：顧客的回答請換成 options 裡的原文再送一次；真的是備註（例如不要醬）就放 note。',
@@ -3345,7 +3395,7 @@ body.is-demo .demo-chip{display:inline-block}
   }
 
   // 測試用
-  window.__kiosk = { runTool: runTool, findItem: findItem, setMenu: setMenu, Order: Order, Menu: Menu, buildInstructions: buildInstructions, buildKeyterms: buildKeyterms, fixTypos: fixTypos, applyRemoteDict: applyRemoteDict, Dict: Dict, sessionUpdate: sessionUpdate, CONFIG: CONFIG, Session: Session, goHome: goHome, showError: showError, goDone: goDone, Submit: Submit, buildOrderData: buildOrderData, speakName: speakName, submitOrder: submitOrder, businessWindow: businessWindow, applyVoiceSettings: applyVoiceSettings, transcriptDishes: transcriptDishes, showTypos: showTypos, onResponseDone: onResponseDone, dayVoice: dayVoice, sessionVoice: sessionVoice, refreshSettings: refreshSettings, Remote: Remote, renderPromptView: renderPromptView, choiceAsk: choiceAsk, Turn: Turn, resetOffers: resetOffers, Offers: Offers, Pending: Pending, closingLine: closingLine, closingResponse: closingResponse, pressDineMode: pressDineMode, handleEvent: handleEvent, Log: Log, Rec: Rec, AudioIO: AudioIO, tick: tick, renderHomeText: renderHomeText };
+  window.__kiosk = { runTool: runTool, findItem: findItem, setMenu: setMenu, Order: Order, Menu: Menu, buildInstructions: buildInstructions, buildKeyterms: buildKeyterms, fixTypos: fixTypos, applyRemoteDict: applyRemoteDict, Dict: Dict, sessionUpdate: sessionUpdate, CONFIG: CONFIG, Session: Session, goHome: goHome, showError: showError, goDone: goDone, Submit: Submit, buildOrderData: buildOrderData, speakName: speakName, submitOrder: submitOrder, businessWindow: businessWindow, applyVoiceSettings: applyVoiceSettings, transcriptDishes: transcriptDishes, showTypos: showTypos, flavorFromWords: flavorFromWords, onResponseDone: onResponseDone, dayVoice: dayVoice, sessionVoice: sessionVoice, refreshSettings: refreshSettings, Remote: Remote, renderPromptView: renderPromptView, choiceAsk: choiceAsk, Turn: Turn, resetOffers: resetOffers, Offers: Offers, Pending: Pending, closingLine: closingLine, closingResponse: closingResponse, pressDineMode: pressDineMode, handleEvent: handleEvent, Log: Log, Rec: Rec, AudioIO: AudioIO, tick: tick, renderHomeText: renderHomeText };
 })();
 </script>
 </body>
