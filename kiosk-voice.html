@@ -671,6 +671,34 @@ body.is-demo .demo-chip{display:inline-block}
   }
   // 點餐員聽成「木薯芽薯菜吐司」「高金乳酪館」對不到菜單：客人原句有「苜蓿芽蔬菜吐司」「高鈣乳酪餅」→ 兩邊聽到的很像就用原句那個
   //   一樣很像時，照說的順序配（第 2 個名稱配原句第 2 個餐點，數量一樣才這樣配）；每個原句餐點只配一次；還是分不出來就照原本問
+  function sameChars(a, b) {   // 兩個名稱有幾個字一樣（不管位置，每個字只算一次）
+    var left = String(b || '').split(''), n = 0;
+    String(a || '').split('').forEach(function (c) { var k = left.indexOf(c); if (k !== -1) { n++; left.splice(k, 1); } });
+    return n;
+  }
+  // kiosk-voice-crosscheck2-20261106：「客人」那行字照錯字表改過再顯示；比對用的 Session.userLine 還是原文
+  //   只用「字數一樣」的錯字（木薯芽→苜蓿芽、滷肉餅→乳酪餅），從左到右一次換完、換過的不再換：
+  //   冰奶→冰錫蘭奶茶 這種別名、帶加料的（高鈣巧克力乳酪餅）不改，畫面才會是客人說的話
+  var ShowTypo = { src: null, byChar: {} };
+  function showTypos(text) {
+    var t = toTrad(String(text || ''));
+    if (!t) return t;
+    var rows = typoRows();
+    if (ShowTypo.src !== rows) {
+      ShowTypo.src = rows; ShowTypo.byChar = {};
+      rows.forEach(function (r) {   // rows 已經是長的在前
+        if (r.addons.length || r.from.length !== r.to.length || /[0-9a-z]/.test(r.from)) return;
+        (ShowTypo.byChar[r.from.charAt(0)] = ShowTypo.byChar[r.from.charAt(0)] || []).push(r);
+      });
+    }
+    var out = '', i = 0;
+    while (i < t.length) {
+      var list = ShowTypo.byChar[t.charAt(i)] || [], hit = null;
+      for (var k = 0; k < list.length && !hit; k++) if (t.substr(i, list[k].from.length) === list[k].from) hit = list[k];
+      if (hit) { out += hit.to; i += hit.from.length; } else { out += t.charAt(i); i++; }
+    }
+    return out;
+  }
   function crossCheck(specs, found) {
     var open = [];
     found.forEach(function (f, i) {
@@ -692,7 +720,8 @@ body.is-demo .demo-chip{display:inline-block}
       hits.forEach(function (h, hi) {
         if (taken[hi]) return;
         var sim = Math.max(similarity(said, h.text), similarity(alt, h.text));
-        if (sim >= 0.5) pairs.push({ i: i, h: hi, sim: sim, score: sim + (aligned && hi === i ? 0.1 : 0) });
+        var lined = aligned && hi === i && Math.max(sameChars(said, h.text), sameChars(alt, h.text)) >= 2;   // 同一個順序：門檻放寬（木藤芽蔬菜熱館 ↔ 苜蓿芽蔬菜燒餅）
+        if (sim >= 0.5 || (lined && sim >= 0.3)) pairs.push({ i: i, h: hi, sim: sim, score: sim + (aligned && hi === i ? 0.1 : 0) });
       });
     });
     pairs.sort(function (a, b) { return b.score - a.score; });
@@ -2449,10 +2478,13 @@ body.is-demo .demo-chip{display:inline-block}
     user: function (key, text) {   // 同一句話的辨識會更新好幾次：只留最後一版
       if (!this.cur) return;
       key = key || ('turn' + this.turn);
-      text = toTrad(String(text || '')).trim();
-      if (!text) return;
+      var raw = toTrad(String(text || '')).trim();
+      if (!raw) return;
+      text = showTypos(raw);   // kiosk-voice-crosscheck2-20261106：紀錄也顯示改過錯字的版本，原文放 raw
       var e = this.cur.users[key];
-      if (e) e.text = text.slice(0, 2000); else this.cur.users[key] = this.add('customer', text);
+      if (!e) e = this.cur.users[key] = this.add('customer', text);
+      e.text = text.slice(0, 2000);
+      if (text !== raw) e.raw = raw.slice(0, 2000); else delete e.raw;
     },
     agent: function (text, cut) {
       if (!this.cur || this.cur.agentLogged || !String(text || '').trim()) return;
@@ -3055,7 +3087,7 @@ body.is-demo .demo-chip{display:inline-block}
   function setAgent(t) { $('agent-line').textContent = toTrad(t); }
   function setUser(t) {
     Session.userLine = t;
-    $('user-text').innerHTML = t ? '<strong>您說</strong>' + esc(toTrad(t)) : '';
+    $('user-text').innerHTML = t ? '<strong>您說</strong>' + esc(showTypos(t)) : '';   // 畫面顯示改過錯字的版本
   }
   function rowsHtml(withAsk) {
     return Order.lines.map(function (l, i) {
@@ -3313,7 +3345,7 @@ body.is-demo .demo-chip{display:inline-block}
   }
 
   // 測試用
-  window.__kiosk = { runTool: runTool, findItem: findItem, setMenu: setMenu, Order: Order, Menu: Menu, buildInstructions: buildInstructions, buildKeyterms: buildKeyterms, fixTypos: fixTypos, applyRemoteDict: applyRemoteDict, Dict: Dict, sessionUpdate: sessionUpdate, CONFIG: CONFIG, Session: Session, goHome: goHome, showError: showError, goDone: goDone, Submit: Submit, buildOrderData: buildOrderData, speakName: speakName, submitOrder: submitOrder, businessWindow: businessWindow, applyVoiceSettings: applyVoiceSettings, transcriptDishes: transcriptDishes, onResponseDone: onResponseDone, dayVoice: dayVoice, sessionVoice: sessionVoice, refreshSettings: refreshSettings, Remote: Remote, renderPromptView: renderPromptView, choiceAsk: choiceAsk, Turn: Turn, resetOffers: resetOffers, Offers: Offers, Pending: Pending, closingLine: closingLine, closingResponse: closingResponse, pressDineMode: pressDineMode, handleEvent: handleEvent, Log: Log, Rec: Rec, AudioIO: AudioIO, tick: tick, renderHomeText: renderHomeText };
+  window.__kiosk = { runTool: runTool, findItem: findItem, setMenu: setMenu, Order: Order, Menu: Menu, buildInstructions: buildInstructions, buildKeyterms: buildKeyterms, fixTypos: fixTypos, applyRemoteDict: applyRemoteDict, Dict: Dict, sessionUpdate: sessionUpdate, CONFIG: CONFIG, Session: Session, goHome: goHome, showError: showError, goDone: goDone, Submit: Submit, buildOrderData: buildOrderData, speakName: speakName, submitOrder: submitOrder, businessWindow: businessWindow, applyVoiceSettings: applyVoiceSettings, transcriptDishes: transcriptDishes, showTypos: showTypos, onResponseDone: onResponseDone, dayVoice: dayVoice, sessionVoice: sessionVoice, refreshSettings: refreshSettings, Remote: Remote, renderPromptView: renderPromptView, choiceAsk: choiceAsk, Turn: Turn, resetOffers: resetOffers, Offers: Offers, Pending: Pending, closingLine: closingLine, closingResponse: closingResponse, pressDineMode: pressDineMode, handleEvent: handleEvent, Log: Log, Rec: Rec, AudioIO: AudioIO, tick: tick, renderHomeText: renderHomeText };
 })();
 </script>
 </body>
