@@ -2555,7 +2555,14 @@ body.is-demo .demo-chip{display:inline-block}
       if (!raw) return;
       text = showTypos(raw);   // kiosk-voice-crosscheck2-20261106：紀錄也顯示改過錯字的版本，原文放 raw
       var e = this.cur.users[key];
-      if (!e) e = this.cur.users[key] = this.add('customer', text);
+      if (!e) {
+        e = this.cur.users[key] = this.add('customer', text);
+        var at = Session.speechAt && Session.speechAt >= this.cur.t0 ? Math.round((Session.speechAt - this.cur.t0) / 100) / 10 : null;
+        if (at !== null && at < e.t) {   // kiosk-voice-fast4-20261106：放在客人開始說話的時間（轉文字出來比較晚）
+          e.t = at; e.heard_at = Math.round((Date.now() - this.cur.t0) / 100) / 10;
+          this.cur.events.sort(function (a, b) { return a.t - b.t; });
+        }
+      }
       e.text = text.slice(0, 2000);
       if (text !== raw) e.raw = raw.slice(0, 2000); else delete e.raw;
     },
@@ -2785,6 +2792,7 @@ body.is-demo .demo-chip{display:inline-block}
     Session.startedAt = Date.now(); touch();
     if (!Session.demo) Log.begin();
     if (LITE) Log.add('system', '精簡測試（?lite=1）：不帶菜單清單、工具說明縮短');
+    if (!Session.demo) Log.add('system', '設定：反應模式 ' + (CONFIG.reasoningEffort === 'high' ? '仔細' : '快') + '、轉文字 ' + (NOTX ? '關（?notx=1）' : '開') + (LITE ? '、精簡（?lite=1）' : ''));
     if (NOTX) Log.add('system', '不轉文字測試（?notx=1）：沒有「客人」那行字，錯字對照、口味判斷也用不到');
     setAgent('正在幫您接通點餐員，請稍等…'); setUser('');
     setStatus('connecting');
@@ -2914,6 +2922,7 @@ body.is-demo .demo-chip{display:inline-block}
       c.speak = Date.now();
       this.write();
     },
+    tx: function () { var c = this.cur; if (c && c.tx === undefined) c.tx = Date.now(); },
     quiet: function () { var c = this.cur; if (!c || !c.stop || c.speak) return; c.quiet = Date.now(); this.write(); },
     done: function () {   // 回覆結束：沒有呼叫工具（直接回答）→ 第一個聲音就是開口
       var c = this.cur;
@@ -2938,9 +2947,11 @@ body.is-demo .demo-chip{display:inline-block}
       step('點餐員開口', c.speak, 'speak');
       if (c.quiet && !c.speak) { parts.push('沒有要問的，不再回覆'); data.quiet = 1; }
       data.total = Math.round((c.speak || prev) - base);
+      var txNote = c.tx ? '；轉文字在說完後 ' + sec(c.tx - base) + ' 秒好' : '';
+      if (c.tx) data.tx = Math.round(c.tx - base);
       var heard = c.lack || c.ack || c.speak;
       if (heard) data.heard = Math.round(heard - base);
-      Log.add('system', '⏱ 客人說完 → ' + parts.join(' → ') + '（' + ((c.lack || c.ack) && c.speak ? '客人等到第一聲 ' + sec(data.heard) + ' 秒，' : '') + '共 ' + sec(data.total) + ' 秒' + (this.pauses ? '；客人中間停頓 ' + this.pauses + ' 次，xAI 先開始回覆又取消' : '') + '）', { timing: Object.assign(data, this.pauses ? { pauses: this.pauses } : {}) });
+      Log.add('system', '⏱ 客人說完 → ' + parts.join(' → ') + '（' + ((c.lack || c.ack) && c.speak ? '客人等到第一聲 ' + sec(data.heard) + ' 秒，' : '') + '共 ' + sec(data.total) + ' 秒' + txNote + (this.pauses ? '；客人中間停頓 ' + this.pauses + ' 次，xAI 先開始回覆又取消' : '') + '）', { timing: Object.assign(data, this.pauses ? { pauses: this.pauses } : {}) });
       this.pauses = 0;
     }
   };
@@ -2986,12 +2997,15 @@ body.is-demo .demo-chip{display:inline-block}
         Ack.settle(ev.transcript);
         if (ev.transcript) { setAgent(String(ev.transcript)); Log.agent(String(ev.transcript), Session.cutOff); }
         return;
-      case 'conversation.item.input_audio_transcription.updated':
       case 'conversation.item.input_audio_transcription.completed':
+        Tm.tx();   // kiosk-voice-fast4-20261106：轉文字好了的時間
+        setUser(String(ev.transcript || ev.text || '')); Log.user(ev.item_id, Session.userLine); return;
+      case 'conversation.item.input_audio_transcription.updated':
         setUser(String(ev.transcript || ev.text || '')); Log.user(ev.item_id, Session.userLine); return;
       case 'conversation.item.input_audio_transcription.delta':
         setUser((Session.userLine || '') + String(ev.delta || '')); Log.user(ev.item_id, Session.userLine); return;
       case 'input_audio_buffer.speech_started':
+        Session.speechAt = Date.now();
         Session.expectFollow = false;   // 客人開口了：之前請的再回覆不算數（下一次回覆照「客人剛說完」處理）
         if (Hold.on && Session.responseActive) {   // 客人又開口：剛剛只是停一下，這次回覆的聲音（好的）不播
           if (Hold.buf.length || Session.timers.hold) Log.add('system', '客人還在說，點餐員先不出聲');
