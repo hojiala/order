@@ -2756,6 +2756,7 @@ body.is-demo .demo-chip{display:inline-block}
     Session.responseActive = false; Session.queueResponse = false; Session.awaiting = false; Session.userSpeaking = false;
     Session.calls = {}; Session.agentText = ''; Session.updateAttempt = 0; Session.wrapUpAt = 0; Session.cutOff = false;
     Session.voice = '';   // 每位客人開始時重選（依當天星期）
+    Tm.reset();
     Session.startedAt = Date.now(); touch();
     if (!Session.demo) Log.begin();
     setAgent('正在幫您接通點餐員，請稍等…'); setUser('');
@@ -2804,19 +2805,74 @@ body.is-demo .demo-chip{display:inline-block}
     if (!Session.ready || !Session.ws || Session.ws.readyState !== 1) return;
     if (AudioIO.micGated()) return;
     send({ type: 'input_audio_buffer.append', audio: b64 });
+    Tm.sent(b64);
   }
+  // kiosk-voice-timing-20261106：每句話的時間（點餐紀錄的 ⏱ 那一行）
+  //   說完＝xAI 說的那段聲音結束的位置（audio_end_ms），換算成平板把那段聲音送出去的時間
+  var Tm = {
+    cur: null, sentMs: 0, marks: [],
+    reset: function () { this.cur = null; this.sentMs = 0; this.marks = []; },
+    sent: function (b64) {   // PCM16 24kHz：每毫秒 48 bytes
+      var len = String(b64 || '').length, bytes = len * 3 / 4 - (/==$/.test(b64) ? 2 : (/=$/.test(b64) ? 1 : 0));
+      this.sentMs += bytes / 48;
+      this.marks.push([this.sentMs, Date.now()]);
+      if (this.marks.length > 3000) this.marks.splice(0, 1000);
+    },
+    wallAt: function (ms) {
+      if (typeof ms !== 'number' || !isFinite(ms)) return 0;
+      for (var i = 0; i < this.marks.length; i++) if (this.marks[i][0] >= ms) return this.marks[i][1];
+      return 0;
+    },
+    start: function () { if (this.cur && this.cur.stop && this.cur.created) this.write(); this.cur = { startSent: this.sentMs }; },   // 上一句沒等到開口（例如點好了）也先記
+    stop: function (ev) {
+      if (!this.cur) this.start();
+      var c = this.cur;
+      c.stop = Date.now();
+      c.aend = ev && typeof ev.audio_end_ms === 'number' ? ev.audio_end_ms : null;   // 原始值也記下來（確認 xAI 的計算方式）
+      c.sent = Math.round(this.sentMs);
+      c.end = this.wallAt(c.aend);
+      if (c.aend !== null && c.startSent !== undefined && c.aend < c.startSent - 1000) c.end = 0;   // 比這句開始還早：xAI 可能每句重算，不算這段
+      if (c.end && (c.end > c.stop || c.stop - c.end > 5000)) c.end = 0;
+    },
+    mark: function (k, v) { var c = this.cur; if (c && c.stop && c[k] === undefined) c[k] = v === undefined ? Date.now() : v; },
+    audio: function () {
+      var c = this.cur;
+      if (!c || !c.stop || c.speak) return;
+      if (c.tool && !c.follow) return;   // 有加餐點：等再回覆的那段聲音
+      c.speak = Date.now();
+      this.write();
+    },
+    write: function () {
+      var c = this.cur; this.cur = null;
+      if (!c) return;
+      var base = c.end || c.stop, prev = base, parts = [], data = { aend: c.aend, sent: c.sent };
+      var tn = { add_items: '加餐點', update_item: '修改', remove_item: '刪除', make_combo: '做成套餐', finish_order: '點好了', search_menu: '查菜單', get_order: '查點餐單' }[c.toolName] || '工具';
+      function sec(ms) { return (Math.round(ms / 100) / 10).toFixed(1); }
+      function step(label, t, key) { if (!t) return; data[key] = Math.round(t - prev); parts.push(label + ' ' + (prev === base && parts.length === 0 ? '' : '+') + sec(t - prev) + ' 秒'); prev = t; }
+      if (c.end) { data.vad = Math.round(c.stop - c.end); parts.push('xAI 判斷說完 ' + sec(c.stop - c.end) + ' 秒'); prev = c.stop; }
+      step('開始回覆', c.created, 'created');
+      if (c.firstType === 'tool' && c.first < c.tool) step('開始寫' + tn, c.first, 'first');
+      step('送出' + tn, c.tool, 'tool');
+      step('再回覆', c.follow, 'follow');
+      step('點餐員開口', c.speak, 'speak');
+      data.total = Math.round((c.speak || prev) - base);
+      Log.add('system', '⏱ 客人說完 → ' + parts.join(' → ') + '（共 ' + sec(data.total) + ' 秒）', { timing: data });
+    }
+  };
   function handleEvent(ev) {
     var type = ev.type || '';
     switch (type) {
       case 'session.updated':
         onReady(); return;
       case 'response.created':
+        Tm.mark('created');
         Session.sawResponse = true; clearTimer('noreply');   // kiosk-voice-crosscheck-20261106
         Session.responseActive = true; Session.agentText = ''; Session.cutOff = false;
         if (Log.cur) Log.cur.agentLogged = false;
         return;
       case 'response.output_audio.delta':
       case 'response.audio.delta':
+        Tm.mark('first'); Tm.mark('firstType', 'audio'); Tm.audio();
         Session.awaiting = false; touch();
         if (!Session.cutOff) AudioIO.play(ev.delta);
         return;
@@ -2824,6 +2880,7 @@ body.is-demo .demo-chip{display:inline-block}
       case 'response.audio_transcript.delta':
       case 'response.output_text.delta':
       case 'response.text.delta':
+        Tm.mark('first'); Tm.mark('firstType', 'text');
         Session.agentText += String(ev.delta || ''); setAgent(Session.agentText);
         if (CONFIG.askDineMode && !Order.dineMode && !Order.askingMode && Order.lines.length && /內用還是外帶|外帶還是內用|內用或外帶/.test(Session.agentText)) { Order.askingMode = true; renderOrder(); }
         return;
@@ -2837,6 +2894,7 @@ body.is-demo .demo-chip{display:inline-block}
       case 'conversation.item.input_audio_transcription.delta':
         setUser((Session.userLine || '') + String(ev.delta || '')); Log.user(ev.item_id, Session.userLine); return;
       case 'input_audio_buffer.speech_started':
+        Tm.start();
         Session.userSpeaking = true; Session.userLine = ''; touch();
         Turn.adds = {}; Log.turn++;
         if (CONFIG.bargeIn && (AudioIO.isPlaying() || Session.responseActive)) {
@@ -2845,11 +2903,15 @@ body.is-demo .demo-chip{display:inline-block}
         }
         return;
       case 'input_audio_buffer.speech_stopped':
+        Tm.stop(ev);
         Session.userSpeaking = false; Session.awaiting = true; touch(); watchReply(); return;
+      case 'response.function_call_arguments.delta':
+        Tm.mark('first'); Tm.mark('firstType', 'tool'); return;
       case 'response.function_call_arguments.done':
+        Tm.mark('first'); Tm.mark('firstType', 'tool'); Tm.mark('tool'); Tm.mark('toolName', ev.name);
         onToolCall(ev.name, ev.call_id, ev.arguments); return;
       case 'response.output_item.done':
-        if (ev.item && ev.item.type === 'function_call') onToolCall(ev.item.name, ev.item.call_id, ev.item.arguments);
+        if (ev.item && ev.item.type === 'function_call') { Tm.mark('first'); Tm.mark('firstType', 'tool'); Tm.mark('tool'); Tm.mark('toolName', ev.item.name); onToolCall(ev.item.name, ev.item.call_id, ev.item.arguments); }
         return;
       case 'response.done':
         onResponseDone(ev.response || {}); return;
@@ -2895,7 +2957,7 @@ body.is-demo .demo-chip{display:inline-block}
       Session.pendingFollowup = false;
       Session.awaiting = true;
       var waits = Session.toolWaits.splice(0);
-      Promise.all(waits).then(function () { return AudioIO.whenIdle(); }).then(function () { if (Session.active && !Session.userSpeaking) requestResponse(closingResponse()); });
+      Promise.all(waits).then(function () { return AudioIO.whenIdle(); }).then(function () { if (Session.active && !Session.userSpeaking) { Tm.mark('follow'); requestResponse(closingResponse()); } });
       return;
     }
     if (Session.queueResponse) { Session.queueResponse = false; requestResponse(); return; }
@@ -3395,7 +3457,7 @@ body.is-demo .demo-chip{display:inline-block}
   }
 
   // 測試用
-  window.__kiosk = { runTool: runTool, findItem: findItem, setMenu: setMenu, Order: Order, Menu: Menu, buildInstructions: buildInstructions, buildKeyterms: buildKeyterms, fixTypos: fixTypos, applyRemoteDict: applyRemoteDict, Dict: Dict, sessionUpdate: sessionUpdate, CONFIG: CONFIG, Session: Session, goHome: goHome, showError: showError, goDone: goDone, Submit: Submit, buildOrderData: buildOrderData, speakName: speakName, submitOrder: submitOrder, businessWindow: businessWindow, applyVoiceSettings: applyVoiceSettings, transcriptDishes: transcriptDishes, showTypos: showTypos, flavorFromWords: flavorFromWords, onResponseDone: onResponseDone, dayVoice: dayVoice, sessionVoice: sessionVoice, refreshSettings: refreshSettings, Remote: Remote, renderPromptView: renderPromptView, choiceAsk: choiceAsk, Turn: Turn, resetOffers: resetOffers, Offers: Offers, Pending: Pending, closingLine: closingLine, closingResponse: closingResponse, pressDineMode: pressDineMode, handleEvent: handleEvent, Log: Log, Rec: Rec, AudioIO: AudioIO, tick: tick, renderHomeText: renderHomeText };
+  window.__kiosk = { runTool: runTool, findItem: findItem, setMenu: setMenu, Order: Order, Menu: Menu, buildInstructions: buildInstructions, buildKeyterms: buildKeyterms, fixTypos: fixTypos, applyRemoteDict: applyRemoteDict, Dict: Dict, sessionUpdate: sessionUpdate, CONFIG: CONFIG, Session: Session, goHome: goHome, showError: showError, goDone: goDone, Submit: Submit, buildOrderData: buildOrderData, speakName: speakName, submitOrder: submitOrder, businessWindow: businessWindow, applyVoiceSettings: applyVoiceSettings, transcriptDishes: transcriptDishes, showTypos: showTypos, Tm: Tm, flavorFromWords: flavorFromWords, onResponseDone: onResponseDone, dayVoice: dayVoice, sessionVoice: sessionVoice, refreshSettings: refreshSettings, Remote: Remote, renderPromptView: renderPromptView, choiceAsk: choiceAsk, Turn: Turn, resetOffers: resetOffers, Offers: Offers, Pending: Pending, closingLine: closingLine, closingResponse: closingResponse, pressDineMode: pressDineMode, handleEvent: handleEvent, Log: Log, Rec: Rec, AudioIO: AudioIO, tick: tick, renderHomeText: renderHomeText };
 })();
 </script>
 </body>
