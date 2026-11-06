@@ -589,8 +589,16 @@ body.is-demo .demo-chip{display:inline-block}
     });
     return rows;
   }
+  // kiosk-voice-noprice-20261106：同一個品名放在兩個分類（苜蓿芽蔬菜吐司在「吐司、厚片」和「其它、飲品」各一筆）
+  //   → 只留一筆：有上架的優先，再挑選項最多的（吐司、厚片那筆有「加蛋」）。不然系統會一直問「請問要苜蓿芽蔬菜吐司？」
+  function dedupeByName(items) {
+    var best = {};
+    function score(it) { return (it.active !== false ? 1000 : 0) + (it.optionGroups || []).length * 10 + (it.options || []).length + (it.posExtras || []).length / 1000; }
+    items.forEach(function (it) { var k = String(it.name).trim(); if (!best[k] || score(it) > score(best[k])) best[k] = it; });
+    return items.filter(function (it) { return best[String(it.name).trim()] === it; });
+  }
   function setMenu(items, aliasData) {
-    Menu.items = (items || []).filter(function (it) { return it && it.name; }).map(prepItem);
+    Menu.items = dedupeByName((items || []).filter(function (it) { return it && it.name; })).map(prepItem);
     Menu.active = Menu.items.filter(function (it) { return it.active !== false; });
     var byName = {};
     Menu.items.forEach(function (it) { it._names.forEach(function (n) { if (!byName[n]) byName[n] = it; }); });
@@ -680,7 +688,33 @@ body.is-demo .demo-chip{display:inline-block}
     if (g && (g.choices || []).length) return g.choices.map(function (c) { return c.name + c.price; }).join('/');
     return String(Number(it.price) || 0);
   }
-  function briefItem(it) { return { name: it.name, price: Number(it.price) || 0, available: it.active !== false }; }
+  function sizeLabel(it) {   // kiosk-voice-noprice-20261106：給點餐員的菜單不列價錢，飲料只列杯型
+    var g = (it.optionGroups || []).filter(function (x) { return x.pricing === 'setPrice'; })[0];
+    return g && (g.choices || []).length ? ' ' + g.choices.map(function (c) { return c.name; }).join('/') : '';
+  }
+  function briefItem(it) { return { name: it.name, available: it.active !== false }; }   // 不給價錢：點餐員不說價錢
+  // 套餐多附什麼：1～9號附一杯大杯奶茶、可換、超過 30 元補差價；其他套餐附一杯飲料、飲料折 5 元（都從菜單的套餐飲料設定算）
+  function setIncludes(set) {
+    var gi = drinkGroupIdx(set);
+    if (gi < 0) return '';
+    var g = set.optionGroups[gi], base = Number(g.baseValue) || 0, ch = g.choices || [];
+    if (/折/.test(g.groupName || '')) return '附一杯飲料，飲料折' + base + '元';
+    var d = ch[clampIdx(g.defaultIdx, ch.length)];
+    return '附一杯' + (d ? cupSize(d.name) + plainName(drinkBaseName(d.name)) : '飲料') + '，可以換別的飲料' + (base ? '，超過' + base + '元要補差價' : '');
+  }
+  function setRulesText() {   // 給點餐員的【套餐】說明
+    var numbered = '', other = '';
+    Menu.active.forEach(function (it) {
+      if (!isSetItem(it)) return;
+      var t = setIncludes(it);
+      if (!t) return;
+      if (/^\d+號/.test(it.name)) { if (!numbered) numbered = t; } else if (!other) other = t;
+    });
+    var parts = [];
+    if (numbered) parts.push('1～9號套餐' + numbered);
+    if (other) parts.push((numbered ? '其他套餐' : '套餐') + other);
+    return parts.length ? '【套餐】套餐和單點的差別是多附一杯飲料：' + parts.join('；') + '。顧客問「套餐有什麼」「套餐跟單點差在哪」就照這個說，不要念食材，也不要說餐點價錢。' : '';
+  }
   // kiosk-voice-contents-20261104：菜單管理「描述」就是食材說明（線上點餐也顯示這一行）
   function cleanContents(raw) {
     var s = String(raw || '').replace(/\r?\n/g, '、');
@@ -865,8 +899,8 @@ body.is-demo .demo-chip{display:inline-block}
   // 同一句話一起說的，照舊由 setPick 直接配成套餐。
   // 不同句才點飲料（或數量對不上）：點餐員問一次「要不要把○○和○○做成套餐？」，顧客說好才用 make_combo 合併。
   // 先點飲料、後點套餐（套餐飲料還沒選）也一樣問「剛剛點的○○要當套餐飲料嗎？」
-  var Offers = { asked: {}, lines: {}, kinds: {}, variants: {} };   // asked：問過的「主餐 id:飲料 id」；lines：問過的那幾項（顧客說不用，就不再拿它們來問）；kinds：問過套餐／單點的那道
-  function resetOffers() { Offers.asked = {}; Offers.lines = {}; Offers.kinds = {}; Offers.variants = {}; }
+  var Offers = { asked: {}, lines: {}, kinds: {}, variants: {}, askSeen: {} };   // asked：問過的「主餐 id:飲料 id」；lines：問過的那幾項（顧客說不用，就不再拿它們來問）；kinds：問過套餐／單點的那道
+  function resetOffers() { Offers.asked = {}; Offers.lines = {}; Offers.kinds = {}; Offers.variants = {}; Offers.askSeen = {}; }
   // kiosk-voice-posextras-20261105：點餐員直接傳了「4號辣卡脆雞堡單點」，但顧客只說「四號辣卡脆雞堡」（沒說套餐或單點）→ 先問一次
   var KIND_WORD_RE = /套餐|單點|單的|不要套|不用套|不要飲料|不用飲料|沒有飲料/;
   // kiosk-voice-choiceguard-20261105：顧客這句話說了套餐／單點、有蛋有肉／無蛋無肉 → 這道記起來，不用再問
@@ -1232,7 +1266,7 @@ body.is-demo .demo-chip{display:inline-block}
   function candidateList(list, family) {
     var labels = family ? familyLabels(list) : null;
     return list.filter(function (c) { return c.active !== false; }).map(function (c) {
-      return { name: c.name, say: labels ? labels[c.name] : speakName(c.name), price: Number(c.price) || 0 };
+      return { name: c.name, say: labels ? labels[c.name] : speakName(c.name) };
     });
   }
   // kiosk-voice-asklabel-20261106：套餐／單點、有蛋有肉／無蛋無肉這種問題，選項念「套餐」「無蛋無肉」就好，
@@ -1775,6 +1809,14 @@ body.is-demo .demo-chip{display:inline-block}
         : { ok: false, said: toTrad(specs[di].name), message: '套餐沒有加成功，這杯飲料也還沒加；先處理套餐，再問飲料' };
     });
     var asking = results.filter(function (r) { return r && r.ask && !r.ok; });
+    asking.forEach(function (r) {   // kiosk-voice-noprice-20261106：同一題第二次回來 → 不要再問一樣的話
+      var k = String(r.said || '') + '|' + r.ask;
+      if (Offers.askSeen[k]) {
+        r.repeat = true;
+        r.message = '這題剛剛問過了，不要再問一樣的話。顧客已經回答的話，從 candidates 挑他說的那一個，name 一字不改傳回來；顧客說「對」「好」就用第一個；真的聽不懂才請顧客再說一次是哪一種';
+      }
+      Offers.askSeen[k] = true;
+    });
     if (asking.length > 1) asking.forEach(function (r) {   // 「一號和黑胡椒鐵板麵」：兩樣都要問 → 「請問黑胡椒鐵板麵要套餐還是單點？」
       var d = r.dish || (r.candidates && r.candidates[0] ? dishLabel({ name: r.candidates[0].name }) : '');
       if (d && /^請問要/.test(r.ask)) r.ask = '請問' + d + '要' + r.ask.slice(3);
@@ -1847,6 +1889,8 @@ body.is-demo .demo-chip{display:inline-block}
       var out = briefItem(r.it), c = contentsOf(r.it);
       if (c.text) { out.contents = c.text; if (c.from) out.contents_from = c.from; }
       else out.contents = '（菜單沒有寫食材）';
+      var setOf = isSetItem(r.it) ? r.it : (variantOf(r.it).kind === '單點' ? familyOf(r.it).filter(function (x) { return x.active !== false && isSetItem(x); })[0] : null);
+      if (setOf && setIncludes(setOf)) out.set_includes = '套餐' + setIncludes(setOf);   // 「套餐有什麼」照這個說
       return out;
     }) };
   }
@@ -2110,11 +2154,11 @@ body.is-demo .demo-chip{display:inline-block}
     Menu.active.forEach(function (it) {
       var c = it.category || '其他';
       if (!cats[c]) { cats[c] = []; order.push(c); }
-      cats[c].push(it.name + ' ' + itemPriceLabel(it));
+      cats[c].push(it.name + sizeLabel(it));
     });
     return [
       '你是早餐店菜單看板旁點餐平板上的點餐員，顧客多半是長輩。',
-      '【說話】台灣華語，用字一律繁體中文；親切、有耐心。回答越短越好（顧客等得少，也比較省錢）：不要重複顧客剛說的餐點和選項、不要念單項價錢（畫面上都看得到）、一次只問一件事。但是要問的、要告訴顧客的（下面規則寫到的）一定要說，不可以省略。',
+      '【說話】台灣華語，用字一律繁體中文；親切、有耐心。回答越短越好（顧客等得少，也比較省錢）：不要重複顧客剛說的餐點和選項、不要說餐點的價錢（單點、套餐多少錢都不要說；顧客問價錢，就請他看旁邊的菜單看板，點了之後螢幕上也看得到）、一次只問一件事。但是要問的、要告訴顧客的（下面規則寫到的）一定要說，不可以省略。',
       '【開場】只說：「' + GREETING + '」',
       '【身分】你是 AI 語音點餐員，不是真人店員；顧客問起就簡短說明，再繼續點餐。',
       '【點餐】',
@@ -2128,14 +2172,15 @@ body.is-demo .demo-chip{display:inline-block}
       '3. 結果有 missing 時，只問第一個，白話問：missing 裡有 ask 就照 ask 問（例如「要加蛋嗎？」「果醬要沙拉嗎？也可以換…」，預設的選項一定要說到）；沒有 ask：套餐飲料→「飲料要大杯奶茶，還是換別的？」；溫度→「冰的還是溫的？」；容量→「大杯還是中杯？」。顧客回答後呼叫 update_item 改「問的那一項」（line 用那一項的項次），selections 用 options 裡的原文；顧客只說「好」「要」「可以」就用 default。顧客回答後又接著點新的餐點（例如「好啊，再一個拼盤」），要分開：答案用 update_item 給問的那一項，新的餐點用 add_items，絕對不要把答案放進新餐點的 selections。加蛋只問要不要：顧客說要，就用 default（菜單預設的蛋），不要再問要哪一種蛋；顧客自己說半熟蛋、散蛋、太陽蛋才照他說的。有蛋有肉的鐵板麵、拼盤本來就有蛋（用菜單預設的蛋），不要問要不要加蛋，也不要問要哪一種蛋；無蛋無肉的鐵板麵照 ask 問要不要加蛋或加肉。結果有 answered_previous，表示系統已經幫那一題記好，不要再問；有 egg_kept 照它說的處理。',
       '4. 結果有 ask（顧客還沒說是哪一種，例如套餐／單點、辣卡／原卡、有蛋有肉／無蛋無肉）時，照 ask 的原句問，前面可以加「好的，」，其他一個字都不要加：不要加餐點名稱、不要解釋（例如不要說「有蛋有肉的里肌」「無蛋無肉的肉醬」），不要自己決定，也絕對不可以把 candidates 全部加入；顧客選好後，只用他選的那一個 name 再呼叫 add_items。顧客明確說「兩種都要」「各一個」才分別加。sold_out 時說「不好意思，這個今天賣完了」，請顧客換別的。',
       '5. 顧客改口一律在同一項上改，不要新增一項，也不要寫進備註：改成有蛋有肉、無蛋無肉、套餐或單點，用 update_item 的 name 填這幾個字；換別的餐點也用 update_item 的 name；改數量、不要某樣用 update_item 或 remove_item（line 是畫面上的項次）。',
-      '5-1. 結果有 auto_upgraded 或 meat_added 時，用一句短話告訴顧客，例如「好的，幫您改成套餐，比較划算」「好的，另外加一片肉，三十五元」。結果有 unmatched 時，那幾個字沒有對應的選項：顧客的回答請換成 options 裡的原文再送一次；真的是備註（例如不要醬）就放 note。',
+      '5-1. 結果有 auto_upgraded 或 meat_added 時，用一句短話告訴顧客，例如「好的，幫您改成套餐，比較划算」「好的，另外加一片肉，○○元」（加肉要多收的錢照 meat_added 念）。結果有 unmatched 時，那幾個字沒有對應的選項：顧客的回答請換成 options 裡的原文再送一次；真的是備註（例如不要醬）就放 note。',
       CONFIG.askDineMode
         ? '6. 顧客說「這樣就好」「沒有了」「好了」，或系統告訴你顧客按了「我點好了」：還不知道內用還是外帶，就直接問「請問內用還是外帶？」，這時先不要呼叫工具；顧客回答（或系統說顧客按了按鈕）後馬上呼叫 finish_order，dine_mode 填「內用」或「外帶」。已經知道內用外帶就直接呼叫 finish_order。回傳 pending 就先把沒確認的問完；回傳 need_dine_mode 就問「請問內用還是外帶？」。'
         : '6. 顧客說「這樣就好」「沒有了」「好了」，或系統告訴你顧客按了「我點好了」，馬上呼叫 finish_order。回傳 pending 就先把沒確認的問完。',
       '6-1. finish_order 成功後只說一句：有 order_no 就說「好的，總共○○元，您的號碼是○○號，' + CONFIG.closingText + '」；沒有 order_no 就說「好的，總共○○元，' + CONFIG.closingText + '」；submitted 是 false 就說「不好意思，訂單沒有送出成功，請到櫃台告訴店員您的餐點」；number_pending 是 true（號碼還在產生）就說「好的，總共○○元，號碼會顯示在螢幕上，' + CONFIG.closingText + '」；trial 是 true 就說「好的，總共○○元，請到櫃台告訴店員您的餐點，謝謝您！」。金額用 order_total，號碼用 order_no。',
       '6-2. 系統說點餐時間到了，就照系統說的收尾，不要再問新的問題。',
-      '7. 價錢只念工具回傳的數字，不要自己加總。',
+      '7. 可以說的錢只有這幾種：加料要多收的錢（照 ask、meat_added）、combo_offer 可以省多少、套餐的「飲料折5元」「超過30元補差價」（照【套餐】或 set_includes）、最後總共多少（照 finish_order）。其他價錢一律不說，也不要自己加總。',
       '8. 聽不清楚就說「不好意思，可以再說一次嗎？」；顧客講台語也盡量聽懂，用華語回答。',
+      '8-0. 顧客問「套餐有什麼」「套餐跟單點差在哪」：只說套餐多附的飲料，照【套餐】或 search_menu 結果的 set_includes 說，例如「套餐有附一杯飲料，飲料折五元」「套餐附一杯大杯錫蘭奶茶，可以換別的飲料，超過三十元要補差價」；不要念食材，也不要說餐點價錢。',
       '8-1. 顧客問某道餐點裡面有什麼、有沒有某樣食材（例如洋蔥、香菜、辣不辣）：先用 search_menu 查那一道，只照結果的 contents 回答。問「有沒有○○」：contents 有寫到就說「有喔」，沒寫到就只說「沒有喔」，不要多說別的。問「裡面有什麼」：白話念出主要食材，例如「裡面有炸雞腿、生菜、番茄和酸黃瓜醬」。contents 是「菜單沒有寫食材」，就說「這個要麻煩問一下櫃台店員」。絕對不要用一般常識猜。顧客提到過敏，最後加一句「如果會過敏，請再跟櫃台確認一下」。顧客說不要某樣食材（例如不要洋蔥），寫在那一項的 note。',
       '9. 店名、地址、營業時間只用【店家】寫的回答；不知道的就說「這個要麻煩問一下櫃台店員」，不要猜。',
       '10. 顧客身體不舒服、有緊急狀況或要客訴，請他直接找櫃台店員。',
@@ -2143,7 +2188,8 @@ body.is-demo .demo-chip{display:inline-block}
       CONFIG.storeFacts ? '【店家】' + CONFIG.storeFacts : '',
       CONFIG.recommend ? '【推薦】顧客問「有什麼推薦」「什麼好吃」時才介紹，一次最多說兩樣：' + CONFIG.recommend : '',
       CONFIG.extraRules ? '【今天特別注意】' + CONFIG.extraRules : '',
-      '【今日菜單】（品名 價格；沒列出的就是今天沒有）',
+      setRulesText(),
+      '【今日菜單】（品名；飲料列出杯型；沒列出的就是今天沒有）',
       order.map(function (c) { return '〔' + c + '〕' + cats[c].join('、'); }).join('\n')
     ].filter(Boolean).join('\n');
   }
@@ -2607,6 +2653,9 @@ body.is-demo .demo-chip{display:inline-block}
   }
   function userPressedDone() {
     if (Session.demo) { demoFinish(); return; }
+    var nowMs = Date.now();
+    if (Session.donePressedAt && nowMs - Session.donePressedAt < 4000) return;   // kiosk-voice-noprice-20261106：連按兩下只算一次
+    Session.donePressedAt = nowMs;
     if (Session.ready && Session.ws) {
       touch();
       Log.add('system', '顧客按了「我點好了」');
