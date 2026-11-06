@@ -400,6 +400,7 @@ body.is-demo .demo-chip{display:inline-block}
     wsUrl: 'wss://api.x.ai/v1/realtime',
     model: 'grok-voice-3.0',          // Pi 回傳的 model 優先
     voice: 'ara',                     // ★ manage 有選就用 manage 的；沒選才用 Pi 回傳的 voice（XAI_VOICE_NAME）
+    voiceByDay: [],                   // ★ kiosk-voice-dayvoice-20261106：[星期日, 一, …, 六]，空的那天用上面的 voice
     speechSpeed: 0.92,                // ★ 長輩：稍微放慢（0.7–1.5）
     reasoningEffort: 'none',          // ★ 'none' 最快；聽懂但常點錯時改 'high'
     bargeIn: false,                   // ★ false = 點餐員說話時不收音，避免喇叭回音打斷自己；?bargein=1 可測試插話
@@ -420,7 +421,7 @@ body.is-demo .demo-chip{display:inline-block}
   /* ═════════ manage 的語音點餐設定（settings.kioskVoice）═════════ */
   var VOICE_NAMES = ['ara', 'eve', 'leo', 'rex', 'sal'];
   var VOICE_KEYS = ['enabled', 'pausedText', 'greeting', 'storeFacts', 'recommend', 'extraRules', 'keyterms', 'askDineMode',
-    'voice', 'speechSpeed', 'reasoningEffort', 'serverIdlePromptMs', 'idleEndMs', 'maxSessionMs', 'doneReturnMs',
+    'voice', 'voiceByDay', 'speechSpeed', 'reasoningEffort', 'serverIdlePromptMs', 'idleEndMs', 'maxSessionMs', 'doneReturnMs',
     'bargeIn', 'vadSilenceMs', 'vadThreshold',
     'submitOrders', 'submitIncomplete', 'homeSteps', 'closingText', 'volume', 'logText', 'logAudio', 'recordNotice'];
   var DEFAULTS = {};
@@ -454,6 +455,10 @@ body.is-demo .demo-chip{display:inline-block}
     s = cfgText(v.voice, 20).toLowerCase();
     Remote.voice = VOICE_NAMES.indexOf(s) !== -1;
     if (Remote.voice) CONFIG.voice = s;
+    CONFIG.voiceByDay = [0, 1, 2, 3, 4, 5, 6].map(function (i) {   // 依星期幾換聲音；壞掉或沒選的那天＝''
+      var d = Array.isArray(v.voiceByDay) ? cfgText(v.voiceByDay[i], 20).toLowerCase() : '';
+      return VOICE_NAMES.indexOf(d) !== -1 ? d : '';
+    });
     if ((n = cfgNum(v.speechSpeed, 0.7, 1.5)) !== null) CONFIG.speechSpeed = Math.round(n * 100) / 100;
     if (v.reasoningEffort === 'none' || v.reasoningEffort === 'high') CONFIG.reasoningEffort = v.reasoningEffort;
     if ((n = cfgNum(v.idlePromptSec, 5, 60)) !== null) CONFIG.serverIdlePromptMs = Math.round(n) * 1000;
@@ -2293,12 +2298,19 @@ body.is-demo .demo-chip{display:inline-block}
     });
     return Object.keys(count).sort(function (a, b) { return count[b] - count[a] || b.length - a.length; });
   }
+  function dayVoice(now) {   // kiosk-voice-dayvoice-20261106：今天（平板的日期，和營業時段判斷一樣）指定的聲音，沒指定回 ''
+    var d = (now || new Date()).getDay();
+    return (CONFIG.voiceByDay || [])[d] || '';
+  }
+  function sessionVoice(tok, now) {
+    return dayVoice(now) || (Remote.voice ? CONFIG.voice : ((tok && tok.voice) || CONFIG.voice));
+  }
   function sessionUpdate(tok, minimal) {
     var level = minimal === true ? 2 : (Number(minimal) || 0);
     applyRemoteDict(tok);
     var s = {
       instructions: buildInstructions(),
-      voice: Remote.voice ? CONFIG.voice : ((tok && tok.voice) || CONFIG.voice),
+      voice: (Session.voice = Session.voice || sessionVoice(tok)),   // 同一位客人中途重送設定時不換聲音
       turn_detection: { type: 'server_vad' },
       audio: {
         input: { format: { type: 'audio/pcm', rate: 24000 } },
@@ -2394,7 +2406,7 @@ body.is-demo .demo-chip{display:inline-block}
         total: orderTotal(), dine_mode: Order.dineMode ? dineModeLabel(Order.dineMode) : '' };
       var meta = { id: c.id, device: storeGet('kiosk_voice_device') || '', started_at: c.startedAt, ended_at: new Date().toISOString(),
         seconds: Math.round((Date.now() - c.t0) / 1000), end_reason: reason || 'unknown', order: order,
-        settings: { voice: Remote.voice ? CONFIG.voice : '(Pi)', speed: CONFIG.speechSpeed, barge_in: CONFIG.bargeIn, submit_orders: CONFIG.submitOrders,
+        settings: { voice: Session.voice || (Remote.voice ? CONFIG.voice : '(Pi)'), voice_by_day: !!dayVoice(), speed: CONFIG.speechSpeed, barge_in: CONFIG.bargeIn, submit_orders: CONFIG.submitOrders,
           submit_incomplete: CONFIG.submitIncomplete, session_level: Session.updateAttempt, saved_at: Remote.updatedAt },
         page: 'kiosk-voice-logs-20261101', ua: String(navigator.userAgent || '').slice(0, 160) };
       if (wantText) meta.events = c.events;
@@ -2597,6 +2609,7 @@ body.is-demo .demo-chip{display:inline-block}
     Session.active = true; Session.ready = false; Session.finishing = false; Session.pendingFollowup = false;
     Session.responseActive = false; Session.queueResponse = false; Session.awaiting = false; Session.userSpeaking = false;
     Session.calls = {}; Session.agentText = ''; Session.updateAttempt = 0; Session.wrapUpAt = 0; Session.cutOff = false;
+    Session.voice = '';   // 每位客人開始時重選（依當天星期）
     Session.startedAt = Date.now(); touch();
     if (!Session.demo) Log.begin();
     setAgent('正在幫您接通點餐員，請稍等…'); setUser('');
@@ -3136,6 +3149,8 @@ body.is-demo .demo-chip{display:inline-block}
   }
   function renderPromptView() {
     var voiceNote = Remote.voice ? CONFIG.voice : (CONFIG.voice + '（manage 沒選，實際以 Pi 的 XAI_VOICE_NAME 為準）');
+    var dv = dayVoice();
+    if (dv) voiceNote = dv + '（今天週' + '日一二三四五六'.charAt(new Date().getDay()) + '指定）';
     var meta = [
       DEMO ? '預覽菜單（離線）' : (Remote.loaded ? ('manage 設定' + (Remote.updatedAt ? '：' + localTime(Remote.updatedAt) + ' 存檔' : '')) : 'manage 還沒存過語音點餐設定，使用預設值'),
       '總開關：' + (CONFIG.enabled ? '開' : '暫停'),
@@ -3218,7 +3233,7 @@ body.is-demo .demo-chip{display:inline-block}
   }
 
   // 測試用
-  window.__kiosk = { runTool: runTool, findItem: findItem, setMenu: setMenu, Order: Order, Menu: Menu, buildInstructions: buildInstructions, buildKeyterms: buildKeyterms, fixTypos: fixTypos, applyRemoteDict: applyRemoteDict, Dict: Dict, sessionUpdate: sessionUpdate, CONFIG: CONFIG, Session: Session, goHome: goHome, showError: showError, goDone: goDone, Submit: Submit, buildOrderData: buildOrderData, speakName: speakName, submitOrder: submitOrder, businessWindow: businessWindow, applyVoiceSettings: applyVoiceSettings, refreshSettings: refreshSettings, Remote: Remote, renderPromptView: renderPromptView, choiceAsk: choiceAsk, Turn: Turn, resetOffers: resetOffers, Offers: Offers, Pending: Pending, closingLine: closingLine, closingResponse: closingResponse, pressDineMode: pressDineMode, handleEvent: handleEvent, Log: Log, Rec: Rec, AudioIO: AudioIO, tick: tick, renderHomeText: renderHomeText };
+  window.__kiosk = { runTool: runTool, findItem: findItem, setMenu: setMenu, Order: Order, Menu: Menu, buildInstructions: buildInstructions, buildKeyterms: buildKeyterms, fixTypos: fixTypos, applyRemoteDict: applyRemoteDict, Dict: Dict, sessionUpdate: sessionUpdate, CONFIG: CONFIG, Session: Session, goHome: goHome, showError: showError, goDone: goDone, Submit: Submit, buildOrderData: buildOrderData, speakName: speakName, submitOrder: submitOrder, businessWindow: businessWindow, applyVoiceSettings: applyVoiceSettings, dayVoice: dayVoice, sessionVoice: sessionVoice, refreshSettings: refreshSettings, Remote: Remote, renderPromptView: renderPromptView, choiceAsk: choiceAsk, Turn: Turn, resetOffers: resetOffers, Offers: Offers, Pending: Pending, closingLine: closingLine, closingResponse: closingResponse, pressDineMode: pressDineMode, handleEvent: handleEvent, Log: Log, Rec: Rec, AudioIO: AudioIO, tick: tick, renderHomeText: renderHomeText };
 })();
 </script>
 </body>

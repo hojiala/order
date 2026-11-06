@@ -65,6 +65,13 @@
         .kv-ev-error { align-self: center; background: rgba(127, 29, 29, .5); color: #fecaca; font-size: 12px; }
         .kv-order { font-size: 13px; color: #e2e8f0; border-collapse: collapse; width: 100%; }
         .kv-order td { padding: 3px 6px; border-top: 1px solid #1e293b; vertical-align: top; }
+        /* kiosk-voice-dayvoice-20261106：每天換聲音 */
+        .kv-days { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; }
+        .kv-days label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: #94a3b8; min-width: 0; }
+        .kv-days label.is-today > span { color: #6ee7b7; font-weight: 700; }
+        .kv-days label.is-off > span { color: #64748b; }
+        .kv-days select { width: 100%; min-width: 0; }
+        @media (max-width: 560px) { .kv-days { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
         .kv-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
         .toggle-switch input { opacity: 0; width: 0; height: 0; }
         .toggle-slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background: #374151; border-radius: 28px; transition: 0.3s; }
@@ -1558,6 +1565,19 @@
                         <label class="kv-field"><span class="kv-label"><b>語速</b><span>{{ Number(kvForm.speechSpeed).toFixed(2) }} 倍・{{ kvSpeedLabel(kvForm.speechSpeed) }}</span></span>
                             <input type="range" min="0.7" max="1.5" step="0.01" v-model.number="kvForm.speechSpeed" @input="kvDirty=true" data-kv-speed class="kv-range">
                             <span class="kv-help">0.7（最慢）～ 1.5（最快）。長輩建議 0.85～0.95。</span></label>
+                    </div>
+                    <div class="kv-field" data-kv-day-voices>
+                        <span class="kv-label"><b>每天換聲音</b><span>今天{{ kvDayName(kvTodayIdx()) }}：{{ kvForm.voiceByDay[kvTodayIdx()] || kvForm.voice }}</span></span>
+                        <div class="kv-days">
+                            <label v-for="d in kvWeekOrder" :key="d" :class="{ 'is-today': d === kvTodayIdx(), 'is-off': isWeeklyOff(d) }">
+                                <span>{{ kvDayName(d) }}{{ isWeeklyOff(d) ? '・公休' : '' }}</span>
+                                <select v-model="kvForm.voiceByDay[d]" @change="kvDirty=true" :data-kv-day-voice="d" class="rounded-lg border border-slate-600 bg-slate-900 px-2 py-1.5 text-sm text-white">
+                                    <option value="">同上</option>
+                                    <option v-for="v in kvVoices" :key="v.id" :value="v.id">{{ v.id }}</option>
+                                </select>
+                            </label>
+                        </div>
+                        <span class="kv-help">選「同上」的那天用上面的「聲音」。平板每位客人按「開始點餐」時看今天星期幾；語速、音量每天都一樣。</span>
                     </div>
                     <div>
                         <label class="kv-field mb-4"><span class="kv-label"><b>播放音量</b><span>{{ Number(kvForm.volume).toFixed(1) }} 倍{{ Number(kvForm.volume) > 1 ? '・放大' : (Number(kvForm.volume) < 1 ? '・變小' : '・原音量') }}</span></span>
@@ -3266,6 +3286,7 @@ window._resetCountUp = function() {
                 // kiosk-voice-logs-20261101：點餐紀錄（Pi 保存的對話文字與錄音）
                 kvView: 'settings',
                 kvLogs: { date: '', rows: [], days: [], usage: null, loading: false, loaded: false, error: '', open: '', detail: null, detailLoading: false, audioUrl: '', audioLoading: false, audioError: '' },
+                kvWeekOrder: [1, 2, 3, 4, 5, 6, 0],   // kiosk-voice-dayvoice-20261106：畫面從週一排到週日（存的時候 0＝週日，和平板 getDay() 一樣）
                 kvVoices: [
                     { id: 'ara', label: 'ara：溫暖、親切（預設）' },
                     { id: 'eve', label: 'eve：一般助理' },
@@ -4953,6 +4974,7 @@ window._resetCountUp = function() {
                     keyterms: '',
                     askDineMode: true,
                     voice: 'ara',
+                    voiceByDay: ['', '', '', '', '', '', ''],   // kiosk-voice-dayvoice-20261106：[週日, 週一, …, 週六]，''＝同上
                     speechSpeed: 0.92,
                     reasoningEffort: 'none',
                     idlePromptSec: 15,
@@ -4987,6 +5009,7 @@ window._resetCountUp = function() {
                 Object.keys(base).forEach(function(k) {
                     var v = saved[k], d = base[k];
                     if (k === 'keyterms') cfg[k] = Array.isArray(v) ? v.join('\n') : (typeof v === 'string' ? v : d);
+                    else if (k === 'voiceByDay') cfg[k] = d.map(function(x, i) { return Array.isArray(v) && voices.some(function(o) { return o.id === v[i]; }) ? v[i] : ''; });
                     else if (Array.isArray(d)) cfg[k] = d.map(function(x, i) { return Array.isArray(v) && typeof v[i] === 'string' && v[i].trim() ? v[i] : x; });
                     else if (k === 'enabled') cfg[k] = v !== false;
                     else if (k === 'voice') cfg[k] = voices.some(function(x) { return x.id === v; }) ? v : d;
@@ -5000,7 +5023,7 @@ window._resetCountUp = function() {
                 if (force) { this.kvNotice = ''; this.kvError = ''; }
             },
             kvNormalize: function(form) {
-                var f = form || {}, base = this.kvDefaultConfig();
+                var f = form || {}, base = this.kvDefaultConfig(), voices = this.kvVoices;
                 function txt(v, max) { return String(v == null ? '' : v).replace(/\r\n?/g, '\n').trim().slice(0, max); }
                 function num(v, lo, hi, d) { var n = Number(v); if (v === '' || v === null || v === undefined || !isFinite(n)) n = d; return Math.min(hi, Math.max(lo, n)); }
                 var terms = [], seen = {};
@@ -5018,6 +5041,10 @@ window._resetCountUp = function() {
                     keyterms: terms.slice(0, 40),
                     askDineMode: f.askDineMode !== false,
                     voice: this.kvVoices.some(function(x) { return x.id === f.voice; }) ? f.voice : base.voice,
+                    voiceByDay: base.voiceByDay.map(function(x, i) {
+                        var v = (f.voiceByDay || [])[i];
+                        return voices.some(function(o) { return o.id === v; }) ? v : '';
+                    }),
                     speechSpeed: Math.round(num(f.speechSpeed, 0.7, 1.5, base.speechSpeed) * 100) / 100,
                     reasoningEffort: f.reasoningEffort === 'high' ? 'high' : 'none',
                     idlePromptSec: Math.round(num(f.idlePromptSec, 5, 60, base.idlePromptSec)),
@@ -5084,6 +5111,8 @@ window._resetCountUp = function() {
                 this.kvError = '';
                 this.kvNotice = '已填回預設值（總開關不變），按「儲存語音點餐設定」才會生效。';
             },
+            kvDayName: function(d) { return '週' + '日一二三四五六'.charAt(d); },
+            kvTodayIdx: function() { return new Date().getDay(); },
             kvSpeedLabel: function(v) {
                 var n = Number(v) || 1;
                 if (n < 0.85) return '慢';
