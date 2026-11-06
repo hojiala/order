@@ -1229,8 +1229,23 @@ body.is-demo .demo-chip{display:inline-block}
     }
     return { error: '這項沒有「' + toTrad(text) + '」的版本' };
   }
-  function candidateList(list) {
-    return list.filter(function (c) { return c.active !== false; }).map(function (c) { return { name: c.name, say: speakName(c.name), price: Number(c.price) || 0 }; });
+  function candidateList(list, family) {
+    var labels = family ? familyLabels(list) : null;
+    return list.filter(function (c) { return c.active !== false; }).map(function (c) {
+      return { name: c.name, say: labels ? labels[c.name] : speakName(c.name), price: Number(c.price) || 0 };
+    });
+  }
+  // kiosk-voice-asklabel-20261106：套餐／單點、有蛋有肉／無蛋無肉這種問題，選項念「套餐」「無蛋無肉」就好，
+  //   不要念「單點-義大利里肌鐵板麵 有蛋+有肉」（點餐員會拿來解釋，多出「里肌」「肉醬」）
+  function familyLabels(list) {
+    var kinds = {}, out = {};
+    list.forEach(function (c) { kinds[variantOf(c).kind] = 1; });
+    var byKind = Object.keys(kinds).length > 1;
+    list.forEach(function (c) { var v = variantOf(c); out[c.name] = byKind ? v.kind : (v.label || speakName(c.name)); });
+    return out;
+  }
+  function dishLabel(it) {   // 餐點名稱（不含套餐／單點、里肌／肉醬）：義大利鐵板麵、一號青檸白蝦捲
+    return speakName(String(it && it.name || '').replace(/^單點-/, '').replace(/[（(][^）)]*[）)]/g, '').replace(/(套餐|單點)$/, '').replace(/里肌|肉醬/g, function (w) { return /鐵板麵/.test(it.name) ? '' : w; })).replace(/[\s\-－]+/g, '');
   }
 
   /* ═════════ 點餐單 ═════════ */
@@ -1708,13 +1723,14 @@ body.is-demo .demo-chip{display:inline-block}
       var hasDrink = !!f.upgraded_from || !!takenMeal[i] || (!!f.item && isSetItem(f.item) && drinkFits(f.item, sels.filter(function (x) { return !isVariantWord(x); })));
       var kindAsk = f.item ? choiceQuestion(f.item, hasDrink) : null;   // kiosk-voice-choiceguard-20261105
       if (kindAsk) {
-        results.push({ ok: false, said: toTrad(said), not_added: true, ask: kindAsk.ask, candidates: candidateList(kindAsk.list),
+        results.push({ ok: false, said: toTrad(said), not_added: true, ask: kindAsk.ask, dish: dishLabel(kindAsk.list[0]), candidates: candidateList(kindAsk.list, true),
           message: '顧客沒有說是哪一種，這項沒有加入。照 ask 問；顧客選好後，用 candidates 裡對應的 name 再呼叫 add_items（其他選項照樣放 selections）' });
         return;
       }
       if (!f.item) {
         if (f.family && f.candidates && f.candidates.length) markAsked(f.candidates);
-        var miss = { ok: false, said: toTrad(said), candidates: candidateList(f.candidates),
+        var missDish = f.family && f.candidates && f.candidates.length ? dishLabel(f.candidates[0]) : '';
+        var miss = { ok: false, said: toTrad(said), dish: missDish || undefined, candidates: candidateList(f.candidates, !!f.family),
           message: f.candidates.length ? '請顧客從候選中選一個' : '菜單上找不到，請顧客再說一次或換別的' };
         if (f.ask) { miss.ask = f.ask; miss.message = '照 ask 問顧客；顧客選好後，用 candidates 裡對應的 name 再呼叫 add_items（其他選項照樣放 selections）'; }
         results.push(miss);
@@ -1758,6 +1774,11 @@ body.is-demo .demo-chip{display:inline-block}
         message: '這杯飲料當作第' + lineNo(meal) + '項套餐的飲料，已經併進去，不另外加一項' }
         : { ok: false, said: toTrad(specs[di].name), message: '套餐沒有加成功，這杯飲料也還沒加；先處理套餐，再問飲料' };
     });
+    var asking = results.filter(function (r) { return r && r.ask && !r.ok; });
+    if (asking.length > 1) asking.forEach(function (r) {   // 「一號和黑胡椒鐵板麵」：兩樣都要問 → 「請問黑胡椒鐵板麵要套餐還是單點？」
+      var d = r.dish || (r.candidates && r.candidates[0] ? dishLabel({ name: r.candidates[0].name }) : '');
+      if (d && /^請問要/.test(r.ask)) r.ask = '請問' + d + '要' + r.ask.slice(3);
+    });
     var out = { results: results, order_total: orderTotal(), lines_count: Order.lines.length };
     var offer = comboOffer(Object.keys(lineOfSpec).map(function (k) { return lineOfSpec[k]; }));
     if (offer) out.combo_offer = offer;
@@ -1776,7 +1797,7 @@ body.is-demo .demo-chip{display:inline-block}
     if (newName || variantSels.length) {
       switched = switchLine(line, (newName + ' ' + variantSels.join(' ')).trim(), !!newName);
       if (switched.ask) {
-        return { ok: false, line: lineNo(line), ask: switched.ask, candidates: candidateList(switched.candidates),
+        return { ok: false, line: lineNo(line), ask: switched.ask, candidates: candidateList(switched.candidates, true),
           message: '照 ask 問顧客；選好後用 update_item 的 name 填 candidates 裡對應的 name' };
       }
       if (switched.error) return { ok: false, line: lineNo(line), message: switched.error, current: lineInfo(line) };
@@ -2105,7 +2126,7 @@ body.is-demo .demo-chip{display:inline-block}
       '2. 工具回傳後：沒有要問的，只說「好的」或「好的，還要點其他的嗎？」，不要複誦餐點名稱、選項和價錢。有要問的（ask、missing、combo_offer），說「好的，」就直接問，例如「好的，要加蛋嗎？」。要說到餐點名稱時，一律念工具回傳的 say，不要用顧客的說法、也不要自己改字或改數字。',
       '2-1. 結果有 number_mismatch（顧客說的數字和菜單不同，例如顧客說六入、菜單只有兩入）時，先確認：「我們的是爆漿奶油餐包兩入，一份兩個，請問要幾份？」，再用 update_item 改數量。',
       '3. 結果有 missing 時，只問第一個，白話問：missing 裡有 ask 就照 ask 問（例如「要加蛋嗎？」「果醬要沙拉嗎？也可以換…」，預設的選項一定要說到）；沒有 ask：套餐飲料→「飲料要大杯奶茶，還是換別的？」；溫度→「冰的還是溫的？」；容量→「大杯還是中杯？」。顧客回答後呼叫 update_item 改「問的那一項」（line 用那一項的項次），selections 用 options 裡的原文；顧客只說「好」「要」「可以」就用 default。顧客回答後又接著點新的餐點（例如「好啊，再一個拼盤」），要分開：答案用 update_item 給問的那一項，新的餐點用 add_items，絕對不要把答案放進新餐點的 selections。加蛋只問要不要：顧客說要，就用 default（菜單預設的蛋），不要再問要哪一種蛋；顧客自己說半熟蛋、散蛋、太陽蛋才照他說的。有蛋有肉的鐵板麵、拼盤本來就有蛋（用菜單預設的蛋），不要問要不要加蛋，也不要問要哪一種蛋；無蛋無肉的鐵板麵照 ask 問要不要加蛋或加肉。結果有 answered_previous，表示系統已經幫那一題記好，不要再問；有 egg_kept 照它說的處理。',
-      '4. 結果有 ask（顧客還沒說是哪一種，例如套餐／單點、辣卡／原卡、有蛋有肉／無蛋無肉）時，照 ask 問，不要自己決定，也絕對不可以把 candidates 全部加入；顧客選好後，只用他選的那一個 name 再呼叫 add_items。顧客明確說「兩種都要」「各一個」才分別加。sold_out 時說「不好意思，這個今天賣完了」，請顧客換別的。',
+      '4. 結果有 ask（顧客還沒說是哪一種，例如套餐／單點、辣卡／原卡、有蛋有肉／無蛋無肉）時，照 ask 的原句問，前面可以加「好的，」，其他一個字都不要加：不要加餐點名稱、不要解釋（例如不要說「有蛋有肉的里肌」「無蛋無肉的肉醬」），不要自己決定，也絕對不可以把 candidates 全部加入；顧客選好後，只用他選的那一個 name 再呼叫 add_items。顧客明確說「兩種都要」「各一個」才分別加。sold_out 時說「不好意思，這個今天賣完了」，請顧客換別的。',
       '5. 顧客改口一律在同一項上改，不要新增一項，也不要寫進備註：改成有蛋有肉、無蛋無肉、套餐或單點，用 update_item 的 name 填這幾個字；換別的餐點也用 update_item 的 name；改數量、不要某樣用 update_item 或 remove_item（line 是畫面上的項次）。',
       '5-1. 結果有 auto_upgraded 或 meat_added 時，用一句短話告訴顧客，例如「好的，幫您改成套餐，比較划算」「好的，另外加一片肉，三十五元」。結果有 unmatched 時，那幾個字沒有對應的選項：顧客的回答請換成 options 裡的原文再送一次；真的是備註（例如不要醬）就放 note。',
       CONFIG.askDineMode
