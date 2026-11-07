@@ -1565,7 +1565,8 @@
                     <label class="kv-field"><span class="kv-label"><b>附加規則</b><span>{{ kvCount('extraRules', 1500) }}</span></span>
                         <textarea v-model="kvForm.extraRules" @input="kvDirty=true" maxlength="1500" rows="5" placeholder="一行一條，例如：&#10;今天鮮奶茶暫停供應。&#10;有蛋有肉的鐵板麵，蛋可以免費換成半熟蛋或太陽蛋。" class="rounded-lg border border-slate-600 bg-slate-900 px-2 py-1.5 text-sm text-white placeholder-slate-500"></textarea>
                         <span class="kv-help">補充店內做法或今天的狀況。<span class="kv-warn">不要寫和核心規則相反的話（例如「鐵板麵直接當有蛋有肉，不用問」），點餐員會不知道聽誰的。</span>賣完的餐點請到「菜單管理」下架，平板會自動不賣。</span></label>
-                    <label class="flex items-center gap-2 text-sm text-slate-200"><input type="checkbox" v-model="kvForm.askDineMode" @change="kvDirty=true">結束前問客人「內用還是外帶」（平板上也有按鈕可以按）</label>
+                    <!-- kiosk-voice-phone-20261107：以前的「結束前問客人內用還是外帶」：首頁一定先選內用／外帶，這個勾已經沒有作用，拿掉（存的值照舊，不影響） -->
+                    <p class="kv-help" data-kv-dinemode-note>內用／外帶：客人在平板首頁先按「內用」或「外帶」才開始點餐，點餐員不會再問；客人中途說要改，結帳時照客人說的。</p>
                 </div>
 
                 <!-- 首頁與結尾（kiosk-voice-logs-20261101） -->
@@ -1771,7 +1772,7 @@
                                 <div class="kv-tile" :class="{ warn: kvStatsView.all.slow }"><b>{{ kvStatsView.all.slow }}<small class="text-xs text-slate-400"> / {{ kvStatsView.all.turns }} 句</small></b><span>點餐員超過 4 秒才開口</span></div>
                                 <div class="kv-tile" :class="{ warn: kvStatsView.all.asks + kvStatsView.all.notFound }"><b>{{ kvStatsView.all.asks + kvStatsView.all.notFound }}</b><span>聽不懂再問（「請問是…」{{ kvStatsView.all.asks }}、找不到 {{ kvStatsView.all.notFound }}）</span></div>
                                 <div class="kv-tile" :class="{ warn: kvStatsView.all.choppy }" data-kv-stats-choppy><b>{{ kvStatsView.all.tracked ? kvStatsView.all.choppy : '—' }}<small v-if="kvStatsView.all.tracked" class="text-xs text-slate-400"> 句</small></b><span>點餐員聲音斷斷續續<template v-if="kvStatsView.all.gaps">（斷 {{ kvStatsView.all.gaps }} 次）</template><template v-if="!kvStatsView.all.tracked">（平板新版才有記）</template></span></div>
-                                <div class="kv-tile" :class="{ bad: kvStatsView.all.errors }"><b>{{ kvStatsView.all.errors }}</b><span>錯誤（沒回應 {{ kvStatsView.all.noReply }}、回覆沒完成 {{ kvStatsView.all.incomplete }}、送單失敗 {{ kvStatsView.all.failed }}）</span></div>
+                                <div class="kv-tile" :class="{ bad: kvStatsView.all.errors }"><b>{{ kvStatsView.all.errors }}</b><span>錯誤（沒回應 {{ kvStatsView.all.noReply }}、說到一半卡住 {{ kvStatsView.all.stuck }}、回覆沒完成 {{ kvStatsView.all.incomplete }}、送單失敗 {{ kvStatsView.all.failed }}）</span></div>
                             </div>
                             <p v-if="kvStats.need && kvStats.done < kvStats.need" class="kv-help">讀取每一筆的回應時間 {{ kvStats.done }} / {{ kvStats.need }}…（速度、錯誤、聲音的數字會一直更新）</p>
                             <div v-if="kvStats.range === 'week' && kvStatsView.days.length" class="kv-table-wrap">
@@ -1785,10 +1786,10 @@
                             </div>
                             <div v-if="kvStatsView.voices.length" class="kv-table-wrap">
                                 <table class="kv-table" data-kv-stats-voices>
-                                    <tr><th>聲音</th><th>次數</th><th>點完</th><th>第一聲</th><th>開口（平均）</th><th>開口（中位數）</th><th>超過 4 秒</th><th>聲音斷</th><th>沒回應</th><th>錯誤</th></tr>
+                                    <tr><th>聲音</th><th>次數</th><th>點完</th><th>第一聲</th><th>開口（平均）</th><th>開口（中位數）</th><th>超過 4 秒</th><th>聲音斷</th><th>沒回應・卡住</th><th>錯誤</th></tr>
                                     <tr v-for="v in kvStatsView.voices" :key="v.key">
                                         <td>{{ v.label }}</td><td>{{ v.n }}</td><td>{{ v.finished }}</td><td>{{ kvSecText(v.heardAvg) }}</td><td>{{ kvSecText(v.speakAvg) }}</td><td>{{ kvSecText(v.speakMed) }}</td>
-                                        <td>{{ v.turns ? v.slow + '/' + v.turns : '—' }}</td><td>{{ v.tracked ? v.choppy : '—' }}</td><td>{{ v.noReply }}</td><td>{{ v.errors }}</td>
+                                        <td>{{ v.turns ? v.slow + '/' + v.turns : '—' }}</td><td>{{ v.tracked ? v.choppy : '—' }}</td><td>{{ v.noReply + v.stuck }}</td><td>{{ v.errors }}</td>
                                     </tr>
                                 </table>
                             </div>
@@ -5373,7 +5374,7 @@ window._resetCountUp = function() {
                 }).finally(function() { if (seq === S.seq) S.loading = false; });
             },
             kvLogFacts: function(log) {   // 一筆紀錄算出統計要用的數字（不留整份對話）
-                var f = { voice: String((log.settings && log.settings.voice) || ''), heard: [], speak: [], slow: 0, asks: 0, notFound: 0, noReply: 0, incomplete: 0, errors: 0, tracked: false, choppy: 0, gaps: 0 };
+                var f = { voice: String((log.settings && log.settings.voice) || ''), heard: [], speak: [], slow: 0, asks: 0, notFound: 0, noReply: 0, incomplete: 0, errors: 0, tracked: false, choppy: 0, gaps: 0, stuck: 0 };
                 (log.events || []).forEach(function(e) {
                     var text = String(e.text || '');
                     if (e.audio_check) f.tracked = true;   // kiosk-voice-smooth-20261107：這筆有記聲音斷掉
@@ -5386,6 +5387,7 @@ window._resetCountUp = function() {
                     } else if (e.role === 'error') {
                         f.errors++;
                         if (/沒有回應/.test(text)) f.noReply++;
+                        else if (/說到一半卡住/.test(text)) f.stuck++;   // kiosk-voice-phone-20261107
                         else if (/回覆沒完成/.test(text)) f.incomplete++;
                     } else if (e.role === 'agent' && /請問是/.test(text)) f.asks++;
                     else if (e.role === 'tool' && text === 'add_items') f.notFound += (String(e.result || '').match(/"not_added":\s*true/g) || []).length;
@@ -5394,7 +5396,7 @@ window._resetCountUp = function() {
             },
             kvStatsAgg: function(items) {   // items：[{ r: 列表那一列, f: kvLogFacts 或 null }]
                 var a = { n: items.length, finished: 0, submitted: 0, trial: 0, failed: 0, empty: 0, sales: 0, avgSec: null,
-                    heardAvg: null, speakAvg: null, speakMed: null, turns: 0, slow: 0, asks: 0, notFound: 0, noReply: 0, incomplete: 0, errors: 0, voices: '', tracked: 0, choppy: 0, gaps: 0 };
+                    heardAvg: null, speakAvg: null, speakMed: null, turns: 0, slow: 0, asks: 0, notFound: 0, noReply: 0, incomplete: 0, errors: 0, voices: '', tracked: 0, choppy: 0, gaps: 0, stuck: 0 };
                 var secs = [], heard = [], speak = [], voices = [];
                 function avg(xs) { return xs.length ? xs.reduce(function(s, x) { return s + x; }, 0) / xs.length : null; }
                 function med(xs) { if (!xs.length) return null; var v = xs.slice().sort(function(x, y) { return x - y; }), m = v.length >> 1; return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2; }
@@ -5409,6 +5411,7 @@ window._resetCountUp = function() {
                     heard = heard.concat(f.heard); speak = speak.concat(f.speak);
                     a.slow += f.slow; a.asks += f.asks; a.notFound += f.notFound; a.noReply += f.noReply; a.incomplete += f.incomplete; a.errors += f.errors;
                     if (f.tracked) { a.tracked++; a.choppy += f.choppy || 0; a.gaps += f.gaps || 0; }
+                    a.stuck += f.stuck || 0;
                     if (f.voice && voices.indexOf(f.voice) === -1) voices.push(f.voice);
                 });
                 a.avgSec = avg(secs); a.heardAvg = avg(heard); a.speakAvg = avg(speak); a.speakMed = med(speak); a.turns = speak.length;
