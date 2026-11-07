@@ -6,6 +6,9 @@
 <meta name="theme-color" content="#13503F">
 <meta name="robots" content="noindex">
 <title>語音點餐</title>
+<link rel="icon" type="image/png" sizes="192x192" href="./images/shortcut-icon-192.png?v=20260911">
+<link rel="apple-touch-icon" href="./images/shortcut-icon-192.png?v=20260911">
+<link rel="shortcut icon" type="image/png" href="./images/shortcut-icon-192.png?v=20260911">
 <!--
   店內語音點餐平板（Grok Voice Agent 版）
   ─────────────────────────────────────────
@@ -405,7 +408,9 @@ body.is-demo .demo-chip{display:inline-block}
     //    每位客人按「開始點餐」時重新讀一次；manage 留空的欄位就用這裡的預設。（Grok 網頁上的 instruction / welcome message 不會用在這個頁面）
     enabled: true,                    // ★ 總開關
     pausedText: '語音點餐暫停中，請到櫃台點餐，謝謝！',   // ★ 暫停時首頁顯示
-    greeting: '早安！想吃什麼呢？直接說餐點名稱就可以喔。',   // ★
+    greeting: '你好！想吃什麼呢？直接說餐點名稱就可以喔。',   // ★（kiosk-voice-smooth-20261107：早安改由 greetingMorning 說）
+    greetingMorning: '早安！想吃什麼呢？',   // ★ 早上的開場白（kiosk-voice-smooth-20261107）；空白＝整天都用 greeting
+    morningUntil: '10:00',            // ★ 早上到幾點（之前用 greetingMorning、首頁大字「早安！」；之後用 greeting、「你好！」）
     storeFacts: '店名：元氣早午餐（善化中山店）；地址：台南市善化區中山路208-2號；營業時間：週一到週六約 06:00 到 13:00，週日公休。',   // ★
     recommend: '',                    // ★ 顧客問「有什麼推薦」時才說
     extraRules: '',                   // ★ 想多交代點餐員的事，例如：「今天鮮奶茶暫停供應」；沒有就留空
@@ -464,7 +469,7 @@ body.is-demo .demo-chip{display:inline-block}
 
   /* ═════════ manage 的語音點餐設定（settings.kioskVoice）═════════ */
   var VOICE_NAMES = ['ara', 'eve', 'leo', 'rex', 'sal', 'carina', 'zagan', 'helix', 'orion', 'luna', 'iris', 'altair', 'zenith', 'perseus', 'helios', 'lux', 'kepler', 'rigel', 'cosmo', 'celeste', 'ursa', 'sirius', 'lumen', 'castor', 'naksh', 'atlas', 'aurora', 'liora'];   // kiosk-voice-voices-20261107：xAI 現在的 28 種聲音
-  var VOICE_KEYS = ['enabled', 'pausedText', 'greeting', 'storeFacts', 'recommend', 'extraRules', 'keyterms', 'askDineMode',
+  var VOICE_KEYS = ['enabled', 'pausedText', 'greeting', 'greetingMorning', 'morningUntil', 'storeFacts', 'recommend', 'extraRules', 'keyterms', 'askDineMode',
     'voice', 'voiceByDay', 'speechSpeed', 'reasoningEffort', 'serverIdlePromptMs', 'idleEndMs', 'maxSessionMs', 'doneReturnMs',
     'bargeIn', 'vadSilenceMs', 'vadThreshold',
     'submitOrders', 'submitIncomplete', 'homeSteps', 'closingText', 'volume', 'logText', 'logAudio', 'recordNotice'];
@@ -491,6 +496,8 @@ body.is-demo .demo-chip{display:inline-block}
     CONFIG.enabled = v.enabled !== false;
     if ((s = cfgText(v.pausedText, 80))) CONFIG.pausedText = s;
     if ((s = cfgText(v.greeting, 80))) CONFIG.greeting = s;
+    if (typeof v.greetingMorning === 'string') CONFIG.greetingMorning = cfgText(v.greetingMorning, 80);   // 空白＝不分早上
+    if (/^([01]\d|2[0-3]):[0-5]\d$/.test(cfgText(v.morningUntil, 5))) CONFIG.morningUntil = cfgText(v.morningUntil, 5);
     if ((s = cfgText(v.storeFacts, 400))) CONFIG.storeFacts = s;
     if ((s = cfgText(v.recommend, 300))) CONFIG.recommend = s;
     if ((s = cfgText(v.extraRules, 1500))) CONFIG.extraRules = s;
@@ -519,8 +526,9 @@ body.is-demo .demo-chip{display:inline-block}
     if ((n = cfgNum(v.volume, 0.5, 3)) !== null) CONFIG.volume = Math.round(n * 10) / 10;
     ['submitOrders', 'submitIncomplete', 'logText', 'logAudio'].forEach(function (k) { if (typeof v[k] === 'boolean') CONFIG[k] = v[k]; });
     if ((s = cfgText(v.recordNotice, 60))) CONFIG.recordNotice = s;
-    GREETING = CONFIG.greeting;
+    GREETING = currentGreeting();
     renderHomeText();
+    setGreeting();
     Remote.loaded = !!raw;
     Remote.updatedAt = cfgText(v.updatedAt, 40);
     renderPaused();
@@ -2238,7 +2246,7 @@ body.is-demo .demo-chip{display:inline-block}
     Session.finishing = true;
     armFinishFallback();
     var done = { ok: true, order_total: orderTotal(), dine_mode: dineModeLabel(Order.dineMode) };   // 不帶整份明細：點餐員只要念總金額，結果越短回得越快
-    if (!CONFIG.submitOrders) { done.trial = true; done.message = '試營運：不送單，請顧客到櫃台告訴店員餐點'; return done; }
+    if (!CONFIG.submitOrders) { done.trial = true; done.message = '試營運：不送單，請顧客到櫃台告訴店員餐點'; Session.closingLine = closingLine(done); return done; }
     var settled = submitOrder().then(function (r) {
       done.submitted = true;
       if (r.orderNo) done.order_no = r.orderNo;
@@ -2417,6 +2425,13 @@ body.is-demo .demo-chip{display:inline-block}
 
   /* ═════════ 給 Grok 的指示 ═════════ */
   var GREETING = CONFIG.greeting;
+  // kiosk-voice-smooth-20261107：早上（morningUntil 之前）用早上的開場白
+  function isMorning(d) {
+    var m = /^(\d\d):(\d\d)$/.exec(CONFIG.morningUntil || '') || [0, 10, 0];
+    d = d || new Date();
+    return d.getHours() * 60 + d.getMinutes() < Number(m[1]) * 60 + Number(m[2]);
+  }
+  function currentGreeting(d) { return CONFIG.greetingMorning && isMorning(d) ? CONFIG.greetingMorning : CONFIG.greeting; }
   function buildInstructions() {
     var cats = {}, order = [];
     Menu.active.forEach(function (it) {
@@ -2706,20 +2721,62 @@ body.is-demo .demo-chip{display:inline-block}
       try { if (this.stream) this.stream.getTracks().forEach(function (tr) { tr.stop(); }); } catch (_) {}
       this.node = null; this.source = null; this.stream = null; this.onChunk = null;
     },
-    play: function (b64) {
-      if (!this.ctx || !b64) return;
+    play: function (b64, lead) {
+      if (!this.ctx || !b64) return 0;
       var f = b64ToFloat(b64);
-      if (!f.length) return;
+      if (!f.length) return 0;
       var buf = this.ctx.createBuffer(1, f.length, 24000);
       buf.getChannelData(0).set(f);
       var s = this.ctx.createBufferSource(), self = this, now = this.ctx.currentTime;
       s.buffer = buf; s.connect(this.out());
       if (Rec.dest) { try { s.connect(Rec.dest); } catch (_) {} }
-      if (this.playHead < now + 0.03) this.playHead = now + 0.08;
+      if (this.playHead < now + 0.03) this.playHead = now + (lead || 0.08);
       s.start(this.playHead);
       this.playHead += buf.duration;
       this.sources.push(s);
       s.onended = function () { var i = self.sources.indexOf(s); if (i !== -1) self.sources.splice(i, 1); };
+      return buf.duration;
+    },
+    // kiosk-voice-smooth-20261107：點餐員的聲音（xAI 傳來的）
+    //   上一段播完、下一段還沒到＝斷掉：這次先多存一點再播（每斷一次多 0.2 秒，最多 0.7 秒），很多小斷點變成少數幾次停頓
+    lead: 0.12, resp: null,
+    newResp: function () { this.resp = { chunks: 0, ms: 0, first: 0, last: 0, started: false, gaps: 0, gapMs: 0, jank0: Jank.count, jankMax0: Jank.max }; },
+    recv: function (b64) {   // 收到一段：記下時間和長度（PCM16 24kHz：每毫秒 48 bytes）
+      var r = this.resp || (this.newResp(), this.resp), t = Date.now(), len = String(b64 || '').length;
+      if (!r.first) r.first = t;
+      r.last = t; r.chunks++;
+      r.ms += (len * 3 / 4 - (/==$/.test(b64) ? 2 : (/=$/.test(b64) ? 1 : 0))) / 48;
+    },
+    stream: function (b64) {   // 播一段
+      if (!b64) return;
+      var r = this.resp || (this.newResp(), this.resp), now = this.ctx ? this.ctx.currentTime : 0;
+      if (this.ctx && r.started && this.playHead < now + 0.03) {
+        r.gaps++;
+        this.lead = Math.min(0.7, this.lead + 0.2);
+        r.gapMs += Math.max(0, now - this.playHead) * 1000 + this.lead * 1000;
+      }
+      r.started = true;
+      this.play(b64, this.lead);
+    },
+    report: function () {   // 這次回覆結束：斷了或平板卡住就記一行（順的不記）
+      var r = this.resp;
+      this.resp = null;
+      if (!r || !r.chunks) return null;
+      var wall = Math.max(0, r.last - r.first), stalls = Jank.count - r.jank0;
+      var data = { audio_ms: Math.round(r.ms), recv_ms: wall, gaps: r.gaps, gap_ms: Math.round(r.gapMs), stalls: stalls, lead_ms: Math.round(this.lead * 1000) };
+      if (document.hidden) data.hidden = 1;
+      if (!r.gaps) this.lead = Math.max(0.12, this.lead - 0.1);   // 這句沒斷：慢慢縮回來，不要一直多等
+      if (!r.gaps && !stalls) return data;
+      function sec1(ms) { return (ms / 1000).toFixed(1); }
+      var slow = r.ms > 800 && wall > r.ms * 0.85;   // 傳的速度跟不上說話的速度
+      var why = [];
+      if (slow) why.push('這句 ' + sec1(r.ms) + ' 秒的聲音，xAI 花了 ' + sec1(wall) + ' 秒才傳完（網路或 xAI 慢）');
+      else if (r.gaps) why.push('這句 ' + sec1(r.ms) + ' 秒的聲音，xAI 分段傳、中間有空檔（網路或 xAI 不穩）');
+      if (stalls) why.push('平板卡住 ' + stalls + ' 次（最長 ' + sec1(Jank.max) + ' 秒）');
+      if (data.hidden) why.push('畫面在背景');
+      Log.add('system', '🔊 ' + (r.gaps ? '點餐員聲音斷了 ' + r.gaps + ' 次（共 ' + sec1(r.gapMs) + ' 秒）' : '點餐員聲音沒斷') + '：' + why.join('；') +
+        (r.gaps ? '。之後先存 ' + sec1(this.lead * 1000) + ' 秒再播' : ''), { audio: data });
+      return data;
     },
     out: function () {
       var vol = Number(CONFIG.volume) || 1;
@@ -2742,6 +2799,7 @@ body.is-demo .demo-chip{display:inline-block}
     stopPlayback: function () {
       this.sources.forEach(function (s) { try { s.stop(); } catch (_) {} });
       this.sources = []; this.playHead = 0;
+      if (this.resp) this.resp.started = false;   // 停下來不算斷掉
     },
     isPlaying: function () { return !!(this.ctx && this.playHead > this.ctx.currentTime + 0.02); },
     micGated: function () {
@@ -2754,6 +2812,30 @@ body.is-demo .demo-chip{display:inline-block}
       return new Promise(function (res) { (function chk() { if (!self.isPlaying()) res(); else setTimeout(chk, 80); })(); });
     }
   };
+  // kiosk-voice-smooth-20261107：平板畫面卡住（每 0.25 秒看一次，晚到 0.2 秒以上算卡一次；畫面在背景不算）
+  var Jank = {
+    timer: 0, last: 0, count: 0, max: 0,
+    start: function () {
+      var self = this;
+      this.stop(); this.count = 0; this.max = 0; this.last = Date.now();
+      this.timer = setInterval(function () {
+        var t = Date.now(), late = t - self.last - 250;
+        self.last = t;
+        if (late > 200 && !document.hidden) { self.count++; self.max = Math.max(self.max, late); }
+      }, 250);
+    },
+    stop: function () { if (this.timer) clearInterval(this.timer); this.timer = 0; }
+  };
+  function netText() {   // 網路狀況（Chrome 才有；數字是瀏覽器估的）
+    var c = navigator.connection || navigator.mozConnection || navigator.webkitConnection, p = [];
+    if (!c) return '';
+    if (c.type) p.push(c.type === 'wifi' ? 'Wi-Fi' : (c.type === 'cellular' ? '行動網路' : (c.type === 'ethernet' ? '有線' : c.type)));
+    if (c.effectiveType) p.push(String(c.effectiveType));
+    if (c.downlink) p.push('下載約 ' + c.downlink + ' Mbps');
+    if (c.rtt > 0) p.push('延遲約 ' + c.rtt + ' 毫秒');
+    if (c.saveData) p.push('省流量模式');
+    return p.join('、');
+  }
   function floatToB64(f32) {
     var u8 = new Uint8Array(f32.length * 2), dv = new DataView(u8.buffer);
     for (var i = 0; i < f32.length; i++) { var s = Math.max(-1, Math.min(1, f32[i])); dv.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true); }
@@ -2822,6 +2904,7 @@ body.is-demo .demo-chip{display:inline-block}
     }).catch(function (e) { failSession(e); });
   }
   function beginSessionUI() {
+    GREETING = currentGreeting();   // kiosk-voice-smooth-20261107：照現在時間選開場白
     resetOrder();
     if (StartMode) { setDineMode(StartMode); StartMode = ''; }   // 首頁已經選了內用／外帶（點餐單上方馬上顯示）
     Session.active = true; Session.ready = false; Session.finishing = false; Session.pendingFollowup = false;
@@ -2831,11 +2914,14 @@ body.is-demo .demo-chip{display:inline-block}
     Session.voice = '';   // 每位客人開始時重選（依當天星期）
     Tm.reset(); Hold.on = false; Hold.buf = []; Session.lastStop = 0; Session.expectFollow = false;
     Session.startedAt = Date.now(); touch();
+    AudioIO.lead = 0.12; AudioIO.resp = null; Session.queuedResp = null; Session.lastResp = null; Session.donePressedAt = 0;   // kiosk-voice-smooth-20261107
+    if (!Session.demo) Jank.start();
     if (!Session.demo) Log.begin();
     if (LITE) Log.add('system', '精簡測試（?lite=1）：不帶菜單清單、工具說明縮短');
     if (!Session.demo && Order.dineMode) Log.add('system', '顧客按「' + dineModeLabel(Order.dineMode) + '」開始');
-    if (!Session.demo) Log.add('system', '設定：反應模式 ' + (CONFIG.reasoningEffort === 'high' ? '仔細' : '快') + '、轉文字 ' + (NOTX ? '關（?notx=1）' : '開') + (LITE ? '、精簡（?lite=1）' : ''));
+    if (!Session.demo) Log.add('system', '設定：反應模式 ' + (CONFIG.reasoningEffort === 'high' ? '仔細' : '快') + '、轉文字 ' + (NOTX ? '關（?notx=1）' : '開') + (LITE ? '、精簡（?lite=1）' : ''), { audio_check: 1 });   // audio_check：這筆有記聲音斷掉（每日統計分得出舊紀錄）
     if (NOTX) Log.add('system', '不轉文字測試（?notx=1）：沒有「客人」那行字，錯字對照、口味判斷也用不到');
+    if (!Session.demo && netText()) Log.add('system', '網路：' + netText());
     setAgent('正在幫您接通點餐員，請稍等…'); setUser('');
     setStatus('connecting');
     showScreen('screen-order');
@@ -2906,8 +2992,9 @@ body.is-demo .demo-chip{display:inline-block}
     }
   };
   function requestResponse(resp) {
-    if (Session.responseActive) { Session.queueResponse = true; return; }
+    if (Session.responseActive) { Session.queueResponse = true; if (resp) Session.queuedResp = resp; return; }   // kiosk-voice-smooth-20261107：排隊的也要記得這次的指示（例如結帳那一句）
     Session.responseActive = true;
+    Session.lastResp = resp || null;
     clearTimer('resp');
     Session.timers.resp = later(15000, function () { Session.responseActive = false; });   // 沒收到 response.done 時解鎖
     send(resp ? { type: 'response.create', response: resp } : { type: 'response.create' });
@@ -3013,6 +3100,7 @@ body.is-demo .demo-chip{display:inline-block}
       case 'session.updated':
         onReady(); return;
       case 'response.created':
+        AudioIO.newResp();   // kiosk-voice-smooth-20261107
         Greet.start();
         Session.respAudio = false;   // kiosk-voice-ack-20261106：這次回覆有沒有出聲（先說了好的）
         clearTimer('hold'); Hold.buf = [];
@@ -3029,12 +3117,13 @@ body.is-demo .demo-chip{display:inline-block}
         Session.respAudio = true;
         Session.awaiting = false; touch();
         if (Session.cutOff) return;
+        AudioIO.recv(ev.delta);   // kiosk-voice-smooth-20261107
         Ack.keep(ev.delta); Greet.keep(ev.delta);
         if (Ack.played) { Hold.buf.push(ev.delta); return; }   // 平板已經說了好的：等這句的字幕出來，只是「好的」就不播
         clearTimer('lack');
         if (Hold.on) { Hold.buf.push(ev.delta); if (!Session.timers.hold) Session.timers.hold = later(CONFIG.ackHoldMs, flushHold); return; }
         Tm.mark('first'); Tm.mark('firstType', 'audio'); Tm.audio();
-        AudioIO.play(ev.delta);
+        AudioIO.stream(ev.delta);
         return;
       case 'response.output_audio_transcript.delta':
       case 'response.audio_transcript.delta':
@@ -3087,6 +3176,7 @@ body.is-demo .demo-chip{display:inline-block}
       case 'response.done':
         Ack.settle(Session.agentText); Ack.save(Session.agentText); Greet.save(Session.agentText);
         Tm.done();
+        AudioIO.report();   // kiosk-voice-smooth-20261107：這句的聲音都到了，斷了幾次已經確定
         onResponseDone(ev.response || {}); return;
       case 'error':
         onServerError(ev.error || ev); return;
@@ -3166,7 +3256,7 @@ body.is-demo .demo-chip{display:inline-block}
       }
       this.played = false;
       if (buf.length) { Tm.mark('first'); Tm.mark('firstType', 'audio'); Tm.audio(); }
-      buf.forEach(function (d) { AudioIO.play(d); });
+      buf.forEach(function (d) { AudioIO.stream(d); });
     }
   };
   function flushHold() {
@@ -3175,7 +3265,7 @@ body.is-demo .demo-chip{display:inline-block}
     var buf = Hold.buf.splice(0);
     if (Session.cutOff || !Session.active || !buf.length) return;
     Tm.mark('first'); Tm.mark('firstType', 'audio'); Tm.audio();
-    buf.forEach(function (d) { AudioIO.play(d); });
+    buf.forEach(function (d) { AudioIO.stream(d); });
     if (!Session.responseActive) Tm.done();   // 回覆已經結束（直接回答，很短）
   }
   // kiosk-voice-fast2-20261106：加餐、修改、刪除完全沒有要問的 → 不再請點餐員說「還要點其他的嗎？」
@@ -3220,14 +3310,14 @@ body.is-demo .demo-chip{display:inline-block}
       });
       return;
     }
-    if (Session.queueResponse) { Session.queueResponse = false; requestResponse(); return; }
+    if (Session.queueResponse) { Session.queueResponse = false; var q = Session.queuedResp; Session.queuedResp = null; requestResponse(q || undefined); return; }
     if (Session.finishing) AudioIO.whenIdle().then(function () { later(500, function () { goDone('finished'); }); });
   }
   function onServerError(err) {
     var msg = String(err && (err.message || err.code) || '');
     console.warn('[kiosk] server error:', msg, err);
     Log.add('error', 'xAI：' + msg.slice(0, 300));
-    if (/active response|already has an active/i.test(msg)) { Session.queueResponse = true; return; }
+    if (/active response|already has an active/i.test(msg)) { Session.queueResponse = true; if (Session.lastResp && !Session.queuedResp) Session.queuedResp = Session.lastResp; return; }
     if (!Session.ready && Session.updateAttempt < 2) {   // 欄位不被接受時退一級再試：先拿掉停頓／靈敏度，再不行用最精簡設定
       Session.updateAttempt += (Session.updateAttempt === 0 && !(CONFIG.vadSilenceMs || CONFIG.vadThreshold)) ? 2 : 1;
       send(sessionUpdate(Session.token, Session.updateAttempt));
@@ -3237,12 +3327,27 @@ body.is-demo .demo-chip{display:inline-block}
     clearTimer('finish');
     Session.timers.finish = later(25000, function () { if (Session.active && Session.finishing) goDone('finished'); });
   }
+  // kiosk-voice-smooth-20261107：客人按了按鈕：點餐員正在說的先停，馬上處理按鈕
+  function stopAgentTalk() {
+    clearTimer('hold'); clearTimer('lack'); Hold.buf = []; Hold.on = false;
+    if (Session.responseActive) { send({ type: 'response.cancel' }); Session.cutOff = true; }
+    AudioIO.stopPlayback();
+  }
   function userPressedDone() {
     if (Session.demo) { demoFinish(); return; }
     var nowMs = Date.now();
     if (Session.donePressedAt && nowMs - Session.donePressedAt < 4000) return;   // kiosk-voice-noprice-20261106：連按兩下只算一次
     Session.donePressedAt = nowMs;
+    // kiosk-voice-smooth-20261107：餐點都確認了、也知道內用外帶 → 平板直接送單（以前要等點餐員說完、再等它決定，常常像沒反應）
+    if (Session.ready && Session.ws && !Session.finishing && Order.dineMode && Order.lines.length && !Order.lines.some(function (l) { return missingOf(l).length; })) {
+      stopAgentTalk();
+      setAgent('好的，幫您送出訂單');
+      Log.add('system', '顧客按了「我點好了」，平板直接送單');
+      pressDineMode(Order.dineMode, true);
+      return;
+    }
     if (Session.ready && Session.ws) {
+      stopAgentTalk();   // 還有要問的、或還沒點：點餐員先停下來，馬上回應按鈕
       touch();
       Log.add('system', '顧客按了「我點好了」');
       send({ type: 'conversation.item.create', item: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '（顧客按了「我點好了」按鈕）' }] } });
@@ -3252,19 +3357,20 @@ body.is-demo .demo-chip{display:inline-block}
     }
     Promise.resolve(toolFinish({})).then(function (r) { if (r.ok) goDone('finished'); });
   }
-  function pressDineMode(mode) {
+  function pressDineMode(mode, byDone) {
     setDineMode(mode);
     if (Session.demo) { demoFinish(); return; }
     if (Session.ready && Session.ws && !Session.finishing && Order.lines.length && !Order.lines.some(function (l) { return missingOf(l).length; })) {
       touch();
-      Log.add('system', '顧客按了「' + dineModeLabel(mode) + '」，直接送單');
+      if (!byDone) Log.add('system', '顧客按了「' + dineModeLabel(mode) + '」，直接送單');
       Promise.resolve(runTool('finish_order', { dine_mode: dineModeLabel(mode) })).then(function (r) {
-        Log.add('tool', 'finish_order', { args: JSON.stringify({ dine_mode: dineModeLabel(mode), by: 'button' }), result: JSON.stringify(r).slice(0, 1500) });
+        Log.add('tool', 'finish_order', { args: JSON.stringify({ dine_mode: dineModeLabel(mode), by: byDone ? 'done_button' : 'button' }), result: JSON.stringify(r).slice(0, 1500) });
         if (!r || !r.ok) { Session.closingLine = ''; return; }
-        send({ type: 'conversation.item.create', item: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '（顧客按了「' + dineModeLabel(mode) + '」按鈕，訂單已經送出）' }] } });
+        send({ type: 'conversation.item.create', item: { type: 'message', role: 'user', content: [{ type: 'input_text', text: byDone ? '（顧客按了「我點好了」按鈕，訂單已經送出）' : '（顧客按了「' + dineModeLabel(mode) + '」按鈕，訂單已經送出）' }] } });
         Session.awaiting = true;
         Session.expectFollow = true;
         requestResponse(closingResponse());
+        armFinishFallback();   // 點餐員一直沒說結帳那句，25 秒後也會跳到完成畫面
       });
       return;
     }
@@ -3286,6 +3392,7 @@ body.is-demo .demo-chip{display:inline-block}
     if (ws) { try { ws.close(1000, 'kiosk_end'); } catch (_) {} }
     if (Rec.rec) { try { Rec.rec.requestData(); } catch (_) {} }
     AudioIO.stopMic(); AudioIO.stopPlayback();
+    Jank.stop();
     demoStop();
   }
   function failSession(e) {
@@ -3576,10 +3683,10 @@ body.is-demo .demo-chip{display:inline-block}
     upd();
     homeTimer = setInterval(upd, 1000);
   }
-  function setGreeting() {
-    var h = new Date().getHours();
-    $('greet').textContent = h < 11 ? '早安！' : (h < 17 ? '午安！' : '您好！');
+  function setGreeting() {   // kiosk-voice-smooth-20261107：和開場白同一個時間換（manage「早上到幾點」，預設 10:00）
+    $('greet').textContent = isMorning() ? '早安！' : '你好！';
   }
+  setInterval(setGreeting, 60000);   // 停在首頁過了 10:00 也會換
   function homeStatus() {
     var el = $('home-status');
     if (DEMO) { el.textContent = '預覽模式　菜單 ' + Menu.active.length + ' 項'; return; }
@@ -3734,7 +3841,7 @@ body.is-demo .demo-chip{display:inline-block}
   }
 
   // 測試用
-  window.__kiosk = { runTool: runTool, findItem: findItem, setMenu: setMenu, Order: Order, Menu: Menu, buildInstructions: buildInstructions, buildKeyterms: buildKeyterms, fixTypos: fixTypos, applyRemoteDict: applyRemoteDict, Dict: Dict, sessionUpdate: sessionUpdate, CONFIG: CONFIG, Session: Session, goHome: goHome, showError: showError, goDone: goDone, Submit: Submit, buildOrderData: buildOrderData, speakName: speakName, submitOrder: submitOrder, businessWindow: businessWindow, applyVoiceSettings: applyVoiceSettings, transcriptDishes: transcriptDishes, showTypos: showTypos, Tm: Tm, Hold: Hold, Ack: Ack, setUser: setUser, setAgent: setAgent, demoStop: demoStop, startWith: startWith, beginSessionUI: beginSessionUI, Greet: Greet, Pre: Pre, onReady: onReady, onMicChunk: onMicChunk, needsTalk: needsTalk, quietAfterTools: quietAfterTools, startLive: startLive, flavorFromWords: flavorFromWords, onResponseDone: onResponseDone, dayVoice: dayVoice, sessionVoice: sessionVoice, refreshSettings: refreshSettings, Remote: Remote, renderPromptView: renderPromptView, choiceAsk: choiceAsk, Turn: Turn, resetOffers: resetOffers, Offers: Offers, Pending: Pending, closingLine: closingLine, closingResponse: closingResponse, pressDineMode: pressDineMode, handleEvent: handleEvent, Log: Log, Rec: Rec, AudioIO: AudioIO, tick: tick, renderHomeText: renderHomeText };
+  window.__kiosk = { runTool: runTool, findItem: findItem, setMenu: setMenu, Order: Order, Menu: Menu, buildInstructions: buildInstructions, buildKeyterms: buildKeyterms, fixTypos: fixTypos, applyRemoteDict: applyRemoteDict, Dict: Dict, sessionUpdate: sessionUpdate, CONFIG: CONFIG, Session: Session, goHome: goHome, showError: showError, goDone: goDone, Submit: Submit, buildOrderData: buildOrderData, speakName: speakName, submitOrder: submitOrder, businessWindow: businessWindow, applyVoiceSettings: applyVoiceSettings, transcriptDishes: transcriptDishes, showTypos: showTypos, Tm: Tm, Hold: Hold, Ack: Ack, setUser: setUser, setAgent: setAgent, demoStop: demoStop, startWith: startWith, beginSessionUI: beginSessionUI, Greet: Greet, Pre: Pre, onReady: onReady, onMicChunk: onMicChunk, needsTalk: needsTalk, quietAfterTools: quietAfterTools, startLive: startLive, flavorFromWords: flavorFromWords, onResponseDone: onResponseDone, dayVoice: dayVoice, sessionVoice: sessionVoice, refreshSettings: refreshSettings, Remote: Remote, renderPromptView: renderPromptView, choiceAsk: choiceAsk, Turn: Turn, resetOffers: resetOffers, Offers: Offers, Pending: Pending, closingLine: closingLine, closingResponse: closingResponse, pressDineMode: pressDineMode, handleEvent: handleEvent, Log: Log, Rec: Rec, AudioIO: AudioIO, Jank: Jank, netText: netText, currentGreeting: currentGreeting, isMorning: isMorning, setGreeting: setGreeting, userPressedDone: userPressedDone, requestResponse: requestResponse, tick: tick, renderHomeText: renderHomeText };
 })();
 </script>
 </body>
