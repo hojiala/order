@@ -2970,12 +2970,19 @@ body.is-demo .demo-chip{display:inline-block}
     }
     AudioIO.unlock();
     beginSessionUI();
-    Greet.playLocal();   // kiosk-voice-fast2-20261106
     var mic = AudioIO.startMic(onMicChunk).catch(function (e) { e.kind = 'mic'; throw e; });
+    // kiosk-voice-greet-20261107：麥克風開好、再等 0.2 秒才播存好的開場白
+    //   手機（Android）開麥克風時會把聲音切到通話模式，按下馬上播的那段會被切掉、客人聽不到
+    var t0 = Date.now();
+    var greet = mic.then(function () {
+      if (!Session.active) return;
+      Log.add('system', '麥克風開好了（按下後 ' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒）');
+      return new Promise(function (r) { setTimeout(r, 200); }).then(function () { if (Session.active && !Session.ready) Greet.playLocal(); });
+    }, function () {});
     var tok = fetchToken();
     // 和拿 token 同時重讀 manage 設定（最多等 2.6 秒；讀不到就用上一次的設定），所以存檔後下一位客人就套用
     var cfg = Promise.race([refreshSettings(2500), new Promise(function (r) { setTimeout(r, 2600); })]);
-    Promise.all([tok, mic, cfg]).then(function (r) {
+    Promise.all([tok, mic, cfg, greet]).then(function (r) {   // 等開場白決定好（平板說還是點餐員說）再連線
       if (!Session.active) return;
       if (!CONFIG.enabled) { var p = new Error('paused'); p.kind = 'paused'; failSession(p); return; }
       openSocket(r[0]);
