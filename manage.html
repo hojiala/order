@@ -30,6 +30,13 @@
         .kv-field input:not([type=range]), .kv-field select { width: 100%; }
         .kv-help { font-size: 12px; line-height: 1.6; color: #94a3b8; margin: 0; }
         .kv-warn { color: #fcd34d; }
+        /* kiosk-voice-rules-20261108：客製化規則 */
+        .kv-rules textarea { font-size: 14px; }
+        .kv-rule-bad { margin: 0; padding-left: 18px; color: #fca5a5; font-size: 12px; line-height: 1.6; }
+        .kv-rule-try { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; padding: 10px 12px; border: 1px dashed #475569; border-radius: 10px; background: rgba(15, 23, 42, .5); font-size: 13px; color: #cbd5e1; }
+        .kv-rule-try input { width: auto !important; min-width: 0; flex: 1 1 140px; }
+        .kv-rule-out { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; line-height: 1.6; }
+        .kv-rule-out small { color: #94a3b8; font-size: 12px; }
         .kv-range { width: 100%; accent-color: #10b981; }
         .kv-notice { border: 1px solid #065f46; background: rgba(6, 78, 59, .35); color: #6ee7b7; }
         .kv-saved-at { margin-right: auto; }
@@ -1570,7 +1577,34 @@
                     <p class="kv-help" data-kv-dinemode-note>內用／外帶：客人在平板首頁先按「內用」或「外帶」才開始點餐，點餐員不會再問；客人中途說要改，結帳時照客人說的。</p>
                     <!-- kiosk-voice-noswap-20261108：餐點內的食材能不能更換 -->
                     <label class="flex items-center gap-2 text-sm text-slate-200" data-kv-allow-swap><input type="checkbox" v-model="kvForm.allowSwap" @change="kvDirty=true">允許更換餐點內的食材（例如生菜換番茄；會寫在備註）</label>
-                    <p class="kv-help">沒勾：客人要換食材時，點餐員會說「不好意思，餐點內的食材沒辦法更換」，餐點照原本的做法，備註不會出現「○換○」。「不要某樣」（例如不要醬、不要生菜）和菜單上的選項（加蛋、大杯、套餐換飲料）照舊可以。</p>
+                    <p class="kv-help">沒勾：客人要換食材時，點餐員會說「不好意思，餐點內的食材沒辦法更換」，餐點照原本的做法，備註不會出現「○換○」（下面「客製化規則」寫「可以」的除外，例如吐司換全麥）。「不要某樣」（例如不要醬、不要生菜）和菜單上的選項（加蛋、大杯、套餐換飲料）照舊可以。</p>
+                    <!-- kiosk-voice-rules-20261108：客製化規則（可以／不行），存檔後下一位客人就照新規則，不用改程式 -->
+                    <div class="kv-field kv-rules" data-kv-custom-rules>
+                        <span class="kv-label"><b>客製化規則（可以／不行）</b><span>{{ kvRulesSummary() }}・{{ kvCount('customRules', 2000) }}</span></span>
+                        <textarea v-model="kvForm.customRules" @input="kvDirty=true" maxlength="2000" rows="6" spellcheck="false" placeholder="一行一條，例如：&#10;可以：吐司換全麥&#10;不行：起司換蛋&#10;不行：不要蛋（蛋餅）&#10;不行：生菜換番茄｜不好意思，生菜沒辦法換喔" class="rounded-lg border border-slate-600 bg-slate-900 px-2 py-1.5 text-sm text-white placeholder-slate-500"></textarea>
+                        <ul class="kv-rule-bad" v-if="kvRulesParsed().bad.length || kvRulesScopeWarn().length">
+                            <li v-for="b in kvRulesParsed().bad" :key="'b' + b.line">第 {{ b.line }} 行「{{ b.text }}」：{{ b.why }}，這行不會用到</li>
+                            <li v-for="w in kvRulesScopeWarn()" :key="w">{{ w }}</li>
+                        </ul>
+                        <span class="kv-help">一行一條，開頭寫「<b>可以：</b>」或「<b>不行：</b>」。<b>存檔後，下一位客人就照新的規則</b>，不用改程式。<br>
+                            ・（餐點）＝只限這幾道，例如「不行：不要蛋（蛋餅）」；同一件事寫兩條，有（餐點）的優先<br>
+                            ・｜後面＝點餐員要說的話，例如「不行：生菜換番茄｜不好意思，生菜沒辦法換喔」；沒寫就說「不好意思，○○沒辦法喔」<br>
+                            ・「換」「換成」「改成」都算同一種說法；「蛋不要」「不加蛋」都算「不要蛋」<br>
+                            ・沒寫到的「○換○」照上面的勾；其他要求照平常（菜單上的選項，或寫在備註）。# 開頭的行是備忘，不算規則<br>
+                            <span class="kv-warn">「可以」的會寫在備註，不會多收錢；要加錢的（例如換全麥 +5 元）請到「菜單管理」加成選項。</span></span>
+                        <div class="kv-rule-try" data-kv-rule-try>
+                            <b>試試看</b>客人說
+                            <input v-model="kvRuleTry.phrase" placeholder="例：起司換一顆蛋" data-kv-rule-phrase class="rounded-lg border border-slate-600 bg-slate-900 px-2 py-1.5 text-sm text-white placeholder-slate-500">
+                            點的是
+                            <input v-model="kvRuleTry.dish" list="kv-rule-dishes" placeholder="餐點（可不填）" data-kv-rule-dish class="rounded-lg border border-slate-600 bg-slate-900 px-2 py-1.5 text-sm text-white placeholder-slate-500">
+                            <datalist id="kv-rule-dishes"><option v-for="it in menuItems" :key="it.id" :value="it.name"></option></datalist>
+                            <div class="kv-rule-out" v-if="kvRuleTest()" data-kv-rule-out>
+                                <span class="kv-chip" :class="kvRuleTest().cls">{{ kvRuleTest().head }}</span>
+                                <span>{{ kvRuleTest().then }}</span>
+                                <small>{{ kvRuleTest().why }}</small>
+                            </div>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- 首頁與結尾（kiosk-voice-logs-20261101） -->
@@ -3336,6 +3370,78 @@ window._resetCountUp = function() {
         return { rows: nextRows, changed: true };
     }
 
+    // kiosk-voice-rules-20261108：客製化規則（manage → 🎙️ 語音點餐 →「客製化規則」，平板和 manage 用同一份）
+    //   一行一條：「可以：吐司換全麥」「不行：起司換蛋」「不行：不要蛋（蛋餅）」「不行：生菜換番茄｜不好意思，生菜沒辦法換喔」
+    //   （…）＝只限這幾道餐點；｜後面＝點餐員要說的話；# 開頭＝備忘，不算規則
+    //   同一件事寫了兩條：有（餐點）的優先，其他照寫的順序，先寫的算
+    var CustomRules = (function () {
+      var SW = /^(.*?)(換成|換|改成|改用|替換成|替換|代替|取代)(.*)$/;
+      var HEAD = /^(不可以|不可|不行|不能|禁止|可以|允許|ok)\s*(?:[：:]|\s)\s*|^(❌|✖️|✖|✗|✘|×|✅|⭕|✔️|✔|✓)\s*[：:]?\s*/i;
+      var YES = /^(可以|允許|ok|✅|⭕|✔️|✔|✓)$/i;
+      var NOT_SWAP = /^(飲料|飲品|套餐飲料|杯子|杯型|冰塊|甜度|我要|要|幫我|可以|麻煩)$/;
+      function nz(s) {
+        return String(s == null ? '' : s).replace(/[０-９]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 65248); })
+          .replace(/[\s，,。．.、；;：:！!？?「」『』（）()\[\]【】〔〕~～\-－_＿'"“”‘’]/g, '').toLowerCase();
+      }
+      function obj(s) { return s.replace(/^成/, '').replace(/^[0-9一二兩三四五半]*[顆片個份條杯匙塊根]/, '').replace(/的$/, ''); }
+      function split(s) { var m = SW.exec(nz(s)); return m ? { from: obj(m[1]), to: obj(m[3]) } : null; }
+      function swapLike(s) { var m = SW.exec(nz(s)); return !!m && !!m[1] && !NOT_SWAP.test(m[1]); }
+      function canon(s) {   // 「蛋不要」「不加蛋」「不用蛋」→「不要蛋」
+        s = nz(s);
+        var m = /^(?:不要加|不用加|不加|不要|不用|免|去掉|拿掉|沒有)(.+)$/.exec(s) || /^(.+?)(?:不要加|不要|不加|不用|去掉|拿掉)$/.exec(s);
+        return m ? '不要' + m[1] : s;
+      }
+      function parse(text) {
+        var rules = [], bad = [];
+        String(text == null ? '' : text).replace(/\r\n?/g, '\n').split('\n').forEach(function (raw, i) {
+          var t = raw.trim().replace(/^[-*•・]\s*/, '');
+          if (!t || /^(#|\/\/)/.test(t)) return;
+          var h = HEAD.exec(t);
+          if (!h) { bad.push({ line: i + 1, text: t, why: '開頭要寫「可以：」或「不行：」' }); return; }
+          var body = t.slice(h[0].length), cut = body.search(/[｜|]/);
+          var reply = cut === -1 ? '' : body.slice(cut + 1).replace(/^\s*回覆?\s*[：:]\s*/, '').trim();
+          var main = (cut === -1 ? body : body.slice(0, cut)).trim(), scopeRaw = '';
+          var sm = /^(.*?)[（(]([^（）()]*)[）)]\s*$/.exec(main);
+          if (sm) { main = sm[1].trim(); scopeRaw = sm[2].replace(/^\s*(只限|限定|僅限|只有|限)\s*[：:]?\s*/, '').trim(); }
+          var key = nz(main);
+          if (!key) { bad.push({ line: i + 1, text: t, why: '「' + h[0].replace(/[：:\s]/g, '') + '」後面沒寫要做什麼' }); return; }
+          rules.push({ line: i + 1, raw: t, allow: YES.test(h[1] || h[2]), text: main, key: key, canon: canon(main),
+            sw: SW.test(key) ? split(main) : null, scopeRaw: scopeRaw,
+            scope: scopeRaw.split(/[、,，/／\s]+/).map(nz).filter(Boolean), reply: reply.slice(0, 80) });
+        });
+        return { rules: rules, bad: bad };
+      }
+      function inScope(r, dishes) {
+        if (!r.scope.length || dishes === null || dishes === undefined) return true;   // dishes 沒給（manage 試試看沒填餐點）＝不看餐點
+        var ds = (Array.isArray(dishes) ? dishes : [dishes]).map(nz).filter(Boolean);
+        return r.scope.some(function (s) { return ds.some(function (d) { return d.indexOf(s) !== -1; }); });
+      }
+      function swapHit(r, p) {
+        var fromOk = !r.from || !p.from || p.from.indexOf(r.from) !== -1 || r.from.indexOf(p.from) !== -1;
+        var toOk = !r.to || (!!p.to && (p.to.indexOf(r.to) !== -1 || r.to.indexOf(p.to) !== -1));
+        return fromOk && toOk;
+      }
+      function match(r, phrase, dishes) {
+        var p = nz(phrase);
+        if (!p || !inScope(r, dishes)) return false;
+        if (r.sw) { var ps = split(p); return !!ps && swapHit(r.sw, ps); }
+        return canon(p).indexOf(r.canon) !== -1;
+      }
+      function judge(rules, phrase, dishes) {
+        var first = null;
+        for (var i = 0; i < (rules || []).length; i++) {
+          if (!match(rules[i], phrase, dishes)) continue;
+          if (rules[i].scope.length) return rules[i];
+          if (!first) first = rules[i];
+        }
+        return first;
+      }
+      function forPrompt(r) {
+        return (r.allow ? '可以：' : '不行：') + r.text + (r.scopeRaw ? '（只限 ' + r.scopeRaw + '）' : '') + (r.reply ? '，跟顧客說「' + r.reply + '」' : '');
+      }
+      return { parse: parse, judge: judge, match: match, swapLike: swapLike, canon: canon, nz: nz, forPrompt: forPrompt };
+    })();
+
     createApp({
         data: function() {
             return {
@@ -3367,6 +3473,7 @@ window._resetCountUp = function() {
                 lwEst: { orders: 15, ticket: 280 },
                 // kiosk-voice-settings-20261031：語音點餐平板設定（settings.kioskVoice；平板每位客人開始點餐時讀一次）
                 kvForm: null, kvDirty: false, kvSaving: false, kvError: '', kvNotice: '',
+                kvRuleTry: { phrase: '吐司換全麥', dish: '' },   // kiosk-voice-rules-20261108：客製化規則「試試看」
                 // kiosk-voice-logs-20261101：點餐紀錄（Pi 保存的對話文字與錄音）
                 kvView: 'settings',
                 kvLogs: { date: '', rows: [], days: [], usage: null, loading: false, loaded: false, error: '', open: '', detail: null, detailLoading: false, audioUrl: '', audioLoading: false, audioError: '' },
@@ -5107,6 +5214,7 @@ window._resetCountUp = function() {
                     keyterms: '',
                     askDineMode: true,
                     allowSwap: false,   // kiosk-voice-noswap-20261108：允許更換餐點內的食材
+                    customRules: '可以：吐司換全麥',   // kiosk-voice-rules-20261108：客製化規則（一行一條「可以：…」「不行：…」）
                     voice: 'ara',
                     voiceByDay: ['', '', '', '', '', '', ''],   // kiosk-voice-dayvoice-20261106：[週日, 週一, …, 週六]，''＝同上
                     speechSpeed: 0.92,
@@ -5148,6 +5256,7 @@ window._resetCountUp = function() {
                     else if (k === 'enabled') cfg[k] = v !== false;
                     else if (k === 'voice') cfg[k] = voices.some(function(x) { return x.id === v; }) ? v : d;
                     else if (k === 'greetingMorning') cfg[k] = typeof v === 'string' ? v : d;   // 存了空白＝不分早上，要保留空白
+                    else if (k === 'customRules') cfg[k] = typeof v === 'string' ? v : d;   // kiosk-voice-rules-20261108：存了空白＝沒有規則
                     else if (k === 'morningUntil') cfg[k] = /^([01]\d|2[0-3]):[0-5]\d$/.test(String(v || '')) ? v : d;
                     else if (k === 'reasoningEffort') cfg[k] = v === 'high' ? 'high' : 'none';
                     else if (typeof d === 'string') cfg[k] = typeof v === 'string' && v.trim() ? v : d;
@@ -5179,6 +5288,7 @@ window._resetCountUp = function() {
                     keyterms: terms.slice(0, 40),
                     askDineMode: f.askDineMode !== false,
                     allowSwap: f.allowSwap === true,
+                    customRules: txt(f.customRules, 2000),
                     voice: this.kvVoices.some(function(x) { return x.id === f.voice; }) ? f.voice : base.voice,
                     voiceByDay: base.voiceByDay.map(function(x, i) {
                         var v = (f.voiceByDay || [])[i];
@@ -5259,6 +5369,35 @@ window._resetCountUp = function() {
                 if (n <= 1.05) return '正常';
                 if (n <= 1.25) return '稍快';
                 return '快';
+            },
+            // kiosk-voice-rules-20261108：客製化規則
+            kvRulesParsed: function() { return CustomRules.parse(this.kvForm ? this.kvForm.customRules : ''); },
+            kvRulesSummary: function() {
+                var r = this.kvRulesParsed().rules;
+                return '可以 ' + r.filter(function(x) { return x.allow; }).length + ' 條、不行 ' + r.filter(function(x) { return !x.allow; }).length + ' 條';
+            },
+            kvRulesScopeWarn: function() {
+                var names = (this.menuItems || []).map(function(it) { return CustomRules.nz(it && it.name); }).filter(Boolean), out = [];
+                if (!names.length) return out;
+                this.kvRulesParsed().rules.forEach(function(r) {
+                    r.scope.forEach(function(sc) {
+                        if (!names.some(function(n) { return n.indexOf(sc) !== -1; })) out.push('第 ' + r.line + ' 行：菜單上找不到「' + sc + '」，這條用不到');
+                    });
+                });
+                return out;
+            },
+            kvRuleTest: function() {
+                var t = this.kvRuleTry || {}, phrase = String(t.phrase || '').trim(), dish = String(t.dish || '').trim();
+                if (!phrase) return null;
+                var r = CustomRules.judge(this.kvRulesParsed().rules, phrase, dish ? [dish] : null);
+                if (r) return { cls: r.allow ? 'ok' : 'bad', head: r.allow ? '✅ 可以' : '❌ 不行', why: '第 ' + r.line + ' 行「' + r.raw + '」',
+                    then: r.allow ? '寫在備註（菜單上有的選項就選選項）' : '不寫進點餐單，點餐員說「' + (r.reply || '不好意思，' + phrase + '沒辦法喔') + '」' };
+                if (CustomRules.swapLike(phrase)) {
+                    var a = !!(this.kvForm && this.kvForm.allowSwap);
+                    return { cls: a ? 'ok' : 'bad', head: a ? '✅ 可以' : '❌ 不行', why: '沒有對到規則；這是更換食材，照上面「允許更換」的勾（' + (a ? '有勾' : '沒勾') + '）',
+                        then: a ? '寫在備註' : '不寫進點餐單，點餐員說「不好意思，餐點內的食材沒辦法更換」' };
+                }
+                return { cls: 'mute', head: '照平常', why: '沒有對到規則', then: '菜單上有的選項就選選項，其他寫在備註' };
             },
             kvCount: function(field, max) {
                 return String((this.kvForm && this.kvForm[field]) || '').length + ' / ' + max;
