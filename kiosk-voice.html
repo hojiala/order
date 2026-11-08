@@ -97,9 +97,20 @@ button:focus-visible{outline:.35rem solid var(--yolk-light);outline-offset:.3rem
 .record-notice{margin:0;font-size:1.05rem;font-weight:700;opacity:.8}
 .record-notice[hidden]{display:none}
 /* kiosk-voice-micui-20261108：首頁的麥克風狀態 */
-.mic-status{position:relative;z-index:2;margin:0;max-width:80vw;font-size:.95rem;font-weight:700;opacity:.75}
+.mic-status{position:relative;z-index:2;margin:0;max-width:80vw;font-size:.95rem;font-weight:700;display:inline-flex;align-items:center;gap:.6em}
 .mic-status:empty{display:none}
-.mic-status.is-warn{opacity:1;color:var(--yolk);cursor:pointer;text-decoration:underline dotted;text-underline-offset:.25em}
+.mic-text{opacity:.75}
+.mic-status.is-warn{color:var(--yolk);cursor:pointer}
+.mic-status.is-warn .mic-text{opacity:1;text-decoration:underline dotted;text-underline-offset:.25em}
+/* kiosk-voice-led-20261108：LED 指示燈（外接綠、內建紅、不知道灰）：中間亮點＋外圈暈光 */
+.mic-led{flex:none;position:relative;width:1.1em;height:1.1em;border-radius:50%}
+.mic-led::after{content:"";position:absolute;left:22%;top:14%;width:38%;height:30%;border-radius:50%;background:radial-gradient(ellipse at center,rgba(255,255,255,.95),rgba(255,255,255,0) 70%)}
+.mic-led.is-ext{background:radial-gradient(circle at 40% 38%,#f3fff6 0,#9dffc0 14%,#2fe27a 38%,#0d9c48 70%,#05542a 100%);
+  box-shadow:0 0 .2em .08em rgba(190,255,210,.95),0 0 .75em .3em rgba(60,255,140,.7),0 0 1.7em .7em rgba(60,255,140,.32),inset 0 -.08em .15em rgba(0,60,25,.6)}
+.mic-led.is-int{background:radial-gradient(circle at 40% 38%,#fff3f0 0,#ffb3a6 14%,#ff4a34 38%,#c4150a 70%,#6b0703 100%);
+  box-shadow:0 0 .2em .08em rgba(255,200,185,.95),0 0 .75em .3em rgba(255,70,45,.7),0 0 1.7em .7em rgba(255,50,30,.34),inset 0 -.08em .15em rgba(70,0,0,.6)}
+.mic-led.is-off{background:radial-gradient(circle at 40% 38%,#ffffff 0,#d5d8dc 16%,#8d949b 50%,#4a5056 100%);
+  box-shadow:0 0 .35em .05em rgba(255,255,255,.18),inset 0 -.08em .15em rgba(0,0,0,.45)}
 body.is-paused .record-notice{display:none}
 .home > .home-status{position:absolute;right:2.2vmin;top:1.6vmin;z-index:1;font-size:.8rem;opacity:.6;margin:0}
 .paused-msg{white-space:pre-line;display:none;margin:0;max-width:46rem;font-size:2.3rem;font-weight:900;line-height:1.35;color:var(--yolk)}
@@ -2767,6 +2778,7 @@ body.is-demo .demo-chip{display:inline-block}
           self.stream = stream;
           var tr = stream.getAudioTracks()[0];
           self.micLabel = (tr && tr.label) || '';
+          self.watchTrack(stream);   // kiosk-voice-otg-20261108
           self.source = self.ctx.createMediaStreamSource(stream);
           self.sink = self.ctx.createGain(); self.sink.gain.value = 0; self.sink.connect(self.ctx.destination);
           var useWorklet = self.ctx.audioWorklet && window.AudioWorkletNode;
@@ -2797,11 +2809,41 @@ body.is-demo .demo-chip{display:inline-block}
         if (this.accLen === this.acc.length) { if (this.onChunk) this.onChunk(floatToB64(this.acc)); this.accLen = 0; }
       }
     },
+    // kiosk-voice-otg-20261108：點餐中麥克風斷了（外接被拔、OTG 自動關閉）→ 馬上改用內建的，這位客人照樣點得下去
+    watchTrack: function (stream) {
+      var self = this, tr = stream && stream.getAudioTracks()[0];
+      if (!tr) return;
+      tr.onended = function () { if (self.stream === stream) self.recoverMic(tr.label || ''); };
+    },
+    recoverMic: function (lostLabel) {
+      var self = this;
+      if (!this.node || !this.ctx || this.recovering) return;
+      this.recovering = true;
+      Log.add('error', '麥克風「' + (lostLabel || '預設') + '」斷了（外接被拔掉或 OTG 自動關閉），改用內建麥克風');
+      navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } }).then(function (stream) {
+        self.recovering = false;
+        if (!self.node) { stream.getTracks().forEach(function (t) { try { t.stop(); } catch (_) {} }); return; }   // 這位客人已經結束
+        try { if (self.source) self.source.disconnect(); } catch (_) {}
+        try { if (self.stream) self.stream.getTracks().forEach(function (t) { t.stop(); }); } catch (_) {}
+        self.stream = stream;
+        var tr = stream.getAudioTracks()[0];
+        self.micLabel = (tr && tr.label) || '';
+        self.source = self.ctx.createMediaStreamSource(stream);
+        self.source.connect(self.node);
+        if (Rec.dest) { try { self.source.connect(Rec.dest); } catch (_) {} }   // 錄音也接上新的
+        self.watchTrack(stream);
+        Log.add('system', '已改用' + (EXT_MIC.test(self.micLabel) ? '外接' : '內建') + '麥克風「' + (self.micLabel || '預設') + '」，繼續點餐');
+        refreshMicStatus();
+      }, function (e) {
+        self.recovering = false;
+        Log.add('error', '換麥克風失敗：' + ((e && (e.name || e.message)) || e));
+      });
+    },
     stopMic: function () {
       try { if (this.node) { this.node.disconnect(); if (this.node.port) this.node.port.onmessage = null; } } catch (_) {}
       try { if (this.source) this.source.disconnect(); } catch (_) {}
       try { if (this.stream) this.stream.getTracks().forEach(function (tr) { tr.stop(); }); } catch (_) {}
-      this.node = null; this.source = null; this.stream = null; this.onChunk = null;
+      this.node = null; this.source = null; this.stream = null; this.onChunk = null; this.recovering = false;
     },
     play: function (b64, lead) {
       if (!this.ctx || !b64) return 0;
@@ -2950,18 +2992,21 @@ body.is-demo .demo-chip{display:inline-block}
   function refreshMicStatus() {
     var el = document.getElementById('mic-status'), md = navigator.mediaDevices;
     if (!el) return;
-    if (DEMO || VIEW_PROMPT || !md || !md.enumerateDevices) { el.textContent = ''; return; }
+    if (DEMO || VIEW_PROMPT || !md || !md.enumerateDevices) { el.innerHTML = ''; return; }
     md.enumerateDevices().then(function (list) {
       var ins = list.filter(function (d) { return d.kind === 'audioinput' && d.deviceId !== 'default' && d.deviceId !== 'communications'; });
       var named = ins.filter(function (d) { return d.label; });
       var ext = named.filter(function (d) { return EXT_MIC.test(d.label); })[0], seen = storeGet(MIC_SEEN_KEY), text, warn = false;
-      if (!named.length) text = ins.length ? '🎙️ 麥克風：允許使用麥克風後，這裡會顯示外接或內建' : '🎙️ 找不到麥克風';
-      else if (ext) { storeSet(MIC_SEEN_KEY, ext.label); text = '🎙️ 外接麥克風：' + ext.label; }
+      var led = 'int';   // kiosk-voice-led-20261108：外接綠燈、內建紅燈、還不知道灰燈
+      if (!named.length) { text = ins.length ? '🎙️ 麥克風：允許使用麥克風後，這裡會顯示外接或內建' : '🎙️ 找不到麥克風'; led = ins.length ? 'off' : 'int'; }
+      else if (ext) { storeSet(MIC_SEEN_KEY, ext.label); text = '🎙️ 外接麥克風：' + ext.label; led = 'ext'; }
       else if (seen) { warn = true; text = '⚠️ 外接麥克風沒接上（' + seen + '），現在用內建麥克風｜不用外接了請點這行'; }
       else text = '🎙️ 內建麥克風（沒接外接麥克風）';
-      el.textContent = text;
+      el.innerHTML = '<span class="mic-led is-' + led + '" aria-hidden="true"></span><span class="mic-text"></span>';
+      el.querySelector('.mic-text').textContent = text;
+      el.setAttribute('data-mic', led);
       el.classList.toggle('is-warn', warn);
-    }, function () { el.textContent = ''; });
+    }, function () { el.innerHTML = ''; });
   }
   function floatToB64(f32) {
     var u8 = new Uint8Array(f32.length * 2), dv = new DataView(u8.buffer);
