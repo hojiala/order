@@ -96,6 +96,10 @@ button:focus-visible{outline:.35rem solid var(--yolk-light);outline-offset:.3rem
 .step-no{display:inline-flex;align-items:center;justify-content:center;width:2.2rem;height:2.2rem;border-radius:50%;background:var(--white);color:var(--green);font-size:1.25rem;font-weight:900}
 .record-notice{margin:0;font-size:1.05rem;font-weight:700;opacity:.8}
 .record-notice[hidden]{display:none}
+/* kiosk-voice-micui-20261108：首頁的麥克風狀態 */
+.mic-status{position:relative;z-index:2;margin:0;max-width:80vw;font-size:.95rem;font-weight:700;opacity:.75}
+.mic-status:empty{display:none}
+.mic-status.is-warn{opacity:1;color:var(--yolk);cursor:pointer;text-decoration:underline dotted;text-underline-offset:.25em}
 body.is-paused .record-notice{display:none}
 .home > .home-status{position:absolute;right:2.2vmin;top:1.6vmin;z-index:1;font-size:.8rem;opacity:.6;margin:0}
 .paused-msg{white-space:pre-line;display:none;margin:0;max-width:46rem;font-size:2.3rem;font-weight:900;line-height:1.35;color:var(--yolk)}
@@ -382,6 +386,7 @@ body.is-demo .demo-chip{display:inline-block}
     <li><span class="step-no">3</span><span class="step-text">到櫃台結帳</span></li>
   </ol>
   <p id="record-notice" class="record-notice" hidden></p>
+  <p id="mic-status" class="mic-status" role="status"></p>
   <p id="home-status" class="home-status"></p>
   <svg class="decor decor-toast" viewBox="0 0 200 200" aria-hidden="true">
     <path fill="#9C5F27" d="M38 178V86C14 80 8 56 20 38 34 16 66 8 100 8s66 8 80 30c12 18 6 42-18 48v92z"/>
@@ -2940,6 +2945,24 @@ body.is-demo .demo-chip{display:inline-block}
       }, function () { return stream; });   // 外接的打不開就用原本的
     }, function () { return stream; });
   }
+  // kiosk-voice-micui-20261108：首頁顯示外接／內建麥克風
+  var MIC_SEEN_KEY = 'kiosk_ext_mic_seen';   // 這台用過的外接麥克風名稱（拔掉時提醒）
+  function refreshMicStatus() {
+    var el = document.getElementById('mic-status'), md = navigator.mediaDevices;
+    if (!el) return;
+    if (DEMO || VIEW_PROMPT || !md || !md.enumerateDevices) { el.textContent = ''; return; }
+    md.enumerateDevices().then(function (list) {
+      var ins = list.filter(function (d) { return d.kind === 'audioinput' && d.deviceId !== 'default' && d.deviceId !== 'communications'; });
+      var named = ins.filter(function (d) { return d.label; });
+      var ext = named.filter(function (d) { return EXT_MIC.test(d.label); })[0], seen = storeGet(MIC_SEEN_KEY), text, warn = false;
+      if (!named.length) text = ins.length ? '🎙️ 麥克風：允許使用麥克風後，這裡會顯示外接或內建' : '🎙️ 找不到麥克風';
+      else if (ext) { storeSet(MIC_SEEN_KEY, ext.label); text = '🎙️ 外接麥克風：' + ext.label; }
+      else if (seen) { warn = true; text = '⚠️ 外接麥克風沒接上（' + seen + '），現在用內建麥克風｜不用外接了請點這行'; }
+      else text = '🎙️ 內建麥克風（沒接外接麥克風）';
+      el.textContent = text;
+      el.classList.toggle('is-warn', warn);
+    }, function () { el.textContent = ''; });
+  }
   function floatToB64(f32) {
     var u8 = new Uint8Array(f32.length * 2), dv = new DataView(u8.buffer);
     for (var i = 0; i < f32.length; i++) { var s = Math.max(-1, Math.min(1, f32[i])); dv.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true); }
@@ -3002,9 +3025,9 @@ body.is-demo .demo-chip{display:inline-block}
     var t0 = Date.now();
     var greet = mic.then(function () {
       if (!Session.active) return;
-      var ml = AudioIO.micList || [];
-      Log.add('system', '麥克風開好了（按下後 ' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒）：用「' + (AudioIO.micLabel || '預設') + '」' +
-        (EXT_MIC.test(AudioIO.micLabel || '') ? '（外接）' : '') + (ml.length ? '；這台找得到 ' + ml.length + ' 支：' + ml.join('、') : ''), { mic: AudioIO.micLabel || '' });   // kiosk-voice-mic-20261108
+      var ml = AudioIO.micList || [], isExt = EXT_MIC.test(AudioIO.micLabel || '');
+      Log.add('system', '麥克風開好了（按下後 ' + ((Date.now() - t0) / 1000).toFixed(1) + ' 秒）：' + (isExt ? '外接麥克風' : '內建麥克風') + '「' + (AudioIO.micLabel || '預設') + '」' +
+        (ml.length ? '；這台找得到 ' + ml.length + ' 支：' + ml.join('、') : ''), { mic: AudioIO.micLabel || '', mic_ext: isExt ? 1 : 0 });   // kiosk-voice-mic-20261108
       return new Promise(function (r) { setTimeout(r, 200); }).then(function () { if (Session.active && !Session.ready) Greet.playLocal(); });
     }, function () {});
     var tok = fetchToken();
@@ -3754,6 +3777,7 @@ body.is-demo .demo-chip{display:inline-block}
     showScreen('screen-home');
     Session.demo = false;
     refreshSettings(4000);
+    refreshMicStatus();   // 這位客人用完，回首頁重看麥克風
   }
   var doneReason = '';
   function goDone(reason) {
@@ -3814,10 +3838,18 @@ body.is-demo .demo-chip{display:inline-block}
   function setGreeting() {   // kiosk-voice-smooth-20261107：和開場白同一個時間換（manage「早上到幾點」，預設 10:00）
     $('greet').textContent = isMorning() ? '早安！' : '你好！';
   }
-  setInterval(function () { setGreeting(); renderPaused(); }, 60000);   // 停在首頁過了 10:00 也會換；點餐時段到了自動開、過了自動關
+  setInterval(function () { setGreeting(); renderPaused(); refreshMicStatus(); }, 60000);
+  // kiosk-voice-micui-20261108：插上、拔掉麥克風馬上更新；點黃色那行＝以後不用外接
+  try { if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) navigator.mediaDevices.addEventListener('devicechange', refreshMicStatus); } catch (_) {}
+  document.getElementById('mic-status').addEventListener('click', function () {
+    if (!this.classList.contains('is-warn')) return;
+    try { localStorage.removeItem(MIC_SEEN_KEY); } catch (_) {}
+    refreshMicStatus();
+  });   // 停在首頁過了 10:00 也會換；點餐時段到了自動開、過了自動關
   function homeStatus() {
     var el = $('home-status');
     renderPaused();   // 店面設定讀到了：照點餐時段開關
+    refreshMicStatus();
     if (DEMO) { el.textContent = '預覽模式　菜單 ' + Menu.active.length + ' 項'; return; }
     if (Menu.error && !Menu.active.length) { el.textContent = '菜單載入失敗：' + Menu.error; return; }
     if (!storeGet('kiosk_voice_key')) { el.textContent = '尚未設定點餐金鑰（網址加 ?kioskKey=）'; return; }
@@ -3983,7 +4015,7 @@ body.is-demo .demo-chip{display:inline-block}
   }
 
   // 測試用
-  window.__kiosk = { runTool: runTool, findItem: findItem, setMenu: setMenu, Order: Order, Menu: Menu, buildInstructions: buildInstructions, buildKeyterms: buildKeyterms, fixTypos: fixTypos, applyRemoteDict: applyRemoteDict, Dict: Dict, sessionUpdate: sessionUpdate, CONFIG: CONFIG, Session: Session, goHome: goHome, showError: showError, goDone: goDone, Submit: Submit, buildOrderData: buildOrderData, speakName: speakName, submitOrder: submitOrder, businessWindow: businessWindow, applyVoiceSettings: applyVoiceSettings, transcriptDishes: transcriptDishes, showTypos: showTypos, Tm: Tm, Hold: Hold, Ack: Ack, setUser: setUser, setAgent: setAgent, demoStop: demoStop, startWith: startWith, beginSessionUI: beginSessionUI, Greet: Greet, Pre: Pre, onReady: onReady, onMicChunk: onMicChunk, needsTalk: needsTalk, quietAfterTools: quietAfterTools, startLive: startLive, flavorFromWords: flavorFromWords, onResponseDone: onResponseDone, dayVoice: dayVoice, sessionVoice: sessionVoice, refreshSettings: refreshSettings, Remote: Remote, renderPromptView: renderPromptView, choiceAsk: choiceAsk, Turn: Turn, resetOffers: resetOffers, Offers: Offers, Pending: Pending, closingLine: closingLine, closingResponse: closingResponse, pressDineMode: pressDineMode, handleEvent: handleEvent, Log: Log, Rec: Rec, AudioIO: AudioIO, Jank: Jank, netText: netText, currentGreeting: currentGreeting, isMorning: isMorning, setGreeting: setGreeting, userPressedDone: userPressedDone, pickExternalMic: pickExternalMic, closedReason: closedReason, renderPaused: renderPaused, setSettings: function (v) { Settings = v; }, tick: tick, teardown: teardown, requestResponse: requestResponse, renderHomeText: renderHomeText };
+  window.__kiosk = { runTool: runTool, findItem: findItem, setMenu: setMenu, Order: Order, Menu: Menu, buildInstructions: buildInstructions, buildKeyterms: buildKeyterms, fixTypos: fixTypos, applyRemoteDict: applyRemoteDict, Dict: Dict, sessionUpdate: sessionUpdate, CONFIG: CONFIG, Session: Session, goHome: goHome, showError: showError, goDone: goDone, Submit: Submit, buildOrderData: buildOrderData, speakName: speakName, submitOrder: submitOrder, businessWindow: businessWindow, applyVoiceSettings: applyVoiceSettings, transcriptDishes: transcriptDishes, showTypos: showTypos, Tm: Tm, Hold: Hold, Ack: Ack, setUser: setUser, setAgent: setAgent, demoStop: demoStop, startWith: startWith, beginSessionUI: beginSessionUI, Greet: Greet, Pre: Pre, onReady: onReady, onMicChunk: onMicChunk, needsTalk: needsTalk, quietAfterTools: quietAfterTools, startLive: startLive, flavorFromWords: flavorFromWords, onResponseDone: onResponseDone, dayVoice: dayVoice, sessionVoice: sessionVoice, refreshSettings: refreshSettings, Remote: Remote, renderPromptView: renderPromptView, choiceAsk: choiceAsk, Turn: Turn, resetOffers: resetOffers, Offers: Offers, Pending: Pending, closingLine: closingLine, closingResponse: closingResponse, pressDineMode: pressDineMode, handleEvent: handleEvent, Log: Log, Rec: Rec, AudioIO: AudioIO, Jank: Jank, netText: netText, currentGreeting: currentGreeting, isMorning: isMorning, setGreeting: setGreeting, userPressedDone: userPressedDone, pickExternalMic: pickExternalMic, refreshMicStatus: refreshMicStatus, closedReason: closedReason, renderPaused: renderPaused, setSettings: function (v) { Settings = v; }, tick: tick, teardown: teardown, requestResponse: requestResponse, renderHomeText: renderHomeText };
 })();
 </script>
 </body>
