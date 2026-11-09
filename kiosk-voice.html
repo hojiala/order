@@ -1012,6 +1012,55 @@ body.is-demo .demo-chip{display:inline-block}
     return { candidates: ranked.slice(0, 3).map(function (r) { return r.it; }) };
     function pack(it, implied, exact) { return it.active === false ? { soldOut: true, item: it } : { item: it, implied: implied || [], exact: !!exact }; }
   }
+  // kiosk-voice-eggopt-20261109：顧客只說做法（半熟蛋、太陽蛋、散蛋）＝荷包蛋的選項
+  //   同一類：品名最後一個字和做法一樣（荷包「蛋」／半熟「蛋」），做法不用加錢；剛好只有一道才算
+  //   （吐司、蘿蔔糕的「+半熟蛋」要加錢、鐵板麵和拼盤的「蛋品選擇」不是同一類，都不算）
+  function choiceKey(c) { return norm(String(c && c.name || '').replace(/^[+＋]/, '')); }
+  function styleGroups(it, fn) {
+    (it.optionGroups || []).forEach(function (g) { if (g.type !== 'checkbox' && g.pricing !== 'setPrice') fn(g); });
+  }
+  function optionDish(said) {
+    var n = norm(said).replace(/^(\d+|[一二兩三四五六七八九十])?(個|顆|份)/, '').replace(/的$/, '');
+    if (n.length < 2) return null;
+    var hits = [];
+    Menu.items.forEach(function (it) {
+      if (norm(it.name).slice(-1) !== n.slice(-1)) return;
+      styleGroups(it, function (g) {
+        (g.choices || []).forEach(function (c) {
+          if (choiceKey(c) === n && !(Number(c.price) > 0) && hits.every(function (h) { return h.item !== it; })) hits.push({ item: it, choice: c.name });
+        });
+      });
+    });
+    var act = hits.filter(function (h) { return h.item.active !== false; });
+    if (act.length > 1 || (!act.length && hits.length !== 1)) return null;
+    var h = act[0] || hits[0];
+    return h.item.active === false ? { soldOut: true, item: h.item } : { item: h.item, implied: [h.choice], exact: false, option_from: said, option_choice: h.choice };
+  }
+  function nameOption(said, item) {   // 「半熟荷包蛋」「荷包蛋要半熟」：品名以外的字剛好是這道的一個做法
+    var n = norm(said), rest = null;
+    (item._names || [norm(item.name)]).some(function (nm) {
+      var i = nm ? n.indexOf(nm) : -1;
+      if (i < 0) return false;
+      rest = n.slice(0, i) + n.slice(i + nm.length);
+      return true;
+    });
+    rest = (rest || '').replace(/^(要|的|請|幫我)+/, '').replace(/(的|就好|就可以|喔|哦)+$/, '');
+    if (!rest) return '';
+    var hits = [];
+    styleGroups(item, function (g) {
+      (g.choices || []).forEach(function (c) { var k = choiceKey(c); if (k && k.indexOf(rest) === 0 && hits.indexOf(c.name) === -1) hits.push(c.name); });
+    });
+    return hits.length === 1 ? hits[0] : '';
+  }
+  function styleLabel(it) {   // 給點餐員的菜單：荷包蛋（全熟蛋/半熟蛋/散蛋/太陽蛋）；只列同一類、不用加錢的做法
+    var nm = norm(it.name), out = '';
+    styleGroups(it, function (g) {
+      if (out) return;
+      var ch = (g.choices || []).filter(function (c) { return !(Number(c.price) > 0); });
+      if (ch.length >= 2 && ch.every(function (c) { return choiceKey(c).slice(-1) === nm.slice(-1); })) out = '（' + ch.map(function (c) { return String(c.name).replace(/^[+＋]/, ''); }).join('/') + '）';
+    });
+    return out;
+  }
   function itemPriceLabel(it) {
     var g = (it.optionGroups || []).filter(function (x) { return x.pricing === 'setPrice'; })[0];
     if (g && (g.choices || []).length) return g.choices.map(function (c) { return c.name + c.price; }).join('/');
@@ -2162,6 +2211,8 @@ body.is-demo .demo-chip{display:inline-block}
       if (!said) return null;
       var extraWords = spec.selections.filter(isVariantWord).join(' ') + ' ' + lineExtra;
       var f = findDish(said, extraWords);
+      if (!f.exact && !f.family) { var od = optionDish(said); if (od) return od; }   // kiosk-voice-eggopt-20261109：半熟蛋 → 荷包蛋（半熟蛋）
+      if (f.item && !f.soldOut && !f.exact) { var no = nameOption(said, f.item); if (no) { f.implied = (f.implied || []).concat(no); f.name_option = no; } }   // 半熟荷包蛋
       if (f.item || (f.family && f.candidates && f.candidates.length)) return f;
       var fx = fixTypos(said);   // kiosk-voice-typo-20261106：菜單上找不到（或只是猜）→ 和電話點餐一樣先校正錯字
       if (!fx) return f;
@@ -2285,6 +2336,10 @@ body.is-demo .demo-chip{display:inline-block}
       if (eggGuard.dropped.length) info.egg_kept = eggKeptText(target, eggGuard.dropped);
       swapInfo(info, swapBag);
       if (f.typo_from) info.heard_as = '「' + toTrad(f.typo_from) + '」' + (f.cross ? '對照顧客原句' : '照錯字表') + '當成「' + target.item.name + '」';
+      if (f.option_from) {   // kiosk-voice-eggopt-20261109
+        info.from_option = '「' + toTrad(f.option_from) + '」是' + target.item.name + '的做法，已加' + target.item.name + '（' + f.option_choice + '）';
+        if (new RegExp('加([0-9]+|[一兩二三])?(顆|個)?' + choiceKey({ name: f.option_choice })).test(norm(Session.userLine || ''))) info.from_option += '。顧客說「加' + f.option_choice + '」：如果是要加在別的餐點裡，請用 remove_item 拿掉這項，改用 update_item 在那一項選「+' + f.option_choice + '」';
+      }
       if (f.upgraded_from) info.auto_upgraded = '單點又點了飲料，已改成' + speakName(target.item.name) + '，飲料就是套餐飲料，比分開點划算';
       if (drinkWords.length) { info.drink_separately = drinkWords; info.message = '這道沒有套餐，飲料「' + drinkWords.join('、') + '」請用 add_items 另外加一項'; }
       if (unmatched.length) info.unmatched = unmatched;
@@ -2663,7 +2718,7 @@ body.is-demo .demo-chip{display:inline-block}
     Menu.active.forEach(function (it) {
       var c = it.category || '其他';
       if (!cats[c]) { cats[c] = []; order.push(c); }
-      cats[c].push(it.name + sizeLabel(it));
+      cats[c].push(it.name + sizeLabel(it) + styleLabel(it));   // kiosk-voice-eggopt-20261109：荷包蛋（全熟蛋/半熟蛋/散蛋/太陽蛋）
     });
     return [
       '你是早餐店菜單看板旁點餐平板上的點餐員，顧客多半是長輩。',
@@ -4207,7 +4262,7 @@ body.is-demo .demo-chip{display:inline-block}
   }
 
   // 測試用
-  window.__kiosk = { runTool: runTool, findItem: findItem, setMenu: setMenu, Order: Order, Menu: Menu, buildInstructions: buildInstructions, buildKeyterms: buildKeyterms, fixTypos: fixTypos, applyRemoteDict: applyRemoteDict, Dict: Dict, sessionUpdate: sessionUpdate, CONFIG: CONFIG, Session: Session, goHome: goHome, showError: showError, goDone: goDone, Submit: Submit, buildOrderData: buildOrderData, speakName: speakName, submitOrder: submitOrder, businessWindow: businessWindow, applyVoiceSettings: applyVoiceSettings, transcriptDishes: transcriptDishes, showTypos: showTypos, Tm: Tm, Hold: Hold, Ack: Ack, setUser: setUser, setAgent: setAgent, demoStop: demoStop, startWith: startWith, beginSessionUI: beginSessionUI, Greet: Greet, Pre: Pre, onReady: onReady, onMicChunk: onMicChunk, needsTalk: needsTalk, quietAfterTools: quietAfterTools, startLive: startLive, flavorFromWords: flavorFromWords, onResponseDone: onResponseDone, dayVoice: dayVoice, sessionVoice: sessionVoice, refreshSettings: refreshSettings, Remote: Remote, renderPromptView: renderPromptView, choiceAsk: choiceAsk, Turn: Turn, resetOffers: resetOffers, Offers: Offers, Pending: Pending, closingLine: closingLine, closingResponse: closingResponse, pressDineMode: pressDineMode, handleEvent: handleEvent, Log: Log, Rec: Rec, AudioIO: AudioIO, Jank: Jank, netText: netText, currentGreeting: currentGreeting, isMorning: isMorning, setGreeting: setGreeting, userPressedDone: userPressedDone, isSwap: isSwap, stripSwaps: stripSwaps, CustomRules: CustomRules, verdict: verdict, screenBag: screenBag, pickExternalMic: pickExternalMic, refreshMicStatus: refreshMicStatus, closedReason: closedReason, renderPaused: renderPaused, setSettings: function (v) { Settings = v; }, tick: tick, teardown: teardown, requestResponse: requestResponse, renderHomeText: renderHomeText };
+  window.__kiosk = { runTool: runTool, findItem: findItem, setMenu: setMenu, Order: Order, Menu: Menu, buildInstructions: buildInstructions, buildKeyterms: buildKeyterms, fixTypos: fixTypos, applyRemoteDict: applyRemoteDict, Dict: Dict, sessionUpdate: sessionUpdate, CONFIG: CONFIG, Session: Session, goHome: goHome, showError: showError, goDone: goDone, Submit: Submit, buildOrderData: buildOrderData, speakName: speakName, submitOrder: submitOrder, businessWindow: businessWindow, applyVoiceSettings: applyVoiceSettings, transcriptDishes: transcriptDishes, showTypos: showTypos, Tm: Tm, Hold: Hold, Ack: Ack, setUser: setUser, setAgent: setAgent, demoStop: demoStop, startWith: startWith, beginSessionUI: beginSessionUI, Greet: Greet, Pre: Pre, onReady: onReady, onMicChunk: onMicChunk, needsTalk: needsTalk, quietAfterTools: quietAfterTools, startLive: startLive, flavorFromWords: flavorFromWords, onResponseDone: onResponseDone, dayVoice: dayVoice, sessionVoice: sessionVoice, refreshSettings: refreshSettings, Remote: Remote, renderPromptView: renderPromptView, choiceAsk: choiceAsk, Turn: Turn, resetOffers: resetOffers, Offers: Offers, Pending: Pending, closingLine: closingLine, closingResponse: closingResponse, pressDineMode: pressDineMode, handleEvent: handleEvent, Log: Log, Rec: Rec, AudioIO: AudioIO, Jank: Jank, netText: netText, currentGreeting: currentGreeting, isMorning: isMorning, setGreeting: setGreeting, userPressedDone: userPressedDone, isSwap: isSwap, stripSwaps: stripSwaps, optionDish: optionDish, nameOption: nameOption, styleLabel: styleLabel, CustomRules: CustomRules, verdict: verdict, screenBag: screenBag, pickExternalMic: pickExternalMic, refreshMicStatus: refreshMicStatus, closedReason: closedReason, renderPaused: renderPaused, setSettings: function (v) { Settings = v; }, tick: tick, teardown: teardown, requestResponse: requestResponse, renderHomeText: renderHomeText };
 })();
 </script>
 </body>
