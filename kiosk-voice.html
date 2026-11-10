@@ -122,6 +122,19 @@ body.is-paused .yolk{animation:none}
 .decor{position:absolute;z-index:0;pointer-events:none}
 .decor-toast{left:-3vmin;bottom:-5vmin;width:26vmin;transform:rotate(-14deg)}
 .decor-cup{right:-1vmin;bottom:-2vmin;width:22vmin}
+/* kiosk-voice-exit-20261110：店員關閉點餐畫面：同時按住左下角吐司和右下角咖啡杯 2 秒 */
+.home > .staff-hot{position:absolute;bottom:0;z-index:2;width:22vmin;height:22vmin;touch-action:none;-webkit-touch-callout:none}
+.home > .staff-hot-l{left:0}
+.home > .staff-hot-r{right:0}
+.decor{transition:filter .25s}
+#screen-home.hot-l .decor-toast,#screen-home.hot-r .decor-cup{filter:brightness(1.2) drop-shadow(0 0 2.2vmin var(--yolk))}
+.staff-panel{position:fixed;inset:0;z-index:50;display:none;align-items:center;justify-content:center;padding:4vmin;background:rgba(13,61,48,.82)}
+.staff-panel.is-open{display:flex}
+.staff-box{background:var(--green-deep);border:.35rem solid var(--yolk);border-radius:1.6rem;padding:2.4rem 2.8rem;max-width:44rem;text-align:center;box-shadow:0 2vmin 6vmin rgba(0,0,0,.35)}
+.staff-box h2{margin:0 0 .8rem;font-size:2rem;font-weight:900;color:var(--yolk)}
+.staff-box p{margin:0 0 1.6rem;font-size:1.2rem;font-weight:700;line-height:1.55;white-space:pre-line}
+.staff-actions{display:flex;gap:1.2rem;justify-content:center;flex-wrap:wrap}
+.staff-actions .btn{min-width:12rem}
 
 /* ───── 點餐中 ───── */
 .order{
@@ -413,7 +426,22 @@ body.is-demo .demo-chip{display:inline-block}
     <path d="M162 98c26-4 34 32 4 44" fill="none" stroke="#FFFDF5" stroke-width="12" stroke-linecap="round"/>
     <path fill="#C98A4B" d="M42 80h116l-2 14H44z"/>
   </svg>
+  <!-- kiosk-voice-exit-20261110：店員關閉點餐畫面（同時按住吐司和咖啡杯 2 秒） -->
+  <div id="staff-hot-l" class="staff-hot staff-hot-l" aria-hidden="true"></div>
+  <div id="staff-hot-r" class="staff-hot staff-hot-r" aria-hidden="true"></div>
 </section>
+
+<!-- kiosk-voice-exit-20261110：店員選單 -->
+<div id="staff-panel" class="staff-panel" role="dialog" aria-modal="true" aria-label="店員：關閉點餐畫面">
+  <div class="staff-box">
+    <h2>店員：關閉點餐畫面？</h2>
+    <p id="staff-msg"></p>
+    <div class="staff-actions">
+      <button id="staff-close" class="btn btn-done" type="button">關閉點餐畫面</button>
+      <button id="staff-cancel" class="btn btn-cancel" type="button">取消</button>
+    </div>
+  </div>
+</div>
 
 <!-- 點餐中 -->
 <section id="screen-order" class="screen order" aria-label="點餐中">
@@ -3897,6 +3925,89 @@ body.is-demo .demo-chip{display:inline-block}
   //   以前在客人點完後、同一條連線裡請點餐員說，它常把剛剛的結帳結果再念一次（存不到），客人也要多等
   //   這條連線沒有點餐內容、沒有工具、不開麥克風，點餐員只會說這一句；客人一按開始就馬上中斷
   //   每個聲音存一次；同一個聲音連續 3 次說錯就不再試（manage 改句子會重來）；10 分鐘最多試一次
+  // kiosk-voice-exit-20261110：店員關閉點餐畫面（Windows 全螢幕沒有鍵盤時用）
+  //   首頁同時按住左下角吐司和右下角咖啡杯 2 秒 → 店員選單；觸控只能一點／滑鼠：按住一邊 2 秒，放開後 5 秒內再按住另一邊 2 秒
+  var Staff = {
+    HOLD_MS: 2000, GAP_MS: 5000, OPEN_MS: 15000,
+    MSG: '關閉後回到桌面。\n要再開：點桌面上的「語音點餐」。',
+    held: { l: null, r: null }, until: { l: 0, r: 0 }, glow: { l: 0, r: 0 }, hideTimer: 0, failTimer: 0,
+    init: function () {
+      var self = this;
+      ['l', 'r'].forEach(function (side) {
+        var el = $('staff-hot-' + side);
+        if (!el) return;
+        el.addEventListener('pointerdown', function (e) { e.preventDefault(); self.down(side, e.pointerId, el); });
+        ['pointerup', 'pointercancel', 'lostpointercapture'].forEach(function (t) { el.addEventListener(t, function (e) { self.up(side, e.pointerId); }); });
+        el.addEventListener('contextmenu', function (e) { e.preventDefault(); });   // 觸控長按不要跳選單
+      });
+      $('staff-close').addEventListener('click', function () { self.close(); });
+      $('staff-cancel').addEventListener('click', function () { self.hide(); });
+    },
+    ok: function () { return $('screen-home').classList.contains('is-active') && !Session.active && !this.isOpen(); },
+    isOpen: function () { return $('staff-panel').classList.contains('is-open'); },
+    down: function (side, id, el) {
+      if (this.held[side] || !this.ok()) return;
+      try { el.setPointerCapture(id); } catch (_) {}
+      var self = this;
+      this.held[side] = { id: id, armed: false, timer: setTimeout(function () { self.arm(side); }, this.HOLD_MS) };
+    },
+    up: function (side, id) {
+      var h = this.held[side];
+      if (!h || h.id !== id) return;
+      clearTimeout(h.timer);
+      this.held[side] = null;
+      if (!h.armed) return;
+      this.until[side] = Date.now() + this.GAP_MS;   // 放開後 5 秒內按住另一邊也算
+      var self = this;
+      clearTimeout(this.glow[side]);
+      this.glow[side] = setTimeout(function () { $('screen-home').classList.remove('hot-' + side); }, this.GAP_MS);
+    },
+    arm: function (side) {
+      var h = this.held[side];
+      if (!h || !this.ok()) return;
+      h.armed = true;
+      this.until[side] = Infinity;   // 還按著
+      clearTimeout(this.glow[side]);
+      $('screen-home').classList.add('hot-' + side);
+      var other = side === 'l' ? 'r' : 'l';
+      if (this.until[other] >= Date.now()) this.show();
+    },
+    reset: function () {
+      var self = this;
+      ['l', 'r'].forEach(function (side) {
+        if (self.held[side]) clearTimeout(self.held[side].timer);
+        self.held[side] = null; self.until[side] = 0;
+        clearTimeout(self.glow[side]);
+        $('screen-home').classList.remove('hot-' + side);
+      });
+    },
+    show: function () {
+      this.reset();
+      $('staff-msg').textContent = this.MSG;
+      $('staff-close').disabled = false;
+      $('staff-panel').classList.add('is-open');
+      var self = this;
+      clearTimeout(this.hideTimer);
+      this.hideTimer = setTimeout(function () { self.hide(); }, this.OPEN_MS);   // 沒人按就自動收起，免得客人看到
+    },
+    hide: function () {
+      clearTimeout(this.hideTimer); clearTimeout(this.failTimer);
+      $('staff-panel').classList.remove('is-open');
+    },
+    close: function () {
+      $('staff-close').disabled = true;
+      try { WaitLearn.abort(); } catch (_) {}
+      try { if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen(); } catch (_) {}
+      try { window.close(); } catch (_) {}
+      var self = this;
+      clearTimeout(this.hideTimer); clearTimeout(this.failTimer);
+      this.failTimer = setTimeout(function () {   // 還在＝瀏覽器不讓網頁自己關
+        $('staff-msg').textContent = '這個瀏覽器不讓網頁自己關閉。\n請用鍵盤按 Alt+F4（F11 全螢幕就先按 F11）。';
+        $('staff-close').disabled = false;
+        self.hideTimer = setTimeout(function () { self.hide(); }, self.OPEN_MS);
+      }, 1000);
+    }
+  };
   var WaitLearn = {
     ws: null, timer: 0, at: 0, note: '',
     schedule: function (ms) {
@@ -4602,6 +4713,7 @@ body.is-demo .demo-chip{display:inline-block}
     warmSubmit();
     if (DEMO) startDemo(); else startLive();
   }
+  Staff.init();   // kiosk-voice-exit-20261110
   $('btn-dinein').addEventListener('click', function () { startWith('dinein'); });
   $('btn-takeout').addEventListener('click', function () { startWith('takeout'); });
   $('btn-done').addEventListener('click', userPressedDone);
@@ -4653,7 +4765,7 @@ body.is-demo .demo-chip{display:inline-block}
   }
 
   // 測試用
-  window.__kiosk = { runTool: runTool, findItem: findItem, setMenu: setMenu, Order: Order, Menu: Menu, buildInstructions: buildInstructions, buildKeyterms: buildKeyterms, fixTypos: fixTypos, applyRemoteDict: applyRemoteDict, Dict: Dict, sessionUpdate: sessionUpdate, CONFIG: CONFIG, Session: Session, goHome: goHome, showError: showError, goDone: goDone, Submit: Submit, buildOrderData: buildOrderData, speakName: speakName, submitOrder: submitOrder, businessWindow: businessWindow, applyVoiceSettings: applyVoiceSettings, transcriptDishes: transcriptDishes, showTypos: showTypos, Tm: Tm, Hold: Hold, Ack: Ack, setUser: setUser, setAgent: setAgent, demoStop: demoStop, startWith: startWith, beginSessionUI: beginSessionUI, Greet: Greet, Pre: Pre, onReady: onReady, onMicChunk: onMicChunk, needsTalk: needsTalk, quietAfterTools: quietAfterTools, startLive: startLive, flavorFromWords: flavorFromWords, onResponseDone: onResponseDone, dayVoice: dayVoice, sessionVoice: sessionVoice, refreshSettings: refreshSettings, Remote: Remote, renderPromptView: renderPromptView, choiceAsk: choiceAsk, Turn: Turn, resetOffers: resetOffers, Offers: Offers, Pending: Pending, closingLine: closingLine, closingResponse: closingResponse, pressDineMode: pressDineMode, handleEvent: handleEvent, Log: Log, Rec: Rec, AudioIO: AudioIO, Jank: Jank, netText: netText, currentGreeting: currentGreeting, isMorning: isMorning, setGreeting: setGreeting, userPressedDone: userPressedDone, isSwap: isSwap, stripSwaps: stripSwaps, Fan: Fan, Wait: Wait, WaitLearn: WaitLearn, rescueChoice: rescueChoice, heardAssign: heardAssign, menuSwap: menuSwap, takeSwaps: takeSwaps, mergeEarlierDrink: mergeEarlierDrink, lineInfo: lineInfo, calcLine: calcLine, optionDish: optionDish, nameOption: nameOption, styleLabel: styleLabel, CustomRules: CustomRules, verdict: verdict, screenBag: screenBag, pickExternalMic: pickExternalMic, refreshMicStatus: refreshMicStatus, closedReason: closedReason, renderPaused: renderPaused, setSettings: function (v) { Settings = v; }, tick: tick, teardown: teardown, requestResponse: requestResponse, renderHomeText: renderHomeText };
+  window.__kiosk = { runTool: runTool, findItem: findItem, setMenu: setMenu, Order: Order, Menu: Menu, buildInstructions: buildInstructions, buildKeyterms: buildKeyterms, fixTypos: fixTypos, applyRemoteDict: applyRemoteDict, Dict: Dict, sessionUpdate: sessionUpdate, CONFIG: CONFIG, Session: Session, goHome: goHome, showError: showError, goDone: goDone, Submit: Submit, buildOrderData: buildOrderData, speakName: speakName, submitOrder: submitOrder, businessWindow: businessWindow, applyVoiceSettings: applyVoiceSettings, transcriptDishes: transcriptDishes, showTypos: showTypos, Tm: Tm, Hold: Hold, Ack: Ack, setUser: setUser, setAgent: setAgent, demoStop: demoStop, startWith: startWith, beginSessionUI: beginSessionUI, Greet: Greet, Pre: Pre, onReady: onReady, onMicChunk: onMicChunk, needsTalk: needsTalk, quietAfterTools: quietAfterTools, startLive: startLive, flavorFromWords: flavorFromWords, onResponseDone: onResponseDone, dayVoice: dayVoice, sessionVoice: sessionVoice, refreshSettings: refreshSettings, Remote: Remote, renderPromptView: renderPromptView, choiceAsk: choiceAsk, Turn: Turn, resetOffers: resetOffers, Offers: Offers, Pending: Pending, closingLine: closingLine, closingResponse: closingResponse, pressDineMode: pressDineMode, handleEvent: handleEvent, Log: Log, Rec: Rec, AudioIO: AudioIO, Jank: Jank, netText: netText, currentGreeting: currentGreeting, isMorning: isMorning, setGreeting: setGreeting, userPressedDone: userPressedDone, isSwap: isSwap, stripSwaps: stripSwaps, Fan: Fan, Wait: Wait, WaitLearn: WaitLearn, Staff: Staff, rescueChoice: rescueChoice, heardAssign: heardAssign, menuSwap: menuSwap, takeSwaps: takeSwaps, mergeEarlierDrink: mergeEarlierDrink, lineInfo: lineInfo, calcLine: calcLine, optionDish: optionDish, nameOption: nameOption, styleLabel: styleLabel, CustomRules: CustomRules, verdict: verdict, screenBag: screenBag, pickExternalMic: pickExternalMic, refreshMicStatus: refreshMicStatus, closedReason: closedReason, renderPaused: renderPaused, setSettings: function (v) { Settings = v; }, tick: tick, teardown: teardown, requestResponse: requestResponse, renderHomeText: renderHomeText };
 })();
 </script>
 </body>
