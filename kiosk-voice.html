@@ -1924,6 +1924,17 @@ body.is-demo .demo-chip{display:inline-block}
       if (line.extras.length !== nb) done = true;
       line.wantMeat = false;
     }
+    if (/^(不|免|沒)/.test(t)) {   // kiosk-voice-waitlearn-20261110：拿掉「不加蛋」＝不是不加蛋（以前反而變成不加蛋）
+      groups.forEach(function (g, gIndex) {
+        if (g.type === 'checkbox') return;
+        var cur = (g.choices || [])[line.sel[gIndex]];
+        if (!cur || normChoice(cur.name) !== t) return;
+        var idx = isEggGroup(g) ? defaultEggIdx(g) : clampIdx(g.defaultIdx, (g.choices || []).length);
+        if (idx >= 0 && idx !== line.sel[gIndex]) { line.sel[gIndex] = idx; line.answered[gIndex] = isEggGroup(g) ? !!line.answered[gIndex] : true; }
+        done = true;
+      });
+      return done || true;
+    }
     if (/蛋/.test(t)) {
       var gi = eggGroupIdx(line);
       if (gi >= 0) { line.sel[gi] = indexWhere(groups[gi].choices, /不加蛋/); line.answered[gi] = true; done = true; }
@@ -1939,6 +1950,43 @@ body.is-demo .demo-chip{display:inline-block}
     return done;
   }
   function addExtra(line, o) { if (!line.extras.some(function (x) { return x.name === o.name; })) line.extras.push(o); }
+  // kiosk-voice-waitlearn-20261110：對不到選項時再救一次
+  //   ①「抹奶油」「塗花生」：抹／塗去掉再對（抹茶這種本來就對得到，不會走到這裡）
+  //   ②「熟蛋」：全熟蛋、半熟蛋都對得到 → 不寫備註，改問「要全熟蛋還是半熟蛋？」
+  //   ③ 點餐員寫錯字（抹创油）：顧客原句裡有這道的某個選項（奶油），而且字很像 → 用那個
+  function rescueChoice(line, p) {
+    var n = norm(toTrad(p)), rest = n.replace(/^(抹|塗|擦)/, '');
+    if (rest !== n && rest.length >= 2 && applyOne(line, rest)) return true;
+    var key = rest.replace(/^(加|要)/, ''), groups = line.item.optionGroups || [];
+    if (key.length >= 2) {
+      for (var gi = 0; gi < groups.length; gi++) {
+        var g = groups[gi];
+        if (g.type === 'checkbox' || line.answered[gi] || !isEggGroup(g)) continue;
+        var hits = (g.choices || []).filter(function (c) { return normChoice(String(c.name).replace(/^[+＋]/, '')).indexOf(key) !== -1; });
+        if (hits.length >= 2) { line.hints = line.hints || {}; line.hints[gi] = hits.map(function (c) { return String(c.name).replace(/^[+＋]/, ''); }); return true; }
+      }
+    }
+    var said = norm(toTrad(Session.userLine || ''));
+    if (!said || key.length < 2) return false;
+    var cands = [];
+    groups.forEach(function (g) {
+      (g.choices || []).forEach(function (c) { cands.push(c.name); });
+    });
+    (line.item._extras || []).forEach(function (o) { cands.push(o.name); });
+    var best = cands.filter(function (name, i, a) {
+      var k = normChoice(String(name).replace(/^[+＋]/, ''));
+      return a.indexOf(name) === i && k.length >= 2 && said.indexOf(k) !== -1 && k.length === key.length && similarity(key, k) >= 0.5;
+    });
+    if (best.length !== 1) return false;
+    return applyOne(line, best[0]);
+  }
+  function rescueNote(line, note) {   // 備註裡短短的「抹奶油」「抹创油」「熟蛋」：對得到選項就改成選項
+    note = String(note || '');
+    if (!note.trim()) return note;
+    var parts = note.split(/[、，,；;。]/).map(function (x) { return x.trim(); }).filter(Boolean), kept = [], moved = false;
+    parts.forEach(function (x) { if (norm(x).length <= 6 && rescueChoice(line, x)) moved = true; else kept.push(x); });
+    return moved ? kept.join('、') : note;
+  }
   function applySelections(line, adds, removes) {
     var unmatched = [], retry = [];
     if (Array.isArray(adds) && drinkGroupIdx(line.item) >= 0) adds = mergeCupWords(adds, line);
@@ -1947,7 +1995,7 @@ body.is-demo .demo-chip{display:inline-block}
       splitCompound(String(raw)).forEach(function (p) { if (!applyOne(line, p)) retry.push(p); });
     });
     // kiosk-voice-addons-20261102：「加糖、美式咖啡」順序顛倒時，飲料換好再對一次
-    retry.forEach(function (p) { if (!applyOne(line, p)) unmatched.push(toTrad(p)); });
+    retry.forEach(function (p) { if (!applyOne(line, p) && !rescueChoice(line, p)) unmatched.push(toTrad(p)); });
     (Array.isArray(removes) ? removes : []).forEach(function (raw) { if (raw && !removeOne(line, String(raw))) unmatched.push('不要' + toTrad(raw)); });
     pruneDrinkAddons(line);
     return unmatched;
@@ -1985,6 +2033,7 @@ body.is-demo .demo-chip{display:inline-block}
         var de = defaultEggIdx(g);
         if (de >= 0) { entry.ask = '要加蛋嗎？'; entry.default = g.choices[de].name; }
       }
+      if (line.hints && line.hints[gi]) entry.ask = '要' + line.hints[gi].join('還是') + '？';   // kiosk-voice-waitlearn-20261110：顧客說了「熟蛋」
       out.push(entry);
     });
     return out;
@@ -2412,7 +2461,7 @@ body.is-demo .demo-chip{display:inline-block}
       var drinkWords = unmatched.filter(function (u) { var d = findItem(u); return d.item && isDrinkItem(d.item); });
       unmatched = unmatched.filter(function (u) { return drinkWords.indexOf(u) === -1; });
       unmatched = takeSwaps(unmatched, swapBag, f.item);
-      line.note = joinNote(keptNoteA, noteAdds(swapBag, keptNoteA).concat(noteWorthy(unmatched)));
+      line.note = rescueNote(line, joinNote(keptNoteA, noteAdds(swapBag, keptNoteA).concat(noteWorthy(unmatched))));   // kiosk-voice-waitlearn-20261110：備註裡的「抹奶油」也對選項
       var target = null;
       if (!missingOf(line).length) Order.lines.forEach(function (l) { if (!target && !missingOf(l).length && sameLine(l, line)) target = l; });
       if (target) target.qty = Math.min(20, target.qty + line.qty);
@@ -2513,6 +2562,7 @@ body.is-demo .demo-chip{display:inline-block}
     if (noteU !== null && (noteU || (!swapBagU.length && !noteSel.length))) line.note = joinNote(noteU, []);   // 只想加不行的或菜單上的換法：原本的備註不動
     var addU = noteAdds(swapBagU, line.note).concat(noteWorthy(unmatched));
     if (addU.length) line.note = joinNote(line.note, addU);
+    if (noteU) line.note = rescueNote(line, line.note);   // kiosk-voice-waitlearn-20261110
     var settled = settleLine(line);
     markChanged(line);
     var info = Object.assign(lineInfo(line), settled);
@@ -2654,7 +2704,7 @@ body.is-demo .demo-chip{display:inline-block}
   function closingResponse() {   // 只給這一句的指示，不帶整份規則和菜單：點餐員想得少、開口快
     var line = Session.closingLine;
     Session.closingLine = '';
-    if (line && (Session.respAudio || Wait.said)) line = line.replace(/^好的，/, '');   // kiosk-voice-ack-20261106：呼叫 finish_order 前已經說了「好的」（或平板說了「好的，請稍等」）
+    if (line && (Session.respAudio || Wait.said || Session.saidAck)) line = line.replace(/^好的，/, '');   // kiosk-voice-waitlearn-20261110：這句話平板已經說了「好的」也算   // kiosk-voice-ack-20261106：呼叫 finish_order 前已經說了「好的」（或平板說了「好的，請稍等」）
     return line ? { instructions: '你是早餐店的點餐員。現在只說下面這一句，一個字都不要改，也不要多說別的話：「' + line + '」' } : undefined;
   }
 
@@ -3424,6 +3474,7 @@ body.is-demo .demo-chip{display:inline-block}
     }).catch(function (e) { failSession(e); });
   }
   function beginSessionUI() {
+    WaitLearn.abort();   // kiosk-voice-waitlearn-20261110：客人按了開始，存聲音的連線馬上中斷
     GREETING = currentGreeting();   // kiosk-voice-smooth-20261107：照現在時間選開場白
     resetOrder();
     if (StartMode) { setDineMode(StartMode); StartMode = ''; }   // 首頁已經選了內用／外帶（點餐單上方馬上顯示）
@@ -3436,11 +3487,12 @@ body.is-demo .demo-chip{display:inline-block}
     Session.startedAt = Date.now(); touch();
     AudioIO.lead = 0.12; AudioIO.resp = null; Session.queuedResp = null; Session.lastResp = null; Session.donePressedAt = 0;   // kiosk-voice-smooth-20261107
     Session.lastMsgAt = 0; Session.stallLogged = false;
-    Wait.said = false; Wait.learning = false; Wait.cb = null;   // kiosk-voice-wait-20261110
+    Wait.said = false;   // kiosk-voice-wait-20261110
     if (!Session.demo) Jank.start();
     if (!Session.demo) Log.begin();
     if (LITE) Log.add('system', '精簡測試（?lite=1）：不帶菜單清單、工具說明縮短');
     if (!Session.demo && Order.dineMode) Log.add('system', '顧客按「' + dineModeLabel(Order.dineMode) + '」開始');
+    if (!Session.demo && WaitLearn.note) { Log.add('system', WaitLearn.note); WaitLearn.note = ''; }   // kiosk-voice-waitlearn-20261110：上次在首頁存聲音的結果
     if (!Session.demo) Log.add('system', '設定：反應模式 ' + (CONFIG.reasoningEffort === 'high' ? '仔細' : '快') + '、轉文字 ' + (NOTX ? '關（?notx=1）' : '開') + (LITE ? '、精簡（?lite=1）' : ''), { audio_check: 1 });   // audio_check：這筆有記聲音斷掉（每日統計分得出舊紀錄）
     if (NOTX) Log.add('system', '不轉文字測試（?notx=1）：沒有「客人」那行字，錯字對照、口味判斷也用不到');
     if (!Session.demo && netText()) Log.add('system', '網路：' + netText());
@@ -3620,7 +3672,6 @@ body.is-demo .demo-chip{display:inline-block}
   };
   function handleEvent(ev) {
     var type = ev.type || '';
-    if (Wait.learning && Wait.handle(ev)) return;   // kiosk-voice-wait-20261110：存聲音的那次回覆不播、不寫進對話
     switch (type) {
       case 'session.updated':
         onReady(); return;
@@ -3671,7 +3722,7 @@ body.is-demo .demo-chip{display:inline-block}
       case 'conversation.item.input_audio_transcription.delta':
         setUser((Session.userLine || '') + String(ev.delta || '')); Log.user(ev.item_id, Session.userLine); return;
       case 'input_audio_buffer.speech_started':
-        Wait.said = false;   // kiosk-voice-wait-20261110
+        Wait.said = false; Session.saidAck = false;   // kiosk-voice-wait-20261110
         Session.speechAt = Date.now();
         Session.expectFollow = false;   // 客人開口了：之前請的再回覆不算數（下一次回覆照「客人剛說完」處理）
         if (Hold.on && Session.responseActive) {   // 客人又開口：剛剛只是停一下，這次回覆的聲音（好的）不播
@@ -3740,10 +3791,13 @@ body.is-demo .demo-chip{display:inline-block}
   //   聲音怎麼來：結帳那句說完後，請點餐員多說一次這句（不播出來，只存）；每個聲音、每種句子存一次
   var DONE_SAID = /^(嗯|恩|欸|ㄟ|喔|哦|好|對|那|啊)*(沒有了?|沒了|沒有其他的?了?|沒有要點了|不用了?|不要了|這樣就好了?|這樣子?就可以了?|這樣就夠了|就這樣(就好)?(了|子)?|先這樣(就好)?(了|子)?|點完了|點好了|我點好了|我點完了|好了|可以了|夠了|就這些|這些就好|結帳|買單)(謝謝你?|喔|哦|囉|啦|啊|了)*$/;
   var Wait = {
-    said: false, learning: false, chunks: [], bytes: 0, got: '', cb: null,
+    said: false,
     text: function () { return cfgText(CONFIG.waitText, 20); },
-    key: function () { var h = 0, t = this.text(); for (var i = 0; i < t.length; i++) h = (h * 31 + t.charCodeAt(i)) | 0; return 'kiosk_wait_clip_' + (Session.voice || 'x') + '_' + (h >>> 0).toString(36); },
-    clip: function () { if (!this.text()) return null; var raw = storeGet(this.key()); if (!raw) return null; try { var c = JSON.parse(raw); return Array.isArray(c) && c.length ? c : null; } catch (_) { return null; } },
+    keyFor: function (voice) { var h = 0, t = this.text(); for (var i = 0; i < t.length; i++) h = (h * 31 + t.charCodeAt(i)) | 0; return 'kiosk_wait_clip_' + (voice || 'x') + '_' + (h >>> 0).toString(36); },
+    key: function () { return this.keyFor(Session.voice); },
+    clipFor: function (voice) { if (!this.text()) return null; var raw = storeGet(this.keyFor(voice)); if (!raw) return null; try { var c = JSON.parse(raw); return Array.isArray(c) && c.length ? c : null; } catch (_) { return null; } },
+    clip: function () { return this.clipFor(Session.voice); },
+    failsFor: function (voice) { return Number(storeGet(this.keyFor(voice) + '_fail') || 0) || 0; },
     isWait: function (t) { var a = norm(t || ''); return !!a && a === norm(this.text()); },
     doneSaid: function (t) { return DONE_SAID.test(norm(t || '')); },
     // 這一句可以說「請稍等」：客人說點完了、餐點都確認了、上一句不是在問別的問題（例如「要加蛋嗎？」「不用」）
@@ -3754,58 +3808,95 @@ body.is-demo .demo-chip{display:inline-block}
       var last = String($('agent-line').textContent || '');
       if (Ack.asking(last) && !/其他|還要|還需要/.test(last)) return null;
       return this.clip();
+    }
+  };
+  // kiosk-voice-waitlearn-20261110：「好的，請稍等」的聲音在首頁閒著時另外開一條連線存
+  //   以前在客人點完後、同一條連線裡請點餐員說，它常把剛剛的結帳結果再念一次（存不到），客人也要多等
+  //   這條連線沒有點餐內容、沒有工具、不開麥克風，點餐員只會說這一句；客人一按開始就馬上中斷
+  //   每個聲音存一次；同一個聲音連續 3 次說錯就不再試（manage 改句子會重來）；10 分鐘最多試一次
+  var WaitLearn = {
+    ws: null, timer: 0, at: 0, note: '',
+    schedule: function (ms) {
+      clearTimeout(this.timer);
+      this.timer = setTimeout(function () { WaitLearn.run(); }, ms == null ? 8000 : ms);
     },
-    // 結帳那句說完：還沒有這個聲音的「請稍等」→ 請點餐員說一次，只存不播（最多等 4 秒）
-    learn: function () {
-      if (Session.demo || !this.text() || !(CONFIG.localAckMs > 0) || !Session.voice || this.clip() || !Session.ws || Session.ws.readyState !== 1 || Session.responseActive) return Promise.resolve(false);
+    abort: function () {
+      clearTimeout(this.timer); this.timer = 0;
+      if (this.ws) { var w = this.ws; this.ws = null; try { w.close(); } catch (_) {} }
+    },
+    needed: function (voice) { return !!voice && !Wait.clipFor(voice) && Wait.failsFor(voice) < 3; },
+    run: function () {
+      this.timer = 0;
+      if (DEMO || this.ws || Session.active || !Wait.text() || !(CONFIG.localAckMs > 0)) return;
+      if (this.at && Date.now() - this.at < 600000) return;
+      if (!this.needed(Greet.voice())) return;
+      if (!storeGet('kiosk_voice_key') || !resolvePiBase()) return;
+      this.at = Date.now();
       var self = this;
-      if (this.fails() >= 3) return Promise.resolve(false);   // kiosk-voice-menuswap-20261110：連續 3 次沒存到就不再試（換句子會重來）
-      return new Promise(function (res) {
-        self.learning = true; self.chunks = []; self.bytes = 0; self.got = ''; self.cb = res;
-        Session.timers.wlearn = later(5000, function () { self.finish(false); });
-        // kiosk-voice-menuswap-20261110：只給指示，點餐員常把剛剛的結帳結果再念一次 → 先放一句「請只說…」再請它說
-        send({ type: 'conversation.item.create', item: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '（店員測試，不是顧客）點餐已經結束，請不要再提訂單、金額或櫃台。請只說這一句，一字不改：' + self.text() } ] } });
-        requestResponse({ instructions: '點餐已經結束。你現在只說「' + self.text() + '」這一句，一個字都不要改、不要加字，不要提訂單、金額、櫃台，不要呼叫任何工具。' });
-      });
-    },
-    handle: function (ev) {   // 存聲音的那次回覆：不播、不寫進對話、不算點餐員說的話
-      switch (ev.type) {
-        case 'response.created': Session.responseActive = true; return true;
-        case 'response.output_audio.delta':
-        case 'response.audio.delta':
-          if (this.bytes < 300000) { this.chunks.push(ev.delta); this.bytes += String(ev.delta || '').length; }
-          return true;
-        case 'response.output_audio_transcript.delta':
-        case 'response.output_text.delta':
-        case 'response.text.delta': this.got += String(ev.delta || ''); return true;
-        case 'response.output_audio_transcript.done':
-        case 'response.audio_transcript.done': if (ev.transcript) this.got = String(ev.transcript); return true;
-        case 'response.function_call_arguments.delta':
-        case 'response.function_call_arguments.done':
-        case 'response.output_item.done': return true;
-        case 'response.done': this.finish(true); return true;
-        case 'error': this.finish(false); return false;
-        default: return false;
-      }
-    },
-    fails: function () { return Number(storeGet(this.key() + '_fail') || 0) || 0; },
-    finish: function (done) {
-      if (!this.learning) return;
-      this.learning = false;
-      clearTimer('wlearn'); clearTimer('resp');
-      Session.responseActive = false;
-      var chunks = this.chunks, bytes = this.bytes, cb = this.cb;
-      this.chunks = []; this.bytes = 0; this.cb = null;
-      if (done && this.isWait(this.got) && bytes >= 24000 && bytes <= 300000) {   // base64 長度：約 0.4～4.7 秒
-        storeSet(this.key(), JSON.stringify(chunks));
-        storeSet(this.key() + '_fail', '0');
-        Log.add('system', '存下點餐員說「' + this.text() + '」的聲音（' + (Session.voice || '') + '），之後客人說點完了平板先說');
-      } else {
-        var nf = this.fails() + 1;
-        storeSet(this.key() + '_fail', String(nf));
-        Log.add('system', '想存「' + this.text() + '」的聲音，這次沒存到（' + (done ? '點餐員說的是「' + String(this.got).slice(0, 30) + '」' : '點餐員沒有回應') + '）' + (nf >= 3 ? '，已經試了 3 次，這個聲音先不用這句（manage 換個說法會重試）' : '，下一位再試'));
-      }
-      if (cb) cb(true);
+      fetchToken().then(function (tok) {
+        if (Session.active || self.ws) return;
+        var voice = sessionVoice(tok), text = Wait.text();
+        if (!self.needed(voice)) return;
+        var ws;
+        try { ws = new WebSocket(CONFIG.wsUrl + '?model=' + encodeURIComponent(tok.model || CONFIG.model), ['xai-client-secret.' + tok.value]); } catch (e) { return; }
+        self.ws = ws;
+        var chunks = [], bytes = 0, got = '', asked = false, over = false;
+        var put = function (o) { try { ws.send(JSON.stringify(o)); } catch (_) {} };
+        var finish = function (answered, why) {
+          if (over) return;
+          over = true; clearTimeout(kill);
+          if (self.ws === ws) self.ws = null;
+          try { ws.close(); } catch (_) {}
+          if (Session.active && !answered) return;   // 客人按了開始：中斷，不算
+          if (answered && Wait.isWait(got) && bytes >= 24000 && bytes <= 300000) {   // base64 長度：約 0.4～4.7 秒
+            storeSet(Wait.keyFor(voice), JSON.stringify(chunks));
+            storeSet(Wait.keyFor(voice) + '_fail', '0');
+            self.note = '存下點餐員說「' + text + '」的聲音（' + voice + '），客人說點完了平板先說';
+          } else if (answered) {
+            var nf = Wait.failsFor(voice) + 1;
+            storeSet(Wait.keyFor(voice) + '_fail', String(nf));
+            self.note = '想存「' + text + '」的聲音（' + voice + '），點餐員說成「' + String(got).slice(0, 30) + '」，沒存' + (nf >= 3 ? '；已經試了 3 次，這個聲音先不用這句（manage 換個說法會重試）' : '，10 分鐘後再試');
+          } else {
+            self.note = '想存「' + text + '」的聲音（' + voice + '），' + (why || '沒有完成') + '，10 分鐘後再試';
+          }
+          console.info('[kiosk] ' + self.note);
+        };
+        var kill = setTimeout(function () { finish(false, '點餐員 15 秒沒有回應'); }, 15000);
+        var ask = function () {
+          if (asked || over) return;
+          asked = true;
+          put({ type: 'conversation.item.create', item: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '請說：' + text }] } });
+          put({ type: 'response.create', response: { instructions: '只說「' + text + '」這一句，一個字都不要改、不要加字。' } });
+        };
+        ws.onopen = function () {
+          put({ type: 'session.update', session: {
+            instructions: '你是早餐店的點餐員。你只會說一句話：「' + text + '」。不管收到什麼，都只說這一句，一個字都不要改、不要加字，也不要說別的。',
+            voice: voice,
+            turn_detection: { type: 'server_vad' },
+            audio: { input: { format: { type: 'audio/pcm', rate: 24000 } }, output: { format: { type: 'audio/pcm', rate: 24000 }, speed: CONFIG.speechSpeed } }
+          } });
+          setTimeout(ask, 1500);
+        };
+        ws.onmessage = function (m) {
+          if (typeof m.data !== 'string') return;
+          var ev; try { ev = JSON.parse(m.data); } catch (_) { return; }
+          switch (ev.type) {
+            case 'session.updated': ask(); return;
+            case 'response.output_audio.delta':
+            case 'response.audio.delta':
+              if (bytes < 300000) { chunks.push(ev.delta); bytes += String(ev.delta || '').length; }
+              return;
+            case 'response.output_audio_transcript.delta':
+            case 'response.audio_transcript.delta': got += String(ev.delta || ''); return;
+            case 'response.output_audio_transcript.done':
+            case 'response.audio_transcript.done': if (ev.transcript) got = String(ev.transcript); return;
+            case 'response.done': finish(true); return;
+            case 'error': finish(false, 'xAI：' + String((ev.error && (ev.error.message || ev.error.code)) || '').slice(0, 60)); return;
+            default: return;
+          }
+        };
+        ws.onclose = function () { finish(false, '連線中斷'); };
+      }).catch(function (e) { self.note = '想存「' + Wait.text() + '」的聲音，拿不到連線（' + String(e && e.message || e).slice(0, 40) + '），10 分鐘後再試'; });
     }
   };
   // kiosk-voice-localack-20261106：平板自己先說「好的」（用點餐員說過的那段聲音）
@@ -3826,7 +3917,7 @@ body.is-demo .demo-chip{display:inline-block}
       Session.timers.lack = 0;
       var clip = this.clip();
       if (!clip || !Session.active || Session.userSpeaking || Session.cutOff || !Session.responseActive || Session.respAudio || this.asking(Session.userLine)) return;
-      this.played = true;
+      this.played = true; Session.saidAck = true;   // kiosk-voice-waitlearn-20261110：客人這句話平板說過好的了
       Tm.mark('lack');
       var wclip = Wait.pick();   // kiosk-voice-wait-20261110：客人說點完了 → 「好的，請稍等」
       if (wclip) { clip = wclip; Wait.said = true; setAgent(Wait.text()); }
@@ -3911,7 +4002,7 @@ body.is-demo .demo-chip{display:inline-block}
       return;
     }
     if (Session.queueResponse) { Session.queueResponse = false; var q = Session.queuedResp; Session.queuedResp = null; requestResponse(q || undefined); return; }
-    if (Session.finishing) AudioIO.whenIdle().then(function () { return Wait.learn(); }).then(function () { later(500, function () { goDone('finished'); }); });   // kiosk-voice-wait-20261110：順便存「請稍等」的聲音
+    if (Session.finishing) AudioIO.whenIdle().then(function () { later(500, function () { goDone('finished'); }); });
   }
   function onServerError(err) {
     var msg = String(err && (err.message || err.code) || '');
@@ -3938,6 +4029,7 @@ body.is-demo .demo-chip{display:inline-block}
     var nowMs = Date.now();
     if (Session.donePressedAt && nowMs - Session.donePressedAt < 4000) return;   // kiosk-voice-noprice-20261106：連按兩下只算一次
     Session.donePressedAt = nowMs;
+    Session.saidAck = false;   // kiosk-voice-waitlearn-20261110：按按鈕不是說話，結帳那句照樣說「好的，」
     // kiosk-voice-smooth-20261107：餐點都確認了、也知道內用外帶 → 平板直接送單（以前要等點餐員說完、再等它決定，常常像沒反應）
     if (Session.ready && Session.ws && !Session.finishing && Order.dineMode && Order.lines.length && !Order.lines.some(function (l) { return missingOf(l).length; })) {
       stopAgentTalk();
@@ -4240,6 +4332,7 @@ body.is-demo .demo-chip{display:inline-block}
     Session.demo = false;
     refreshSettings(4000);
     refreshMicStatus();   // 這位客人用完，回首頁重看麥克風
+    WaitLearn.schedule(8000);   // kiosk-voice-waitlearn-20261110：首頁閒著 8 秒，還沒有「請稍等」的聲音就去存
   }
   var doneReason = '';
   function goDone(reason) {
@@ -4300,7 +4393,7 @@ body.is-demo .demo-chip{display:inline-block}
   function setGreeting() {   // kiosk-voice-smooth-20261107：和開場白同一個時間換（manage「早上到幾點」，預設 10:00）
     $('greet').textContent = isMorning() ? '早安！' : '你好！';
   }
-  setInterval(function () { setGreeting(); renderPaused(); refreshMicStatus(); }, 60000);
+  setInterval(function () { setGreeting(); renderPaused(); refreshMicStatus(); if (!Session.active && !WaitLearn.timer) WaitLearn.schedule(1000); }, 60000);   // kiosk-voice-waitlearn-20261110
   // kiosk-voice-micui-20261108：插上、拔掉麥克風馬上更新；點黃色那行＝以後不用外接
   try { if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) navigator.mediaDevices.addEventListener('devicechange', refreshMicStatus); } catch (_) {}
   document.getElementById('mic-status').addEventListener('click', function () {
@@ -4477,7 +4570,7 @@ body.is-demo .demo-chip{display:inline-block}
   }
 
   // 測試用
-  window.__kiosk = { runTool: runTool, findItem: findItem, setMenu: setMenu, Order: Order, Menu: Menu, buildInstructions: buildInstructions, buildKeyterms: buildKeyterms, fixTypos: fixTypos, applyRemoteDict: applyRemoteDict, Dict: Dict, sessionUpdate: sessionUpdate, CONFIG: CONFIG, Session: Session, goHome: goHome, showError: showError, goDone: goDone, Submit: Submit, buildOrderData: buildOrderData, speakName: speakName, submitOrder: submitOrder, businessWindow: businessWindow, applyVoiceSettings: applyVoiceSettings, transcriptDishes: transcriptDishes, showTypos: showTypos, Tm: Tm, Hold: Hold, Ack: Ack, setUser: setUser, setAgent: setAgent, demoStop: demoStop, startWith: startWith, beginSessionUI: beginSessionUI, Greet: Greet, Pre: Pre, onReady: onReady, onMicChunk: onMicChunk, needsTalk: needsTalk, quietAfterTools: quietAfterTools, startLive: startLive, flavorFromWords: flavorFromWords, onResponseDone: onResponseDone, dayVoice: dayVoice, sessionVoice: sessionVoice, refreshSettings: refreshSettings, Remote: Remote, renderPromptView: renderPromptView, choiceAsk: choiceAsk, Turn: Turn, resetOffers: resetOffers, Offers: Offers, Pending: Pending, closingLine: closingLine, closingResponse: closingResponse, pressDineMode: pressDineMode, handleEvent: handleEvent, Log: Log, Rec: Rec, AudioIO: AudioIO, Jank: Jank, netText: netText, currentGreeting: currentGreeting, isMorning: isMorning, setGreeting: setGreeting, userPressedDone: userPressedDone, isSwap: isSwap, stripSwaps: stripSwaps, Fan: Fan, Wait: Wait, menuSwap: menuSwap, takeSwaps: takeSwaps, mergeEarlierDrink: mergeEarlierDrink, lineInfo: lineInfo, calcLine: calcLine, optionDish: optionDish, nameOption: nameOption, styleLabel: styleLabel, CustomRules: CustomRules, verdict: verdict, screenBag: screenBag, pickExternalMic: pickExternalMic, refreshMicStatus: refreshMicStatus, closedReason: closedReason, renderPaused: renderPaused, setSettings: function (v) { Settings = v; }, tick: tick, teardown: teardown, requestResponse: requestResponse, renderHomeText: renderHomeText };
+  window.__kiosk = { runTool: runTool, findItem: findItem, setMenu: setMenu, Order: Order, Menu: Menu, buildInstructions: buildInstructions, buildKeyterms: buildKeyterms, fixTypos: fixTypos, applyRemoteDict: applyRemoteDict, Dict: Dict, sessionUpdate: sessionUpdate, CONFIG: CONFIG, Session: Session, goHome: goHome, showError: showError, goDone: goDone, Submit: Submit, buildOrderData: buildOrderData, speakName: speakName, submitOrder: submitOrder, businessWindow: businessWindow, applyVoiceSettings: applyVoiceSettings, transcriptDishes: transcriptDishes, showTypos: showTypos, Tm: Tm, Hold: Hold, Ack: Ack, setUser: setUser, setAgent: setAgent, demoStop: demoStop, startWith: startWith, beginSessionUI: beginSessionUI, Greet: Greet, Pre: Pre, onReady: onReady, onMicChunk: onMicChunk, needsTalk: needsTalk, quietAfterTools: quietAfterTools, startLive: startLive, flavorFromWords: flavorFromWords, onResponseDone: onResponseDone, dayVoice: dayVoice, sessionVoice: sessionVoice, refreshSettings: refreshSettings, Remote: Remote, renderPromptView: renderPromptView, choiceAsk: choiceAsk, Turn: Turn, resetOffers: resetOffers, Offers: Offers, Pending: Pending, closingLine: closingLine, closingResponse: closingResponse, pressDineMode: pressDineMode, handleEvent: handleEvent, Log: Log, Rec: Rec, AudioIO: AudioIO, Jank: Jank, netText: netText, currentGreeting: currentGreeting, isMorning: isMorning, setGreeting: setGreeting, userPressedDone: userPressedDone, isSwap: isSwap, stripSwaps: stripSwaps, Fan: Fan, Wait: Wait, WaitLearn: WaitLearn, rescueChoice: rescueChoice, menuSwap: menuSwap, takeSwaps: takeSwaps, mergeEarlierDrink: mergeEarlierDrink, lineInfo: lineInfo, calcLine: calcLine, optionDish: optionDish, nameOption: nameOption, styleLabel: styleLabel, CustomRules: CustomRules, verdict: verdict, screenBag: screenBag, pickExternalMic: pickExternalMic, refreshMicStatus: refreshMicStatus, closedReason: closedReason, renderPaused: renderPaused, setSettings: function (v) { Settings = v; }, tick: tick, teardown: teardown, requestResponse: requestResponse, renderHomeText: renderHomeText };
 })();
 </script>
 </body>
