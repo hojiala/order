@@ -1619,6 +1619,10 @@
                     <label class="kv-field"><span class="kv-label"><b>點好了之後的那句話</b><span>{{ kvCount('closingText', 40) }}</span></span>
                         <input v-model="kvForm.closingText" @input="kvDirty=true" maxlength="40" data-kv-closing class="rounded-lg border border-slate-600 bg-slate-900 px-2 py-1.5 text-sm text-white placeholder-slate-500">
                         <span class="kv-help">「點好了」畫面的大字，也是點餐員最後說的話：「好的，總共○○元，您的號碼是○○號，<b class="text-white">{{ kvForm.closingText }}</b>」</span></label>
+                    <!-- kiosk-voice-wait-20261110 -->
+                    <label class="kv-field"><span class="kv-label"><b>客人說「沒有了／點完了」，平板先說</b><span>{{ kvCount('waitText', 20) }}</span></span>
+                        <input v-model="kvForm.waitText" @input="kvDirty=true" maxlength="20" placeholder="留空＝只說「好的」" data-kv-wait class="rounded-lg border border-slate-600 bg-slate-900 px-2 py-1.5 text-sm text-white placeholder-slate-500">
+                        <span class="kv-help">代替平常那聲「好的」，讓客人知道點餐員還會說結帳那句。和「好的」一樣由平板直接播，不用等。<br>每個聲音第一次要先存：那位客人結帳那句說完後，點餐員會多說一次這句（不會播出來），下一位客人起生效。改了句子或換聲音會重新存一次。</span></label>
                 </div>
 
                 <!-- 聲音 -->
@@ -1741,6 +1745,19 @@
                 </div>
 
                 <!-- 紀錄與錄音（kiosk-voice-logs-20261101） -->
+                <!-- kiosk-voice-fan-20261110：點餐時暫停輔助抽風扇（平板 → Pi 5 → MQTT → ESP32） -->
+                <div class="rounded-xl border border-slate-700 bg-slate-800 p-5 flex flex-col gap-4" data-kv-fan-card>
+                    <p class="font-bold text-white">輔助抽風扇</p>
+                    <label class="kv-check"><input type="checkbox" v-model="kvForm.fanPause" @change="kvDirty=true" data-kv-fan>
+                        <span><b>客人點餐時，暫停輔助抽風扇</b><span class="kv-help block">客人按內用／外帶開始點餐就暫停，點好、取消或逾時回首頁就恢復。風扇本來沒開（沒按 ESP32 上的按鈕）就什麼都不會動。<span class="kv-warn">要先裝好 ESP32 開關，Pi 5 也要設定好 MQTT，才有作用；沒裝好不影響點餐。</span></span></span></label>
+                    <div class="kv-grid">
+                        <label class="kv-field"><span class="kv-label"><b>一次最多停幾秒</b></span>
+                            <input type="number" min="30" max="120" step="10" v-model.number="kvForm.fanPauseSec" @input="kvDirty=true" :disabled="!kvForm.fanPause" data-kv-fan-sec class="rounded-lg border border-slate-600 bg-slate-900 px-2 py-1.5 text-sm text-white placeholder-slate-500">
+                            <span class="kv-help">30～120 秒。點餐中每 30 秒自動續一次；平板或網路出問題沒送到「恢復」，時間到風扇也會自己恢復。連續暫停最多 5 分鐘。</span></label>
+                    </div>
+                    <p class="kv-help">師傅需要風扇不能停時：暫停中按一下 ESP32 上的按鈕，風扇馬上恢復，接下來 15 分鐘不會再被暫停。</p>
+                </div>
+
                 <div class="rounded-xl border border-slate-700 bg-slate-800 p-5 flex flex-col gap-4">
                     <p class="font-bold text-white">紀錄與錄音</p>
                     <label class="kv-check"><input type="checkbox" v-model="kvForm.logText" @change="kvDirty=true" data-kv-logtext>
@@ -5215,6 +5232,8 @@ window._resetCountUp = function() {
                     askDineMode: true,
                     allowSwap: false,   // kiosk-voice-noswap-20261108：允許更換餐點內的食材
                     customRules: '可以：吐司換全麥',   // kiosk-voice-rules-20261108：客製化規則（一行一條「可以：…」「不行：…」）
+                    fanPause: false,   // kiosk-voice-fan-20261110：點餐時暫停輔助抽風扇
+                    fanPauseSec: 90,
                     voice: 'ara',
                     voiceByDay: ['', '', '', '', '', '', ''],   // kiosk-voice-dayvoice-20261106：[週日, 週一, …, 週六]，''＝同上
                     speechSpeed: 0.92,
@@ -5225,6 +5244,7 @@ window._resetCountUp = function() {
                     doneReturnSec: 60,
                     homeSteps: ['選內用或外帶', '說出想吃的餐點', '到櫃台結帳'],   // kiosk-voice-logs-20261101；kiosk-voice-dinemode-20261107 首頁改成內用／外帶兩顆按鈕
                     closingText: '請到櫃台結帳，謝謝您！',
+                    waitText: '好的，請稍等',   // kiosk-voice-wait-20261110：客人說點完了，平板先說這句
                     volume: 1,
                     submitOrders: true,
                     submitIncomplete: false,
@@ -5257,6 +5277,7 @@ window._resetCountUp = function() {
                     else if (k === 'voice') cfg[k] = voices.some(function(x) { return x.id === v; }) ? v : d;
                     else if (k === 'greetingMorning') cfg[k] = typeof v === 'string' ? v : d;   // 存了空白＝不分早上，要保留空白
                     else if (k === 'customRules') cfg[k] = typeof v === 'string' ? v : d;   // kiosk-voice-rules-20261108：存了空白＝沒有規則
+                    else if (k === 'waitText') cfg[k] = typeof v === 'string' ? v : d;   // kiosk-voice-wait-20261110：存了空白＝只說「好的」
                     else if (k === 'morningUntil') cfg[k] = /^([01]\d|2[0-3]):[0-5]\d$/.test(String(v || '')) ? v : d;
                     else if (k === 'reasoningEffort') cfg[k] = v === 'high' ? 'high' : 'none';
                     else if (typeof d === 'string') cfg[k] = typeof v === 'string' && v.trim() ? v : d;
@@ -5289,6 +5310,8 @@ window._resetCountUp = function() {
                     askDineMode: f.askDineMode !== false,
                     allowSwap: f.allowSwap === true,
                     customRules: txt(f.customRules, 2000),
+                    fanPause: f.fanPause === true,
+                    fanPauseSec: Math.round(num(f.fanPauseSec, 30, 120, base.fanPauseSec)),
                     voice: this.kvVoices.some(function(x) { return x.id === f.voice; }) ? f.voice : base.voice,
                     voiceByDay: base.voiceByDay.map(function(x, i) {
                         var v = (f.voiceByDay || [])[i];
@@ -5302,6 +5325,7 @@ window._resetCountUp = function() {
                     doneReturnSec: Math.round(num(f.doneReturnSec, 10, 180, base.doneReturnSec)),
                     homeSteps: base.homeSteps.map(function(d, i) { return txt((f.homeSteps || [])[i], 16) || d; }),
                     closingText: txt(f.closingText, 40) || base.closingText,
+                    waitText: txt(f.waitText, 20),
                     volume: Math.round(num(f.volume, 0.5, 3, 1) * 10) / 10,
                     submitOrders: f.submitOrders !== false,
                     submitIncomplete: f.submitIncomplete === true,
