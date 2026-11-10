@@ -5902,7 +5902,8 @@
             },
             archivePhoneOrder:async function(order){
                 var s=this;
-                var archived=Object.assign({},order,{status:'archived',wasCancelled:order.status==='cancelled'||order.wasCancelled===true});
+                // revived-order-revenue-20261110：進行中的單（新訂單／製作中／已完成）結單時不沿用 wasCancelled 舊記號
+                var archived=Object.assign({},order,{status:'archived',wasCancelled:order.status==='cancelled'||(order.wasCancelled===true&&['new','making','done'].indexOf(String(order.status||''))<0)});
                 // 已取消的電話單可能已離開 Node-RED 歷史表，直接保存後端封存狀態。
                 if(s.ordersReadBackend==='firebase'){
                     // phone_ai 是唯讀來源；歷史與共用覆寫都成功才算完成。
@@ -5949,7 +5950,8 @@
                     var fallbackDate = d.getFullYear() + '-' + ('0'+(d.getMonth()+1)).slice(-2) + '-' + ('0'+d.getDate()).slice(-2);
                     var dateCandidates=[sourceMatch&&sourceMatch[1],o.orderDateKey,o.pickupDate,fallbackDate].filter(function(v,i,arr){v=String(v||'').trim();return validDate(v)&&arr.indexOf(v)===i;});
                     var dateKey=dateCandidates[0]||fallbackDate;
-                    var wasCancelled=o.status==="cancelled"||o.wasCancelled===true;
+                    // revived-order-revenue-20261110：撤單後又被調出重新收款的單（狀態回到進行中）結單時不沿用 wasCancelled 舊記號，否則結單後變回「已取消」
+                    var wasCancelled=o.status==="cancelled"||(o.wasCancelled===true&&!(o.status==="new"||o.status==="making"||o.status==="done"));
                     // ★ 已取消訂單結單後 status 也要進 archived（wasCancelled 保留取消記號）：
                     //   PB 沒有 archive 桶，status 留在 cancelled 會永遠卡在「進行中」列表
                     var archivedOrder=Object.assign({},o,{
@@ -8816,6 +8818,9 @@
                         upd.sourceRecordPath=pickupDateMove.toSourcePath;
                     }
                     if(s.editOrderNote!==undefined)upd.orderNote=s.editOrderNote;
+                    // revived-order-revenue-20261110：LINE Pay 失敗被撤單後又調出修改／重新收款的單，狀態在進行中就清掉 wasCancelled 舊記號
+                    //   （否則已收款的單在 manage 營業報表被當成「已取消」漏算）
+                    if(targetOrder&&targetOrder.wasCancelled===true&&['new','making','done'].indexOf(String(targetOrder.status||'').toLowerCase())>=0)upd.wasCancelled=false;
                     var qtyOfPrintItem=function(item){
                         var q=Number(item&&((item.qty!==undefined)?item.qty:((item['\u6578\u91cf']!==undefined)?item['\u6578\u91cf']:item.quantity)));
                         return Number.isFinite(q)&&q>0?q:1;

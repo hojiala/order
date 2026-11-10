@@ -1082,8 +1082,8 @@
                                 <td class="px-4 py-3 text-slate-300">{{ order.pickupDate ? order.pickupDate + ' ' : '' }}{{ getDisplayPickupTime(order.pickupTime) }}</td>
                                 <td class="px-4 py-3 text-center">
                                     <span class="text-xs px-2 py-0.5 rounded-full font-bold"
-                                        :class="order.status==='new'?'bg-blue-900/60 text-blue-300':order.status==='making'?'bg-yellow-900/60 text-yellow-300':order.status==='done'?'bg-emerald-900/60 text-emerald-300':(order.status==='cancelled'||(order.status==='archived'&&order.wasCancelled))?'bg-red-900/60 text-red-400':order.status==='archived'?'bg-emerald-900/60 text-emerald-300':'bg-gray-700 text-gray-400'">
-                                        {{ order.status==='archived'?(order.wasCancelled?'已取消':'已完成'):({new:'新訂單',making:'製作中',done:'已完成',cancelled:'已取消'}[order.status]||order.status) }}
+                                        :class="order.status==='new'?'bg-blue-900/60 text-blue-300':order.status==='making'?'bg-yellow-900/60 text-yellow-300':order.status==='done'?'bg-emerald-900/60 text-emerald-300':(order.status==='cancelled'||(order.status==='archived'&&isStatsOrderCancelled(order)))?'bg-red-900/60 text-red-400':order.status==='archived'?'bg-emerald-900/60 text-emerald-300':'bg-gray-700 text-gray-400'">
+                                        {{ order.status==='archived'?(isStatsOrderCancelled(order)?'已取消':'已完成'):({new:'新訂單',making:'製作中',done:'已完成',cancelled:'已取消'}[order.status]||order.status) }}
                                     </span>
                                 </td>
                                 <td class="px-5 py-3 text-right text-red-400 font-bold">${{ getOrderTotalValue(order) }}
@@ -3912,7 +3912,7 @@ window._resetCountUp = function() {
             },
             statsCancelCount: function() {
                 // ★ 同時計算 status=cancelled 和 wasCancelled=true（結單後狀態被封存的舊取消訂單）
-                return this.statsOrders.filter(function(o){ return o.status === 'cancelled' || o.wasCancelled === true; }).length;
+                return this.statsOrders.filter(this.isStatsOrderCancelled.bind(this)).length;
             },
             // lucky-wheel-stats-20261025：這段期間參加幸運轉盤的有效訂單數與折扣合計（和營收同一套規則）
             statsLuckyWheelSummary: function() {
@@ -3927,7 +3927,7 @@ window._resetCountUp = function() {
                 return { count: count, discount: discount };
             },
             statsValidCount: function() {
-                return this.statsOrders.filter(function(o){ return o.status !== 'cancelled' && !o.wasCancelled; }).length;
+                return this.statsOrders.filter(function(o){ return !this.isStatsOrderCancelled(o); }.bind(this)).length;
             },
             statsCashCount: function() {
                 return this.statsOrders.filter(function(o){
@@ -5857,8 +5857,20 @@ window._resetCountUp = function() {
                 var pm = this.getOrderPaymentMethodValue(order);
                 return pm === 'linepay' || pm === 'linepay_offline' || pm === 'linepay_refund';
             },
+            // revived-order-revenue-20261110：LINE Pay 失敗被撤單（wasCancelled=true）後，店員在 POS 調出同一張單改單、重新收款，
+            //   wasCancelled 舊記號還留在訂單上，營業報表就把已收款的單當成「已取消」漏算。
+            //   訂單仍在進行中（新訂單／製作中／已完成），或 LINE Pay 已付清且未退款 → 舊記號不算取消。
+            isStatsOrderCancelled: function(order) {
+                if (!order) return false;
+                var st = String(order.status || '').toLowerCase();
+                if (st === 'cancelled') return true;
+                if (!order.wasCancelled) return false;
+                if (st === 'new' || st === 'making' || st === 'done') return false;
+                if (this.isLinePayOrder(order) && this.isLinePayPaid(order)) return false;
+                return true;
+            },
             isRevenueOrder: function(order) {
-                if (!order || order.status === 'cancelled' || order.wasCancelled) return false;
+                if (!order || this.isStatsOrderCancelled(order)) return false;
                 if (String(this.getOrderPaymentStatusValue(order) || '').toLowerCase() === 'refunded') return false;
                 return !this.isLinePayOrder(order) || this.isLinePayPaid(order);
             },
@@ -9415,7 +9427,7 @@ window._resetCountUp = function() {
             },
             getStatsExportStatusText: function(order) {
                 if (!order) return '';
-                if (order.status === 'archived') return order.wasCancelled ? '已取消' : '已完成';
+                if (order.status === 'archived') return this.isStatsOrderCancelled(order) ? '已取消' : '已完成';
                 return ({ new: '新訂單', making: '製作中', done: '已完成', cancelled: '已取消' }[order.status] || order.status || '');
             },
             formatStatsCsvTimestamp: function(order) {
@@ -9595,7 +9607,7 @@ window._resetCountUp = function() {
                 return false;
             },
             buildDashboardReportFromOrders: function(list) {
-                var orders = (Array.isArray(list) ? list : []).filter(function(order) { return order && order.status && order.status !== 'cancelled' && !order.wasCancelled; });
+                var orders = (Array.isArray(list) ? list : []).filter(function(order) { return order && order.status && !this.isStatsOrderCancelled(order); }.bind(this));
                 var report = this.createEmptyReportDashboard();
                 var pad = function(v) { return ('0' + v).slice(-2); };
                 var dateList = this.buildDateListForStatsMode(this.statsMode);
