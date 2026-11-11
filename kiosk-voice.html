@@ -135,6 +135,15 @@ body.is-paused .yolk{animation:none}
 .staff-box p{margin:0 0 1.6rem;font-size:1.2rem;font-weight:700;line-height:1.55;white-space:pre-line}
 .staff-actions{display:flex;gap:1.2rem;justify-content:center;flex-wrap:wrap}
 .staff-actions .btn{min-width:12rem}
+/* kiosk-voice-power-20261111：關閉點餐畫面（左）、關機（右）、取消（下面一排） */
+.staff-main .btn{min-width:14rem;flex:1 1 0}
+.btn-power{background:var(--red);color:var(--white);box-shadow:0 .7vmin 0 #8E1710}
+.btn-power:active{transform:translateY(.5vmin);box-shadow:0 .2vmin 0 #8E1710}
+.staff-sub{margin-top:1.2rem}
+.staff-sub .btn{min-width:14rem}
+.pin-head h2{margin-bottom:.2rem}
+.pin-head .pin-sub{margin:0 0 1rem;font-size:1.3rem;color:rgba(255,253,245,.85)}
+@media (orientation:landscape){ .staff-pin .pin-head{grid-area:t} }
 /* kiosk-voice-exitpin-20261111：店員密碼鍵盤 */
 .staff-pin[hidden],.staff-menu[hidden]{display:none}
 .pin-dots{display:flex;justify-content:center;gap:1rem;min-height:3rem;margin:0 0 .6rem;font-size:2.4rem;line-height:3rem;color:var(--yolk);letter-spacing:.1em}
@@ -457,16 +466,19 @@ body.is-demo .demo-chip{display:inline-block}
 <div id="staff-panel" class="staff-panel" role="dialog" aria-modal="true" aria-label="店員：關閉點餐畫面">
   <div class="staff-box">
     <div id="staff-menu" class="staff-menu">
-    <h2>店員：關閉點餐畫面？</h2>
+    <h2>要關閉點餐畫面，還是關機？</h2>
     <p id="staff-msg"></p>
-    <div class="staff-actions">
+    <div class="staff-actions staff-main">
       <button id="staff-close" class="btn btn-done" type="button">關閉點餐畫面</button>
+      <button id="staff-power" class="btn btn-power" type="button">關機</button>
+    </div>
+    <div class="staff-actions staff-sub">
       <button id="staff-cancel" class="btn btn-cancel" type="button">取消</button>
     </div>
     </div>
     <!-- kiosk-voice-exitpin-20261111：店員密碼 -->
     <div id="staff-pin" class="staff-pin" hidden>
-      <h2>請輸入店員密碼</h2>
+      <div class="pin-head"><h2 id="pin-title">關閉點餐畫面</h2><p class="pin-sub">請輸入店員密碼</p></div>
       <div id="pin-dots" class="pin-dots" aria-live="polite"></div>
       <p id="pin-msg" class="pin-msg"></p>
       <div id="pin-pad" class="pin-pad">
@@ -4068,7 +4080,12 @@ body.is-demo .demo-chip{display:inline-block}
     HOLD_MS: 2000, GAP_MS: 5000, OPEN_MS: 15000,
     PIN_MS: 30000, PIN_MAX: 8, PIN_TRIES: 5, PIN_LOCK_MS: 60000,   // kiosk-voice-exitpin-20261111
     pin: '', pinBusy: false, pinWrong: 0, pinLockUntil: 0, pinLockTimer: 0, pinRefreshed: false,
-    MSG: '關閉後回到桌面。\n要再開：點桌面上的「語音點餐」。',
+    MSG: '關閉點餐畫面：回到桌面，點「語音點餐」可再開。\n關機：整台電腦關機。',   // kiosk-voice-power-20261111
+    POWER_URL: 'yuangi-kiosk://shutdown', POWER_WAIT_MS: 20000, powerTimer: 0, pinAction: 'close',
+    go: function (url) {   // 用連結開（不換頁、不加上一頁，「關閉點餐畫面」才關得掉）；測試時換掉
+      var a = document.createElement('a'); a.href = url; a.rel = 'noopener'; a.style.display = 'none';
+      document.body.appendChild(a); a.click(); setTimeout(function () { a.remove(); }, 1000);
+    },
     held: { l: null, r: null }, until: { l: 0, r: 0 }, glow: { l: 0, r: 0 }, hideTimer: 0, failTimer: 0,
     init: function () {
       var self = this;
@@ -4079,7 +4096,8 @@ body.is-demo .demo-chip{display:inline-block}
         ['pointerup', 'pointercancel', 'lostpointercapture'].forEach(function (t) { el.addEventListener(t, function (e) { self.up(side, e.pointerId); }); });
         el.addEventListener('contextmenu', function (e) { e.preventDefault(); });   // 觸控長按不要跳選單
       });
-      $('staff-close').addEventListener('click', function () { self.askPin(); });   // kiosk-voice-exitpin-20261111：先問密碼
+      $('staff-close').addEventListener('click', function () { self.askPin('close'); });   // kiosk-voice-exitpin-20261111：先問密碼
+      $('staff-power').addEventListener('click', function () { self.askPin('power'); });   // kiosk-voice-power-20261111
       $('staff-cancel').addEventListener('click', function () { self.hide(); });
       $('pin-pad').addEventListener('click', function (e) {
         var b = e.target && e.target.closest ? e.target.closest('button[data-k]') : null;
@@ -4139,9 +4157,15 @@ body.is-demo .demo-chip{display:inline-block}
     pinOpen: function () { return this.isOpen() && !$('staff-pin').hidden; },
     view: function (pin) { $('staff-menu').hidden = !!pin; $('staff-pin').hidden = !pin; document.querySelector('.staff-box').classList.toggle('is-pin', !!pin); },
     later: function (ms) { var self = this; clearTimeout(this.hideTimer); this.hideTimer = setTimeout(function () { self.hide(); }, ms); },
-    askPin: function () {
-      if (!PIN_HASH_RE.test(this.pinHashNow())) { this.close(); return; }   // 沒設密碼：照舊直接關
+    act: function () { if (this.pinAction === 'power') this.power(); else this.close(); },
+    askPin: function (action) {
+      this.pinAction = action === 'power' ? 'power' : 'close';   // kiosk-voice-power-20261111
+      if (!PIN_HASH_RE.test(this.pinHashNow())) { this.act(); return; }   // 沒設密碼：照舊直接做
       this.pin = ''; this.pinBusy = false; this.pinRefreshed = false;
+      $('pin-title').textContent = this.pinAction === 'power' ? '關機' : '關閉點餐畫面';
+      $('pin-ok').textContent = this.pinAction === 'power' ? '確認關機' : '確認';
+      $('pin-ok').classList.toggle('btn-power', this.pinAction === 'power');
+      $('pin-ok').classList.toggle('btn-done', this.pinAction !== 'power');
       this.view(true);
       this.renderPin('');
       this.later(this.PIN_MS);
@@ -4183,7 +4207,7 @@ body.is-demo .demo-chip{display:inline-block}
       }).then(function (good) {
         self.pinBusy = false; self.pin = '';
         if (!self.pinOpen()) return;
-        if (good) { self.pinWrong = 0; self.close(); return; }
+        if (good) { self.pinWrong = 0; self.act(); return; }
         self.pinWrong++;
         var box = document.querySelector('.staff-box');
         box.classList.remove('is-shake'); void box.offsetWidth; box.classList.add('is-shake');
@@ -4207,15 +4231,31 @@ body.is-demo .demo-chip{display:inline-block}
       this.view(false);   // kiosk-voice-exitpin-20261111
       $('staff-msg').textContent = this.MSG;
       $('staff-close').disabled = false;
+      $('staff-power').disabled = false;   // kiosk-voice-power-20261111
       $('staff-panel').classList.add('is-open');
       var self = this;
       clearTimeout(this.hideTimer);
       this.hideTimer = setTimeout(function () { self.hide(); }, this.OPEN_MS);   // 沒人按就自動收起，免得客人看到
     },
     hide: function () {
-      clearTimeout(this.hideTimer); clearTimeout(this.failTimer);
+      clearTimeout(this.hideTimer); clearTimeout(this.failTimer); clearTimeout(this.powerTimer);
       $('staff-panel').classList.remove('is-open');
       this.pin = ''; this.view(false);   // kiosk-voice-exitpin-20261111：輸入到一半的密碼不留
+    },
+    power: function () {   // kiosk-voice-power-20261111：請 Windows 關機（kiosk-power.ps1）
+      this.view(false);
+      $('staff-msg').textContent = '正在關機…\n電腦大約 5 秒後關機。';
+      $('staff-close').disabled = true; $('staff-power').disabled = true;
+      clearTimeout(this.hideTimer); clearTimeout(this.failTimer); clearTimeout(this.powerTimer);
+      try { WaitLearn.abort(); } catch (_) {}
+      try { Log.add('system', '店員從點餐畫面關機'); } catch (_) {}
+      try { this.go(this.POWER_URL); } catch (_) {}
+      var self = this;
+      this.powerTimer = setTimeout(function () {   // 還在＝這台電腦還沒裝關機功能，或 Chrome 擋下了
+        $('staff-msg').textContent = '沒有關機。\n這台電腦要先執行一次新版 install.cmd（kiosk-windows 安裝包），再重新開機。\n現在要關機：請用 Windows 的開始選單。';
+        $('staff-close').disabled = false; $('staff-power').disabled = false;
+        self.hideTimer = setTimeout(function () { self.hide(); }, self.OPEN_MS * 2);
+      }, this.POWER_WAIT_MS);
     },
     close: function () {
       this.view(false);   // kiosk-voice-exitpin-20261111：關不掉時的提示顯示在選單
