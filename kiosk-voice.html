@@ -1886,6 +1886,9 @@ body.is-demo .demo-chip{display:inline-block}
   }
   var LEAD_FILLER_RE = /^(好啊|好阿|好喔|好的|好|對啊|對|嗯|可以|那就|那)(?=.)/;
   var REPLY_ONLY_RE = /^(好|好啊|好阿|好的|好喔|對|對啊|嗯|要|要啊|不用|不要|可以|沒有|沒關係|都可以|都不要|隨便|是|不是)$/;
+  // kiosk-voice-garble-20261111：「不要菜」「不要番茄」這類寫進備註就好，不算「沒有這個選項」
+  var REMARK_RE = /^(不要|不加|不放|別加|別放|去掉|拿掉)/;
+  function unmatchedToTell(list) { return (list || []).filter(function (u) { return !REMARK_RE.test(norm(u)) || !noteWorthy([u]).length; }); }
   function noteWorthy(list) { return list.filter(function (x) { var n = norm(x); return n && !REPLY_ONLY_RE.test(n) && !isVariantWord(n); }); }
   function applyOne(line, raw) {
     raw = norm(raw).replace(LEAD_FILLER_RE, '');
@@ -2300,9 +2303,30 @@ body.is-demo .demo-chip{display:inline-block}
     });
     return out;
   }
+  // kiosk-voice-garble-20261111：點餐員傳來的換法常寫錯字（漢堡換蠟牛堡、果醬換奶酪）→ 以顧客原句為準
+  function swapFrom(t) {
+    var m = SWAP_RE.exec(norm(toTrad(String(t || ''))).replace(/^(要|的|請|幫我|再)+/, ''));
+    return m ? m[1].replace(/(要|的|想|可以|幫我)+$/, '') : '';
+  }
+  function dropGarbled(list, textOf, keep) {   // 從清單拿掉 keep(字) 回 false 的
+    for (var j = (list || []).length - 1; j >= 0; j--) if (!keep(textOf(list[j]), list[j])) list.splice(j, 1);
+  }
   function heardApply(line, clauses, bag, unmatched) {
+    var swapsSaid = (clauses || []).filter(function (c) { return isSwap(c.replace(/^(要|的|請|幫我|再)+/, '')); });
+    if (swapsSaid.length && swapsSaid.every(function (c) { return !!heardOption(line.item, c); })) {
+      // 顧客對這道說的換法全部是菜單上的選項：點餐員傳來的換法（不是客製化規則擋的）只是寫錯字，不算不能換
+      dropGarbled(bag, function (b) { return b.text; }, function (t, b) { return !!b.rule; });
+      dropGarbled(unmatched, function (u) { return u; }, function (t) { return !isSwap(t); });
+    }
     (clauses || []).forEach(function (c) {
       var opt = heardOption(line.item, c);
+      if (opt) {   // 換之前的東西一樣（漢堡換○○），顧客原句這個是菜單選項 → 點餐員那個不算不能換
+        var from = swapFrom(c);
+        if (from) {
+          dropGarbled(bag, function (b) { return b.text; }, function (t, b) { return !!b.rule || swapFrom(t) !== from; });
+          dropGarbled(unmatched, function (u) { return u; }, function (t) { return swapFrom(t) !== from; });
+        }
+      }
       if (!opt || chosenNames(line).indexOf(opt) !== -1) return;
       var gi = -1, ci = -1;
       (line.item.optionGroups || []).forEach(function (g, i) { if (g.type !== 'checkbox') (g.choices || []).forEach(function (ch, k) { if (gi < 0 && ch.name === opt) { gi = i; ci = k; } }); });
@@ -2628,7 +2652,7 @@ body.is-demo .demo-chip{display:inline-block}
       }
       if (f.upgraded_from) info.auto_upgraded = '單點又點了飲料，已改成' + speakName(target.item.name) + '，飲料就是套餐飲料，比分開點划算';
       if (drinkWords.length) { info.drink_separately = drinkWords; info.message = '這道沒有套餐，飲料「' + drinkWords.join('、') + '」請用 add_items 另外加一項'; }
-      if (unmatched.length) info.unmatched = unmatched;
+      if (unmatchedToTell(unmatched).length) info.unmatched = unmatchedToTell(unmatched);
       if (flavors.length) info.flavor_heard = flavors.join('、') + '（顧客說的口味，已經選好）';
       if (!f.exact) {
         info.corrected_from = toTrad(said);   // 顧客說法和菜單名稱不同：複誦時要念 say
@@ -2703,6 +2727,7 @@ body.is-demo .demo-chip{display:inline-block}
     plainSels = eggGuardU.keep;
     var unmatched = applySelections(line, plainSels, args.remove_selections);
     unmatched = takeSwaps(unmatched, swapBagU, line.item);
+    if (swapBagU.length || unmatched.length) heardApply(line, heardAssign([{ item: line.item }])[0], swapBagU, unmatched);   // kiosk-voice-garble-20261111
     if (noteU !== null && (noteU || (!swapBagU.length && !noteSel.length))) line.note = joinNote(noteU, []);   // 只想加不行的或菜單上的換法：原本的備註不動
     var addU = noteAdds(swapBagU, line.note).concat(noteWorthy(unmatched));
     if (addU.length) line.note = joinNote(line.note, addU);
@@ -2715,7 +2740,7 @@ body.is-demo .demo-chip{display:inline-block}
     if (eggGuardU.dropped.length) info.egg_kept = eggKeptText(line, eggGuardU.dropped);
     info.ok = true;
     swapInfo(info, swapBagU);
-    if (unmatched.length) info.unmatched = unmatched;
+    if (unmatchedToTell(unmatched).length) info.unmatched = unmatchedToTell(unmatched);
     if ((plainSels.length || switched.switched_from) && isSetItem(line.item)) mergeEarlierDrink(line, [line], info);   // kiosk-voice-menuswap-20261110
     info.order_total = orderTotal();
     var offer = comboOffer([line]);
