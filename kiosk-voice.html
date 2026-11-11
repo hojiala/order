@@ -3030,7 +3030,7 @@ body.is-demo .demo-chip{display:inline-block}
       '4. 結果有 ask（顧客還沒說是哪一種，例如套餐／單點、辣卡／原卡、有蛋有肉／無蛋無肉）時，照 ask 的原句問，其他一個字都不要加：不要加餐點名稱、不要解釋（例如不要說「有蛋有肉的里肌」「無蛋無肉的肉醬」），不要自己決定，也絕對不可以把 candidates 全部加入；顧客選好後，只用他選的那一個 name 再呼叫 add_items。顧客明確說「兩種都要」「各一個」才分別加。sold_out 時說「不好意思，這個今天賣完了」，請顧客換別的。',
       '5. 顧客改口一律在同一項上改，不要新增一項，也不要寫進備註：改成有蛋有肉、無蛋無肉、套餐或單點，用 update_item 的 name 填這幾個字；換別的餐點也用 update_item 的 name；改數量、不要某樣用 update_item 或 remove_item（line 是畫面上的項次）。',
       '5-1. 結果有 auto_upgraded 或 meat_added 時，用一句短話告訴顧客，例如「幫您改成套餐，比較划算」「另外加一片肉，○○元」（加肉要多收的錢照 meat_added 念）。結果有 unmatched 時，那幾個字沒有對應的選項：顧客的回答請換成 options 裡的原文再送一次；真的是備註（例如不要醬）就放 note。',
-      CONFIG.allowSwap ? '' : '5-2. 顧客說要「換」（例如果醬換奶酥、漢堡換蝸牛堡、蛋換全熟、生菜換番茄）：不要自己先說能不能換，照顧客的原話放進那一項的 selections（例如「果醬換奶酥」），系統會判斷：菜單上有的選項會直接選好（結果有 menu_option，不用多說）；不能換的會回 not_allowed，照 message 跟顧客說「不好意思，餐點內的食材沒辦法更換」，餐點照原本的做法。只有結果有 not_allowed 才可以說不能換；餐點還沒加入（結果有 ask）時先照 ask 問，不要提換不換。「不要某樣」（例如不要醬、不要生菜）照舊寫在 note。',   // kiosk-voice-noswap-20261108
+      CONFIG.allowSwap ? '' : '5-2. 顧客說要「換」（例如果醬換奶酥、漢堡換蝸牛堡、蛋換全熟、生菜換番茄）：不要自己先說能不能換，照顧客的原話放進那一項的 selections（例如「果醬換奶酥」），系統會判斷：菜單上有的選項會直接選好（看結果的 selected，不用多說）；結果有 not_allowed 時，照它的 message 跟顧客說，其他時候都不要提換不換。「不要某樣」（例如不要醬、不要生菜）照舊寫在 note。',   // kiosk-voice-noswap-20261108
       customRulesText(),   // kiosk-voice-rules-20261108
       CONFIG.askDineMode
         ? '6. 顧客說「這樣就好」「沒有了」「好了」，或系統告訴你顧客按了「我點好了」：還不知道內用還是外帶，就直接問「請問內用還是外帶？」，這時先不要呼叫工具；顧客回答（或系統說顧客按了按鈕）後馬上呼叫 finish_order，dine_mode 填「內用」或「外帶」。已經知道內用外帶就直接呼叫 finish_order。回傳 pending 就先把沒確認的問完；回傳 need_dine_mode 就問「請問內用還是外帶？」。'
@@ -3905,6 +3905,24 @@ body.is-demo .demo-chip{display:inline-block}
         return;
     }
   }
+  // kiosk-voice-nextline-20261111：menu_option、kind_heard 只是給店員看紀錄的說明，不傳給點餐員
+  //   （裡面寫「不要跟顧客說不能換」，點餐員反而說了「餐點內的食材沒辦法更換」）
+  var LOG_ONLY_KEYS = ['menu_option', 'kind_heard'];
+  function forAgent(result) {
+    var copy;
+    try { copy = JSON.parse(JSON.stringify(result)); } catch (_) { return JSON.stringify(result); }
+    var strip = function (r) { if (r && typeof r === 'object') LOG_ONLY_KEYS.forEach(function (k) { delete r[k]; }); };
+    strip(copy);
+    if (copy && Array.isArray(copy.results)) copy.results.forEach(strip);
+    return JSON.stringify(copy);
+  }
+  // 加餐、修改、刪除都成功、沒有要問也沒有要說的 → 指定只說這一句（點餐員不會自己多說別的）
+  var NEXT_LINE = '還要點其他的嗎？';
+  function plainNext(list) {
+    if (!list || !list.length) return undefined;
+    if (!list.every(function (x) { return /^(add_items|update_item|remove_item)$/.test(x.name) && !needsTalk(x.result); })) return undefined;
+    return { instructions: '你是早餐店的點餐員。顧客剛剛說的都已經處理好了，沒有要問的。現在只說這一句，一個字都不要改，也不要多說別的話：「' + NEXT_LINE + '」（顧客剛剛那句話還有沒加到的餐點或沒改到的地方，才先呼叫工具處理。）' };
+  }
   function onToolCall(name, callId, rawArgs) {
     if (!callId || Session.calls[callId]) return;
     Session.calls[callId] = true;
@@ -3916,7 +3934,7 @@ body.is-demo .demo-chip{display:inline-block}
       Session.toolResults.push({ name: name, result: result });   // kiosk-voice-fast2-20261106：回覆結束後看要不要再說話
       var out = JSON.stringify(result);
       Log.add('tool', name, { args: JSON.stringify(args).slice(0, 800), result: out.slice(0, 1500) });
-      send({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output: out } });
+      send({ type: 'conversation.item.create', item: { type: 'function_call_output', call_id: callId, output: forAgent(result) } });   // kiosk-voice-nextline-20261111
     }));
   }
   // kiosk-voice-crosscheck-20261106：客人說完 10 秒，點餐員連回覆都還沒開始 → 記錄，再請一次（每句話只補一次）
@@ -4223,8 +4241,11 @@ body.is-demo .demo-chip{display:inline-block}
       var waits = Session.toolWaits.splice(0);
       Promise.all(waits).then(function () { return AudioIO.whenIdle(); }).then(function () {
         if (!Session.active || Session.userSpeaking) return;
-        if (quietAfterTools(Session.toolResults.splice(0))) return;   // kiosk-voice-fast2-20261106
-        Tm.mark('follow'); Session.expectFollow = true; requestResponse(closingResponse());
+        var doneTools = Session.toolResults.splice(0);
+        if (quietAfterTools(doneTools)) return;   // kiosk-voice-fast2-20261106
+        var only = closingResponse() || plainNext(doneTools);   // kiosk-voice-nextline-20261111
+        if (only && only.instructions.indexOf(NEXT_LINE) !== -1) Log.add('system', '沒有要問的，請點餐員只說「' + NEXT_LINE + '」');
+        Tm.mark('follow'); Session.expectFollow = true; requestResponse(only);
       });
       return;
     }
@@ -4798,7 +4819,7 @@ body.is-demo .demo-chip{display:inline-block}
   }
 
   // 測試用
-  window.__kiosk = { runTool: runTool, findItem: findItem, setMenu: setMenu, Order: Order, Menu: Menu, buildInstructions: buildInstructions, buildKeyterms: buildKeyterms, fixTypos: fixTypos, applyRemoteDict: applyRemoteDict, Dict: Dict, sessionUpdate: sessionUpdate, CONFIG: CONFIG, Session: Session, goHome: goHome, showError: showError, goDone: goDone, Submit: Submit, buildOrderData: buildOrderData, speakName: speakName, submitOrder: submitOrder, businessWindow: businessWindow, applyVoiceSettings: applyVoiceSettings, transcriptDishes: transcriptDishes, showTypos: showTypos, Tm: Tm, Hold: Hold, Ack: Ack, setUser: setUser, setAgent: setAgent, demoStop: demoStop, startWith: startWith, beginSessionUI: beginSessionUI, Greet: Greet, Pre: Pre, onReady: onReady, onMicChunk: onMicChunk, needsTalk: needsTalk, quietAfterTools: quietAfterTools, startLive: startLive, flavorFromWords: flavorFromWords, onResponseDone: onResponseDone, dayVoice: dayVoice, sessionVoice: sessionVoice, refreshSettings: refreshSettings, Remote: Remote, renderPromptView: renderPromptView, choiceAsk: choiceAsk, Turn: Turn, resetOffers: resetOffers, Offers: Offers, Pending: Pending, closingLine: closingLine, closingResponse: closingResponse, pressDineMode: pressDineMode, handleEvent: handleEvent, Log: Log, Rec: Rec, AudioIO: AudioIO, Jank: Jank, netText: netText, currentGreeting: currentGreeting, isMorning: isMorning, setGreeting: setGreeting, userPressedDone: userPressedDone, isSwap: isSwap, stripSwaps: stripSwaps, Fan: Fan, Wait: Wait, WaitLearn: WaitLearn, Staff: Staff, rescueChoice: rescueChoice, heardAssign: heardAssign, menuSwap: menuSwap, takeSwaps: takeSwaps, mergeEarlierDrink: mergeEarlierDrink, lineInfo: lineInfo, calcLine: calcLine, optionDish: optionDish, nameOption: nameOption, styleLabel: styleLabel, CustomRules: CustomRules, verdict: verdict, screenBag: screenBag, pickExternalMic: pickExternalMic, refreshMicStatus: refreshMicStatus, closedReason: closedReason, renderPaused: renderPaused, setSettings: function (v) { Settings = v; }, tick: tick, teardown: teardown, requestResponse: requestResponse, renderHomeText: renderHomeText };
+  window.__kiosk = { runTool: runTool, findItem: findItem, setMenu: setMenu, Order: Order, Menu: Menu, buildInstructions: buildInstructions, buildKeyterms: buildKeyterms, fixTypos: fixTypos, applyRemoteDict: applyRemoteDict, Dict: Dict, sessionUpdate: sessionUpdate, CONFIG: CONFIG, Session: Session, goHome: goHome, showError: showError, goDone: goDone, Submit: Submit, buildOrderData: buildOrderData, speakName: speakName, submitOrder: submitOrder, businessWindow: businessWindow, applyVoiceSettings: applyVoiceSettings, transcriptDishes: transcriptDishes, showTypos: showTypos, Tm: Tm, Hold: Hold, Ack: Ack, setUser: setUser, setAgent: setAgent, demoStop: demoStop, startWith: startWith, beginSessionUI: beginSessionUI, Greet: Greet, Pre: Pre, onReady: onReady, onMicChunk: onMicChunk, needsTalk: needsTalk, quietAfterTools: quietAfterTools, startLive: startLive, flavorFromWords: flavorFromWords, onResponseDone: onResponseDone, dayVoice: dayVoice, sessionVoice: sessionVoice, refreshSettings: refreshSettings, Remote: Remote, renderPromptView: renderPromptView, choiceAsk: choiceAsk, Turn: Turn, resetOffers: resetOffers, Offers: Offers, Pending: Pending, closingLine: closingLine, closingResponse: closingResponse, pressDineMode: pressDineMode, handleEvent: handleEvent, Log: Log, Rec: Rec, AudioIO: AudioIO, Jank: Jank, netText: netText, currentGreeting: currentGreeting, isMorning: isMorning, setGreeting: setGreeting, userPressedDone: userPressedDone, isSwap: isSwap, stripSwaps: stripSwaps, forAgent: forAgent, plainNext: plainNext, Fan: Fan, Wait: Wait, WaitLearn: WaitLearn, Staff: Staff, rescueChoice: rescueChoice, heardAssign: heardAssign, menuSwap: menuSwap, takeSwaps: takeSwaps, mergeEarlierDrink: mergeEarlierDrink, lineInfo: lineInfo, calcLine: calcLine, optionDish: optionDish, nameOption: nameOption, styleLabel: styleLabel, CustomRules: CustomRules, verdict: verdict, screenBag: screenBag, pickExternalMic: pickExternalMic, refreshMicStatus: refreshMicStatus, closedReason: closedReason, renderPaused: renderPaused, setSettings: function (v) { Settings = v; }, tick: tick, teardown: teardown, requestResponse: requestResponse, renderHomeText: renderHomeText };
 })();
 </script>
 </body>
