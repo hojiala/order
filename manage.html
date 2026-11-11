@@ -1758,6 +1758,27 @@
                     <p class="kv-help">師傅需要風扇不能停時：暫停中按一下 ESP32 上的按鈕，風扇馬上恢復，接下來 15 分鐘不會再被暫停。</p>
                 </div>
 
+                <!-- kiosk-voice-exitpin-20261111：店員關閉點餐畫面的密碼（按按鈕就直接存，只存雜湊） -->
+                <div class="rounded-xl border border-slate-700 bg-slate-800 p-5 flex flex-col gap-4" data-kv-exitpin-card>
+                    <p class="font-bold text-white">店員關閉點餐畫面</p>
+                    <p class="kv-help">平板首頁同時按住左下角吐司和右下角咖啡杯 2 秒 → 按「關閉點餐畫面」→ 輸入這組密碼，對了才會關閉。</p>
+                    <p class="text-sm text-slate-200" data-kv-exitpin-status>目前：<b v-if="kvPinSet()" class="text-emerald-300">已設定密碼</b><b v-else class="text-amber-300">還沒設定（按「關閉點餐畫面」會直接關閉，不用密碼）</b></p>
+                    <div class="kv-grid">
+                        <label class="kv-field"><span class="kv-label"><b>{{ kvPinSet() ? '新密碼' : '密碼' }}</b></span>
+                            <input type="password" inputmode="numeric" autocomplete="new-password" maxlength="8" :value="kvPin.a" @input="kvPinInput('a', $event)" data-kv-pin-a class="rounded-lg border border-slate-600 bg-slate-900 px-2 py-1.5 text-sm text-white placeholder-slate-500">
+                            <span class="kv-help">4～8 個數字。</span></label>
+                        <label class="kv-field"><span class="kv-label"><b>再輸入一次</b></span>
+                            <input type="password" inputmode="numeric" autocomplete="new-password" maxlength="8" :value="kvPin.b" @input="kvPinInput('b', $event)" @keydown.enter.prevent="kvSetPin()" data-kv-pin-b class="rounded-lg border border-slate-600 bg-slate-900 px-2 py-1.5 text-sm text-white placeholder-slate-500">
+                            <span class="kv-help">和上面一樣。</span></label>
+                    </div>
+                    <div class="flex flex-wrap items-center gap-2">
+                        <button type="button" @click="kvSetPin()" :disabled="kvSaving || kvPin.busy" data-kv-pin-save class="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-sm font-black px-4 py-2 rounded-lg">{{ kvPin.busy ? '儲存中…' : (kvPinSet() ? '更改密碼' : '設定密碼') }}</button>
+                        <button v-if="kvPinSet()" type="button" @click="kvClearPin()" :disabled="kvSaving || kvPin.busy" data-kv-pin-clear class="bg-slate-700 hover:bg-slate-600 disabled:opacity-40 text-white text-sm font-bold px-4 py-2 rounded-lg">取消密碼</button>
+                        <span v-if="kvPin.msg" class="text-sm" :class="kvPin.bad ? 'text-red-300' : 'text-emerald-300'" data-kv-pin-msg>{{ kvPin.msg }}</span>
+                    </div>
+                    <p class="kv-help">按「設定密碼」就直接存好，不用再按最下面的「儲存語音點餐設定」（其他還沒存的修改不會一起送出）。平板最慢 5 分鐘讀到；店員在平板輸入新密碼時也會馬上去讀一次。manage 只存加密後的值，看不到密碼本身，忘記了就在這裡設新的。<span class="kv-warn">不要用提款卡或手機的密碼。</span></p>
+                </div>
+
                 <div class="rounded-xl border border-slate-700 bg-slate-800 p-5 flex flex-col gap-4">
                     <p class="font-bold text-white">紀錄與錄音</p>
                     <label class="kv-check"><input type="checkbox" v-model="kvForm.logText" @change="kvDirty=true" data-kv-logtext>
@@ -3387,6 +3408,8 @@ window._resetCountUp = function() {
         return { rows: nextRows, changed: true };
     }
 
+    var KV_PIN_RE = /^pbkdf2\$(\d{4,7})\$([0-9a-f]{32})\$([0-9a-f]{64})$/;   // kiosk-voice-exitpin-20261111：和 kiosk-voice.html 的 PIN_HASH_RE 一樣
+
     // kiosk-voice-rules-20261108：客製化規則（manage → 🎙️ 語音點餐 →「客製化規則」，平板和 manage 用同一份）
     //   一行一條：「可以：吐司換全麥」「不行：起司換蛋」「不行：不要蛋（蛋餅）」「不行：生菜換番茄｜不好意思，生菜沒辦法換喔」
     //   （…）＝只限這幾道餐點；｜後面＝點餐員要說的話；# 開頭＝備忘，不算規則
@@ -3490,7 +3513,8 @@ window._resetCountUp = function() {
                 lwEst: { orders: 15, ticket: 280 },
                 // kiosk-voice-settings-20261031：語音點餐平板設定（settings.kioskVoice；平板每位客人開始點餐時讀一次）
                 kvForm: null, kvDirty: false, kvSaving: false, kvError: '', kvNotice: '',
-                kvRuleTry: { phrase: '吐司換全麥', dish: '' },   // kiosk-voice-rules-20261108：客製化規則「試試看」
+                kvRuleTry: { phrase: '吐司換全麥', dish: '' },
+                kvPin: { a: '', b: '', busy: false, msg: '', bad: false },   // kiosk-voice-exitpin-20261111：店員關閉點餐畫面的密碼（只在這頁，不存）   // kiosk-voice-rules-20261108：客製化規則「試試看」
                 // kiosk-voice-logs-20261101：點餐紀錄（Pi 保存的對話文字與錄音）
                 kvView: 'settings',
                 kvLogs: { date: '', rows: [], days: [], usage: null, loading: false, loaded: false, error: '', open: '', detail: null, detailLoading: false, audioUrl: '', audioLoading: false, audioError: '' },
@@ -5234,6 +5258,7 @@ window._resetCountUp = function() {
                     customRules: '可以：吐司換全麥',   // kiosk-voice-rules-20261108：客製化規則（一行一條「可以：…」「不行：…」）
                     fanPause: false,   // kiosk-voice-fan-20261110：點餐時暫停輔助抽風扇
                     fanPauseSec: 90,
+                    exitPinHash: '',   // kiosk-voice-exitpin-20261111：店員關閉點餐畫面的密碼雜湊（pbkdf2$次數$鹽$雜湊）；''＝不用密碼
                     voice: 'ara',
                     voiceByDay: ['', '', '', '', '', '', ''],   // kiosk-voice-dayvoice-20261106：[週日, 週一, …, 週六]，''＝同上
                     speechSpeed: 0.92,
@@ -5312,6 +5337,7 @@ window._resetCountUp = function() {
                     customRules: txt(f.customRules, 2000),
                     fanPause: f.fanPause === true,
                     fanPauseSec: Math.round(num(f.fanPauseSec, 30, 120, base.fanPauseSec)),
+                    exitPinHash: /^pbkdf2\$(\d{4,7})\$([0-9a-f]{32})\$([0-9a-f]{64})$/.test(String(f.exitPinHash || '')) ? String(f.exitPinHash) : '',   // kiosk-voice-exitpin-20261111：和 KV_PIN_RE 一樣
                     voice: this.kvVoices.some(function(x) { return x.id === f.voice; }) ? f.voice : base.voice,
                     voiceByDay: base.voiceByDay.map(function(x, i) {
                         var v = (f.voiceByDay || [])[i];
@@ -5342,7 +5368,7 @@ window._resetCountUp = function() {
                 cfg.updatedAt = new Date().toISOString();
                 return cfg;
             },
-            kvSave: function(configOverride, okText) {
+            kvSave: function(configOverride, okText, opts) {
                 var self = this;
                 if (self.kvSaving) return Promise.resolve();
                 var cfg = configOverride || self.kvNormalize(self.kvForm);
@@ -5361,7 +5387,7 @@ window._resetCountUp = function() {
                     }
                     self.kvNotice = okText || '已儲存。平板下一位客人按「內用」或「外帶」時就會套用。';
                 }).catch(function(err) {
-                    if (configOverride && self.kvForm) self.kvForm.enabled = !cfg.enabled;
+                    if (configOverride && self.kvForm && !(opts && opts.pin)) self.kvForm.enabled = !cfg.enabled;   // kiosk-voice-exitpin-20261111：存密碼失敗不動總開關
                     self.kvError = '語音點餐設定儲存失敗：' + String((err && err.message) || err || '未知錯誤');
                 }).finally(function() {
                     self.kvSaving = false;
@@ -5379,10 +5405,59 @@ window._resetCountUp = function() {
             },
             kvResetDefaults: function() {
                 var enabled = this.kvForm ? this.kvForm.enabled : true;
-                this.kvForm = Object.assign(this.kvDefaultConfig(), { enabled: enabled });
+                var pinHash = this.kvForm ? this.kvForm.exitPinHash : '';   // kiosk-voice-exitpin-20261111：店員密碼不跟著清掉
+                this.kvForm = Object.assign(this.kvDefaultConfig(), { enabled: enabled, exitPinHash: pinHash || '' });
                 this.kvDirty = true;
                 this.kvError = '';
-                this.kvNotice = '已填回預設值（總開關不變），按「儲存語音點餐設定」才會生效。';
+                this.kvNotice = '已填回預設值（總開關、店員密碼不變），按「儲存語音點餐設定」才會生效。';
+            },
+            // ── kiosk-voice-exitpin-20261111：店員關閉點餐畫面的密碼 ──
+            kvPinSet: function() { var c = this.kvSavedConfig(); return !!(c && KV_PIN_RE.test(String(c.exitPinHash || ''))); },
+            kvPinInput: function(k, e) {
+                var v = String(e && e.target ? e.target.value : '').replace(/\D/g, '').slice(0, 8);
+                if (e && e.target && e.target.value !== v) e.target.value = v;
+                this.kvPin[k] = v; this.kvPin.msg = ''; this.kvPin.bad = false;
+            },
+            kvSavePin: function(hash, okText) {
+                var self = this, saved = this.kvSavedConfig();
+                saved = saved ? JSON.parse(JSON.stringify(saved)) : this.kvNormalize(this.kvDefaultConfig());
+                saved.exitPinHash = hash;
+                return this.kvSave(saved, okText, { pin: true }).then(function() {
+                    var now = self.kvSavedConfig();
+                    var done = !!now && String(now.exitPinHash || '') === hash;
+                    if (done && self.kvForm) self.kvForm.exitPinHash = hash;
+                    self.kvPin.bad = !done || !!self.kvError;
+                    self.kvPin.msg = self.kvError ? '沒有存好：' + self.kvError : (done ? okText : '沒有存好，請再按一次。');
+                    return done && !self.kvError;
+                });
+            },
+            kvSetPin: function() {
+                var self = this, a = this.kvPin.a, b = this.kvPin.b;
+                this.kvPin.bad = true;
+                if (!/^\d{4,8}$/.test(a)) { this.kvPin.msg = '密碼要 4～8 個數字。'; return Promise.resolve(false); }
+                if (a !== b) { this.kvPin.msg = '兩次輸入的不一樣，請再輸入一次。'; return Promise.resolve(false); }
+                if (!window.crypto || !crypto.subtle || typeof TextEncoder === 'undefined') { this.kvPin.msg = '這個瀏覽器不能設定密碼，請改用電腦的 Chrome 打開 manage。'; return Promise.resolve(false); }
+                this.kvPin.busy = true; this.kvPin.msg = ''; this.kvPin.bad = false;
+                var salt = new Uint8Array(16); crypto.getRandomValues(salt);
+                var hex = function(buf) { return Array.prototype.map.call(new Uint8Array(buf), function(x) { return ('0' + x.toString(16)).slice(-2); }).join(''); };
+                var saltHex = hex(salt), iter = 100000;   // 和 kiosk-voice.html 的 pinHash 同一個算法
+                return crypto.subtle.importKey('raw', new TextEncoder().encode(a), 'PBKDF2', false, ['deriveBits']).then(function(key) {
+                    return crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: salt, iterations: iter }, key, 256);
+                }).then(function(bits) {
+                    return self.kvSavePin('pbkdf2$' + iter + '$' + saltHex + '$' + hex(bits), '已設定店員密碼。');
+                }).then(function(ok) {
+                    if (ok) { self.kvPin.a = ''; self.kvPin.b = ''; }
+                    return ok;
+                }).catch(function(err) {
+                    self.kvPin.bad = true; self.kvPin.msg = '設定失敗：' + String((err && err.message) || err);
+                    return false;
+                }).finally(function() { self.kvPin.busy = false; });
+            },
+            kvClearPin: function() {
+                if (!window.confirm('取消店員密碼？取消後在平板按「關閉點餐畫面」會直接關閉，不用密碼。')) return Promise.resolve(false);
+                var self = this;
+                this.kvPin.busy = true;
+                return this.kvSavePin('', '已取消店員密碼。').finally(function() { self.kvPin.busy = false; });
             },
             kvDayName: function(d) { return '週' + '日一二三四五六'.charAt(d); },
             kvTodayIdx: function() { return new Date().getDay(); },

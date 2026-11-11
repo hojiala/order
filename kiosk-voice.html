@@ -135,6 +135,28 @@ body.is-paused .yolk{animation:none}
 .staff-box p{margin:0 0 1.6rem;font-size:1.2rem;font-weight:700;line-height:1.55;white-space:pre-line}
 .staff-actions{display:flex;gap:1.2rem;justify-content:center;flex-wrap:wrap}
 .staff-actions .btn{min-width:12rem}
+/* kiosk-voice-exitpin-20261111：店員密碼鍵盤 */
+.staff-pin[hidden],.staff-menu[hidden]{display:none}
+.pin-dots{display:flex;justify-content:center;gap:1rem;min-height:3rem;margin:0 0 .6rem;font-size:2.4rem;line-height:3rem;color:var(--yolk);letter-spacing:.1em}
+.pin-dots .pin-empty{color:rgba(255,253,245,.35);font-size:1.4rem}
+.pin-msg{min-height:1.6em;margin:0 0 1rem !important;font-size:1.15rem !important}
+.pin-msg.is-bad{color:#FF8A80}
+.pin-pad{display:grid;grid-template-columns:repeat(3,6.4rem);gap:1rem;justify-content:center;margin:0 0 1.4rem}
+.pin-pad button{height:5.2rem;border:0;border-radius:1rem;background:var(--white);color:var(--ink);font-size:2.4rem;font-weight:900;box-shadow:0 .6vmin 0 var(--rule);touch-action:manipulation}
+.pin-pad button:active{transform:translateY(.4vmin);box-shadow:0 .2vmin 0 var(--rule)}
+.pin-pad button.pin-fn{background:var(--green-soft);color:var(--white);font-size:1.4rem;box-shadow:0 .6vmin 0 var(--green)}
+.pin-pad button:disabled,.staff-pin .btn:disabled{opacity:.4}
+.staff-box.is-shake{animation:pin-shake .35s}
+@keyframes pin-shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-1.2rem)}75%{transform:translateX(1.2rem)}}
+@media (orientation:landscape){   /* 橫放：數字鍵放右邊，高度才放得下 */
+  .staff-box.is-pin{max-width:none}
+  .staff-pin:not([hidden]){display:grid;grid-template-columns:minmax(14rem,18rem) auto;grid-template-areas:"t pad" "d pad" "m pad" "a pad";column-gap:3rem;align-items:center;align-content:center}
+  .staff-pin h2{grid-area:t}
+  .staff-pin .pin-dots{grid-area:d}
+  .staff-pin .pin-msg{grid-area:m}
+  .staff-pin .pin-pad{grid-area:pad;margin:0}
+  .staff-pin .staff-actions{grid-area:a;flex-direction:column;align-items:stretch}
+}
 
 /* ───── 點餐中 ───── */
 .order{
@@ -434,11 +456,29 @@ body.is-demo .demo-chip{display:inline-block}
 <!-- kiosk-voice-exit-20261110：店員選單 -->
 <div id="staff-panel" class="staff-panel" role="dialog" aria-modal="true" aria-label="店員：關閉點餐畫面">
   <div class="staff-box">
+    <div id="staff-menu" class="staff-menu">
     <h2>店員：關閉點餐畫面？</h2>
     <p id="staff-msg"></p>
     <div class="staff-actions">
       <button id="staff-close" class="btn btn-done" type="button">關閉點餐畫面</button>
       <button id="staff-cancel" class="btn btn-cancel" type="button">取消</button>
+    </div>
+    </div>
+    <!-- kiosk-voice-exitpin-20261111：店員密碼 -->
+    <div id="staff-pin" class="staff-pin" hidden>
+      <h2>請輸入店員密碼</h2>
+      <div id="pin-dots" class="pin-dots" aria-live="polite"></div>
+      <p id="pin-msg" class="pin-msg"></p>
+      <div id="pin-pad" class="pin-pad">
+        <button type="button" data-k="1">1</button><button type="button" data-k="2">2</button><button type="button" data-k="3">3</button>
+        <button type="button" data-k="4">4</button><button type="button" data-k="5">5</button><button type="button" data-k="6">6</button>
+        <button type="button" data-k="7">7</button><button type="button" data-k="8">8</button><button type="button" data-k="9">9</button>
+        <button type="button" data-k="clear" class="pin-fn">清除</button><button type="button" data-k="0">0</button><button type="button" data-k="back" class="pin-fn" aria-label="刪一個字">⌫</button>
+      </div>
+      <div class="staff-actions">
+        <button id="pin-ok" class="btn btn-done" type="button">確認</button>
+        <button id="pin-cancel" class="btn btn-cancel" type="button">取消</button>
+      </div>
     </div>
   </div>
 </div>
@@ -564,6 +604,7 @@ body.is-demo .demo-chip{display:inline-block}
     tokenPath: '/api/kiosk/voice/token',
     fanPath: '/api/kiosk/voice/fan',  // kiosk-voice-fan-20261110：請 Pi 發 MQTT 給輔助抽風扇的 ESP32
     fanPause: false,                  // ★ 點餐時暫停輔助抽風扇（manage 開關；預設關）
+    exitPinHash: '',                  // ★ kiosk-voice-exitpin-20261111：店員關閉點餐畫面的密碼（manage 存的雜湊）；空白＝不用密碼
     fanPauseSec: 90,                  // ★ 一次最多停幾秒（30～120）；點餐中每 30 秒續一次，ESP32 時間到自己恢復
     wsUrl: 'wss://api.x.ai/v1/realtime',
     model: 'grok-voice-3.0',          // Pi 回傳的 model 優先
@@ -593,10 +634,11 @@ body.is-demo .demo-chip{display:inline-block}
 
   /* ═════════ manage 的語音點餐設定（settings.kioskVoice）═════════ */
   var VOICE_NAMES = ['ara', 'eve', 'leo', 'rex', 'sal', 'carina', 'zagan', 'helix', 'orion', 'luna', 'iris', 'altair', 'zenith', 'perseus', 'helios', 'lux', 'kepler', 'rigel', 'cosmo', 'celeste', 'ursa', 'sirius', 'lumen', 'castor', 'naksh', 'atlas', 'aurora', 'liora'];   // kiosk-voice-voices-20261107：xAI 現在的 28 種聲音
-  var VOICE_KEYS = ['enabled', 'pausedText', 'greeting', 'greetingMorning', 'morningUntil', 'storeFacts', 'recommend', 'extraRules', 'keyterms', 'askDineMode', 'allowSwap', 'customRules', 'fanPause', 'fanPauseSec',
+  var VOICE_KEYS = ['enabled', 'pausedText', 'greeting', 'greetingMorning', 'morningUntil', 'storeFacts', 'recommend', 'extraRules', 'keyterms', 'askDineMode', 'allowSwap', 'customRules', 'fanPause', 'fanPauseSec', 'exitPinHash',
     'voice', 'voiceByDay', 'speechSpeed', 'reasoningEffort', 'serverIdlePromptMs', 'idleEndMs', 'maxSessionMs', 'doneReturnMs',
     'bargeIn', 'vadSilenceMs', 'vadThreshold',
     'submitOrders', 'submitIncomplete', 'homeSteps', 'closingText', 'waitText', 'volume', 'logText', 'logAudio', 'recordNotice'];
+  var PIN_HASH_RE = /^pbkdf2\$(\d{4,7})\$([0-9a-f]{32})\$([0-9a-f]{64})$/;   // kiosk-voice-exitpin-20261111：manage 存的密碼雜湊
   var DEFAULTS = {};
   VOICE_KEYS.forEach(function (k) { DEFAULTS[k] = Array.isArray(CONFIG[k]) ? CONFIG[k].slice() : CONFIG[k]; });
   var Remote = { loaded: false, voice: false, updatedAt: '' };
@@ -631,6 +673,10 @@ body.is-demo .demo-chip{display:inline-block}
     if (typeof v.customRules === 'string') CONFIG.customRules = v.customRules.replace(/\r\n?/g, '\n').slice(0, 2000);   // 存了空白＝沒有規則
     if (typeof v.fanPause === 'boolean') CONFIG.fanPause = v.fanPause;   // kiosk-voice-fan-20261110
     if ((n = cfgNum(v.fanPauseSec, 30, 120)) !== null) CONFIG.fanPauseSec = Math.round(n);
+    if (raw && typeof raw === 'object') {   // kiosk-voice-exitpin-20261111：manage 有設定（含沒設密碼）就照 manage，並記在這台平板
+      CONFIG.exitPinHash = PIN_HASH_RE.test(String(v.exitPinHash || '')) ? String(v.exitPinHash) : '';
+      storeSet('kiosk_exit_pin', CONFIG.exitPinHash);
+    }
     s = cfgText(v.voice, 20).toLowerCase();
     Remote.voice = VOICE_NAMES.indexOf(s) !== -1;
     if (Remote.voice) CONFIG.voice = s;
@@ -4001,10 +4047,27 @@ body.is-demo .demo-chip{display:inline-block}
   //   以前在客人點完後、同一條連線裡請點餐員說，它常把剛剛的結帳結果再念一次（存不到），客人也要多等
   //   這條連線沒有點餐內容、沒有工具、不開麥克風，點餐員只會說這一句；客人一按開始就馬上中斷
   //   每個聲音存一次；同一個聲音連續 3 次說錯就不再試（manage 改句子會重來）；10 分鐘最多試一次
+  // kiosk-voice-exitpin-20261111：店員密碼。manage 存「pbkdf2$次數$鹽$雜湊」，平板算一次比對，不存密碼本身
+  function pinHash(pin, saltHex, iter) {
+    if (!window.crypto || !crypto.subtle || typeof TextEncoder === 'undefined') return Promise.reject(new Error('no_crypto'));
+    var salt = new Uint8Array(saltHex.match(/../g).map(function (h) { return parseInt(h, 16); }));
+    return crypto.subtle.importKey('raw', new TextEncoder().encode(String(pin)), 'PBKDF2', false, ['deriveBits']).then(function (key) {
+      return crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: salt, iterations: iter }, key, 256);
+    }).then(function (buf) {
+      return Array.prototype.map.call(new Uint8Array(buf), function (b) { return ('0' + b.toString(16)).slice(-2); }).join('');
+    });
+  }
+  function pinMatches(pin, stored) {
+    var m = PIN_HASH_RE.exec(String(stored || ''));
+    if (!m || !/^\d{4,8}$/.test(String(pin))) return Promise.resolve(false);
+    return pinHash(pin, m[2], Number(m[1])).then(function (h) { return h === m[3]; }, function () { return false; });
+  }
   // kiosk-voice-exit-20261110：店員關閉點餐畫面（Windows 全螢幕沒有鍵盤時用）
   //   首頁同時按住左下角吐司和右下角咖啡杯 2 秒 → 店員選單；觸控只能一點／滑鼠：按住一邊 2 秒，放開後 5 秒內再按住另一邊 2 秒
   var Staff = {
     HOLD_MS: 2000, GAP_MS: 5000, OPEN_MS: 15000,
+    PIN_MS: 30000, PIN_MAX: 8, PIN_TRIES: 5, PIN_LOCK_MS: 60000,   // kiosk-voice-exitpin-20261111
+    pin: '', pinBusy: false, pinWrong: 0, pinLockUntil: 0, pinLockTimer: 0, pinRefreshed: false,
     MSG: '關閉後回到桌面。\n要再開：點桌面上的「語音點餐」。',
     held: { l: null, r: null }, until: { l: 0, r: 0 }, glow: { l: 0, r: 0 }, hideTimer: 0, failTimer: 0,
     init: function () {
@@ -4016,8 +4079,23 @@ body.is-demo .demo-chip{display:inline-block}
         ['pointerup', 'pointercancel', 'lostpointercapture'].forEach(function (t) { el.addEventListener(t, function (e) { self.up(side, e.pointerId); }); });
         el.addEventListener('contextmenu', function (e) { e.preventDefault(); });   // 觸控長按不要跳選單
       });
-      $('staff-close').addEventListener('click', function () { self.close(); });
+      $('staff-close').addEventListener('click', function () { self.askPin(); });   // kiosk-voice-exitpin-20261111：先問密碼
       $('staff-cancel').addEventListener('click', function () { self.hide(); });
+      $('pin-pad').addEventListener('click', function (e) {
+        var b = e.target && e.target.closest ? e.target.closest('button[data-k]') : null;
+        if (b && !b.disabled) self.key(b.getAttribute('data-k'));
+      });
+      $('pin-ok').addEventListener('click', function () { self.submitPin(); });
+      $('pin-cancel').addEventListener('click', function () { self.hide(); });
+      document.addEventListener('keydown', function (e) {   // 有接鍵盤也可以直接打數字
+        if (!self.pinOpen()) return;
+        if (/^[0-9]$/.test(e.key)) self.key(e.key);
+        else if (e.key === 'Backspace') self.key('back');
+        else if (e.key === 'Enter') self.submitPin();
+        else if (e.key === 'Escape') self.hide();
+        else return;
+        e.preventDefault();
+      });
     },
     ok: function () { return $('screen-home').classList.contains('is-active') && !Session.active && !this.isOpen(); },
     isOpen: function () { return $('staff-panel').classList.contains('is-open'); },
@@ -4057,8 +4135,76 @@ body.is-demo .demo-chip{display:inline-block}
         $('screen-home').classList.remove('hot-' + side);
       });
     },
+    pinHashNow: function () { return CONFIG.exitPinHash || (Remote.loaded ? '' : storeGet('kiosk_exit_pin')); },   // 讀不到 manage 設定：用上次記住的
+    pinOpen: function () { return this.isOpen() && !$('staff-pin').hidden; },
+    view: function (pin) { $('staff-menu').hidden = !!pin; $('staff-pin').hidden = !pin; document.querySelector('.staff-box').classList.toggle('is-pin', !!pin); },
+    later: function (ms) { var self = this; clearTimeout(this.hideTimer); this.hideTimer = setTimeout(function () { self.hide(); }, ms); },
+    askPin: function () {
+      if (!PIN_HASH_RE.test(this.pinHashNow())) { this.close(); return; }   // 沒設密碼：照舊直接關
+      this.pin = ''; this.pinBusy = false; this.pinRefreshed = false;
+      this.view(true);
+      this.renderPin('');
+      this.later(this.PIN_MS);
+    },
+    locked: function () { return Date.now() < this.pinLockUntil; },
+    renderPin: function (msg, bad) {
+      var dots = $('pin-dots'), n = this.pin.length, html = '';
+      for (var i = 0; i < n; i++) html += '<span>●</span>';
+      dots.innerHTML = n ? html : '<span class="pin-empty">用數字鍵輸入</span>';
+      var locked = this.locked();
+      if (locked) { msg = '錯太多次，請 ' + Math.ceil((this.pinLockUntil - Date.now()) / 1000) + ' 秒後再試'; bad = true; }
+      $('pin-msg').textContent = msg || '';
+      $('pin-msg').classList.toggle('is-bad', !!bad);
+      var off = locked || this.pinBusy;
+      var keys = $('pin-pad').querySelectorAll('button');
+      for (var k = 0; k < keys.length; k++) keys[k].disabled = off;
+      $('pin-ok').disabled = off || n < 4;
+    },
+    key: function (k) {
+      if (!this.pinOpen() || this.pinBusy || this.locked()) return;
+      if (k === 'clear') this.pin = '';
+      else if (k === 'back') this.pin = this.pin.slice(0, -1);
+      else if (/^[0-9]$/.test(k) && this.pin.length < this.PIN_MAX) this.pin += k;
+      this.renderPin('');
+      this.later(this.PIN_MS);
+    },
+    submitPin: function () {
+      if (!this.pinOpen() || this.pinBusy || this.locked() || this.pin.length < 4) return;
+      var self = this, pin = this.pin;
+      this.pinBusy = true;
+      this.renderPin('檢查中…');
+      clearTimeout(this.hideTimer);
+      pinMatches(pin, this.pinHashNow()).then(function (good) {
+        if (good || self.pinRefreshed) return good;
+        self.pinRefreshed = true;   // 剛在 manage 改了密碼、平板還沒讀到：讀一次最新設定再比一次
+        return Promise.race([refreshSettings(2500), new Promise(function (r) { setTimeout(r, 2600); })]).then(function () {
+          return pinMatches(pin, self.pinHashNow());
+        });
+      }).then(function (good) {
+        self.pinBusy = false; self.pin = '';
+        if (!self.pinOpen()) return;
+        if (good) { self.pinWrong = 0; self.close(); return; }
+        self.pinWrong++;
+        var box = document.querySelector('.staff-box');
+        box.classList.remove('is-shake'); void box.offsetWidth; box.classList.add('is-shake');
+        if (self.pinWrong >= self.PIN_TRIES) {
+          self.pinWrong = 0;
+          self.pinLockUntil = Date.now() + self.PIN_LOCK_MS;
+          clearInterval(self.pinLockTimer);
+          self.pinLockTimer = setInterval(function () {
+            if (!self.pinOpen() || !self.locked()) { clearInterval(self.pinLockTimer); if (self.pinOpen()) self.renderPin(''); return; }
+            self.renderPin('');
+          }, 250);
+          self.renderPin('');
+        } else {
+          self.renderPin('密碼不對，請再試一次（還可以試 ' + (self.PIN_TRIES - self.pinWrong) + ' 次）', true);
+        }
+        self.later(self.PIN_MS);
+      });
+    },
     show: function () {
       this.reset();
+      this.view(false);   // kiosk-voice-exitpin-20261111
       $('staff-msg').textContent = this.MSG;
       $('staff-close').disabled = false;
       $('staff-panel').classList.add('is-open');
@@ -4069,8 +4215,11 @@ body.is-demo .demo-chip{display:inline-block}
     hide: function () {
       clearTimeout(this.hideTimer); clearTimeout(this.failTimer);
       $('staff-panel').classList.remove('is-open');
+      this.pin = ''; this.view(false);   // kiosk-voice-exitpin-20261111：輸入到一半的密碼不留
     },
     close: function () {
+      this.view(false);   // kiosk-voice-exitpin-20261111：關不掉時的提示顯示在選單
+      $('staff-msg').textContent = '正在關閉…';
       $('staff-close').disabled = true;
       try { WaitLearn.abort(); } catch (_) {}
       try { if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen(); } catch (_) {}
@@ -4844,7 +4993,7 @@ body.is-demo .demo-chip{display:inline-block}
   }
 
   // 測試用
-  window.__kiosk = { runTool: runTool, findItem: findItem, setMenu: setMenu, Order: Order, Menu: Menu, buildInstructions: buildInstructions, buildKeyterms: buildKeyterms, fixTypos: fixTypos, applyRemoteDict: applyRemoteDict, Dict: Dict, sessionUpdate: sessionUpdate, CONFIG: CONFIG, Session: Session, goHome: goHome, showError: showError, goDone: goDone, Submit: Submit, buildOrderData: buildOrderData, speakName: speakName, submitOrder: submitOrder, businessWindow: businessWindow, applyVoiceSettings: applyVoiceSettings, transcriptDishes: transcriptDishes, showTypos: showTypos, Tm: Tm, Hold: Hold, Ack: Ack, setUser: setUser, setAgent: setAgent, demoStop: demoStop, startWith: startWith, beginSessionUI: beginSessionUI, Greet: Greet, Pre: Pre, onReady: onReady, onMicChunk: onMicChunk, needsTalk: needsTalk, quietAfterTools: quietAfterTools, startLive: startLive, flavorFromWords: flavorFromWords, onResponseDone: onResponseDone, dayVoice: dayVoice, sessionVoice: sessionVoice, refreshSettings: refreshSettings, Remote: Remote, renderPromptView: renderPromptView, choiceAsk: choiceAsk, Turn: Turn, resetOffers: resetOffers, Offers: Offers, Pending: Pending, closingLine: closingLine, closingResponse: closingResponse, pressDineMode: pressDineMode, handleEvent: handleEvent, Log: Log, Rec: Rec, AudioIO: AudioIO, Jank: Jank, netText: netText, currentGreeting: currentGreeting, isMorning: isMorning, setGreeting: setGreeting, userPressedDone: userPressedDone, isSwap: isSwap, stripSwaps: stripSwaps, forAgent: forAgent, plainNext: plainNext, Fan: Fan, Wait: Wait, WaitLearn: WaitLearn, Staff: Staff, rescueChoice: rescueChoice, heardAssign: heardAssign, menuSwap: menuSwap, takeSwaps: takeSwaps, mergeEarlierDrink: mergeEarlierDrink, lineInfo: lineInfo, calcLine: calcLine, optionDish: optionDish, nameOption: nameOption, styleLabel: styleLabel, CustomRules: CustomRules, verdict: verdict, screenBag: screenBag, pickExternalMic: pickExternalMic, refreshMicStatus: refreshMicStatus, closedReason: closedReason, renderPaused: renderPaused, setSettings: function (v) { Settings = v; }, tick: tick, teardown: teardown, requestResponse: requestResponse, renderHomeText: renderHomeText };
+  window.__kiosk = { runTool: runTool, findItem: findItem, setMenu: setMenu, Order: Order, Menu: Menu, buildInstructions: buildInstructions, buildKeyterms: buildKeyterms, fixTypos: fixTypos, applyRemoteDict: applyRemoteDict, Dict: Dict, sessionUpdate: sessionUpdate, CONFIG: CONFIG, Session: Session, goHome: goHome, showError: showError, goDone: goDone, Submit: Submit, buildOrderData: buildOrderData, speakName: speakName, submitOrder: submitOrder, businessWindow: businessWindow, applyVoiceSettings: applyVoiceSettings, transcriptDishes: transcriptDishes, showTypos: showTypos, Tm: Tm, Hold: Hold, Ack: Ack, setUser: setUser, setAgent: setAgent, demoStop: demoStop, startWith: startWith, beginSessionUI: beginSessionUI, Greet: Greet, Pre: Pre, onReady: onReady, onMicChunk: onMicChunk, needsTalk: needsTalk, quietAfterTools: quietAfterTools, startLive: startLive, flavorFromWords: flavorFromWords, onResponseDone: onResponseDone, dayVoice: dayVoice, sessionVoice: sessionVoice, refreshSettings: refreshSettings, Remote: Remote, renderPromptView: renderPromptView, choiceAsk: choiceAsk, Turn: Turn, resetOffers: resetOffers, Offers: Offers, Pending: Pending, closingLine: closingLine, closingResponse: closingResponse, pressDineMode: pressDineMode, handleEvent: handleEvent, Log: Log, Rec: Rec, AudioIO: AudioIO, Jank: Jank, netText: netText, currentGreeting: currentGreeting, isMorning: isMorning, setGreeting: setGreeting, userPressedDone: userPressedDone, isSwap: isSwap, stripSwaps: stripSwaps, pinHash: pinHash, pinMatches: pinMatches, forAgent: forAgent, plainNext: plainNext, Fan: Fan, Wait: Wait, WaitLearn: WaitLearn, Staff: Staff, rescueChoice: rescueChoice, heardAssign: heardAssign, menuSwap: menuSwap, takeSwaps: takeSwaps, mergeEarlierDrink: mergeEarlierDrink, lineInfo: lineInfo, calcLine: calcLine, optionDish: optionDish, nameOption: nameOption, styleLabel: styleLabel, CustomRules: CustomRules, verdict: verdict, screenBag: screenBag, pickExternalMic: pickExternalMic, refreshMicStatus: refreshMicStatus, closedReason: closedReason, renderPaused: renderPaused, setSettings: function (v) { Settings = v; }, tick: tick, teardown: teardown, requestResponse: requestResponse, renderHomeText: renderHomeText };
 })();
 </script>
 </body>
