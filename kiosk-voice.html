@@ -1400,7 +1400,7 @@ body.is-demo .demo-chip{display:inline-block}
   // 不同句才點飲料（或數量對不上）：點餐員問一次「要不要把○○和○○做成套餐？」，顧客說好才用 make_combo 合併。
   // 先點飲料、後點套餐（套餐飲料還沒選）也一樣問「剛剛點的○○要當套餐飲料嗎？」
   var Offers = { asked: {}, lines: {}, kinds: {}, variants: {}, askSeen: {} };   // asked：問過的「主餐 id:飲料 id」；lines：問過的那幾項（顧客說不用，就不再拿它們來問）；kinds：問過套餐／單點的那道
-  function resetOffers() { Offers.asked = {}; Offers.lines = {}; Offers.kinds = {}; Offers.variants = {}; Offers.askSeen = {}; }
+  function resetOffers() { Offers.asked = {}; Offers.lines = {}; Offers.kinds = {}; Offers.variants = {}; Offers.askSeen = {}; Offers.pendingCombo = null; }
   // kiosk-voice-posextras-20261105：點餐員直接傳了「4號辣卡脆雞堡單點」，但顧客只說「四號辣卡脆雞堡」（沒說套餐或單點）→ 先問一次
   var KIND_WORD_RE = /套餐|單點|單的|不要套|不用套|不要飲料|不用飲料|沒有飲料/;
   // kiosk-voice-choiceguard-20261105：顧客這句話說了套餐／單點、有蛋有肉／無蛋無肉 → 這道記起來，不用再問
@@ -1515,6 +1515,112 @@ body.is-demo .demo-chip{display:inline-block}
     markChanged(target);
     return target;
   }
+  // kiosk-voice-cupsize-20261112：杯型一定要顧客說過（這句或上一句），點餐員自己加的拿掉，照菜單問
+  function sizeOk(sz) {
+    var now = norm(Session.userLine || '');
+    if (!now) return true;   // 不知道顧客說了什麼（測試、店員）：不擋
+    var t = toTrad(String(Session.userLine || '') + ' ' + String(Session.prevUserLine || ''));
+    return sz === '大杯' ? /大/.test(t) : /中|小/.test(t);
+  }
+  function guardSizes(list) {
+    var dropped = [];
+    var keep = (list || []).map(function (x) {
+      var str = String(x == null ? '' : x), n = norm(str), bare = /^(大|中|小)(杯|的|杯的)?$/.exec(n);
+      var sz = bare ? (bare[1] === '大' ? '大杯' : '中杯') : cupSize(str);
+      if (!sz || sizeOk(sz)) return str;
+      dropped.push(str);
+      return bare ? '' : str.replace(/[（(]\s*(大杯|中杯|小杯)\s*[）)]/g, '').replace(/(大杯|中杯|小杯)的?/g, '').trim();
+    }).filter(Boolean);
+    if (dropped.length) Log.add('system', '點餐員自己加了杯型（' + dropped.join('、') + '），顧客沒說，拿掉、照菜單問');
+    return { keep: keep, dropped: dropped };
+  }
+  // 套餐飲料只說了飲料（美式咖啡），套餐裡有中杯、大杯兩種 → 記下來，問「套餐的美式咖啡要中杯還是大杯？」
+  function setDrinkFromWord(line, word) {
+    if (!line || !isSetItem(line.item)) return false;
+    var gi = drinkGroupIdx(line.item);
+    if (gi < 0 || line.answered[gi]) return false;
+    var f = findItem(word);
+    if (!f.item || !isDrinkItem(f.item)) return false;
+    var base = drinkBase(f.item.name), hits = [], g = line.item.optionGroups[gi];
+    (g.choices || []).forEach(function (c, ci) { if (drinkBase(c.name) === base) hits.push(ci); });
+    if (!hits.length) return false;
+    var said = (f.implied || []).map(cupSize).filter(Boolean)[0] || cupSize(word);
+    var pick = hits.filter(function (ci) { return hits.length === 1 || (said && cupSize(g.choices[ci].name) === said); })[0];
+    (f.implied || []).forEach(function (x) { if (!cupSize(x)) applyOne(line, x); });   // 熱美式 → 溫
+    if (pick !== undefined) { line.sel[gi] = pick; line.answered[gi] = true; return true; }
+    line.sizeHint = line.sizeHint || {};
+    line.sizeHint[gi] = hits;
+    return true;
+  }
+  function takeHintSize(line, sels) {   // 顧客回答「中杯」：套餐飲料選好
+    if (!line || !line.sizeHint) return sels;
+    return (sels || []).filter(function (x) {
+      var n = norm(String(x || '')), bare = /^(要)?(大|中|小)(杯|的|杯的)?$/.exec(n);
+      var sz = bare ? (bare[2] === '大' ? '大杯' : '中杯') : '';
+      if (!sz) return true;
+      var used = false;
+      Object.keys(line.sizeHint).forEach(function (gi) {
+        if (used || line.answered[gi]) return;
+        var g = line.item.optionGroups[gi];
+        var ci = line.sizeHint[gi].filter(function (c) { return cupSize(g.choices[c].name) === sz; })[0];
+        if (ci !== undefined) { line.sel[gi] = ci; line.answered[gi] = true; delete line.sizeHint[gi]; used = true; }
+      });
+      return !used;
+    });
+  }
+  // 套餐飲料說「剛剛那杯熱美式」→ 找點餐單上另外點的那杯，從 selections 拿掉，之後併進套餐
+  function takeEarlierRef(item, sels, self) {
+    if (!item || !isSetItem(item) || !EARLIER_DRINK_RE.test(norm(Session.userLine || ''))) return null;
+    var drinks = Order.lines.filter(function (l) { return comboDrink(l) && l !== self; });
+    if (!drinks.length) return null;
+    var d = null, rest = [];
+    (sels || []).forEach(function (x) {
+      if (d) { rest.push(x); return; }
+      var str = String(x == null ? '' : x).replace(/[（(]\s*(大杯|中杯|小杯)\s*[）)]/g, '');
+      var f = findItem(str), hit = null;
+      if (f.item && isDrinkItem(f.item)) hit = drinks.filter(function (l) { return l.item === f.item || drinkBase(l.item.name) === drinkBase(f.item.name); }).pop() || null;
+      else if (EARLIER_DRINK_RE.test(norm(str)) && drinks.length === 1) hit = drinks[0];
+      if (hit) d = hit; else rest.push(x);
+    });
+    return d ? { d: d, sels: rest } : null;
+  }
+  function linkEarlier(set, d, info) {
+    if (!set || !d || Order.lines.indexOf(d) === -1 || !comboMeal(set)) return;
+    var say = drinkSay(d);
+    Offers.lines[set.id] = Offers.lines[d.id] = true;   // 不要再問一次要不要當套餐飲料
+    if (!drinkPicks(d).sizeAnswered) {
+      Offers.pendingCombo = { meal: set.id, drink: d.id };
+      info.drink_wait = '剛剛點的' + plainName(d.item.name) + '還沒說杯型，系統會先問；顧客回答後自動當套餐飲料';
+      Log.add('system', '套餐飲料是剛剛點的' + plainName(d.item.name) + '：先問那杯的杯型，回答後自動併進套餐');
+      return;
+    }
+    var dr = comboDraft(set, d);
+    if (dr.error) { info.message = (info.message ? info.message + '；' : '') + notInSetText(set, d, dr.set); return; }
+    Offers.asked[set.id + ':' + d.id] = true;
+    var target = applyCombo(set, d, dr);
+    Object.assign(info, lineInfo(target));
+    info.merged_drink = '剛剛點的' + say + '就是套餐飲料，那杯已經併進套餐，不會變兩杯';
+    Log.add('system', '套餐飲料就是剛剛點的' + say + '：那杯併進套餐');
+  }
+  function pendingComboDone(d, info) {   // 剛剛那杯說了杯型 → 自動併進套餐
+    var pc = Offers.pendingCombo;
+    if (!pc || pc.drink !== d.id || !drinkPicks(d).sizeAnswered) return false;
+    Offers.pendingCombo = null;
+    var meal = Order.lines.filter(function (l) { return l.id === pc.meal; })[0];
+    if (!meal || !comboMeal(meal)) return false;
+    var dr = comboDraft(meal, d);
+    if (dr.error) return false;
+    var say = drinkSay(d);
+    Offers.asked[meal.id + ':' + d.id] = true;
+    var target = applyCombo(meal, d, dr);
+    var left = Order.lines.indexOf(d) !== -1 ? d.qty : 0;
+    Object.keys(info).forEach(function (k) { delete info[k]; });
+    Object.assign(info, lineInfo(target), settleLine(target));
+    info.ok = true; info.made_combo = true;
+    info.message = say + '已經當作' + speakName(target.item.name) + '的飲料（第' + lineNo(target) + '項）' + (left ? '；第' + lineNo(d) + '項還有' + left + '杯' + say + '另外算' : '');
+    Log.add('system', say + '當作' + speakName(target.item.name) + '的飲料');
+    return true;
+  }
   function comboMeal(l) {   // 可以配飲料變套餐的那一項：單點（有同一道的套餐），或套餐飲料還沒選
     if (!l || l.parentId || meatChildren(l).length) return false;
     if (isSetItem(l.item)) return !l.answered[drinkGroupIdx(l.item)];
@@ -1532,7 +1638,7 @@ body.is-demo .demo-chip{display:inline-block}
     var base = drinkBase(c.name), size = cupSize(c.name);
     return Order.lines.filter(function (d) {
       if (!comboDrink(d) || fresh.indexOf(d) !== -1 || drinkBase(d.item.name) !== base) return false;
-      var ds = cupSize(drinkPicks(d).size);
+      var pk = drinkPicks(d), ds = pk.sizeAnswered ? cupSize(pk.size) : '';   // kiosk-voice-cupsize-20261112：還沒說杯型的不算有杯型
       return !size || !ds || ds === size;
     })[0] || null;
   }
@@ -2146,6 +2252,11 @@ body.is-demo .demo-chip{display:inline-block}
         if (de >= 0) { entry.ask = '要加蛋嗎？'; entry.default = g.choices[de].name; }
       }
       if (line.hints && line.hints[gi]) entry.ask = '要' + line.hints[gi].join('還是') + '？';   // kiosk-voice-waitlearn-20261110：顧客說了「熟蛋」
+      if (line.sizeHint && line.sizeHint[gi]) {   // kiosk-voice-cupsize-20261112：套餐飲料說了飲料、沒說杯型
+        var hs = line.sizeHint[gi].map(function (ci) { return g.choices[ci].name; });
+        entry.options = hs; entry.dish = dishLabel(line.item);
+        entry.ask = '套餐的' + plainName(drinkBaseName(hs[0])) + '要' + hs.map(cupSize).join('還是') + '？';
+      }
       out.push(entry);
     });
     return out;
@@ -2447,7 +2558,7 @@ body.is-demo .demo-chip{display:inline-block}
   }
   function joinNote(a, list) { return [String(a || '').trim()].concat(list || []).filter(Boolean).map(toTrad).join('、'); }
   function getLine(n) { n = Math.round(Number(n)); return n >= 1 && n <= Order.lines.length ? Order.lines[n - 1] : null; }
-  function resetOrder() { Order.lines = []; Order.changedId = 0; Order.dineMode = ''; Order.askingMode = false; Order.incomplete = ''; Turn.adds = {}; Turn.warned = {}; resetOffers(); Pending.egg = null; Pending.heard = null; resetSubmit(); renderOrder(); }
+  function resetOrder() { Session.prevUserLine = ''; Order.lines = []; Order.changedId = 0; Order.dineMode = ''; Order.askingMode = false; Order.incomplete = ''; Turn.adds = {}; Turn.warned = {}; resetOffers(); Pending.egg = null; Pending.heard = null; resetSubmit(); renderOrder(); }
 
   /* ═════════ 工具（給 Grok 呼叫） ═════════ */
   var TOOLS_SPEC = [
@@ -2643,6 +2754,10 @@ body.is-demo .demo-chip{display:inline-block}
       var sels = takeSwaps(Array.isArray(spec.selections) ? spec.selections : [], swapBag, f.item);
       var keptNoteA = stripSwaps(spec.note, swapBag, f.item);   // kiosk-voice-menuswap-20261110：備註裡菜單上有的換法改成選項
       sels = sels.concat(swapBag.toSel.splice(0));
+      sels = guardSizes(sels).keep;   // kiosk-voice-cupsize-20261112：顧客沒說的杯型拿掉
+      if (f && f.implied && f.implied.length) f.implied = guardSizes(f.implied).keep;
+      var earlyRef = f && f.item ? takeEarlierRef(f.item, sels, null) : null;   // 套餐飲料＝剛剛那杯
+      if (earlyRef) sels = earlyRef.sels;
       var bk = f.item ? numberedKey(f.item.name) : '';
       if (bk && blocked[bk]) {
         var already = Order.lines.filter(function (l) { return blocked[bk].indexOf(l.item) !== -1 && (Turn.adds[bk] || []).indexOf(l.item) !== -1; })[0];
@@ -2684,6 +2799,7 @@ body.is-demo .demo-chip{display:inline-block}
       var flavors = flavorFromWords(line, said, eggGuard.keep);   // kiosk-voice-flavor-20261106
       var drinkWords = unmatched.filter(function (u) { var d = findItem(u); return d.item && isDrinkItem(d.item); });
       unmatched = unmatched.filter(function (u) { return drinkWords.indexOf(u) === -1; });
+      drinkWords = drinkWords.filter(function (w) { return !setDrinkFromWord(line, w); });   // kiosk-voice-cupsize-20261112：套餐飲料沒說杯型 → 問杯型
       unmatched = takeSwaps(unmatched, swapBag, f.item);
       heardApply(line, heardBy[i] || heldHeard(f.item), swapBag, unmatched);   // kiosk-voice-heard-20261110：點餐員漏放的菜單選項，照顧客原句補上
       line.note = rescueNote(line, joinNote(keptNoteA, noteAdds(swapBag, keptNoteA).concat(noteWorthy(unmatched))));   // kiosk-voice-waitlearn-20261110：備註裡的「抹奶油」也對選項
@@ -2698,6 +2814,7 @@ body.is-demo .demo-chip{display:inline-block}
       lineOfSpec[i] = target;
       if (extraTurn && isDrinkItem(target.item)) target.extraDrink = true;
       var info = Object.assign(lineInfo(target), settled);
+      if (earlyRef && target === line) linkEarlier(target, earlyRef.d, info);   // kiosk-voice-cupsize-20261112
       if (target === line) mergeEarlierDrink(target, Object.keys(lineOfSpec).map(function (k) { return lineOfSpec[k]; }).concat([target]), info);   // kiosk-voice-menuswap-20261110
       info.ok = true;
       if (eggGuard.dropped.length) info.egg_kept = eggKeptText(target, eggGuard.dropped);
@@ -2758,6 +2875,10 @@ body.is-demo .demo-chip{display:inline-block}
     var noteU = typeof args.note === 'string' && args.note.trim() ? stripSwaps(args.note, swapBagU, line.item) : null;   // kiosk-voice-menuswap-20261110
     var noteSel = swapBagU.toSel.splice(0);
     sels = sels.concat(noteSel);
+    sels = guardSizes(sels).keep;   // kiosk-voice-cupsize-20261112：顧客沒說的杯型拿掉
+    sels = takeHintSize(line, sels);   // 「中杯」→ 套餐飲料選好
+    var earlyRefU = takeEarlierRef(line.item, sels, line);   // 套餐飲料＝剛剛那杯
+    if (earlyRefU) sels = earlyRefU.sels;
     var variantSels = sels.filter(isVariantWord), newName = String(args.name || '').trim(), switched = {};
     if (newName || variantSels.length) {
       switched = switchLine(line, (newName + ' ' + variantSels.join(' ')).trim(), !!newName);
@@ -2784,6 +2905,7 @@ body.is-demo .demo-chip{display:inline-block}
     var eggGuardU = guardEggStyle(line.item, plainSels);
     plainSels = eggGuardU.keep;
     var unmatched = applySelections(line, plainSels, args.remove_selections);
+    unmatched = unmatched.filter(function (u) { return !setDrinkFromWord(line, u); });   // kiosk-voice-cupsize-20261112
     unmatched = takeSwaps(unmatched, swapBagU, line.item);
     if (swapBagU.length || unmatched.length) heardApply(line, heardAssign([{ item: line.item }])[0], swapBagU, unmatched);   // kiosk-voice-garble-20261111
     if (noteU !== null && (noteU || (!swapBagU.length && !noteSel.length))) line.note = joinNote(noteU, []);   // 只想加不行的或菜單上的換法：原本的備註不動
@@ -2799,7 +2921,9 @@ body.is-demo .demo-chip{display:inline-block}
     info.ok = true;
     swapInfo(info, swapBagU);
     if (unmatchedToTell(unmatched).length) info.unmatched = unmatchedToTell(unmatched);
+    if (earlyRefU) linkEarlier(line, earlyRefU.d, info);   // kiosk-voice-cupsize-20261112
     if ((plainSels.length || switched.switched_from) && isSetItem(line.item)) mergeEarlierDrink(line, [line], info);   // kiosk-voice-menuswap-20261110
+    pendingComboDone(line, info);   // kiosk-voice-cupsize-20261112：剛剛那杯說了杯型 → 併進套餐
     info.order_total = orderTotal();
     var offer = comboOffer([line]);
     if (offer) info.combo_offer = offer;
@@ -3958,7 +4082,7 @@ body.is-demo .demo-chip{display:inline-block}
         }
         clearTimer('lack');
         Tm.start();
-        Session.userSpeaking = true; Session.userLine = ''; touch();
+        Session.userSpeaking = true; if (Session.userLine) Session.prevUserLine = Session.userLine; Session.userLine = ''; touch();   // kiosk-voice-cupsize-20261112：留上一句（杯型可能上一句才說）
         Turn.adds = {}; Log.turn++;
         if (CONFIG.bargeIn && (AudioIO.isPlaying() || Session.responseActive)) {
           if (!Session.cutOff) Log.add('system', '顧客插話，點餐員停下來');
@@ -4001,8 +4125,45 @@ body.is-demo .demo-chip{display:inline-block}
   }
   // 加餐、修改、刪除都成功、沒有要問也沒有要說的 → 指定只說這一句（點餐員不會自己多說別的）
   var NEXT_LINE = '還要點其他的嗎？';
+  // kiosk-voice-cupsize-20261112：點餐單上還有沒問完的 → 請點餐員只問那一句（照點餐單順序，套餐先問飲料）
+  function firstMissing() {
+    for (var i = 0; i < Order.lines.length; i++) {
+      var l = Order.lines[i], miss = missingOf(l);
+      if (!miss.length) continue;
+      if (isSetItem(l.item)) {
+        var dg = (l.item.optionGroups[drinkGroupIdx(l.item)] || {}).groupName;
+        var dm = miss.filter(function (m) { return m.question === dg; })[0];
+        if (dm) return { line: l, m: dm };
+      }
+      return { line: l, m: miss[0] };
+    }
+    return null;
+  }
+  function missingAsk(line, m) {
+    var dish = Order.lines.length > 1 ? dishLabel(line.item) : '';
+    if (m.ask) return m.dish ? m.ask : dish + m.ask;
+    var q = String(m.question || ''), opts = (m.options || []).map(String), set = isSetItem(line.item);
+    if (set && q === (line.item.optionGroups[drinkGroupIdx(line.item)] || {}).groupName) return (dish || '') + '套餐飲料要什麼？';
+    if (set && /溫度|冰/.test(q)) dish = (dish ? dish + '的' : '') + '飲料';
+    if (opts.length >= 2 && opts.length <= 4) return dish + '要' + (opts.length === 2 ? opts[0] + '還是' + opts[1] : opts.slice(0, -1).join('、') + '，還是' + opts[opts.length - 1]) + '？';
+    return (dish ? dish + '的' : '') + q + '要哪一種？';
+  }
+  function talkBesidesMissing(r) {
+    if (!r || typeof r !== 'object' || r.ok === false) return true;
+    if (TALK_KEYS.some(function (k) { return r[k] !== undefined && r[k] !== false && r[k] !== null; })) return true;
+    return Array.isArray(r.results) && r.results.some(talkBesidesMissing);
+  }
+  function nextAsk(list) {
+    if (!list || !list.length) return undefined;
+    if (!list.every(function (x) { return /^(add_items|update_item|remove_item|make_combo)$/.test(x.name) && !talkBesidesMissing(x.result); })) return undefined;
+    var nx = firstMissing();
+    if (!nx) return undefined;
+    var q = missingAsk(nx.line, nx.m);
+    return { ask: q, instructions: '你是早餐店的點餐員。現在只問這一句，一個字都不要改，也不要多說別的話：「' + q + '」（顧客剛剛那句話還有沒加到的餐點或沒改到的地方，才先呼叫工具處理。）' };
+  }
   function plainNext(list) {
     if (!list || !list.length) return undefined;
+    if (firstMissing()) return undefined;   // kiosk-voice-cupsize-20261112：還有沒問完的，不能說「還要點其他的嗎？」
     if (!list.every(function (x) { return /^(add_items|update_item|remove_item)$/.test(x.name) && !needsTalk(x.result); })) return undefined;
     return { instructions: '你是早餐店的點餐員。顧客剛剛說的都已經處理好了，沒有要問的。現在只說這一句，一個字都不要改，也不要多說別的話：「' + NEXT_LINE + '」（顧客剛剛那句話還有沒加到的餐點或沒改到的地方，才先呼叫工具處理。）' };
   }
@@ -4034,7 +4195,7 @@ body.is-demo .demo-chip{display:inline-block}
   var Hold = { on: false, buf: [] };
   // kiosk-voice-wait-20261110：客人說「沒有了／點完了」→ 平板說「好的，請稍等」（代替「好的」），客人知道還有下一句
   //   聲音怎麼來：結帳那句說完後，請點餐員多說一次這句（不播出來，只存）；每個聲音、每種句子存一次
-  var DONE_SAID = /^(嗯|恩|欸|ㄟ|喔|哦|好|對|那|啊)*(沒有了?|沒了|沒有其他的?了?|沒有要點了|不用了?|不要了|這樣就好了?|這樣子?就可以了?|這樣就夠了|就這樣(就好)?(了|子)?|先這樣(就好)?(了|子)?|點完了|點好了|我點好了|我點完了|好了|可以了|夠了|就這些|這些就好|結帳|買單)(謝謝你?|喔|哦|囉|啦|啊|了)*$/;
+  var DONE_SAID = /^(嗯|恩|欸|ㄟ|喔|哦|好|對|那|啊)*((沒有了?|沒了|沒有其他的?了?|沒有要點了|不用了?|不要了|這樣就好了?|這樣子?就可以了?|這樣就夠了|就這樣(就好)?(了|子)?|先這樣(就好)?(了|子)?|點完了|點好了|我點好了|我點完了|好了|可以了|夠了|就這些|這些就好|結帳|買單)(謝謝你?|喔|哦|囉|啦|啊|了)*)+$/   // kiosk-voice-cupsize-20261112：「沒有了，這樣就好，謝謝」好幾句連在一起也算;
   var Wait = {
     said: false,
     text: function () { return cfgText(CONFIG.waitText, 20); },
@@ -4457,8 +4618,9 @@ body.is-demo .demo-chip{display:inline-block}
         if (!Session.active || Session.userSpeaking) return;
         var doneTools = Session.toolResults.splice(0);
         if (quietAfterTools(doneTools)) return;   // kiosk-voice-fast2-20261106
-        var only = closingResponse() || plainNext(doneTools);   // kiosk-voice-nextline-20261111
-        if (only && only.instructions.indexOf(NEXT_LINE) !== -1) Log.add('system', '沒有要問的，請點餐員只說「' + NEXT_LINE + '」');
+        var only = closingResponse() || plainNext(doneTools) || nextAsk(doneTools);   // kiosk-voice-nextline-20261111；kiosk-voice-cupsize-20261112
+        if (only && only.ask) { Log.add('system', '還有沒問完的，請點餐員只問「' + only.ask + '」'); only = { instructions: only.instructions }; }
+        else if (only && only.instructions.indexOf(NEXT_LINE) !== -1) Log.add('system', '沒有要問的，請點餐員只說「' + NEXT_LINE + '」');
         Tm.mark('follow'); Session.expectFollow = true; requestResponse(only);
       });
       return;
@@ -5033,7 +5195,7 @@ body.is-demo .demo-chip{display:inline-block}
   }
 
   // 測試用
-  window.__kiosk = { runTool: runTool, findItem: findItem, setMenu: setMenu, Order: Order, Menu: Menu, buildInstructions: buildInstructions, buildKeyterms: buildKeyterms, fixTypos: fixTypos, applyRemoteDict: applyRemoteDict, Dict: Dict, sessionUpdate: sessionUpdate, CONFIG: CONFIG, Session: Session, goHome: goHome, showError: showError, goDone: goDone, Submit: Submit, buildOrderData: buildOrderData, speakName: speakName, submitOrder: submitOrder, businessWindow: businessWindow, applyVoiceSettings: applyVoiceSettings, transcriptDishes: transcriptDishes, showTypos: showTypos, Tm: Tm, Hold: Hold, Ack: Ack, setUser: setUser, setAgent: setAgent, demoStop: demoStop, startWith: startWith, beginSessionUI: beginSessionUI, Greet: Greet, Pre: Pre, onReady: onReady, onMicChunk: onMicChunk, needsTalk: needsTalk, quietAfterTools: quietAfterTools, startLive: startLive, flavorFromWords: flavorFromWords, onResponseDone: onResponseDone, dayVoice: dayVoice, sessionVoice: sessionVoice, refreshSettings: refreshSettings, Remote: Remote, renderPromptView: renderPromptView, choiceAsk: choiceAsk, Turn: Turn, resetOffers: resetOffers, Offers: Offers, Pending: Pending, closingLine: closingLine, closingResponse: closingResponse, pressDineMode: pressDineMode, handleEvent: handleEvent, Log: Log, Rec: Rec, AudioIO: AudioIO, Jank: Jank, netText: netText, currentGreeting: currentGreeting, isMorning: isMorning, setGreeting: setGreeting, userPressedDone: userPressedDone, isSwap: isSwap, stripSwaps: stripSwaps, pinHash: pinHash, pinMatches: pinMatches, forAgent: forAgent, plainNext: plainNext, Fan: Fan, Wait: Wait, WaitLearn: WaitLearn, Staff: Staff, rescueChoice: rescueChoice, heardAssign: heardAssign, menuSwap: menuSwap, takeSwaps: takeSwaps, mergeEarlierDrink: mergeEarlierDrink, lineInfo: lineInfo, calcLine: calcLine, optionDish: optionDish, nameOption: nameOption, styleLabel: styleLabel, CustomRules: CustomRules, verdict: verdict, screenBag: screenBag, pickExternalMic: pickExternalMic, refreshMicStatus: refreshMicStatus, closedReason: closedReason, renderPaused: renderPaused, setSettings: function (v) { Settings = v; }, tick: tick, teardown: teardown, requestResponse: requestResponse, renderHomeText: renderHomeText };
+  window.__kiosk = { runTool: runTool, findItem: findItem, setMenu: setMenu, Order: Order, Menu: Menu, buildInstructions: buildInstructions, buildKeyterms: buildKeyterms, fixTypos: fixTypos, applyRemoteDict: applyRemoteDict, Dict: Dict, sessionUpdate: sessionUpdate, CONFIG: CONFIG, Session: Session, goHome: goHome, showError: showError, goDone: goDone, Submit: Submit, buildOrderData: buildOrderData, speakName: speakName, submitOrder: submitOrder, businessWindow: businessWindow, applyVoiceSettings: applyVoiceSettings, transcriptDishes: transcriptDishes, showTypos: showTypos, Tm: Tm, Hold: Hold, Ack: Ack, setUser: setUser, setAgent: setAgent, demoStop: demoStop, startWith: startWith, beginSessionUI: beginSessionUI, Greet: Greet, Pre: Pre, onReady: onReady, onMicChunk: onMicChunk, needsTalk: needsTalk, quietAfterTools: quietAfterTools, startLive: startLive, flavorFromWords: flavorFromWords, onResponseDone: onResponseDone, dayVoice: dayVoice, sessionVoice: sessionVoice, refreshSettings: refreshSettings, Remote: Remote, renderPromptView: renderPromptView, choiceAsk: choiceAsk, Turn: Turn, resetOffers: resetOffers, Offers: Offers, Pending: Pending, closingLine: closingLine, closingResponse: closingResponse, pressDineMode: pressDineMode, handleEvent: handleEvent, Log: Log, Rec: Rec, AudioIO: AudioIO, Jank: Jank, netText: netText, currentGreeting: currentGreeting, isMorning: isMorning, setGreeting: setGreeting, userPressedDone: userPressedDone, isSwap: isSwap, stripSwaps: stripSwaps, nextAsk: nextAsk, firstMissing: firstMissing, missingAsk: missingAsk, guardSizes: guardSizes, pinHash: pinHash, pinMatches: pinMatches, forAgent: forAgent, plainNext: plainNext, Fan: Fan, Wait: Wait, WaitLearn: WaitLearn, Staff: Staff, rescueChoice: rescueChoice, heardAssign: heardAssign, menuSwap: menuSwap, takeSwaps: takeSwaps, mergeEarlierDrink: mergeEarlierDrink, lineInfo: lineInfo, calcLine: calcLine, optionDish: optionDish, nameOption: nameOption, styleLabel: styleLabel, CustomRules: CustomRules, verdict: verdict, screenBag: screenBag, pickExternalMic: pickExternalMic, refreshMicStatus: refreshMicStatus, closedReason: closedReason, renderPaused: renderPaused, setSettings: function (v) { Settings = v; }, tick: tick, teardown: teardown, requestResponse: requestResponse, renderHomeText: renderHomeText };
 })();
 </script>
 </body>
