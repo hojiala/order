@@ -30,6 +30,24 @@
         .kv-field input:not([type=range]), .kv-field select { width: 100%; }
         .kv-help { font-size: 12px; line-height: 1.6; color: #94a3b8; margin: 0; }
         .kv-warn { color: #fcd34d; }
+        /* kiosk-voice-billing-20261112：xAI 剩餘額度 */
+        .kv-bill { border: 1px solid #334155; border-radius: 1rem; background: linear-gradient(180deg, #0f2a22 0%, #0b1f19 100%); padding: 1.1rem 1.25rem 1rem; margin-bottom: 1rem; }
+        .kv-bill-head { display: flex; align-items: center; justify-content: space-between; gap: .75rem; flex-wrap: wrap; }
+        .kv-bill-title { font-weight: 800; color: #e2e8f0; font-size: 1rem; }
+        .kv-bill-amt { margin-top: .35rem; font-weight: 900; line-height: 1; letter-spacing: -.02em; font-variant-numeric: tabular-nums; color: #34d399; display: flex; align-items: baseline; gap: .4rem; flex-wrap: wrap; }
+        .kv-bill-amt .cur { font-size: clamp(1.5rem, 4vw, 2.25rem); font-weight: 800; opacity: .85; }
+        .kv-bill-amt .num { font-size: clamp(3.75rem, 13vw, 6.5rem); }
+        .kv-bill-amt.is-low { color: #fbbf24; }
+        .kv-bill-amt.is-empty { color: #f87171; }
+        .kv-bill-twd { margin-top: .4rem; font-size: 1.15rem; font-weight: 700; color: #cbd5e1; }
+        .kv-bill-twd small { font-size: .78rem; font-weight: 500; color: #94a3b8; }
+        .kv-bill-grid { margin-top: .9rem; display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); gap: .6rem; }
+        .kv-bill-grid > div { border-radius: .75rem; background: rgba(15, 23, 42, .55); padding: .55rem .75rem; }
+        .kv-bill-grid span { display: block; font-size: .75rem; color: #94a3b8; }
+        .kv-bill-grid b { display: block; margin-top: .15rem; font-size: 1.15rem; color: #f8fafc; font-variant-numeric: tabular-nums; }
+        .kv-bill-note { margin-top: .7rem; font-size: .78rem; line-height: 1.6; color: #94a3b8; }
+        .kv-bill-err { margin-top: .6rem; border-radius: .6rem; border: 1px solid #7f1d1d; background: rgba(127, 29, 29, .3); color: #fca5a5; padding: .45rem .7rem; font-size: .85rem; }
+        .kv-bill-err.is-soft { border-color: #78350f; background: rgba(120, 53, 15, .3); color: #fcd34d; }
         /* kiosk-voice-rules-20261108：客製化規則 */
         .kv-rules textarea { font-size: 14px; }
         .kv-rule-bad { margin: 0; padding-left: 18px; color: #fca5a5; font-size: 12px; line-height: 1.6; }
@@ -1521,6 +1539,32 @@
                     <p class="text-slate-400 text-sm mt-0.5">店內語音點餐平板的開場白、聲音和規則。儲存後，平板下一位客人按「內用」或「外帶」時就會套用，不用重新整理平板。</p>
                 </div>
                 <span v-if="kvForm" :class="kvForm.enabled ? 'bg-emerald-900/60 text-emerald-300' : 'bg-amber-900/60 text-amber-300'" class="text-xs font-bold px-3 py-1 rounded-full">{{ kvForm.enabled ? '使用中' : '暫停中' }}</span>
+            </div>
+            <!-- kiosk-voice-billing-20261112：xAI 剩餘額度（Pi 用 Management Key 查，manage 只看結果） -->
+            <div class="kv-bill" data-kv-bill>
+                <div class="kv-bill-head">
+                    <span class="kv-bill-title">💰 xAI 剩餘額度</span>
+                    <button type="button" @click="kvBillLoad(true)" :disabled="kvBill.loading" data-kv-bill-refresh class="bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-white text-xs font-bold px-3 py-1.5 rounded-lg">{{ kvBill.loading ? '查詢中…' : '🔄 重新整理' }}</button>
+                </div>
+                <template v-if="kvBill.data">
+                    <div class="kv-bill-amt" :class="kvBillLevel()" data-kv-bill-amount><span class="cur">US$</span><span class="num">{{ kvMoney(kvBill.data.balance_usd) }}</span></div>
+                    <p v-if="kvBill.data.twd_rate" class="kv-bill-twd" data-kv-bill-twd>約 NT$ {{ kvTwd(kvBill.data.balance_usd) }} <small>（以 1 美元 = {{ kvBill.data.twd_rate }} 元估算）</small></p>
+                    <div class="kv-bill-grid">
+                        <div><span>本月已用（{{ Number(String(kvBill.data.month || '').slice(5)) || '' }} 月）</span><b data-kv-bill-month>{{ kvBill.data.month_usd != null ? 'US$ ' + kvMoney(kvBill.data.month_usd) : '—' }}</b></div>
+                        <div><span>今天</span><b data-kv-bill-today>{{ kvBill.data.today_usd != null ? 'US$ ' + kvMoney(kvBill.data.today_usd) : '—' }}</b></div>
+                        <div><span>照本月平均</span><b data-kv-bill-days>{{ kvBill.data.days_left != null ? '約可再用 ' + kvBill.data.days_left + ' 天' : '—' }}</b></div>
+                        <div><span>上次儲值</span><b data-kv-bill-topup>{{ kvBill.data.last_topup ? 'US$ ' + kvMoney(kvBill.data.last_topup.usd) + '（' + kvShortDate(kvBill.data.last_topup.at) + '）' : '—' }}</b></div>
+                    </div>
+                    <p class="kv-bill-note" data-kv-bill-note>
+                        <template v-if="kvBill.data.month_sessions">本月語音點餐 {{ kvBill.data.month_sessions }} 位客人<template v-if="kvBill.data.per_session_usd != null">，平均每位約 US$ {{ kvBill.data.per_session_usd }}<template v-if="kvBill.data.twd_rate">（約 NT$ {{ (kvBill.data.per_session_usd * kvBill.data.twd_rate).toFixed(1) }}）</template></template>。</template>
+                        金額是 xAI 主控台的預付額度，同一個團隊所有用量都算在內。低於 US$10 變黃、低於 US$5 變紅。
+                        <br>更新時間：{{ kvBill.data.fetched_at || '—' }}<template v-if="kvBill.data.cached && kvBill.data.age_sec">（{{ Math.round(kvBill.data.age_sec / 60) }} 分鐘前查的）</template>
+                    </p>
+                    <p v-if="kvBill.data.usage_error" class="kv-bill-err is-soft">本月用量查不到：{{ kvBill.data.usage_error }}（剩餘額度照常）</p>
+                    <p v-if="kvBill.data.limit_reached" class="kv-bill-err">xAI 說已經到用量上限：語音點餐可能會連不上，請到 xAI 主控台儲值或調整上限。</p>
+                </template>
+                <p v-else-if="kvBill.loading" class="mt-3 text-slate-400 text-sm">查詢中…</p>
+                <p v-if="kvBill.error" class="kv-bill-err" :class="{ 'is-soft': kvBill.data && kvBill.data.stale }" data-kv-bill-error>{{ kvBill.error }}</p>
             </div>
             <div class="kv-tabs">
                 <button type="button" :class="{ on: kvView === 'settings' }" @click="kvView = 'settings'">⚙️ 設定</button>
@@ -3514,6 +3558,7 @@ window._resetCountUp = function() {
                 // kiosk-voice-settings-20261031：語音點餐平板設定（settings.kioskVoice；平板每位客人開始點餐時讀一次）
                 kvForm: null, kvDirty: false, kvSaving: false, kvError: '', kvNotice: '',
                 kvRuleTry: { phrase: '吐司換全麥', dish: '' },
+                kvBill: { data: null, loading: false, loaded: false, error: '', at: 0 },   // kiosk-voice-billing-20261112：xAI 剩餘額度
                 kvPin: { a: '', b: '', busy: false, msg: '', bad: false },   // kiosk-voice-exitpin-20261111：店員關閉點餐畫面的密碼（只在這頁，不存）   // kiosk-voice-rules-20261108：客製化規則「試試看」
                 // kiosk-voice-logs-20261101：點餐紀錄（Pi 保存的對話文字與錄音）
                 kvView: 'settings',
@@ -4147,6 +4192,7 @@ window._resetCountUp = function() {
                     this.lineMemberOrdersMember = null;
                     this.loadStaffPresets();
                 } else if (newTab === 'kioskVoice') {
+                    if (!this.kvBill.loaded || Date.now() - this.kvBill.at > 300000) this.kvBillLoad(false);   // kiosk-voice-billing-20261112
                     this.lineMemberOrdersMode = false;
                     this.lineMemberOrdersMember = null;
                     if (!this.kvForm || !this.kvDirty) this.kvInitForm();
@@ -5511,6 +5557,44 @@ window._resetCountUp = function() {
                 var d = saved && saved.updatedAt ? new Date(saved.updatedAt) : null;
                 if (!d || isNaN(d.getTime())) return '還沒存過，平板使用預設值';
                 return '上次儲存：' + d.toLocaleString('zh-TW', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
+            },
+            // ── kiosk-voice-billing-20261112：xAI 剩餘額度 ──
+            kvMoney: function(v) {
+                var n = Number(v);
+                return isFinite(n) ? n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—';
+            },
+            kvTwd: function(usd) {
+                var n = Number(usd) * Number((this.kvBill.data && this.kvBill.data.twd_rate) || 0);
+                return isFinite(n) ? Math.round(n).toLocaleString('en-US') : '—';
+            },
+            kvShortDate: function(iso) {
+                var d = new Date(iso);
+                return isNaN(d.getTime()) ? String(iso || '').slice(0, 10) : d.toLocaleDateString('zh-TW', { month: 'numeric', day: 'numeric', timeZone: 'Asia/Taipei' });
+            },
+            kvBillLevel: function() {
+                var d = this.kvBill.data || {}, b = Number(d.balance_usd), days = d.days_left;
+                if (!isFinite(b)) return '';
+                if (b < 5 || (days != null && days <= 3)) return 'is-empty';
+                if (b < 10 || (days != null && days <= 7)) return 'is-low';
+                return '';
+            },
+            kvBillLoad: function(force) {
+                var self = this, B = this.kvBill;
+                if (B.loading) return Promise.resolve();
+                B.loading = true;
+                if (!B.data) B.error = '';
+                return this.kvPiFetch('/api/kiosk/voice/billing' + (force ? '?refresh=1' : '')).then(function(d) {
+                    B.data = d; B.at = Date.now();
+                    B.error = d.stale ? 'xAI 暫時查不到，下面是 ' + (d.fetched_at || '上一次') + ' 的資料（' + (d.error || '') + '）' : '';
+                }).catch(function(err) {
+                    var msg = String((err && err.message) || err);
+                    var base = String((self.settings && self.settings.linePayServerUrl) || '').replace(/\/+$/, '');
+                    if (!base) { B.error = msg; return; }
+                    // Pi 還沒裝這個功能：不帶登入問一次，回 404 就是還沒更新
+                    return fetch(base + '/api/kiosk/voice/billing', { cache: 'no-store' }).then(function(r) {
+                        B.error = r.status === 404 ? 'Pi 還沒更新：請在 Pi 執行 kiosk-voice-billing-20261112 的安裝（見 README）。' : msg;
+                    }, function() { B.error = msg; });
+                }).finally(function() { B.loading = false; B.loaded = true; });
             },
             // ── kiosk-voice-logs-20261101：點餐紀錄（Pi） ──
             kvPiFetch: function(path, asBlob) {
