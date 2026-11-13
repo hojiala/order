@@ -777,6 +777,32 @@ body.is-demo .demo-chip{display:inline-block}
     var t = Math.floor(n / 10), o = n % 10;
     return (t === 1 ? '' : ZH_DIGIT[t]) + '十' + (o ? ZH_DIGIT[o] : '');
   }
+  // kiosk-voice-combo2-20261113：金額、號碼念國字（209 → 兩百零九）：點餐員把「總共209元」念成「609元」
+  function zhBig(n, measure) {
+    n = Number(n);
+    if (!(n >= 0 && n < 100000000) || n % 1) return String(n);
+    if (n < 100) return zhNum(n, measure);
+    var four = function (x, lead) {   // lead：前面還有「萬」
+      var t = '', zero = false, started = false;
+      [[1000, '千'], [100, '百'], [10, '十'], [1, '']].forEach(function (p) {
+        var d = Math.floor(x / p[0]) % 10;
+        if (!d) { if (started || lead) zero = true; return; }
+        if (zero) t += '零';
+        zero = false;
+        t += (d === 2 && p[0] >= 100 ? '兩' : ZH_DIGIT[d]) + p[1];
+        started = true;
+      });
+      return t;
+    };
+    var hi = Math.floor(n / 10000), lo = n % 10000;
+    if (!hi) return four(lo, false);
+    return (hi === 2 ? '兩' : hi < 100 ? zhNum(hi, false) : four(hi, false)) + '萬' + (lo ? four(lo, true) : '');
+  }
+  function speakNums(text) {   // 要念出來的句子：「209元」→「兩百零九元」、「2杯」→「兩杯」、「23號」→「二十三號」
+    return String(text == null ? '' : text)
+      .replace(new RegExp('(\\d+)(?=\\s*(?:元|' + UNIT_RE + '))', 'g'), function (m, d) { return zhBig(d, true); })
+      .replace(/(\d+)(?=\s*號)/g, function (m, d) { return zhBig(d, false); });
+  }
   // 給點餐員念的名稱：2入→兩入、4號→四號、(1片)→一片、1/4→四分之一（語音模型對「數字＋量詞」容易念錯或沿用顧客說法）
   function speakName(name) {
     return String(name || '')
@@ -1403,7 +1429,7 @@ body.is-demo .demo-chip{display:inline-block}
   // 不同句才點飲料（或數量對不上）：點餐員問一次「要不要把○○和○○做成套餐？」，顧客說好才用 make_combo 合併。
   // 先點飲料、後點套餐（套餐飲料還沒選）也一樣問「剛剛點的○○要當套餐飲料嗎？」
   var Offers = { asked: {}, lines: {}, kinds: {}, variants: {}, askSeen: {} };   // asked：問過的「主餐 id:飲料 id」；lines：問過的那幾項（顧客說不用，就不再拿它們來問）；kinds：問過套餐／單點的那道
-  function resetOffers() { Offers.asked = {}; Offers.lines = {}; Offers.kinds = {}; Offers.variants = {}; Offers.askSeen = {}; Offers.pendingCombo = null; }
+  function resetOffers() { Offers.asked = {}; Offers.lines = {}; Offers.kinds = {}; Offers.variants = {}; Offers.askSeen = {}; Offers.pendingCombo = null; Offers.lastCombo = null; }
   // kiosk-voice-posextras-20261105：點餐員直接傳了「4號辣卡脆雞堡單點」，但顧客只說「四號辣卡脆雞堡」（沒說套餐或單點）→ 先問一次
   var KIND_WORD_RE = /套餐|單點|單的|不要套|不用套|不要飲料|不用飲料|沒有飲料/;
   // kiosk-voice-choiceguard-20261105：顧客這句話說了套餐／單點、有蛋有肉／無蛋無肉 → 這道記起來，不用再問
@@ -1620,9 +1646,13 @@ body.is-demo .demo-chip{display:inline-block}
     Object.keys(info).forEach(function (k) { delete info[k]; });
     Object.assign(info, lineInfo(target), settleLine(target));
     info.ok = true; info.made_combo = true;
-    info.message = say + '已經當作' + speakName(target.item.name) + '的飲料（第' + lineNo(target) + '項）' + (left ? '；第' + lineNo(d) + '項還有' + left + '杯' + say + '另外算' : '');
+    info.message = say + '已經當作' + speakName(target.item.name) + '的飲料（第' + lineNo(target) + '項）' + (left ? '；第' + lineNo(d) + '項還有' + left + '杯' + say + '另外算' + leftHint(d) : '');
+    Offers.lastCombo = { fill: true, drink: say, drinkId: d.id, saved: 0 };   // kiosk-voice-combo2-20261113
     Log.add('system', say + '當作' + speakName(target.item.name) + '的飲料');
     return true;
+  }
+  function leftHint(d) {   // kiosk-voice-combo2-20261113：平板會問「另外還有一杯…，還要嗎？」
+    return '（系統會問顧客另外那杯還要不要：顧客說不要，就呼叫 remove_item，line 填 ' + lineNo(d) + '；只要少幾杯，就用 update_item 改 quantity；說要，就不用改）';
   }
   function comboMeal(l) {   // 可以配飲料變套餐的那一項：單點（有同一道的套餐），或套餐飲料還沒選
     if (!l || l.parentId || meatChildren(l).length) return false;
@@ -2865,9 +2895,37 @@ body.is-demo .demo-chip{display:inline-block}
     if (offer) out.combo_offer = offer;
     return out;
   }
+  // kiosk-voice-combo2-20261113：顧客說「原本那一杯美式咖啡不要」，點餐員卻送 update_item 一樣的數量（沒改到）→ 照顧客的話刪
+  var DROP_VERB_RE = /(刪除|刪掉|刪|取消|拿掉|去掉|移除|不要|不用)(了|啦|喔|吧|囉)?/g;
+  function dropByWords(line, args) {
+    if (args.quantity === undefined || args.quantity === null || Number(args.quantity) !== line.qty) return null;
+    if ((Array.isArray(args.selections) && args.selections.length) || (Array.isArray(args.remove_selections) && args.remove_selections.length)
+        || String(args.name || '').trim() || String(args.note || '').trim()) return null;
+    var u = String(Session.userLine || ''), name = plainName(line.item.name), m, hit = false;
+    DROP_VERB_RE.lastIndex = 0;
+    while ((m = DROP_VERB_RE.exec(u))) {   // 「不要」後面接的是這一項、那杯、或句子結束才算（「不要冰」「取消加蛋」不算）
+      var rest = u.slice(m.index + m[0].length);
+      if (!rest || /^[\s，,。！!、？?]|^(那|這|剛|原本|另外|一|兩|二|\d)/.test(rest) || (rest.length >= 2 && name.indexOf(rest.slice(0, 2)) !== -1)) { hit = true; break; }
+    }
+    if (!hit) return null;
+    var c = u.match(/(一|1|兩|二|2|三|3|四|4|五|5)\s*(杯|個|份|碗|盤|項)/);
+    var n = c ? ({ '一': 1, '1': 1, '兩': 2, '二': 2, '2': 2, '三': 3, '3': 3, '四': 4, '4': 4, '五': 5, '5': 5 })[c[1]] : (/[那這][杯個份]/.test(u) ? 1 : line.qty);
+    n = Math.min(n, line.qty);
+    return { n: n, all: n >= line.qty };
+  }
   function toolUpdateItem(args) {
     var line = getLine(args.line);
     if (!line) return { ok: false, message: '點餐單上沒有第' + args.line + '項', lines: Order.lines.map(lineInfo) };
+    var drop = dropByWords(line, args);
+    if (drop) {
+      Log.add('system', '點餐員送了一樣的數量（' + line.qty + '），沒有改到；顧客說「' + Session.userLine + '」→ ' + (drop.all ? '刪掉第' + lineNo(line) + '項' : '少 ' + drop.n + ' 份'));
+      if (drop.all) {
+        var rm = toolRemoveItem({ line: args.line });
+        rm.dropped = '顧客說不要，已經刪掉' + speakName(line.item.name);
+        return rm;
+      }
+      args = Object.assign({}, args, { quantity: line.qty - drop.n });
+    }
     if (args.quantity !== undefined && args.quantity !== null && Number(args.quantity) <= 0) return toolRemoveItem(args);
     if (args.quantity !== undefined && args.quantity !== null) {
       line.qty = clampQty(args.quantity);
@@ -3003,10 +3061,11 @@ body.is-demo .demo-chip{display:inline-block}
     var info = Object.assign(lineInfo(target), settleLine(target));
     info.ok = true;
     info.made_combo = true;
+    Offers.lastCombo = { fill: fill, drink: drinkName, drinkId: p.x.id, saved: fill ? 0 : saved };   // kiosk-voice-combo2-20261113
     info.message = (fill
       ? drinkName + '已經當作' + some + speakName(target.item.name) + '的飲料（第' + lineNo(target) + '項）'
       : '已經把' + some + mealName + '和' + drinkName + '做成' + speakName(target.item.name) + '（第' + lineNo(target) + '項）') +
-      (left ? '；第' + lineNo(p.x) + '項還有' + left + '杯' + drinkName + '另外算' : '');
+      (left ? '；第' + lineNo(p.x) + '項還有' + left + '杯' + drinkName + '另外算' + leftHint(p.x) : '');
     if (!fill && saved > 0) info.saved = saved;
     info.order_total = orderTotal();
     return info;
@@ -3048,12 +3107,12 @@ body.is-demo .demo-chip{display:inline-block}
   // kiosk-voice-fastfinish-20261105：結尾那句由平板組好，點餐員只要照念（和規則 6-1 一樣的句子）
   function closingLine(r) {
     if (!r || !r.ok) return '';
-    var total = '總共' + r.order_total + '元，';
+    var total = '總共' + zhBig(r.order_total, true) + '元，';   // kiosk-voice-combo2-20261113：念國字
     if (r.trial) return '好的，' + total + '請到櫃台告訴店員您的餐點，謝謝您！';
     if (r.submitted === false) return '不好意思，訂單沒有送出成功，請到櫃台告訴店員您的餐點';
-    if (r.order_no) return '好的，' + total + '您的號碼是' + Number(r.order_no) + '號，' + CONFIG.closingText;
-    if (r.number_pending) return '好的，' + total + '號碼會顯示在螢幕上，' + CONFIG.closingText;
-    return '好的，' + total + CONFIG.closingText;
+    if (r.order_no) return '好的，' + total + '您的號碼是' + zhBig(Number(r.order_no), false) + '號，' + speakNums(CONFIG.closingText);
+    if (r.number_pending) return '好的，' + total + '號碼會顯示在螢幕上，' + speakNums(CONFIG.closingText);
+    return '好的，' + total + speakNums(CONFIG.closingText);
   }
   function closingResponse() {   // 只給這一句的指示，不帶整份規則和菜單：點餐員想得少、開口快
     var line = Session.closingLine;
@@ -3236,7 +3295,7 @@ body.is-demo .demo-chip{display:inline-block}
       '1-4. 顧客自己問能不能把單點和飲料做成套餐、能不能算套餐價、要跟哪一樣做套餐：一律先呼叫 make_combo（知道項次就填 meal_line、drink_line；只知道顧客說的名稱就填 meal_name、drink_name）。不要自己算價錢、自己比較哪個划算，也絕對不要自己說「套餐是套餐、單點是單點」「不能合併」「系統只支援」；只有 make_combo 回傳 ok 是 false，才照 message 簡短說明。成功就說「改成套餐了」，有 saved 就加「省○元」。',
       '2. 工具回傳後（「好的」呼叫工具前已經說過了）：沒有要問的，只說「還要點其他的嗎？」，不要複誦餐點名稱、選項和價錢。有要問的（ask、missing、combo_offer），直接照 ask 問，例如「要加蛋嗎？」「苜蓿芽蔬菜吐司要加蛋嗎？」：ask 裡有餐點名稱一定要念，顧客才知道是哪一項；missing 有 dish 而沒有 ask（套餐飲料、冰溫、大小杯），問的時候前面也加 dish（例如「三號牛肉起司漢堡的飲料要大杯奶茶，還是換別的？」）。要說到餐點名稱時，一律念工具回傳的 say，不要用顧客的說法、也不要自己改字或改數字。',
       '2-1. 結果有 number_mismatch（顧客說的數字和菜單不同，例如顧客說六入、菜單只有兩入）時，先確認：「我們的是爆漿奶油餐包兩入，一份兩個，請問要幾份？」，再用 update_item 改數量。',
-      '3. 果醬（沙拉、草莓…）用菜單預設，不要問口味；顧客點的時候說了口味（例如「奶油的果醬燒餅」「巧克力抹醬丹尼酥」），口味一定要放進 selections；點完才說要換，用 update_item 換。結果有 missing 時，只問第一個，白話問：missing 裡有 ask 就照 ask 問（例如「要加蛋嗎？」，預設的選項一定要說到）；沒有 ask：套餐飲料→「飲料要大杯奶茶，還是換別的？」；溫度→「冰的還是溫的？」；容量→「大杯還是中杯？」。顧客回答後呼叫 update_item 改「問的那一項」（line 用那一項的項次），selections 用 options 裡的原文；顧客只說「好」「要」「可以」就用 default。顧客回答後又接著點新的餐點（例如「好啊，再一個拼盤」），要分開：答案用 update_item 給問的那一項，新的餐點用 add_items，絕對不要把答案放進新餐點的 selections。加蛋只問要不要：顧客說要，就用 default（菜單預設的蛋），不要再問要哪一種蛋；顧客自己說半熟蛋、散蛋、太陽蛋才照他說的。有蛋有肉的鐵板麵、拼盤本來就有蛋（用菜單預設的蛋），不要問要不要加蛋，也不要問要哪一種蛋；無蛋無肉的鐵板麵照 ask 問要不要加蛋或加肉。結果有 answered_previous，表示系統已經幫那一題記好，不要再問；有 egg_kept 照它說的處理。',
+      '3. 果醬（沙拉、草莓…）用菜單預設，不要問口味；顧客點的時候說了口味（例如「奶油的果醬燒餅」「巧克力抹醬丹尼酥」），口味一定要放進 selections；點完才說要換，用 update_item 換。結果有 missing 時，只問第一個，白話問：missing 裡有 ask 就照 ask 問（例如「要加蛋嗎？」，預設的選項一定要說到）；沒有 ask：套餐飲料→1～9號套餐問「飲料要大杯奶茶，還是換別的？」，其他套餐（拼盤、鐵板麵…沒有附大杯奶茶）問「套餐飲料要什麼？」；溫度→「冰的還是溫的？」；容量→「大杯還是中杯？」。顧客回答後呼叫 update_item 改「問的那一項」（line 用那一項的項次），selections 用 options 裡的原文；顧客只說「好」「要」「可以」就用 default。顧客回答後又接著點新的餐點（例如「好啊，再一個拼盤」），要分開：答案用 update_item 給問的那一項，新的餐點用 add_items，絕對不要把答案放進新餐點的 selections。加蛋只問要不要：顧客說要，就用 default（菜單預設的蛋），不要再問要哪一種蛋；顧客自己說半熟蛋、散蛋、太陽蛋才照他說的。有蛋有肉的鐵板麵、拼盤本來就有蛋（用菜單預設的蛋），不要問要不要加蛋，也不要問要哪一種蛋；無蛋無肉的鐵板麵照 ask 問要不要加蛋或加肉。結果有 answered_previous，表示系統已經幫那一題記好，不要再問；有 egg_kept 照它說的處理。',
       '4. 結果有 ask（顧客還沒說是哪一種，例如套餐／單點、辣卡／原卡、有蛋有肉／無蛋無肉）時，照 ask 的原句問，其他一個字都不要加：不要加餐點名稱、不要解釋（例如不要說「有蛋有肉的里肌」「無蛋無肉的肉醬」），不要自己決定，也絕對不可以把 candidates 全部加入；顧客選好後，只用他選的那一個 name 再呼叫 add_items。顧客明確說「兩種都要」「各一個」才分別加。sold_out 時說「不好意思，這個今天賣完了」，請顧客換別的。',
       '5. 顧客改口一律在同一項上改，不要新增一項，也不要寫進備註：改成有蛋有肉、無蛋無肉、套餐或單點，用 update_item 的 name 填這幾個字；換別的餐點也用 update_item 的 name；改數量、不要某樣用 update_item 或 remove_item（line 是畫面上的項次）。',
       '5-1. 結果有 auto_upgraded 或 meat_added 時，用一句短話告訴顧客，例如「幫您改成套餐，比較划算」「另外加一片肉，○○元」（加肉要多收的錢照 meat_added 念）。結果有 unmatched 時，那幾個字沒有對應的選項：顧客的回答請換成 options 裡的原文再送一次；真的是備註（例如不要醬）就放 note。',
@@ -3247,7 +3306,7 @@ body.is-demo .demo-chip{display:inline-block}
         : '6. 顧客說「這樣就好」「沒有了」「好了」，或系統告訴你顧客按了「我點好了」，馬上呼叫 finish_order。回傳 pending 就先把沒確認的問完。',
       '6-1. finish_order 成功後只說一句（開頭的「好的」呼叫前已經說過）：有 order_no 就說「總共○○元，您的號碼是○○號，' + CONFIG.closingText + '」；沒有 order_no 就說「總共○○元，' + CONFIG.closingText + '」；submitted 是 false 就說「不好意思，訂單沒有送出成功，請到櫃台告訴店員您的餐點」；number_pending 是 true（號碼還在產生）就說「總共○○元，號碼會顯示在螢幕上，' + CONFIG.closingText + '」；trial 是 true 就說「總共○○元，請到櫃台告訴店員您的餐點，謝謝您！」。金額用 order_total，號碼用 order_no。',
       '6-2. 系統說點餐時間到了，就照系統說的收尾，不要再問新的問題。',
-      '7. 可以說的錢只有這幾種：加料要多收的錢（照 ask、meat_added）、combo_offer 可以省多少、套餐的「飲料折5元」「超過30元補差價」（照【套餐】或 set_includes）、最後總共多少（照 finish_order）。其他價錢一律不說，也不要自己加總。',
+      '7. 可以說的錢只有這幾種：加料要多收的錢（照 ask、meat_added）、combo_offer 可以省多少、套餐的「飲料折5元」「超過30元補差價」（照【套餐】或 set_includes）、最後總共多少（照 finish_order）。其他價錢一律不說，也不要自己加總。說到數字（金額、杯數、號碼）一律念國字，例如「兩百零九元」「省五元」「兩杯」，不要照阿拉伯數字念。',
       '7-1. add_items 找不到餐點時，不要直接說「我們沒有」：照 message 先從【今日菜單】找發音最像的問「請問是○○嗎？」（例如 高麗滷肉餅→高鈣乳酪餅、木樹芽→苜蓿芽）；問過還是不對，才請顧客看旁邊的菜單看板換別的。結果有 heard_as 是系統照錯字表改好的，不用跟顧客說。',
       '8. 聽不清楚就說「不好意思，可以再說一次嗎？」；顧客講台語也盡量聽懂，用華語回答。',
       '8-0. 顧客問「套餐有什麼」「套餐跟單點差在哪」：只說套餐多附的飲料，照【套餐】或 search_menu 結果的 set_includes 說，例如「套餐有附一杯飲料，飲料折五元」「套餐附一杯大杯錫蘭奶茶，可以換別的飲料，超過三十元要補差價」；不要念食材，也不要說餐點價錢。',
@@ -4124,6 +4183,11 @@ body.is-demo .demo-chip{display:inline-block}
     var strip = function (r) { if (r && typeof r === 'object') LOG_ONLY_KEYS.forEach(function (k) { delete r[k]; }); };
     strip(copy);
     if (copy && Array.isArray(copy.results)) copy.results.forEach(strip);
+    (function zh(o) {   // kiosk-voice-combo2-20261113：要照念的 ask 換成國字（「可以省5元」→「可以省五元」）
+      if (Array.isArray(o)) { o.forEach(zh); return; }
+      if (!o || typeof o !== 'object') return;
+      Object.keys(o).forEach(function (k) { if (k === 'ask' && typeof o[k] === 'string') o[k] = speakNums(o[k]); else zh(o[k]); });
+    })(copy);
     return JSON.stringify(copy);
   }
   // 加餐、修改、刪除都成功、沒有要問也沒有要說的 → 指定只說這一句（點餐員不會自己多說別的）
@@ -4161,8 +4225,50 @@ body.is-demo .demo-chip{display:inline-block}
     if (!list.every(function (x) { return /^(add_items|update_item|remove_item|make_combo)$/.test(x.name) && !talkBesidesMissing(x.result); })) return undefined;
     var nx = firstMissing();
     if (!nx) return undefined;
-    var q = missingAsk(nx.line, nx.m);
-    return { ask: q, instructions: '你是早餐店的點餐員。現在只問這一句，一個字都不要改，也不要多說別的話：「' + q + '」（顧客剛剛那句話還有沒加到的餐點或沒改到的地方，才先呼叫工具處理。）' };
+    return onlyLine(missingAsk(nx.line, nx.m), true);   // kiosk-voice-combo2-20261113：數字念國字
+  }
+  // kiosk-voice-combo2-20261113：結果有 combo_offer（沒有別的要說）→ 只問 combo_offer.ask
+  //   （11/12 19:51：點餐員自己改問「美國鄉村拼盤的飲料要大杯奶茶，還是換別的？」）
+  function talkKeysOf(r, skip) {
+    var out = [];
+    (function walk(x, top) {
+      if (!x || typeof x !== 'object') { out.push('?'); return; }
+      if (x.ok === false) out.push('ok');
+      TALK_KEYS.forEach(function (k) { if (k !== skip && x[k] !== undefined && x[k] !== false && x[k] !== null) out.push(k); });
+      if (top && Array.isArray(x.results)) x.results.forEach(function (y) { walk(y, false); });
+    })(r, true);
+    return out;
+  }
+  function onlyLine(q, ask) {
+    q = speakNums(q);
+    return { ask: q, instructions: '你是早餐店的點餐員。現在只' + (ask ? '問' : '說') + '這一句，一個字都不要改，也不要多說別的話：「' + q + '」（顧客剛剛那句話還有沒加到的餐點或沒改到的地方，才先呼叫工具處理。）' };
+  }
+  function offerNext(list) {
+    if (!list || !list.length) return undefined;
+    if (!list.every(function (x) { return /^(add_items|update_item)$/.test(x.name) && !talkKeysOf(x.result, 'combo_offer').length; })) return undefined;
+    var offers = [];
+    list.forEach(function (x) {
+      var r = x.result || {};
+      [r].concat(Array.isArray(r.results) ? r.results : []).forEach(function (y) { if (y && y.combo_offer && y.combo_offer.ask) offers.push(y.combo_offer); });
+    });
+    if (offers.length !== 1) return undefined;
+    return onlyLine(offers[0].ask, true);
+  }
+  // kiosk-voice-combo2-20261113：做成套餐後只說這一句；剛剛那杯點了不只一杯 → 問另外那幾杯還要不要
+  //   （11/12 19:51：點餐員只說「改成套餐了，省5元」，顧客不知道還剩一杯，說了兩次才刪掉）
+  function comboNext(list) {
+    var c = Offers.lastCombo;
+    if (!c || !list || !list.length) return undefined;
+    if (!list.some(function (x) { return x.result && x.result.made_combo; })) return undefined;
+    if (!list.every(function (x) { return /^(add_items|update_item|make_combo)$/.test(x.name) && !talkKeysOf(x.result).length; })) return undefined;
+    Offers.lastCombo = null;
+    var head = c.fill ? '套餐飲料就用' + c.drink + '。' : '改成套餐了' + (c.saved > 0 ? '，省' + c.saved + '元' : '') + '。';
+    var d = Order.lines.filter(function (l) { return l.id === c.drinkId; })[0];
+    if (d && d.qty > 0) {
+      return onlyLine(head + '另外還有' + d.qty + '杯' + drinkSay(d) + '，還要嗎？', true);
+    }
+    var nx = firstMissing();
+    return onlyLine(head + (nx ? missingAsk(nx.line, nx.m) : NEXT_LINE), !!nx);
   }
   function plainNext(list) {
     if (!list || !list.length) return undefined;
@@ -4621,7 +4727,7 @@ body.is-demo .demo-chip{display:inline-block}
         if (!Session.active || Session.userSpeaking) return;
         var doneTools = Session.toolResults.splice(0);
         if (quietAfterTools(doneTools)) return;   // kiosk-voice-fast2-20261106
-        var only = closingResponse() || plainNext(doneTools) || nextAsk(doneTools);   // kiosk-voice-nextline-20261111；kiosk-voice-cupsize-20261112
+        var only = closingResponse() || comboNext(doneTools) || offerNext(doneTools) || plainNext(doneTools) || nextAsk(doneTools);   // kiosk-voice-nextline-20261111；kiosk-voice-cupsize-20261112；kiosk-voice-combo2-20261113
         if (only && only.ask) { Log.add('system', '還有沒問完的，請點餐員只問「' + only.ask + '」'); only = { instructions: only.instructions }; }
         else if (only && only.instructions.indexOf(NEXT_LINE) !== -1) Log.add('system', '沒有要問的，請點餐員只說「' + NEXT_LINE + '」');
         Tm.mark('follow'); Session.expectFollow = true; requestResponse(only);
@@ -5198,7 +5304,7 @@ body.is-demo .demo-chip{display:inline-block}
   }
 
   // 測試用
-  window.__kiosk = { runTool: runTool, findItem: findItem, setMenu: setMenu, Order: Order, Menu: Menu, buildInstructions: buildInstructions, buildKeyterms: buildKeyterms, fixTypos: fixTypos, applyRemoteDict: applyRemoteDict, Dict: Dict, sessionUpdate: sessionUpdate, CONFIG: CONFIG, Session: Session, goHome: goHome, showError: showError, goDone: goDone, Submit: Submit, buildOrderData: buildOrderData, speakName: speakName, submitOrder: submitOrder, businessWindow: businessWindow, applyVoiceSettings: applyVoiceSettings, transcriptDishes: transcriptDishes, showTypos: showTypos, Tm: Tm, Hold: Hold, Ack: Ack, setUser: setUser, setAgent: setAgent, demoStop: demoStop, startWith: startWith, beginSessionUI: beginSessionUI, Greet: Greet, Pre: Pre, onReady: onReady, onMicChunk: onMicChunk, needsTalk: needsTalk, quietAfterTools: quietAfterTools, startLive: startLive, flavorFromWords: flavorFromWords, onResponseDone: onResponseDone, dayVoice: dayVoice, sessionVoice: sessionVoice, refreshSettings: refreshSettings, Remote: Remote, renderPromptView: renderPromptView, choiceAsk: choiceAsk, Turn: Turn, resetOffers: resetOffers, Offers: Offers, Pending: Pending, closingLine: closingLine, closingResponse: closingResponse, pressDineMode: pressDineMode, handleEvent: handleEvent, Log: Log, Rec: Rec, AudioIO: AudioIO, Jank: Jank, netText: netText, currentGreeting: currentGreeting, isMorning: isMorning, setGreeting: setGreeting, userPressedDone: userPressedDone, isSwap: isSwap, stripSwaps: stripSwaps, nextAsk: nextAsk, firstMissing: firstMissing, missingAsk: missingAsk, guardSizes: guardSizes, pinHash: pinHash, pinMatches: pinMatches, forAgent: forAgent, plainNext: plainNext, Fan: Fan, Wait: Wait, WaitLearn: WaitLearn, Staff: Staff, rescueChoice: rescueChoice, heardAssign: heardAssign, menuSwap: menuSwap, takeSwaps: takeSwaps, mergeEarlierDrink: mergeEarlierDrink, lineInfo: lineInfo, calcLine: calcLine, optionDish: optionDish, nameOption: nameOption, styleLabel: styleLabel, CustomRules: CustomRules, verdict: verdict, screenBag: screenBag, pickExternalMic: pickExternalMic, refreshMicStatus: refreshMicStatus, closedReason: closedReason, renderPaused: renderPaused, setSettings: function (v) { Settings = v; }, tick: tick, teardown: teardown, requestResponse: requestResponse, renderHomeText: renderHomeText };
+  window.__kiosk = { runTool: runTool, findItem: findItem, setMenu: setMenu, Order: Order, Menu: Menu, buildInstructions: buildInstructions, buildKeyterms: buildKeyterms, fixTypos: fixTypos, applyRemoteDict: applyRemoteDict, Dict: Dict, sessionUpdate: sessionUpdate, CONFIG: CONFIG, Session: Session, goHome: goHome, showError: showError, goDone: goDone, Submit: Submit, buildOrderData: buildOrderData, speakName: speakName, submitOrder: submitOrder, businessWindow: businessWindow, applyVoiceSettings: applyVoiceSettings, transcriptDishes: transcriptDishes, showTypos: showTypos, Tm: Tm, Hold: Hold, Ack: Ack, setUser: setUser, setAgent: setAgent, demoStop: demoStop, startWith: startWith, beginSessionUI: beginSessionUI, Greet: Greet, Pre: Pre, onReady: onReady, onMicChunk: onMicChunk, needsTalk: needsTalk, quietAfterTools: quietAfterTools, startLive: startLive, flavorFromWords: flavorFromWords, onResponseDone: onResponseDone, dayVoice: dayVoice, sessionVoice: sessionVoice, refreshSettings: refreshSettings, Remote: Remote, renderPromptView: renderPromptView, choiceAsk: choiceAsk, Turn: Turn, resetOffers: resetOffers, Offers: Offers, Pending: Pending, closingLine: closingLine, closingResponse: closingResponse, pressDineMode: pressDineMode, handleEvent: handleEvent, Log: Log, Rec: Rec, AudioIO: AudioIO, Jank: Jank, netText: netText, currentGreeting: currentGreeting, isMorning: isMorning, setGreeting: setGreeting, userPressedDone: userPressedDone, isSwap: isSwap, stripSwaps: stripSwaps, nextAsk: nextAsk, offerNext: offerNext, comboNext: comboNext, zhBig: zhBig, speakNums: speakNums, dropByWords: dropByWords, firstMissing: firstMissing, missingAsk: missingAsk, guardSizes: guardSizes, pinHash: pinHash, pinMatches: pinMatches, forAgent: forAgent, plainNext: plainNext, Fan: Fan, Wait: Wait, WaitLearn: WaitLearn, Staff: Staff, rescueChoice: rescueChoice, heardAssign: heardAssign, menuSwap: menuSwap, takeSwaps: takeSwaps, mergeEarlierDrink: mergeEarlierDrink, lineInfo: lineInfo, calcLine: calcLine, optionDish: optionDish, nameOption: nameOption, styleLabel: styleLabel, CustomRules: CustomRules, verdict: verdict, screenBag: screenBag, pickExternalMic: pickExternalMic, refreshMicStatus: refreshMicStatus, closedReason: closedReason, renderPaused: renderPaused, setSettings: function (v) { Settings = v; }, tick: tick, teardown: teardown, requestResponse: requestResponse, renderHomeText: renderHomeText };
 })();
 </script>
 </body>
