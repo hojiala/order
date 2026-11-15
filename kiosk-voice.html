@@ -1647,12 +1647,20 @@ body.is-demo .demo-chip{display:inline-block}
     Object.assign(info, lineInfo(target), settleLine(target));
     info.ok = true; info.made_combo = true;
     info.message = say + '已經當作' + speakName(target.item.name) + '的飲料（第' + lineNo(target) + '項）' + (left ? '；第' + lineNo(d) + '項還有' + left + '杯' + say + '另外算' + leftHint(d) : '');
-    Offers.lastCombo = { fill: true, drink: say, drinkId: d.id, saved: 0 };   // kiosk-voice-combo2-20261113
+    Offers.lastCombo = { fill: true, drink: say, drinkId: d.id, saved: 0, n: dr.n };   // kiosk-voice-combo2-20261113
+    var more = nextComboOffer(d);   // kiosk-voice-combo3-20261115
+    if (more) info.combo_offer = more;
     Log.add('system', say + '當作' + speakName(target.item.name) + '的飲料');
     return true;
   }
-  function leftHint(d) {   // kiosk-voice-combo2-20261113：平板會問「另外還有一杯…，還要嗎？」
-    return '（系統會問顧客另外那杯還要不要：顧客說不要，就呼叫 remove_item，line 填 ' + lineNo(d) + '；只要少幾杯，就用 update_item 改 quantity；說要，就不用改）';
+  function leftHint(d) {   // kiosk-voice-combo3-20261115：沒配到的單點飲料照樣保留
+    return '（照樣保留，不要跟顧客說還有幾杯，也不要問還要不要）';
+  }
+  // kiosk-voice-combo3-20261115：做成套餐後，同一種飲料還有剩、還有套餐沒選飲料 → 接著問下一份
+  function nextComboOffer(d) {
+    if (!d || Order.lines.indexOf(d) === -1) return null;
+    delete Offers.lines[d.id];
+    return comboOffer([d]);
   }
   function comboMeal(l) {   // 可以配飲料變套餐的那一項：單點（有同一道的套餐），或套餐飲料還沒選
     if (!l || l.parentId || meatChildren(l).length) return false;
@@ -1696,7 +1704,7 @@ body.is-demo .demo-chip{display:inline-block}
   function offerInfo(meal, d, dr, touched) {   // 問句越短越好：剛點的是飲料就提主餐，剛點的是主餐就提飲料
     var fill = isSetItem(meal.item), some = someText(meal, dr.n), ask;
     var newMeal = !!touched && touched.indexOf(meal) !== -1, newDrink = !!touched && touched.indexOf(d) !== -1;
-    if (fill) ask = '剛剛的' + drinkSay(d) + '要當' + (some ? some + '的' : '') + '套餐飲料嗎？';
+    if (fill) ask = '剛剛的' + zhNum(dr.n, true) + '杯' + drinkSay(d) + '要當' + some + dishLabel(meal.item) + '套餐飲料嗎？';   // kiosk-voice-combo3-20261115：說出幾杯、哪個套餐
     else ask = (newDrink && !newMeal ? '要不要跟' + some + plainName(meal.item.name) + '做成套餐？'
       : newMeal && !newDrink ? '要不要' + (some ? '把' + some : '') + '跟剛剛的' + drinkSay(d) + '做成套餐？'
       : '要不要把' + some + plainName(meal.item.name) + '和' + drinkSay(d) + '做成套餐？') + '可以省' + dr.save * dr.n + '元。';
@@ -3061,12 +3069,14 @@ body.is-demo .demo-chip{display:inline-block}
     var info = Object.assign(lineInfo(target), settleLine(target));
     info.ok = true;
     info.made_combo = true;
-    Offers.lastCombo = { fill: fill, drink: drinkName, drinkId: p.x.id, saved: fill ? 0 : saved };   // kiosk-voice-combo2-20261113
+    Offers.lastCombo = { fill: fill, drink: drinkName, drinkId: p.x.id, saved: fill ? 0 : saved, n: p.dr.n };   // kiosk-voice-combo2-20261113
     info.message = (fill
       ? drinkName + '已經當作' + some + speakName(target.item.name) + '的飲料（第' + lineNo(target) + '項）'
       : '已經把' + some + mealName + '和' + drinkName + '做成' + speakName(target.item.name) + '（第' + lineNo(target) + '項）') +
       (left ? '；第' + lineNo(p.x) + '項還有' + left + '杯' + drinkName + '另外算' + leftHint(p.x) : '');
     if (!fill && saved > 0) info.saved = saved;
+    var more = nextComboOffer(p.x);   // kiosk-voice-combo3-20261115
+    if (more) info.combo_offer = more;
     info.order_total = orderTotal();
     return info;
   }
@@ -3291,7 +3301,7 @@ body.is-demo .demo-chip{display:inline-block}
       '1. 顧客說出餐點就立刻呼叫 add_items；同一句點好幾樣放在同一次呼叫。name 用下方菜單的正式名稱，但顧客沒說的不要自己補：顧客沒說套餐或單點、有蛋有肉或無蛋無肉、辣卡或原卡，就照顧客說的傳（例如「一號」「黑胡椒鐵板麵」「單點黑胡椒鐵板麵」），系統會問；不確定就照顧客原話傳，系統會比對。',
       '1-1. 顧客點主餐時一起說了飲料（例如「三號牛肉堡，飲料改大杯少冰鮮奶茶」「蘑菇鐵板麵配大杯奶茶」）：那杯就是套餐飲料，放在主餐那一項的 selections（例如 大杯鮮奶茶、少冰），系統會自動配成套餐；不要再問套餐還是單點，也不要另外加一杯飲料。顧客說「再一杯」「另外一杯」的飲料才另外加一項。顧客說套餐飲料就是剛剛另外點的那杯：一樣放在套餐那一項的 selections，系統會把剛剛那杯併進套餐（結果有 merged_drink）；結果有 dup_drink 就照它問一次。結果有 drink_separately（這道沒有套餐）時，那杯飲料用 add_items 另外加一項。',
       '1-2. 飲料名稱裡的（無糖無奶）（無糖）只是原本的做法：顧客要加糖、加奶，照樣放在那一項的 selections（例如 加糖、加奶），系統會加上；不要自己說不能加，只有結果出現 unmatched 才是沒有這個選項。',
-      '1-3. 結果有 combo_offer（點餐單上的單點主餐和另外點的飲料可以做成套餐，比較便宜）：照 combo_offer.ask 問一次，例如「要不要跟四號辣卡脆雞堡做成套餐？可以省10元。」同時還有 missing 或 ask，先問 combo_offer，再問其他。顧客說好，就呼叫 make_combo，meal_line、drink_line 填 combo_offer 的；顧客說要跟別的主餐做（例如「跟四號做套餐」），就呼叫 make_combo，meal_name 填顧客說的那一樣（例如 四號），drink_line 填 combo_offer 的；顧客說不用，就維持原樣，不要再問。',
+      '1-3. 結果有 combo_offer（點餐單上的單點主餐和另外點的飲料可以做成套餐，比較便宜）：照 combo_offer.ask 問一次，例如「要不要跟四號辣卡脆雞堡做成套餐？可以省10元。」同時還有 missing 或 ask，先問 combo_offer，再問其他。顧客說好，就呼叫 make_combo，meal_line、drink_line 填 combo_offer 的；顧客說要跟別的主餐做（例如「跟四號做套餐」），就呼叫 make_combo，meal_name 填顧客說的那一樣（例如 四號），drink_line 填 combo_offer 的；顧客說不用，就維持原樣，不要再問。做成套餐後，沒配到的單點飲料照樣留在點餐單上：不要跟顧客說還有幾杯，也不要問還要不要。',
       '1-4. 顧客自己問能不能把單點和飲料做成套餐、能不能算套餐價、要跟哪一樣做套餐：一律先呼叫 make_combo（知道項次就填 meal_line、drink_line；只知道顧客說的名稱就填 meal_name、drink_name）。不要自己算價錢、自己比較哪個划算，也絕對不要自己說「套餐是套餐、單點是單點」「不能合併」「系統只支援」；只有 make_combo 回傳 ok 是 false，才照 message 簡短說明。成功就說「改成套餐了」，有 saved 就加「省○元」。',
       '2. 工具回傳後（「好的」呼叫工具前已經說過了）：沒有要問的，只說「還要點其他的嗎？」，不要複誦餐點名稱、選項和價錢。有要問的（ask、missing、combo_offer），直接照 ask 問，例如「要加蛋嗎？」「苜蓿芽蔬菜吐司要加蛋嗎？」：ask 裡有餐點名稱一定要念，顧客才知道是哪一項；missing 有 dish 而沒有 ask（套餐飲料、冰溫、大小杯），問的時候前面也加 dish（例如「三號牛肉起司漢堡的飲料要大杯奶茶，還是換別的？」）。要說到餐點名稱時，一律念工具回傳的 say，不要用顧客的說法、也不要自己改字或改數字。',
       '2-1. 結果有 number_mismatch（顧客說的數字和菜單不同，例如顧客說六入、菜單只有兩入）時，先確認：「我們的是爆漿奶油餐包兩入，一份兩個，請問要幾份？」，再用 update_item 改數量。',
@@ -4254,19 +4264,19 @@ body.is-demo .demo-chip{display:inline-block}
     if (offers.length !== 1) return undefined;
     return onlyLine(offers[0].ask, true);
   }
-  // kiosk-voice-combo2-20261113：做成套餐後只說這一句；剛剛那杯點了不只一杯 → 問另外那幾杯還要不要
-  //   （11/12 19:51：點餐員只說「改成套餐了，省5元」，顧客不知道還剩一杯，說了兩次才刪掉）
+  // kiosk-voice-combo2-20261113：做成套餐後只說這一句
+  // kiosk-voice-combo3-20261115：沒配到的單點飲料照樣保留，不問也不念；還有別的套餐可以配同一種飲料 → 接著問
   function comboNext(list) {
     var c = Offers.lastCombo;
     if (!c || !list || !list.length) return undefined;
     if (!list.some(function (x) { return x.result && x.result.made_combo; })) return undefined;
-    if (!list.every(function (x) { return /^(add_items|update_item|make_combo)$/.test(x.name) && !talkKeysOf(x.result).length; })) return undefined;
+    if (!list.every(function (x) { return /^(add_items|update_item|make_combo)$/.test(x.name) && !talkKeysOf(x.result, 'combo_offer').length; })) return undefined;
     Offers.lastCombo = null;
-    var head = c.fill ? '套餐飲料就用' + c.drink + '。' : '改成套餐了' + (c.saved > 0 ? '，省' + c.saved + '元' : '') + '。';
-    var d = Order.lines.filter(function (l) { return l.id === c.drinkId; })[0];
-    if (d && d.qty > 0) {
-      return onlyLine(head + '另外還有' + d.qty + '杯' + drinkSay(d) + '，還要嗎？', true);
-    }
+    // kiosk-voice-combo3-20261115：沒配到的單點飲料照樣保留，不問也不念；還有套餐沒飲料、同一種飲料還有剩 → 接著問
+    var head = c.fill ? '套餐飲料就用' + (c.n > 1 ? zhNum(c.n, true) + '杯' : '') + c.drink + '。' : '改成套餐了' + (c.saved > 0 ? '，省' + c.saved + '元' : '') + '。';
+    var offer = null;
+    list.forEach(function (x) { if (x.result && x.result.made_combo && x.result.combo_offer && x.result.combo_offer.ask) offer = x.result.combo_offer; });
+    if (offer) return onlyLine(head + offer.ask, true);
     var nx = firstMissing();
     return onlyLine(head + (nx ? missingAsk(nx.line, nx.m) : NEXT_LINE), !!nx);
   }
