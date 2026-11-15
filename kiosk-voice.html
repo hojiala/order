@@ -2142,7 +2142,7 @@ body.is-demo .demo-chip{display:inline-block}
       line.extras = line.extras.filter(function (o) { return !/蛋/.test(o.name); });
       return true;
     }
-    if (/^(加蛋|要蛋|蛋|要加蛋|一顆蛋|加一顆蛋|加顆蛋|要加|加一顆|好加蛋|要加一顆蛋)$/.test(full)) {
+    if (/^(加蛋|要蛋|蛋|要加蛋|一顆蛋|加一顆蛋|加顆蛋|要加|加一顆|好加蛋|要加一顆蛋|雙蛋|要雙蛋|[2二兩]顆蛋|多一顆蛋|多加一顆蛋|再加一顆蛋|多一顆|多加一顆)$/.test(full)) {   // kiosk-voice-doubleegg-20261115：雙蛋＝加一顆蛋
       gi = eggGroupIdx(line);
       if (gi >= 0) {
         g = groups[gi];
@@ -2150,9 +2150,15 @@ body.is-demo .demo-chip{display:inline-block}
         if (/不加蛋/.test(g.choices[idx].name)) idx = indexWhere(g.choices, /^(?!.*不加蛋)/);
         line.sel[gi] = idx; line.answered[gi] = true; return true;
       }
-      var eggs = line.item._extras.filter(function (o) { return !o._pos && /蛋/.test(o.name) && !/不加蛋/.test(o.name); });   // POS 加料的 +蛋沙拉 不是蛋
-      if (eggs.length) { addExtra(line, eggs[0]); return true; }
+      var egg = eggExtraFor(line.item, '');   // kiosk-voice-doubleegg-20261115：POS 加料的加蛋也算（+蛋沙拉不算）
+      if (egg) { addExtra(line, egg); return true; }
       return false;
+    }
+    // kiosk-voice-doubleegg-20261115：「+全熟蛋」「加散蛋」：這道沒有這種蛋的選項（蛋品選擇、加蛋群組）→ 用菜單上的加蛋加料
+    var eggKind = /^(加)?(全熟|半熟|散|太陽)蛋$/.exec(full);
+    if (eggKind && !groups.some(function (gr) { return (gr.choices || []).some(function (c) { return norm(c.name).indexOf(eggKind[2] + '蛋') !== -1; }); })) {
+      var eggK = eggExtraFor(line.item, eggKind[2]);
+      if (eggK) { addExtra(line, eggK); return true; }
     }
     if (MEAT_WORD_RE.test(full)) {
       var meatOpt = meatOptFor(line.item);
@@ -2243,6 +2249,59 @@ body.is-demo .demo-chip{display:inline-block}
     return done;
   }
   function addExtra(line, o) { if (!line.extras.some(function (x) { return x.name === o.name; })) line.extras.push(o); }
+  // kiosk-voice-doubleegg-20261115：這道菜單上的加蛋加料（選項或 POS 加料，有加錢的）；kind＝全熟／半熟／散／太陽，沒說挑全熟蛋
+  function isEggExtra(o) { return !!o && /蛋/.test(o.name) && !/沙拉|不加蛋|不要蛋|蛋餅|蛋吐司|蛋堡|蛋捲|蛋糕|皮蛋|鹹蛋|茶葉蛋|蛋黃/.test(o.name) && Number(o.price) > 0; }
+  function eggExtraFor(item, kind) {
+    var eggs = (item._extras || []).filter(isEggExtra);
+    if (!eggs.length) return null;
+    var want = kind ? kind + '蛋' : '全熟蛋';
+    return eggs.filter(function (o) { return norm(o.name).indexOf(want) !== -1; })[0]
+      || eggs.filter(function (o) { return norm(o.name).indexOf('全熟蛋') !== -1; })[0]
+      || eggs.filter(function (o) { return /^加?蛋$/.test(norm(o.name)); })[0]
+      || eggs[0];
+  }
+  function hasEggExtra(line) { return line.extras.some(isEggExtra); }
+  // 顧客原句說了雙蛋：「雙蛋火腿蛋餅」「火腿蛋餅雙蛋」「火腿蛋餅兩顆蛋」，或錯字表「雙蛋火腿蛋餅 → 火腿蛋餅, 加料_加蛋」
+  function saidDoubleEgg(item) {
+    var raw = toTrad(String(Session.userLine || ''));
+    if (!raw) return false;
+    typoRows().forEach(function (r) { if (/雙蛋/.test(r.to) && !r.addons.length && r.from.length >= 2) raw = raw.split(r.from).join(r.to); });   // 裝蛋 → 雙蛋
+    var names = (item._names || []).filter(function (n) { return n.length >= 2; });
+    var clauses = raw.split(/[，,。.!！?？、；;\n]+/).map(norm).filter(Boolean);
+    var hit = clauses.some(function (c) {
+      return names.some(function (n) {
+        var p = c.indexOf(n);
+        if (p === -1) return false;
+        var before = c.slice(Math.max(0, p - 4), p), after = c.slice(p + n.length);
+        return /雙蛋(的)?$/.test(before) || /^(要|的|是|做)?(雙蛋|[2二兩]顆蛋)$/.test(after);
+      });
+    });
+    if (hit) return true;
+    var t = norm(raw);
+    return typoRows().some(function (r) {
+      return t.indexOf(r.from) !== -1 && names.indexOf(r.to) !== -1 && r.addons.some(function (a) { return /^加?(全熟|半熟|散|太陽)?蛋$/.test(norm(a)); });
+    });
+  }
+  var EGG_WORD_RE = /^(\+|＋)?(加|多加|再加)?(一顆|1顆)?(全熟|半熟|散|太陽)?蛋$|^雙蛋$|^[2二兩]顆蛋$/;
+  function isEggWord(x) { return EGG_WORD_RE.test(String(x || '').replace(/\s/g, '')) || EGG_WORD_RE.test(norm(x)); }
+  // 回傳 { unmatched, note, add }：unmatched 拿掉已經變成加料的蛋；note＝點餐員寫的備註（加好了就拿掉蛋）；add＝要另外寫進備註的
+  function doubleEggFix(line, unmatched, note, info) {
+    var out = { unmatched: unmatched || [], note: note || '', add: [] };
+    var noteParts = String(note || '').split(/[、，,；;]/).map(function (x) { return x.trim(); }).filter(Boolean);
+    var want = saidDoubleEgg(line.item) || out.unmatched.some(isEggWord) || noteParts.some(isEggWord);
+    if (!want || eggGroupIdx(line) >= 0) return out;
+    if (hasEggExtra(line) || applyOne(line, '雙蛋')) {
+      if (!out.unmatched.length && !noteParts.some(isEggWord)) { Log.add('system', '雙蛋' + line.item.name + '：照顧客說的加一顆蛋（' + line.extras.filter(isEggExtra)[0].name + '）'); }
+      out.unmatched = out.unmatched.filter(function (u) { return !isEggWord(u); });
+      out.note = noteParts.filter(function (x) { return !isEggWord(x); }).join('、');
+      return out;
+    }
+    var miss = '菜單上「' + line.item.name + '」沒有加蛋的加料，雙蛋只能寫在備註、沒有加錢；請到 manage 菜單幫它加「+全熟蛋」15 元';
+    Log.add('error', miss);
+    if (info) info.egg_missing = miss;
+    if (!noteParts.some(isEggWord) && !out.unmatched.some(isEggWord)) out.add.push('雙蛋');
+    return out;
+  }
   // kiosk-voice-waitlearn-20261110：對不到選項時再救一次
   //   ①「抹奶油」「塗花生」：抹／塗去掉再對（抹茶這種本來就對得到，不會走到這裡）
   //   ②「熟蛋」：全熟蛋、半熟蛋都對得到 → 不寫備註，改問「要全熟蛋還是半熟蛋？」
@@ -2880,7 +2939,9 @@ body.is-demo .demo-chip{display:inline-block}
       drinkWords = drinkWords.filter(function (w) { return !setDrinkFromWord(line, w); });   // kiosk-voice-cupsize-20261112：套餐飲料沒說杯型 → 問杯型
       unmatched = takeSwaps(unmatched, swapBag, f.item);
       heardApply(line, heardBy[i] || heldHeard(f.item), swapBag, unmatched);   // kiosk-voice-heard-20261110：點餐員漏放的菜單選項，照顧客原句補上
-      line.note = rescueNote(line, joinNote(keptNoteA, noteAdds(swapBag, keptNoteA).concat(noteWorthy(unmatched))));   // kiosk-voice-waitlearn-20261110：備註裡的「抹奶油」也對選項
+      var eggInfo = {}, egg2 = doubleEggFix(line, unmatched, keptNoteA, eggInfo);   // kiosk-voice-doubleegg-20261115：雙蛋＝加一顆蛋（加料，不是備註）
+      unmatched = egg2.unmatched; keptNoteA = egg2.note;
+      line.note = rescueNote(line, joinNote(keptNoteA, noteAdds(swapBag, keptNoteA).concat(noteWorthy(unmatched)).concat(egg2.add)));   // kiosk-voice-waitlearn-20261110：備註裡的「抹奶油」也對選項
       var target = null;
       if (!missingOf(line).length) Order.lines.forEach(function (l) { if (!target && !missingOf(l).length && sameLine(l, line)) target = l; });
       if (target) target.qty = Math.min(20, target.qty + line.qty);
@@ -2906,6 +2967,7 @@ body.is-demo .demo-chip{display:inline-block}
       if (f.upgraded_from) info.auto_upgraded = '單點又點了飲料，已改成' + speakName(target.item.name) + '，飲料就是套餐飲料，比分開點划算';
       if (drinkWords.length) { info.drink_separately = drinkWords; info.message = '這道沒有套餐，飲料「' + drinkWords.join('、') + '」請用 add_items 另外加一項'; }
       if (unmatchedToTell(unmatched).length) info.unmatched = unmatchedToTell(unmatched);
+      if (eggInfo.egg_missing) info.egg_missing = eggInfo.egg_missing;   // 只給店員看紀錄
       if (flavors.length) info.flavor_heard = flavors.join('、') + '（顧客說的口味，已經選好）';
       if (!f.exact) {
         info.corrected_from = toTrad(said);   // 顧客說法和菜單名稱不同：複誦時要念 say
@@ -4223,7 +4285,7 @@ body.is-demo .demo-chip{display:inline-block}
   }
   // kiosk-voice-nextline-20261111：menu_option、kind_heard 只是給店員看紀錄的說明，不傳給點餐員
   //   （裡面寫「不要跟顧客說不能換」，點餐員反而說了「餐點內的食材沒辦法更換」）
-  var LOG_ONLY_KEYS = ['menu_option', 'kind_heard'];
+  var LOG_ONLY_KEYS = ['menu_option', 'kind_heard', 'egg_missing'];   // kiosk-voice-doubleegg-20261115：egg_missing 只給店員看
   function forAgent(result) {
     var copy;
     try { copy = JSON.parse(JSON.stringify(result)); } catch (_) { return JSON.stringify(result); }
