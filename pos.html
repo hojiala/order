@@ -1209,6 +1209,8 @@
                 posOrderType:'takeout',posTableLabel:'',posTables:[],cartDragIdx:null,
                 posBags:[],posBagSeq:0,posBagActive:0,posBagMoveIdx:-1,posBagMoveQty:1,// ★ pos-bag-split-20261012
                 posPickupDate:"",posPickupTime:"",
+                // ★ pos-stale-today-20261116：今天的日期改成會跟著時鐘更新的資料（見 refreshToday）
+                currentDayStr:(function(){var d=new Date();return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);})(),
                 orderMode:"pos",editingOrder:null,
                 onlineOrders:[],ordersLoading:false,assigningNos:{},orderBuckets:{},orderBucketUnsubs:[],integrationOrdersUnsub:null,integrationOrdersCache:[],phoneOrdersUnsub:null,phoneOrdersCache:[],useIntegrationView:false,ordersReadBackend:'checking',settingsReadBackend:'checking',menuReadBackend:'checking',lastWriteBackend:'',lastWriteAt:0,menuEditOverrideUntil:0,menuLocalOverrides:{},menuSettingsPollTimer:null,menuVersion:'',menuVersionPollTimer:null,menuVersionReadInFlight:false,pbOrdersPollTimer:null,pbOrdersReadInFlight:false,pbOrdersEverConnected:false,pbOrdersFailureCount:0,pbOrdersSuccessStreak:0,ordersFallbackHoldUntil:0,remoteStatusOverrides:{},remoteStatusOverridesUnsub:null,orderHydrateInFlight:{},orderHydrateDone:{},
                 orderSearch:"",
@@ -1232,7 +1234,9 @@
             };
         },
         computed:{
-            todayStr:function(){var d=new Date();return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);},
+            // ★ pos-stale-today-20261116：以前這裡直接 new Date()，computed 沒有相依資料 → 頁面載入那天就被永久快取，
+            //   POS 開著跨日（尤其週六開到週一）時「今天」仍是舊日期，現場單就被存到舊日期。改讀 currentDayStr。
+            todayStr:function(){return this.currentDayStr||(function(){var d=new Date();return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);})();},
             allCategories:function(){return this.settings.categories||[];},
             filteredMenu:function(){var s=this;if(!s.filterCat){if(s.settings.hideAllTab&&s.allCategories.length){s.filterCat=s.allCategories[0];return s.menu.filter(function(i){return i.category===s.allCategories[0];});}return s.menu;}return s.menu.filter(function(i){return i.category===s.filterCat;});},
             activeStaffPresets:function(){return (this.staffPresets||[]).filter(function(row){return row&&row.active!==false&&Array.isArray(row.templates)&&row.templates.length;});},
@@ -1447,6 +1451,9 @@
             }catch(menuOverrideErr){localStorage.removeItem('yuangi_menu_active_overrides_v1');}
             var d=new Date();
             if(!s.posPickupDate)s.posPickupDate=d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);
+            // ★ pos-stale-today-20261116：還原回來的取餐日期若已是過去的日期，改回今天；每 30 秒檢查是否跨日
+            s.refreshToday();
+            s._todayTimer=setInterval(function(){s.refreshToday();},30000);
             // 匿名使用者（index/dinein 顧客頁產生）不算 staff 登入。
             // 登出事件加 1.5 秒防抖：index/dinein 初始化時的跨分頁同步會短暫發出 null，
             // 立刻切登入畫面會造成「閃一下又自動回來」；確認真的沒有 staff 使用者才登出。
@@ -1464,6 +1471,7 @@
                 }
             });});
             s._openTodayResumeHandler=function(){
+                s.refreshToday();// ★ pos-stale-today-20261116：平板喚醒／切回頁面時立刻校正日期
                 if(document.visibilityState!=='hidden')s.requestOpenTodayFromVisible();
             };
             document.addEventListener('visibilitychange',s._openTodayResumeHandler);
@@ -6838,6 +6846,19 @@
                 s.startOrdersPrimaryRead();
                 s.listenRemoteStatusOverrides();
             },
+            // ★ pos-stale-today-20261116：校正「今天」。跨日時把停在舊日期的取餐日期一起帶到今天；
+            //   新單的取餐日期不可能是過去，所以任何早於今天的取餐日期也一律改回今天（預約的未來日期不動）。
+            refreshToday:function(){
+                var s=this,real=(function(){var d=new Date();return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);})(),prev=s.currentDayStr;
+                if(prev!==real)s.currentDayStr=real;
+                if(!s.posPickupDate||s.posPickupDate===prev&&prev!==real||s.posPickupDate<real){
+                    if(s.posPickupDate!==real){
+                        if(s.posPickupDate)console.warn('POS 取餐日期已過期，改回今天:',s.posPickupDate,'→',real);
+                        s.posPickupDate=real;
+                    }
+                }
+                return real;
+            },
             requestOpenTodayFromVisible:function(){
                 var s=this;
                 s.openTodayPending=true;
@@ -8125,6 +8146,7 @@
 
                 // 先顯示明確進度；訂單建立完成前鎖住輸入，避免慢網路看起來像按鈕沒反應。
                 s.isSubmitting=true;
+                s.refreshToday();// ★ pos-stale-today-20261116：送單前校正日期，過去的取餐日期一律改成今天
                 var pickDate=s.posPickupDate||s.todayStr;
                 var pickTime=s.posPickupTime||(pickDate>s.todayStr?"":"現場取餐");
                 if(!pickTime)pickTime="預約取餐";
@@ -8369,6 +8391,7 @@
                 s.isSubmitting=true;
                 s.showStorePayChoiceModal=false;
                 s.showLinePayChoiceModal=false;
+                s.refreshToday();// ★ pos-stale-today-20261116：送單前校正日期，過去的取餐日期一律改成今天
                 var pickDate=s.posPickupDate||s.todayStr;
                 var pickTime=s.posPickupTime||(pickDate>s.todayStr?"":"現場取餐");
                 if(!pickTime)pickTime="預約取餐";
