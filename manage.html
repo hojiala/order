@@ -2386,6 +2386,30 @@
                     <p class="text-slate-400 text-xs mt-2">目前設定：{{ settings.pickupInterval }} 分鐘</p>
                 </div>
 
+                <!-- large-order-lead-20261116：大單加倍備餐時間（只有線上點餐 index / LINE LIFF） -->
+                <div v-show="settingsSubTab==='ops'" :style="{order: 7}" class="bg-slate-800 rounded-xl border border-slate-700 p-5">
+                    <div class="flex items-center justify-between gap-4">
+                        <div>
+                            <p class="font-bold text-white">大單加倍備餐時間</p>
+                            <p class="text-slate-400 text-sm mt-1">訂單金額「超過」設定金額、而且取餐日期是今天時，前台最早可取餐時間改成「備餐緩衝時間 × 2」。選明天以後的日期不受限制。</p>
+                        </div>
+                        <label class="toggle-switch"><input type="checkbox" :checked="lolForm.enabled" :disabled="lolSaving" @change="lolToggle($event.target.checked)"><span class="toggle-slider"></span></label>
+                    </div>
+                    <div class="flex items-center gap-2 flex-wrap mt-4">
+                        <span class="text-slate-300 text-sm font-bold">訂單超過</span>
+                        <input v-model.number="lolForm.amount" @input="lolDirty = true; lolNotice = ''" type="number" min="1" max="99999" step="10" inputmode="numeric"
+                            class="bg-slate-700 border border-slate-600 rounded-lg px-4 py-2.5 text-white text-lg font-bold text-center w-28">
+                        <span class="text-slate-300 text-sm font-bold">元，需加倍最短取餐時間</span>
+                        <button @click="lolSave()" :disabled="lolSaving || !lolDirty"
+                            :class="lolDirty ? 'bg-emerald-600 hover:bg-emerald-500 text-white' : 'bg-slate-700 text-slate-500'"
+                            class="px-4 h-11 rounded-lg font-bold text-sm transition">{{ lolSaving ? '儲存中…' : '儲存金額' }}</button>
+                    </div>
+                    <p class="text-slate-400 text-xs mt-3">目前：{{ lolForm.enabled ? '啟用' : '停用' }}。備餐緩衝 {{ settings.pickupInterval }} 分鐘 → 超過 ${{ lolNormalize(settings.largeOrderLead).amount }} 的今日訂單最快 {{ (Number(settings.pickupInterval) || 30) * 2 }} 分鐘後取餐（剛好 ${{ lolNormalize(settings.largeOrderLead).amount }} 不加倍）。</p>
+                    <p class="text-amber-400 text-xs mt-1">只套用在線上點餐（網頁）與 LINE 點餐（LIFF）；桌邊點餐、掃碼內用、掃碼外帶、POS、電話與語音點餐都不受影響。</p>
+                    <p v-if="lolNotice" class="text-emerald-400 text-xs mt-2">{{ lolNotice }}</p>
+                    <p v-if="lolError" class="text-red-400 text-xs mt-2">{{ lolError }}</p>
+                </div>
+
                 <!-- ★ LINE Pay 設定 -->
                 <div v-show="settingsSubTab==='tools'" :style="{order: 2}" class="bg-slate-800 rounded-xl border border-green-900/50 p-5">
                     <div class="flex items-center gap-2 mb-1">
@@ -3713,6 +3737,8 @@ window._resetCountUp = function() {
                 memberNoteEditing: '', memberNoteDraft: '', memberNoteSaving: false, memberNoteError: '',
                 // lucky-wheel-20261025：幸運轉盤設定（存在 settings.luckyWheel；伺服器建單時依這份抽獎）
                 lwForm: null, lwDirty: false, lwSaving: false, lwError: '', lwNotice: '',
+                // large-order-lead-20261116：大單加倍備餐時間（存在 settings.largeOrderLead）
+                lolForm: { enabled: false, amount: 300 }, lolDirty: false, lolSaving: false, lolError: '', lolNotice: '',
                 // lucky-wheel-reset-20261025：今天參加紀錄
                 lwDraws: [], lwDrawsDate: '', lwDrawsLoaded: false, lwDrawsLoading: false, lwDrawsError: '', lwDrawsNotice: '', lwResetPhone: '', lwResetting: '',
                 lwDrawsDay: '', // lucky-wheel-stats-20261025：參加紀錄要看的日期（空白＝今天）
@@ -5449,6 +5475,46 @@ window._resetCountUp = function() {
                 }).finally(function() {
                     self.lwSaving = false;
                 });
+            },
+            // ── large-order-lead-20261116：大單加倍備餐時間（存在 settings.largeOrderLead；只有 index / LIFF 會讀） ──
+            lolNormalize: function(raw) {
+                if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { raw = null; } }
+                if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { enabled: false, amount: 300 };
+                var amt = Math.round(Number(raw.amount));
+                return { enabled: raw.enabled === true, amount: (Number.isFinite(amt) && amt >= 1 && amt <= 99999) ? amt : 300 };
+            },
+            lolInitForm: function() {
+                this.lolForm = this.lolNormalize(this.settings && this.settings.largeOrderLead);
+                this.lolDirty = false;
+            },
+            lolToggle: function(enabled) {
+                // 開關馬上存；輸入框裡還沒儲存的金額不會跟著存
+                var saved = this.lolNormalize(this.settings && this.settings.largeOrderLead);
+                this.lolForm.enabled = !!enabled;
+                return this.lolSave({ enabled: !!enabled, amount: saved.amount });
+            },
+            lolSave: function(override) {
+                var self = this;
+                if (self.lolSaving) return Promise.resolve();
+                var src = override || self.lolForm;
+                var amt = Number(src.amount);
+                if (!Number.isInteger(amt) || amt < 1 || amt > 99999) {
+                    self.lolError = '金額請填 1～99999 的整數。';
+                    if (override) self.lolForm.enabled = !override.enabled;
+                    return Promise.resolve();
+                }
+                var cfg = { enabled: src.enabled === true, amount: amt, updatedAt: new Date().toISOString() };
+                var patch = { largeOrderLead: cfg };
+                self.lolSaving = true; self.lolError = ''; self.lolNotice = '';
+                return self.writeSettingsPrimary(patch, function() { return update(ref(db, 'settings'), patch); }).then(function() {
+                    if (self.settings) self.settings.largeOrderLead = JSON.parse(JSON.stringify(cfg));
+                    if (override) self.lolForm.enabled = cfg.enabled;   // 只切開關：輸入框裡還沒儲存的金額草稿留著
+                    else { self.lolForm = { enabled: cfg.enabled, amount: cfg.amount }; self.lolDirty = false; }
+                    self.lolNotice = '已儲存，前台約 1 分鐘內套用。';
+                }).catch(function(err) {
+                    if (override) self.lolForm.enabled = !cfg.enabled;
+                    self.lolError = '儲存失敗：' + String((err && err.message) || err || '未知錯誤');
+                }).finally(function() { self.lolSaving = false; });
             },
             // ── kiosk-voice-settings-20261031：語音點餐平板設定 ──
             kvDefaultConfig: function() {
@@ -11302,6 +11368,7 @@ window._resetCountUp = function() {
                     if (Object.prototype.hasOwnProperty.call(incoming, 'isOpen')) self.settings.isOpen = incoming.isOpen !== false;
                     if (Object.prototype.hasOwnProperty.call(incoming, 'dineinIsOpen')) self.settings.dineinIsOpen = incoming.dineinIsOpen !== false;
                     if (!self.storeControlSaving.pickupInterval && Number.isFinite(Number(incoming.pickupInterval))) self.settings.pickupInterval = Number(incoming.pickupInterval);
+                    if (!self.lolSaving && !self.lolDirty && Object.prototype.hasOwnProperty.call(incoming, 'largeOrderLead')) { self.settings.largeOrderLead = incoming.largeOrderLead; self.lolInitForm(); }
                     if (!self.announcementsTouched && Array.isArray(incoming.announcements)) {
                         self.settings.announcements = self.normalizeAnnouncementsForSave(incoming.announcements);
                         self.announcementBaseline = JSON.stringify(self.settings.announcements);
@@ -11490,8 +11557,11 @@ window._resetCountUp = function() {
                             : (typeof s.luckyWheel === 'string' && s.luckyWheel ? s.luckyWheel : (prev.luckyWheel || null)),
                         // kiosk-voice-settings-20261031：語音點餐設定（這一頁只讀，儲存走「語音點餐」頁）
                         kioskVoice: (s.kioskVoice && typeof s.kioskVoice === 'object' && !Array.isArray(s.kioskVoice)) ? s.kioskVoice
-                            : (typeof s.kioskVoice === 'string' && s.kioskVoice ? s.kioskVoice : (prev.kioskVoice || null))
+                            : (typeof s.kioskVoice === 'string' && s.kioskVoice ? s.kioskVoice : (prev.kioskVoice || null)),
+                        // large-order-lead-20261116：大單加倍備餐時間（開關與金額各自即時儲存，不走下面的「儲存設定」）
+                        largeOrderLead: Object.prototype.hasOwnProperty.call(s, 'largeOrderLead') ? s.largeOrderLead : (prev.largeOrderLead || null)
                     };
+                    if (!self.lolDirty && !self.lolSaving) self.lolInitForm();
                     if (self.activeTab === 'luckyWheel' && !self.lwDirty && !self.lwSaving) self.lwInitForm();
                     if (self.activeTab === 'kioskVoice' && !self.kvDirty && !self.kvSaving) self.kvInitForm();
                     self.announcementsTouched = false;

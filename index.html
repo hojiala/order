@@ -142,6 +142,7 @@
                         </div>
                     </div>
                 </div>
+                <p v-if="pickupLeadNotice" class="px-4 pb-2 text-xs font-bold" style="color:#c2410c;margin-top:-0.25rem;">⏱ {{ pickupLeadNotice }}</p>
                 <div class="overflow-x-auto no-scrollbar border-t border-gray-100">
                     <div class="flex whitespace-nowrap px-2">
                         <button v-for="cat in categories" :key="cat"
@@ -431,6 +432,7 @@
                     <span class="text-orange-300">|</span>
                     <span>{{ orderType === 'dinein' ? '內用' : '自取' }}</span>
                 </div>
+                <p v-if="pickupLeadNotice" class="text-xs font-bold px-1" style="color:#c2410c;">⏱ {{ pickupLeadNotice }}</p>
             </div>
             <div class="fixed bottom-0 bg-white border-t border-gray-100 px-4 py-4 z-50"
                  style="left:50%;transform:translateX(-50%);width:100%;max-width:32rem;">
@@ -925,6 +927,18 @@
             cartTotal: function() {
                 return this.cart.reduce(function(s, i) { return s + i.itemTotal; }, 0);
             },
+            // large-order-lead-20261116：購物車金額「超過」設定金額時，今天的最短取餐時間加倍
+            pickupLeadDoubled: function() {
+                var cfg = this.settings && this.settings.largeOrderLead;
+                return !!(cfg && cfg.enabled === true && Number(cfg.amount) > 0 && Number(this.cartTotal) > Number(cfg.amount));
+            },
+            pickupLeadNotice: function() {
+                if (!this.pickupLeadDoubled) return '';
+                var d = new Date();
+                var todayValue = d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2);
+                if (this.pickupDate !== todayValue) return '';
+                return '訂單超過 $' + Number(this.settings.largeOrderLead.amount) + '，備餐時間較長，今天最快 ' + this.pickupLeadMinutes() + ' 分鐘後取餐';
+            },
             tempTotalPrice: function() {
                 if (!this.activeItem) return 0;
                 var basePrice = this.activeItem.price;
@@ -960,6 +974,18 @@
                 deep: true,
                 handler: function(val) {
                     try { localStorage.setItem('cart_items', JSON.stringify(val)); } catch(e) {}
+                }
+            },
+            // large-order-lead-20261116：金額跨過門檻（或 manage 改了設定）→ 重算今天可選的取餐時間
+            pickupLeadDoubled: function(nv) {
+                if (!this.pickupDate) return;
+                var beforeDate = this.pickupDate;
+                this.updateAvailableTimes();
+                // 加倍後今天排不進去 → 日期會自動跳到下一個營業日，一定要讓顧客知道
+                if (nv && this.pickupDate !== beforeDate) {
+                    var self = this;
+                    var row = (this.availableDates || []).find(function(r) { return r && r.value === self.pickupDate; });
+                    this.showAlertModal('取餐日期已調整', '訂單超過 $' + Number(this.settings.largeOrderLead.amount) + ' 需要較長的備餐時間，今天已經沒有可取餐的時段，取餐時間已改為「' + (row ? row.label : this.pickupDate) + ' ' + this.pickupTime + '」，請確認。');
                 }
             },
             currentCategory: function(nv) {
@@ -1324,7 +1350,14 @@
                         posOnlyCategories: v.posOnlyCategories || prev.posOnlyCategories || [],
                         cancelLimitMinutes: Number.isFinite(Number(v.cancelLimitMinutes)) ? Number(v.cancelLimitMinutes) : (Number.isFinite(Number(prev.cancelLimitMinutes)) ? Number(prev.cancelLimitMinutes) : 15),
                         // lucky-wheel-20261025：幸運轉盤設定（manage「幸運轉盤」）
-                        luckyWheel: has('luckyWheel') ? ((v.luckyWheel && typeof v.luckyWheel === 'object' && !Array.isArray(v.luckyWheel)) ? v.luckyWheel : null) : (prev.luckyWheel || null)
+                        luckyWheel: has('luckyWheel') ? ((v.luckyWheel && typeof v.luckyWheel === 'object' && !Array.isArray(v.luckyWheel)) ? v.luckyWheel : null) : (prev.luckyWheel || null),
+                        // large-order-lead-20261116：訂單超過設定金額 → 今天的最短取餐時間加倍（manage「營運設定」）。只有這一頁（一般網頁＋LINE LIFF）會讀
+                        largeOrderLead: has('largeOrderLead') ? (function(raw) {
+                            if (typeof raw === 'string') { try { raw = JSON.parse(raw); } catch (e) { raw = null; } }
+                            if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+                            var amt = Math.round(Number(raw.amount));
+                            return { enabled: raw.enabled === true, amount: (Number.isFinite(amt) && amt > 0) ? amt : 0 };
+                        })(v.largeOrderLead) : (prev.largeOrderLead || null)
                     };
                     if (self.settings.luckyWheel) self.luckyWheelRefreshMarks(); // lucky-wheel-reset-20261025
                     self.settingsReadBackend = backend || 'pocketbase';
@@ -1526,6 +1559,11 @@
                 this.pickupDate = dates.length ? dates[0].value : '';
                 this.updateAvailableTimes();
             },
+            // large-order-lead-20261116：今天下單到最早可取餐要等幾分鐘（大單加倍；取餐時間清單的間隔不變）
+            pickupLeadMinutes: function() {
+                var interval = Number.isFinite(Number(this.settings.pickupInterval)) ? Number(this.settings.pickupInterval) : 30;
+                return this.pickupLeadDoubled ? interval * 2 : interval;
+            },
             updateAvailableTimes: function() {
                 var now = new Date();
                 var todayValue = now.getFullYear() + '-' + ('0' + (now.getMonth() + 1)).slice(-2) + '-' + ('0' + now.getDate()).slice(-2);
@@ -1541,7 +1579,7 @@
                 // 現在時間無條件進位到最近5分，加緩衝 = 最早可取餐時間
                 var nowMin = now.getHours() * 60 + now.getMinutes();
                 var nowCeil5 = Math.ceil(nowMin / 5) * 5;
-                var earliest = isToday ? Math.max(oTotal, nowCeil5 + interval) : oTotal;
+                var earliest = isToday ? Math.max(oTotal, nowCeil5 + this.pickupLeadMinutes()) : oTotal;
                 // 從 earliest 開始，每「備餐緩衝時間」一格（不依賴固定格點，15:40也能出現）
                 var step = Math.max(5, interval);
                 var firstSlot = isToday ? Math.ceil(earliest / 5) * 5 : oTotal;
@@ -2714,7 +2752,7 @@
                     var pickupMin = parseInt(pParts[0]) * 60 + parseInt(pParts[1]);
                     var nowCeil5 = Math.ceil(nowMin / 5) * 5;
                     var interval = Number.isFinite(Number(this.settings.pickupInterval)) ? Number(this.settings.pickupInterval) : 30;
-                    var earliestSlot = nowCeil5 + interval;
+                    var earliestSlot = nowCeil5 + this.pickupLeadMinutes();
                     if (pickupMin <= nowMin) {
                         var origTime = this.pickupTime;
                         this.updateAvailableTimes();
