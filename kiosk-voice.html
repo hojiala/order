@@ -552,6 +552,9 @@ body.is-demo .demo-chip{display:inline-block}
 @media (max-aspect-ratio:1/1){
   .order .actions{grid-template-columns:minmax(0,1.35fr) minmax(0,1fr)}
 }
+.order .bubble.is-pop{animation:kv-pop .5s ease-out}
+@keyframes kv-pop{0%{transform:scale(1);box-shadow:0 0 0 0 rgba(255,210,63,.9),0 .3rem .9rem rgba(30,80,40,.2)}35%{transform:scale(1.05)}100%{transform:scale(1);box-shadow:0 0 0 1.4rem rgba(255,210,63,0),0 .3rem .9rem rgba(30,80,40,.2)}}
+@media (prefers-reduced-motion:reduce){ .order .bubble.is-pop{animation:none} }
 @media (min-aspect-ratio:1/1){   /* 橫放：左邊比較窄，頭像小一點 */
   .order .clerk-face{width:6.6rem;height:6.6rem}
   .order .bubble{font-size:1.8rem}
@@ -4226,6 +4229,7 @@ body.is-demo .demo-chip{display:inline-block}
     if (StartMode) { setDineMode(StartMode); StartMode = ''; }   // 首頁已經選了內用／外帶（點餐單上方馬上顯示）
     Session.active = true; Session.ready = false; Session.finishing = false; Session.pendingFollowup = false;
     Session.responseActive = false; Session.queueResponse = false; Session.awaiting = false; Session.userSpeaking = false;
+    Session.doneWanted = false;   // kiosk-voice-donebtn-20261117
     Session.calls = {}; Session.agentText = ''; Session.updateAttempt = 0; Session.wrapUpAt = 0; Session.cutOff = false;
     Session.toolResults = []; Session.localGreet = ''; Pre.buf = []; Pre.bytes = 0;
     Session.voice = '';   // 每位客人開始時重選（依當天星期）
@@ -4452,13 +4456,13 @@ body.is-demo .demo-chip{display:inline-block}
       case 'response.output_text.delta':
       case 'response.text.delta':
         Tm.mark('first'); Tm.mark('firstType', 'text');
-        Session.agentText += String(ev.delta || ''); setAgent(Session.agentText);
+        Session.agentText += String(ev.delta || ''); if (Session.doneWanted !== 'wait') setAgent(Session.agentText);
         if (CONFIG.askDineMode && !Order.dineMode && !Order.askingMode && Order.lines.length && /內用還是外帶|外帶還是內用|內用或外帶/.test(Session.agentText)) { Order.askingMode = true; renderOrder(); }
         return;
       case 'response.output_audio_transcript.done':
       case 'response.audio_transcript.done':
         Ack.settle(ev.transcript);
-        if (ev.transcript) { setAgent(String(ev.transcript)); Log.agent(String(ev.transcript), Session.cutOff); }
+        if (ev.transcript) { if (Session.doneWanted !== 'wait') setAgent(String(ev.transcript)); Log.agent(String(ev.transcript), Session.cutOff); }
         return;
       case 'conversation.item.input_audio_transcription.completed':
         Tm.tx();   // kiosk-voice-fast4-20261106：轉文字好了的時間
@@ -5044,6 +5048,17 @@ body.is-demo .demo-chip{display:inline-block}
     Tm.quiet();
     return true;
   }
+  // kiosk-voice-donebtn-20261117：點餐員處理完工具之後，按鈕優先
+  function doneFollow(list, seq) {
+    if (Session.finishing) { Session.doneWanted = false; return false; }   // 點餐員自己結帳了：照原本念結帳那句
+    if (Session.doneWanted === 'asked' && list.some(function (x) { return x.name === 'add_items'; })) {
+      Session.doneWanted = false;
+      Log.add('system', '問完之後顧客又加點，先不送單');
+      return false;
+    }
+    if (Session.doneWanted) { Session.queueResponse = false; Session.queuedResp = null; doneDecide(); return true; }
+    return seq !== Session.doneSeq;   // 等工具的時候客人按了「我點好了」：按鈕已經處理，原本要說的下一句不說
+  }
   function onResponseDone(resp) {
     var st = resp && resp.status;
     if (st && st !== 'completed' && st !== 'cancelled') {   // failed／incomplete：記下 xAI 給的原因（以前不會留下任何紀錄）
@@ -5055,10 +5070,11 @@ body.is-demo .demo-chip{display:inline-block}
     if (Session.pendingFollowup) {
       Session.pendingFollowup = false;
       Session.awaiting = true;
-      var waits = Session.toolWaits.splice(0);
+      var waits = Session.toolWaits.splice(0), seq = Session.doneSeq;
       Promise.all(waits).then(function () { return AudioIO.whenIdle(); }).then(function () {
         if (!Session.active || Session.userSpeaking) return;
         var doneTools = Session.toolResults.splice(0);
+        if (doneFollow(doneTools, seq)) return;   // kiosk-voice-donebtn-20261117
         if (quietAfterTools(doneTools)) return;   // kiosk-voice-fast2-20261106
         var only = closingResponse() || comboNext(doneTools) || offerNext(doneTools) || plainNext(doneTools) || nextAsk(doneTools);   // kiosk-voice-nextline-20261111；kiosk-voice-cupsize-20261112；kiosk-voice-combo2-20261113
         if (only && only.ask) { Log.add('system', '還有沒問完的，請點餐員只問「' + only.ask + '」'); only = { instructions: only.instructions }; }
@@ -5067,6 +5083,7 @@ body.is-demo .demo-chip{display:inline-block}
       });
       return;
     }
+    if (Session.doneWanted === 'wait') { Session.queueResponse = false; Session.queuedResp = null; doneDecide(); return; }   // kiosk-voice-donebtn-20261117：點餐員處理完上一句，接著按鈕
     if (Session.queueResponse) { Session.queueResponse = false; var q = Session.queuedResp; Session.queuedResp = null; requestResponse(q || undefined); return; }
     if (Session.finishing) AudioIO.whenIdle().then(function () { later(500, function () { goDone('finished'); }); });
   }
@@ -5090,33 +5107,78 @@ body.is-demo .demo-chip{display:inline-block}
     if (Session.responseActive) { send({ type: 'response.cancel' }); Session.cutOff = true; }
     AudioIO.stopPlayback();
   }
+  // kiosk-voice-donebtn-20261117：按「我點好了」→ 要說哪一句由平板決定：畫面馬上換字，點餐員只照念
+  //   以前把「顧客按了按鈕」告訴點餐員、等它自己決定要說什麼：它沒出聲時畫面完全沒變，像沒反應；還沒點餐時只換對話框的字、沒有聲音
+  function popBubble() { var b = $('agent-text'); b.classList.remove('is-pop'); void b.offsetWidth; b.classList.add('is-pop'); }
+  function doneSay(line, ask, note, told) {
+    stopAgentTalk(); touch();
+    setAgent(line); popBubble();
+    Log.add('system', note);
+    if (!(Session.ready && Session.ws)) return;
+    var resp = { instructions: '你是早餐店的點餐員。顧客按了畫面上的「我點好了」按鈕。現在只' + (ask ? '問' : '說') + '這一句，一個字都不要改，不要多說別的話，也不要呼叫工具：「' + speakNums(line) + '」' };
+    send({ type: 'conversation.item.create', item: { type: 'message', role: 'user', content: [{ type: 'input_text', text: told }] } });
+    Session.awaiting = true; Session.expectFollow = true; Session.sawResponse = false;
+    requestResponse(resp);
+    clearTimer('doneReply');
+    Session.timers.doneReply = later(5000, function () {   // 5 秒連回覆都沒開始：記下來，再請一次
+      if (!Session.active || Session.sawResponse || Session.userSpeaking || Session.finishing) return;
+      Log.add('error', '按了「我點好了」5 秒點餐員沒有出聲（聲音 ' + (Session.voice || '?') + '），再請一次');
+      Session.responseActive = false; Session.queueResponse = false;
+      requestResponse(resp);
+    });
+  }
   function userPressedDone() {
     if (Session.demo) { demoFinish(); return; }
     var nowMs = Date.now();
     if (Session.donePressedAt && nowMs - Session.donePressedAt < 4000) return;   // kiosk-voice-noprice-20261106：連按兩下只算一次
     Session.donePressedAt = nowMs;
     Session.saidAck = false;   // kiosk-voice-waitlearn-20261110：按按鈕不是說話，結帳那句照樣說「好的，」
-    // kiosk-voice-smooth-20261107：餐點都確認了、也知道內用外帶 → 平板直接送單（以前要等點餐員說完、再等它決定，常常像沒反應）
-    if (Session.ready && Session.ws && !Session.finishing && Order.dineMode && Order.lines.length && !Order.lines.some(function (l) { return missingOf(l).length; })) {
+    if (Session.finishing) { Log.add('system', '顧客按了「我點好了」：已經在結帳，不重複處理'); return; }
+    Session.doneSeq = (Session.doneSeq || 0) + 1;   // 回覆結束後原本要說的下一句（還要點其他的嗎？）不說了，改由按鈕決定
+    if (Session.ready && Session.ws && (Session.responseActive || Session.pendingFollowup)) {
+      // 點餐員還在處理客人上一句（可能正要加餐）：不取消，聲音先停；它處理完再決定（以前直接取消，加到一半的餐點會不見）
+      clearTimer('hold'); clearTimer('lack'); Hold.buf = []; Hold.on = false; Session.cutOff = true; AudioIO.stopPlayback();
+      touch(); setAgent('好的，請稍等'); popBubble();
+      Session.doneWanted = 'wait';
+      Log.add('system', '顧客按了「我點好了」，點餐員還在處理上一句，處理完馬上接著');
+      clearTimer('doneWait');
+      Session.timers.doneWait = later(6000, function () {   // 6 秒還沒處理完：不等了
+        if (Session.doneWanted !== 'wait' || !Session.active) return;
+        Session.doneWanted = false; Session.responseActive = false; Session.queueResponse = false;
+        Log.add('error', '按了「我點好了」6 秒點餐員還沒處理完上一句，平板直接接著');
+        doneDecide();
+      });
+      return;
+    }
+    doneDecide();
+  }
+  // 照點餐單決定下一句：沒點餐 → 提醒；還有沒問完的 → 只問那一句（客人回答完自動接著結帳）；只差內用外帶 → 出現兩顆按鈕；都好了 → 直接送單
+  function doneDecide() {
+    clearTimer('doneWait');
+    Session.doneWanted = false;
+    if (!Session.active || Session.finishing) return;
+    var live = Session.ready && Session.ws, nx = firstMissing();
+    // kiosk-voice-smooth-20261107：餐點都確認了、也知道內用外帶（或設定成不問）→ 平板直接送單
+    if (live && Order.lines.length && !nx && (Order.dineMode || !CONFIG.askDineMode)) {
       stopAgentTalk();
-      setAgent('好的，幫您送出訂單');
+      setAgent('好的，幫您送出訂單'); popBubble();
       Log.add('system', '顧客按了「我點好了」，平板直接送單');
-      pressDineMode(Order.dineMode, true);
+      pressDineMode(Order.dineMode || 'takeout', true);
       return;
     }
-    if (!Order.lines.length) {   // kiosk-voice-phone-20261107：還沒點餐：平板直接說，不用等點餐員
-      stopAgentTalk();
-      setAgent('還沒有點餐喔，請說出想吃的餐點');
-      Log.add('system', '顧客按了「我點好了」，還沒有點餐（平板直接提醒）');
+    if (!Order.lines.length) {   // 還沒點餐：畫面提醒，點餐員照念
+      doneSay('還沒有點餐喔，請說出想吃的餐點', false, '顧客按了「我點好了」，還沒有點餐（畫面提醒，請點餐員照念）', '（顧客按了「我點好了」按鈕，但是還沒有點任何餐點）');
       return;
     }
-    if (Session.ready && Session.ws) {
-      stopAgentTalk();   // 還有要問的：點餐員先停下來，馬上回應按鈕
-      touch();
-      Log.add('system', '顧客按了「我點好了」');
-      send({ type: 'conversation.item.create', item: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '（顧客按了「我點好了」按鈕）' }] } });
-      Session.awaiting = true;
-      requestResponse();
+    if (live && nx) {   // 還有選項沒問完：只問那一句
+      var q = missingAsk(nx.line, nx.m);
+      doneSay(q, true, '顧客按了「我點好了」，還有沒問完的，請點餐員只問「' + q + '」', '（顧客按了「我點好了」按鈕）');
+      Session.doneWanted = 'asked';   // 客人回答完（點餐員改好那一項），平板自動接著結帳
+      return;
+    }
+    if (live) {   // 只差內用外帶：兩顆按鈕馬上出現，點餐員只問這一句
+      Order.askingMode = true; renderOrder();
+      doneSay('請問內用還是外帶？', true, '顧客按了「我點好了」，畫面出現「內用」「外帶」按鈕，請點餐員只問「請問內用還是外帶？」', '（顧客按了「我點好了」按鈕）');
       return;
     }
     Promise.resolve(toolFinish({})).then(function (r) { if (r.ok) goDone('finished'); });
@@ -5527,7 +5589,7 @@ body.is-demo .demo-chip{display:inline-block}
     report: function () {   // 寫進對話紀錄：下次看紀錄就知道客人的長條有沒有動
       var st = this.stat;
       if (!st || !Log.cur) return;
-      Log.add('system', '畫面版本 kiosk-voice-orderui-20261117；聲音頻譜：客人的長條動了 ' + (st.userMs / 1000).toFixed(1) + ' 秒（最高 ' + st.userPeak.toFixed(2) + '、' + (st.feed ? '用送出去的聲音算' : '沒收到麥克風聲音') + '），點餐員 ' + (st.agentMs / 1000).toFixed(1) + ' 秒');
+      Log.add('system', '畫面版本 kiosk-voice-donebtn-20261117；聲音頻譜：客人的長條動了 ' + (st.userMs / 1000).toFixed(1) + ' 秒（最高 ' + st.userPeak.toFixed(2) + '、' + (st.feed ? '用送出去的聲音算' : '沒收到麥克風聲音') + '），點餐員 ' + (st.agentMs / 1000).toFixed(1) + ' 秒');
       this.stat = null;
     },
     analyser: function (c) {
@@ -5882,7 +5944,7 @@ body.is-demo .demo-chip{display:inline-block}
   }
 
   // 測試用
-  window.__kiosk = { Viz: Viz, Step: Step, showScreen: showScreen, renderOrder: renderOrder, stepChange: stepChange, stepRemove: stepRemove, stepTell: stepTell, runTool: runTool, findItem: findItem, setMenu: setMenu, Order: Order, Menu: Menu, buildInstructions: buildInstructions, buildKeyterms: buildKeyterms, fixTypos: fixTypos, applyRemoteDict: applyRemoteDict, Dict: Dict, sessionUpdate: sessionUpdate, CONFIG: CONFIG, Session: Session, goHome: goHome, showError: showError, goDone: goDone, Submit: Submit, buildOrderData: buildOrderData, speakName: speakName, submitOrder: submitOrder, businessWindow: businessWindow, applyVoiceSettings: applyVoiceSettings, transcriptDishes: transcriptDishes, showTypos: showTypos, Tm: Tm, Hold: Hold, Ack: Ack, setUser: setUser, setAgent: setAgent, demoStop: demoStop, startWith: startWith, beginSessionUI: beginSessionUI, Greet: Greet, Pre: Pre, onReady: onReady, onMicChunk: onMicChunk, needsTalk: needsTalk, quietAfterTools: quietAfterTools, startLive: startLive, flavorFromWords: flavorFromWords, onResponseDone: onResponseDone, dayVoice: dayVoice, sessionVoice: sessionVoice, refreshSettings: refreshSettings, Remote: Remote, renderPromptView: renderPromptView, choiceAsk: choiceAsk, Turn: Turn, resetOffers: resetOffers, Offers: Offers, Pending: Pending, closingLine: closingLine, closingResponse: closingResponse, pressDineMode: pressDineMode, handleEvent: handleEvent, Log: Log, Rec: Rec, AudioIO: AudioIO, Jank: Jank, netText: netText, currentGreeting: currentGreeting, isMorning: isMorning, setGreeting: setGreeting, userPressedDone: userPressedDone, isSwap: isSwap, stripSwaps: stripSwaps, nextAsk: nextAsk, offerNext: offerNext, comboNext: comboNext, zhBig: zhBig, speakNums: speakNums, dropByWords: dropByWords, firstMissing: firstMissing, missingAsk: missingAsk, guardSizes: guardSizes, pinHash: pinHash, pinMatches: pinMatches, forAgent: forAgent, plainNext: plainNext, Fan: Fan, Wait: Wait, WaitLearn: WaitLearn, Staff: Staff, rescueChoice: rescueChoice, heardAssign: heardAssign, menuSwap: menuSwap, takeSwaps: takeSwaps, mergeEarlierDrink: mergeEarlierDrink, lineInfo: lineInfo, calcLine: calcLine, optionDish: optionDish, nameOption: nameOption, styleLabel: styleLabel, CustomRules: CustomRules, verdict: verdict, screenBag: screenBag, pickExternalMic: pickExternalMic, refreshMicStatus: refreshMicStatus, closedReason: closedReason, renderPaused: renderPaused, setSettings: function (v) { Settings = v; }, tick: tick, teardown: teardown, requestResponse: requestResponse, renderHomeText: renderHomeText };
+  window.__kiosk = { Viz: Viz, Step: Step, showScreen: showScreen, renderOrder: renderOrder, stepChange: stepChange, stepRemove: stepRemove, stepTell: stepTell, runTool: runTool, findItem: findItem, setMenu: setMenu, Order: Order, Menu: Menu, buildInstructions: buildInstructions, buildKeyterms: buildKeyterms, fixTypos: fixTypos, applyRemoteDict: applyRemoteDict, Dict: Dict, sessionUpdate: sessionUpdate, CONFIG: CONFIG, Session: Session, goHome: goHome, showError: showError, goDone: goDone, Submit: Submit, buildOrderData: buildOrderData, speakName: speakName, submitOrder: submitOrder, businessWindow: businessWindow, applyVoiceSettings: applyVoiceSettings, transcriptDishes: transcriptDishes, showTypos: showTypos, Tm: Tm, Hold: Hold, Ack: Ack, setUser: setUser, setAgent: setAgent, demoStop: demoStop, startWith: startWith, beginSessionUI: beginSessionUI, Greet: Greet, Pre: Pre, onReady: onReady, onMicChunk: onMicChunk, needsTalk: needsTalk, quietAfterTools: quietAfterTools, startLive: startLive, flavorFromWords: flavorFromWords, onResponseDone: onResponseDone, dayVoice: dayVoice, sessionVoice: sessionVoice, refreshSettings: refreshSettings, Remote: Remote, renderPromptView: renderPromptView, choiceAsk: choiceAsk, Turn: Turn, resetOffers: resetOffers, Offers: Offers, Pending: Pending, closingLine: closingLine, closingResponse: closingResponse, pressDineMode: pressDineMode, handleEvent: handleEvent, Log: Log, Rec: Rec, AudioIO: AudioIO, Jank: Jank, netText: netText, currentGreeting: currentGreeting, isMorning: isMorning, setGreeting: setGreeting, userPressedDone: userPressedDone, doneSay: doneSay, doneDecide: doneDecide, doneFollow: doneFollow, isSwap: isSwap, stripSwaps: stripSwaps, nextAsk: nextAsk, offerNext: offerNext, comboNext: comboNext, zhBig: zhBig, speakNums: speakNums, dropByWords: dropByWords, firstMissing: firstMissing, missingAsk: missingAsk, guardSizes: guardSizes, pinHash: pinHash, pinMatches: pinMatches, forAgent: forAgent, plainNext: plainNext, Fan: Fan, Wait: Wait, WaitLearn: WaitLearn, Staff: Staff, rescueChoice: rescueChoice, heardAssign: heardAssign, menuSwap: menuSwap, takeSwaps: takeSwaps, mergeEarlierDrink: mergeEarlierDrink, lineInfo: lineInfo, calcLine: calcLine, optionDish: optionDish, nameOption: nameOption, styleLabel: styleLabel, CustomRules: CustomRules, verdict: verdict, screenBag: screenBag, pickExternalMic: pickExternalMic, refreshMicStatus: refreshMicStatus, closedReason: closedReason, renderPaused: renderPaused, setSettings: function (v) { Settings = v; }, tick: tick, teardown: teardown, requestResponse: requestResponse, renderHomeText: renderHomeText };
 })();
 </script>
 </body>
