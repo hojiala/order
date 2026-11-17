@@ -1137,6 +1137,45 @@ body.is-demo .demo-chip{display:inline-block}
     }
     return n;
   }
+  // kiosk-voice-heardfix-20261117：點餐員給的飲料，顧客原句完全沒提到；原句裡剛好有另一杯沒被用到的飲料 → 用顧客說的那杯
+  //   （11/17 08:03：顧客「一杯冰奶大的」，點餐員傳「鮮奶咖啡」）
+  function drinkCross(specs, found) {
+    var hits = transcriptDishes(Session.userLine || '').filter(function (h) { return isDrinkItem(h.item); });
+    if (!hits.length) return 0;
+    var base = function (it) { return drinkBase(drinkBaseName(it.name)); };
+    var taken = hits.map(function () { return false; }), wrong = [];
+    found.forEach(function (f, i) {
+      if (!f || !f.item || f.soldOut || f.family || !isDrinkItem(f.item) || specs[i].quantity === 0) return;
+      for (var h = 0; h < hits.length; h++) if (!taken[h] && base(hits[h].item) === base(f.item)) { taken[h] = true; return; }
+      wrong.push(i);
+    });
+    var free = [];
+    hits.forEach(function (h, hi) { if (!taken[hi]) free.push(h); });
+    if (wrong.length !== 1 || free.length !== 1) return 0;   // 分不出來就照點餐員的
+    var i = wrong[0], f = found[i], h = free[0];
+    if (norm(Session.userLine || '').indexOf(norm(plainName(drinkBaseName(f.item.name)))) !== -1) return 0;   // 顧客其實有說這杯
+    Log.add('system', '點餐員給的是「' + f.item.name + '」，顧客原句說的是「' + h.text + '」：用顧客說的「' + h.item.name + '」');
+    found[i] = { item: h.item, implied: f.implied || [], exact: false, typo_from: String(specs[i].name || ''), typo_sure: true, cross: h.text };
+    return 1;
+  }
+  // kiosk-voice-heardfix-20261117：備註的錯字照顧客原句改（切邊烤酫 → 切邊烤酥）：原句裡有一樣長、只差一個字的那一段
+  function noteFromHeard(note) {
+    var heard = toTrad(String(Session.userLine || '') + '，' + String(Session.prevUserLine || ''));
+    if (!note || !heard.replace(/[，,\s]/g, '')) return note;
+    return String(note).split(/([、，,；;\s]+)/).map(function (seg) {
+      if (seg.length < 3 || /^[、，,；;\s]+$/.test(seg) || heard.indexOf(seg) !== -1) return seg;
+      var best = '', n = 0;
+      for (var p = 0; p + seg.length <= heard.length; p++) {
+        var w = heard.substr(p, seg.length), diff = 0;
+        if (/[，,。.!！?？、；;\s]/.test(w)) continue;
+        for (var k = 0; k < seg.length && diff < 2; k++) if (w.charAt(k) !== seg.charAt(k)) diff++;
+        if (diff === 1 && w !== best) { best = w; n++; }
+      }
+      if (n !== 1) return seg;   // 找不到、或有兩種可能：不改
+      Log.add('system', '備註「' + seg + '」照顧客原句改成「' + best + '」');
+      return best;
+    }).join('');
+  }
   function applyRemoteDict(tok) {   // Pi 發 token 時一起給的字典
     if (!tok) return;
     if (tok.aliases && typeof tok.aliases === 'object' && tok.aliases !== Dict.remote) { Dict.remote = tok.aliases; rebuildAliases(); }
@@ -2884,6 +2923,7 @@ body.is-demo .demo-chip{display:inline-block}
       return g;
     });
     crossCheck(specs, found);   // kiosk-voice-crosscheck-20261106
+    drinkCross(specs, found);   // kiosk-voice-heardfix-20261117
     // 主餐自己帶了飲料（selections）→ 套餐
     found = found.map(function (f, i) { return setPick(f, specs[i].selections.filter(function (x) { return !isVariantWord(x); })); });
     // 同一次另外點的飲料 → 併進還沒有飲料的套餐（顧客說「再一杯」「另外一杯」的不併）
@@ -2937,7 +2977,7 @@ body.is-demo .demo-chip{display:inline-block}
       var f = found[i];
       var swapBag = screenBag();   // kiosk-voice-noswap-20261108；kiosk-voice-rules-20261108 照客製化規則
       var sels = takeSwaps(Array.isArray(spec.selections) ? spec.selections : [], swapBag, f.item);
-      var keptNoteA = stripSwaps(spec.note, swapBag, f.item);   // kiosk-voice-menuswap-20261110：備註裡菜單上有的換法改成選項
+      var keptNoteA = noteFromHeard(stripSwaps(spec.note, swapBag, f.item));   // kiosk-voice-heardfix-20261117：備註的錯字照顧客原句改   // kiosk-voice-menuswap-20261110：備註裡菜單上有的換法改成選項
       sels = sels.concat(swapBag.toSel.splice(0));
       sels = guardSizes(sels).keep;   // kiosk-voice-cupsize-20261112：顧客沒說的杯型拿掉
       if (f && f.implied && f.implied.length) f.implied = guardSizes(f.implied).keep;
@@ -3088,7 +3128,7 @@ body.is-demo .demo-chip{display:inline-block}
     }
     var swapBagU = screenBag();   // kiosk-voice-noswap-20261108；kiosk-voice-rules-20261108 照客製化規則
     var sels = takeSwaps(Array.isArray(args.selections) ? args.selections : [], swapBagU, line.item);
-    var noteU = typeof args.note === 'string' && args.note.trim() ? stripSwaps(args.note, swapBagU, line.item) : null;   // kiosk-voice-menuswap-20261110
+    var noteU = typeof args.note === 'string' && args.note.trim() ? noteFromHeard(stripSwaps(args.note, swapBagU, line.item)) : null;   // kiosk-voice-menuswap-20261110
     var noteSel = swapBagU.toSel.splice(0);
     sels = sels.concat(noteSel);
     sels = guardSizes(sels).keep;   // kiosk-voice-cupsize-20261112：顧客沒說的杯型拿掉
