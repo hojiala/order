@@ -1128,6 +1128,11 @@ body.is-demo .demo-chip{display:inline-block}
     });
     Dict.typos = rows.sort(function (a, b) { return b.from.length - a.from.length; });
   }
+  function typoWhole(text) {   // kiosk-voice-milktea-20261117：整句剛好是錯字表的一筆
+    var n = norm(text), rows = typoRows();
+    for (var i = 0; i < rows.length; i++) if (rows[i].from === n) return { text: rows[i].to, addons: rows[i].addons.slice() };
+    return null;
+  }
   function fixTypos(text) {   // 菜單上找不到時才用：長的先換；回傳 { text, addons }，沒改到回傳 null
     var n = norm(text), addons = [], changed = false;
     typoRows().forEach(function (r) {
@@ -1141,12 +1146,14 @@ body.is-demo .demo-chip{display:inline-block}
   //   只收一個名稱就確定是哪一道的（有套餐／單點、有蛋有肉這種版本的不收，照原本問）
   function transcriptDishes(text) {
     var t = norm(text || '');
-    if (t.length < 3) return [];
+    if (t.length < 2) return [];
     var fx = fixTypos(t);
     if (fx) t = fx.text;
-    var names = [];
-    Menu.active.forEach(function (it) { it._names.forEach(function (n) { if (n.length >= 3) names.push({ n: n, item: it }); }); });
-    (Menu.aliases || []).forEach(function (a) { if (a.from.length >= 3 && a.to.active !== false) names.push({ n: a.from, item: a.to }); });
+    // kiosk-voice-milktea-20261117：「熱奶」「冰紅」這種錯字表沒有的簡稱 → 熱奶茶、冰紅茶
+    t = t.replace(/(去冰|少冰|微冰|冰|溫|熱)(鮮奶|奶|紅|綠)(?![茶油酥精昔])/g, '$1$2茶');
+    var names = [], len = function (it) { return isDrinkItem(it) ? 2 : 3; };   // 飲料兩個字（奶茶、紅茶）也算
+    Menu.active.forEach(function (it) { it._names.forEach(function (n) { if (n.length >= len(it)) names.push({ n: n, item: it }); }); });
+    (Menu.aliases || []).forEach(function (a) { if (a.from.length >= len(a.to) && a.to.active !== false) names.push({ n: a.from, item: a.to, implied: a.implied }); });
     names.sort(function (a, b) { return b.n.length - a.n.length; });
     var hits = [], used = [];
     names.forEach(function (x) {
@@ -1154,10 +1161,19 @@ body.is-demo .demo-chip{display:inline-block}
         var end = p + x.n.length;
         if (used.some(function (r) { return p < r[1] && end > r[0]; })) continue;
         used.push([p, end]);
-        if (familyOf(x.item).length < 2) hits.push({ item: x.item, pos: p, text: x.n });
+        if (familyOf(x.item).length < 2) hits.push({ item: x.item, pos: p, end: end, text: x.n, implied: (x.implied || []).slice() });
       }
     });
-    return hits.sort(function (a, b) { return a.pos - b.pos; });
+    hits.sort(function (a, b) { return a.pos - b.pos; });
+    hits.forEach(function (h, k) {   // 飲料前面說的杯型、冰熱（「一杯大杯去冰奶茶」「大杯熱奶茶」）
+      if (!isDrinkItem(h.item)) return;
+      var seg = t.slice(Math.max(k ? hits[k - 1].end : 0, h.pos - 8), h.pos);
+      seg = seg.replace(/^.*(然後|還有|另外|再來|再|跟|和|[0-9一二兩三四五六七八九十]杯)/, '');
+      var sz = /(大杯|中杯|小杯|大的|中的|大|中|小)/.exec(seg), tp = /(去冰|少冰|微冰|常溫|冰|溫|熱)/.exec(seg);
+      if (sz && !h.implied.some(function (x) { return /杯$/.test(x); })) h.implied.push(SIZE_WORDS[sz[1]]);
+      if (tp && !h.implied.some(function (x) { return /冰|溫/.test(x); })) h.implied.push(TEMP_WORDS[tp[1]]);
+    });
+    return hits;
   }
   // 點餐員聽成「木薯芽薯菜吐司」「高金乳酪館」對不到菜單：客人原句有「苜蓿芽蔬菜吐司」「高鈣乳酪餅」→ 兩邊聽到的很像就用原句那個
   //   一樣很像時，照說的順序配（第 2 個名稱配原句第 2 個餐點，數量一樣才這樣配）；每個原句餐點只配一次；還是分不出來就照原本問
@@ -1254,11 +1270,11 @@ body.is-demo .demo-chip{display:inline-block}
     var done = {}, n = 0;
     pairs.forEach(function (p) {
       if (done[p.i] || taken[p.h]) return;
-      var rival = pairs.filter(function (q) { return q.i === p.i && q.h !== p.h && !taken[q.h]; })[0];
+      var rival = pairs.filter(function (q) { return q.i === p.i && q.h !== p.h && !taken[q.h] && hits[q.h].item !== hits[p.h].item; })[0];   // kiosk-voice-milktea-20261117：原句兩杯都是奶茶不算分不出來
       if (rival && p.score - rival.score < 0.05) return;            // 兩個一樣像：照原本問
       done[p.i] = true; taken[p.h] = true; n++;
       var h = hits[p.h];
-      found[p.i] = { item: h.item, implied: [], exact: false, typo_from: String(specs[p.i].name || ''), typo_sure: true, cross: h.text };
+      found[p.i] = { item: h.item, implied: isDrinkItem(h.item) ? h.implied || [] : [], exact: false, typo_from: String(specs[p.i].name || ''), typo_sure: true, cross: h.text };   // kiosk-voice-milktea-20261117：飲料帶原句的杯型冰熱
     });
     // kiosk-voice-flavor-20261106：其他都對上了，只剩一樣、原句也只剩同一個位置的那一道 → 就是它（木藤芽藝藥燕館 → 苜蓿芽蔬菜燒餅）
     if (aligned) {
@@ -1273,6 +1289,32 @@ body.is-demo .demo-chip{display:inline-block}
       }
     }
     return n;
+  }
+  // kiosk-voice-milktea-20261117：點餐員傳的飲料名稱是亂字（11/17 16:34：顧客「大杯去冰奶茶」「大熱奶」，點餐員傳「大杯乳茶」「大熱乳」）
+  //   對不到菜單、看起來是飲料的那幾項，和原句裡還沒被用到的飲料一樣多 → 照說的順序用原句的（杯型、冰熱也照原句）
+  var DRINKISH_RE = /茶|奶|乳|咖啡|拿鐵|豆漿|可可|杯|冰|熱|溫|紅|綠/;
+  function drinkLeftover(specs, found) {
+    var open = [];
+    found.forEach(function (f, i) {
+      if (specs[i].quantity === 0 || (f && (f.soldOut || f.family))) return;
+      if (f && f.item && !(f.typo_from && !f.typo_sure)) return;
+      if (DRINKISH_RE.test(norm(specs[i].name))) open.push(i);
+    });
+    if (!open.length) return 0;
+    var hits = transcriptDishes(Session.userLine || '').filter(function (h) { return isDrinkItem(h.item); });
+    var taken = hits.map(function () { return false; });
+    found.forEach(function (f, i) {
+      if (open.indexOf(i) !== -1 || !f || !f.item || !isDrinkItem(f.item)) return;
+      for (var h = 0; h < hits.length; h++) if (!taken[h] && hits[h].item === f.item) { taken[h] = true; break; }
+    });
+    var free = hits.filter(function (h, hi) { return !taken[hi]; });
+    if (free.length !== open.length) return 0;   // 對不起來就照原本問
+    open.forEach(function (i, k) {
+      var h = free[k];
+      Log.add('system', '點餐員傳「' + toTrad(specs[i].name) + '」對不到菜單，顧客原句是「' + h.text + '」：用「' + h.item.name + (h.implied.length ? '（' + h.implied.join('、') + '）' : '') + '」');
+      found[i] = { item: h.item, implied: h.implied || [], exact: false, typo_from: String(specs[i].name || ''), typo_sure: true, cross: h.text };
+    });
+    return open.length;
   }
   // kiosk-voice-heardfix-20261117：點餐員給的飲料，顧客原句完全沒提到；原句裡剛好有另一杯沒被用到的飲料 → 用顧客說的那杯
   //   （11/17 08:03：顧客「一杯冰奶大的」，點餐員傳「鮮奶咖啡」）
@@ -1360,6 +1402,19 @@ body.is-demo .demo-chip{display:inline-block}
       .filter(function (r) { return r.s >= 0.5; })
       .sort(function (a, b) { return b.s - a.s; });
   }
+  // kiosk-voice-milktea-20261117：電話點餐的飲料簡稱（大熱奶、中去奶、大溫紅、熱奶）＝奶茶／紅茶，杯型、冰熱照說的
+  var DRINK_SHORT_RE = /^(大杯|中杯|小杯|大|中|小)?的?(去冰|少冰|微冰|常溫|冰|溫|熱|去)?的?(鮮奶|奶|紅|綠)(茶)?$/;
+  var DRINK_SHORT_BASE = { '鮮奶': '鮮奶茶', '奶': '奶茶', '紅': '紅茶', '綠': '綠茶' };
+  function drinkShort(n) {
+    var m = DRINK_SHORT_RE.exec(n || '');
+    if (!m || !(m[1] || m[2])) return null;
+    var hit = exactItem(DRINK_SHORT_BASE[m[3]]);
+    if (!hit || !isDrinkItem(hit.it)) return null;
+    var implied = (hit.implied || []).slice();
+    if (m[1]) implied.push(SIZE_WORDS[m[1]] || '中杯');
+    if (m[2]) implied.push(m[2] === '去' ? '去冰' : TEMP_WORDS[m[2]]);
+    return { it: hit.it, implied: implied };
+  }
   function findItem(said) {
     var n = norm(said);
     if (!n) return { candidates: [] };
@@ -1368,6 +1423,8 @@ body.is-demo .demo-chip{display:inline-block}
       var hit = exactItem(stages[i].text);
       if (hit) return pack(hit.it, stages[i].implied.concat(hit.implied), true);
     }
+    var ds = drinkShort(n);   // kiosk-voice-milktea-20261117
+    if (ds) return pack(ds.it, ds.implied, true);
     var core = stages[stages.length - 1];
     var num = /^(\d+)號(套餐|餐)?$/.exec(core.text);
     if (num) {
@@ -1806,7 +1863,7 @@ body.is-demo .demo-chip{display:inline-block}
   function sizeOk(sz) {
     var now = norm(Session.userLine || '');
     if (!now) return true;   // 不知道顧客說了什麼（測試、店員）：不擋
-    var t = toTrad(String(Session.userLine || '') + ' ' + String(Session.prevUserLine || ''));
+    var t = toTrad(String(Session.userLine || '') + ' ' + String(Session.prevUserLine || '') + ' ' + (Session.userHist || []).join(' '));   // kiosk-voice-milktea-20261117
     return sz === '大杯' ? /大/.test(t) : /中|小/.test(t);
   }
   function guardSizes(list) {
@@ -2916,7 +2973,7 @@ body.is-demo .demo-chip{display:inline-block}
   }
   function joinNote(a, list) { return [String(a || '').trim()].concat(list || []).filter(Boolean).map(toTrad).join('、'); }
   function getLine(n) { n = Math.round(Number(n)); return n >= 1 && n <= Order.lines.length ? Order.lines[n - 1] : null; }
-  function resetOrder() { Session.prevUserLine = ''; Order.lines = []; Order.changedId = 0; Order.dineMode = ''; Order.askingMode = false; Order.incomplete = ''; Turn.adds = {}; Turn.warned = {}; resetOffers(); Pending.egg = null; Pending.heard = null; resetSubmit(); renderOrder(); }
+  function resetOrder() { Session.prevUserLine = ''; Session.userHist = []; Order.lines = []; Order.changedId = 0; Order.dineMode = ''; Order.askingMode = false; Order.incomplete = ''; Turn.adds = {}; Turn.warned = {}; resetOffers(); Pending.egg = null; Pending.heard = null; resetSubmit(); renderOrder(); }
 
   /* ═════════ 工具（給 Grok 呼叫） ═════════ */
   var TOOLS_SPEC = [
@@ -3047,11 +3104,13 @@ body.is-demo .demo-chip{display:inline-block}
       }
       if (!f.exact && !f.family) { var od = optionDish(said); if (od) return od; }   // kiosk-voice-eggopt-20261109：半熟蛋 → 荷包蛋（半熟蛋）
       if (f.item && !f.soldOut && !f.exact) { var no = nameOption(said, f.item); if (no) { f.implied = (f.implied || []).concat(no); f.name_option = no; } }   // 半熟荷包蛋
-      if (f.item || (f.family && f.candidates && f.candidates.length)) return f;
-      var fx = fixTypos(said);   // kiosk-voice-typo-20261106：菜單上找不到（或只是猜）→ 和電話點餐一樣先校正錯字
+      var whole = !f.exact ? typoWhole(said) : null;   // kiosk-voice-milktea-20261117：錯字表剛好有整句（大熱奶）→ 先照錯字表
+      if (!whole && (f.item || (f.family && f.candidates && f.candidates.length))) return f;
+      var fx = whole || fixTypos(said);   // kiosk-voice-typo-20261106：菜單上找不到（或只是猜）→ 和電話點餐一樣先校正錯字
       if (!fx) return f;
       var g = findDish(fx.text, extraWords);
-      var sure = !!g.item && g.item._names.indexOf(norm(fx.text)) !== -1;   // 改完剛好是菜單品名
+      if (whole && !g.item) return f.item || (f.candidates && f.candidates.length) ? f : g;
+      var sure = !!g.item && (g.exact || g.item._names.indexOf(norm(fx.text)) !== -1);   // 改完剛好是菜單品名，或別名／簡稱（kiosk-voice-milktea-20261117：大杯熱奶茶 → 奶茶 → 錫蘭奶茶）
       if (!g.item && !(g.candidates && g.candidates.length)) return f;
       if (f.candidates && f.candidates.length && !sure && !g.family) return f;   // 本來就猜得到幾個、錯字表也沒有更確定 → 照原本問
       g.typo_from = said;
@@ -3060,6 +3119,7 @@ body.is-demo .demo-chip{display:inline-block}
       return g;
     });
     crossCheck(specs, found);   // kiosk-voice-crosscheck-20261106
+    drinkLeftover(specs, found);   // kiosk-voice-milktea-20261117
     drinkCross(specs, found);   // kiosk-voice-heardfix-20261117
     // 主餐自己帶了飲料（selections）→ 套餐
     found = found.map(function (f, i) { return setPick(f, specs[i].selections.filter(function (x) { return !isVariantWord(x); })); });
@@ -3331,6 +3391,13 @@ body.is-demo .demo-chip{display:inline-block}
   function toolSearchMenu(args) {
     var q = norm(args.query || '');
     var ranked = q ? rankItems(stripImplied(q).pop().text, true) : [];
+    if (q) {   // kiosk-voice-milktea-20261117：先照別名、錯字表、簡稱（熱奶 → 錫蘭奶茶）
+      var fx = typoWhole(q) || fixTypos(q), ex = findItem(q);
+      if (!(ex.item && ex.exact) && fx) ex = findItem(fx.text);
+      var top = ex.item || null;
+      if (top) ranked = [{ it: top, s: 1 }].concat(ranked.filter(function (r) { return r.it !== top; }));
+    }
+    if (q && !ranked.length) return { ok: true, results: [], message: '菜單上找不到「' + toTrad(args.query) + '」。不要跟顧客說「我們沒有」：照規則 7-1 從【今日菜單】找發音最像的問「請問是○○嗎？」' };
     return { ok: true, results: ranked.slice(0, 6).map(function (r) {
       var out = briefItem(r.it), c = contentsOf(r.it);
       if (c.text) { out.contents = c.text; if (c.from) out.contents_from = c.from; }
@@ -3642,6 +3709,7 @@ body.is-demo .demo-chip{display:inline-block}
       '6-2. 系統說點餐時間到了，就照系統說的收尾，不要再問新的問題。',
       '7. 可以說的錢只有這幾種：加料要多收的錢（照 ask、meat_added）、combo_offer 可以省多少、套餐的「飲料折5元」「超過30元補差價」（照【套餐】或 set_includes）、最後總共多少（照 finish_order）。其他價錢一律不說，也不要自己加總。說到數字（金額、杯數、號碼）一律念國字，例如「兩百零九元」「省五元」「兩杯」，不要照阿拉伯數字念。',
       '7-1. add_items 找不到餐點時，不要直接說「我們沒有」：照 message 先從【今日菜單】找發音最像的問「請問是○○嗎？」（例如 高麗滷肉餅→高鈣乳酪餅、木樹芽→苜蓿芽）；問過還是不對，才請顧客看旁邊的菜單看板換別的。結果有 heard_as 是系統照錯字表改好的，不用跟顧客說。',
+      '7-2. 顧客說「奶茶」「大冰奶」「熱奶」「中去奶」「大溫紅」這種簡稱：奶＝錫蘭奶茶、紅＝錫蘭紅茶，大／中＝杯型，冰／去／溫／熱＝冰塊；照顧客說的原樣放進 add_items 的 name，系統會換成正式名稱，不要自己改字、不要問「請問是錫蘭奶茶嗎？」，也不要說「我們沒有熱牛奶」。',
       '8. 聽不清楚就說「不好意思，可以再說一次嗎？」；顧客講台語也盡量聽懂，用華語回答。',
       '8-0. 顧客問「套餐有什麼」「套餐跟單點差在哪」：只說套餐多附的飲料，照【套餐】或 search_menu 結果的 set_includes 說，例如「套餐有附一杯飲料，飲料折五元」「套餐附一杯大杯錫蘭奶茶，可以換別的飲料，超過三十元要補差價」；不要念食材，也不要說餐點價錢。',
       '8-1. 顧客問某道餐點裡面有什麼、有沒有某樣食材（例如洋蔥、香菜、辣不辣）：先用 search_menu 查那一道，只照結果的 contents 回答。問「有沒有○○」：contents 有寫到就說「有喔」，沒寫到就只說「沒有喔」，不要多說別的。問「裡面有什麼」：白話念出主要食材，例如「裡面有炸雞腿、生菜、番茄和酸黃瓜醬」。contents 是「菜單沒有寫食材」，就說「這個要麻煩問一下櫃台店員」。絕對不要用一般常識猜。顧客提到過敏，最後加一句「如果會過敏，請再跟櫃台確認一下」。結果有 notice（注意事項）時：顧客問能不能吃、有沒有要注意的，或提到懷孕、哺乳、吃藥、肝腎、過敏，就用一句話照 notice 提醒；只問裡面有什麼就不用念。顧客說不要某樣食材（例如不要洋蔥），寫在那一項的 note。',
@@ -3824,6 +3892,7 @@ body.is-demo .demo-chip{display:inline-block}
         settings: { voice: Session.voice || (Remote.voice ? CONFIG.voice : '(Pi)'), voice_by_day: !!dayVoice(), speed: CONFIG.speechSpeed, barge_in: CONFIG.bargeIn, submit_orders: CONFIG.submitOrders,
           submit_incomplete: CONFIG.submitIncomplete, session_level: Session.updateAttempt, saved_at: Remote.updatedAt },
         page: 'kiosk-voice-logs-20261101', ua: String(navigator.userAgent || '').slice(0, 160) };
+      if (c.xai) meta.xai = { model: c.xai.model, connected_s: Math.round(((c.xai.closeAt || Date.now()) - c.xai.openAt) / 100) / 10, text_inputs: c.xai.texts, function_outputs: c.xai.outputs };   // kiosk-voice-milktea-20261117
       if (wantText) meta.events = c.events;
       var submitP = Submit.promise ? Submit.promise.then(function (r) { return { status: 'ok', order_no: r.orderNo || null }; }, function (e) { return { status: 'fail', error: String(e && e.message || e).slice(0, 200) }; })
         : Promise.resolve(Submit.status === 'ok' ? { status: 'ok', order_no: Submit.orderNo } : { status: CONFIG.submitOrders ? 'not_sent' : 'trial' });
@@ -4127,7 +4196,13 @@ body.is-demo .demo-chip{display:inline-block}
     timers: {}, updateAttempt: 0, token: null, toolWaits: []
   };
   function clearTimer(name) { if (Session.timers[name]) { clearTimeout(Session.timers[name]); Session.timers[name] = 0; } }
-  function send(obj) { if (Session.ws && Session.ws.readyState === 1) Session.ws.send(JSON.stringify(obj)); }
+  function send(obj) {
+    if (Session.ws && Session.ws.readyState === 1) {
+      Session.ws.send(JSON.stringify(obj));
+      var x = Log.cur && Log.cur.xai;   // kiosk-voice-milktea-20261117：xAI 一則文字訊息另外收費
+      if (x && obj && obj.type === 'conversation.item.create' && obj.item) { if (obj.item.type === 'message') x.texts++; else if (obj.item.type === 'function_call_output') x.outputs++; }
+    }
+  }
   function touch() { Session.lastActivity = Date.now(); }
 
   function resolvePiBase() {
@@ -4261,6 +4336,7 @@ body.is-demo .demo-chip{display:inline-block}
     Session.ws = ws;
     Session.timers.connect = later(12000, function () { if (!Session.ready) { var e = new Error('connect_timeout'); e.kind = 'ws'; failSession(e); } });
     ws.onopen = function () {
+      if (Log.cur) Log.cur.xai = { model: String(tok.model || CONFIG.model), openAt: Date.now(), closeAt: 0, texts: 0, outputs: 0 };   // kiosk-voice-milktea-20261117
       send(sessionUpdate(tok, 0));
       Session.timers.ready = later(3000, function () { if (!Session.ready) onReady(); });
     };
@@ -4271,6 +4347,7 @@ body.is-demo .demo-chip{display:inline-block}
       handleEvent(ev);
     };
     ws.onclose = function (e) {
+      if (Log.cur && Log.cur.xai && !Log.cur.xai.closeAt) Log.cur.xai.closeAt = Date.now();   // kiosk-voice-milktea-20261117
       if (Session.ws !== ws) return;
       Session.ws = null;
       if (Session.active && !Session.finishing) { var err = new Error('closed ' + e.code + ' ' + (e.reason || '')); err.kind = 'ws'; failSession(err); }
@@ -4481,7 +4558,7 @@ body.is-demo .demo-chip{display:inline-block}
         }
         clearTimer('lack');
         Tm.start();
-        Session.userSpeaking = true; if (Session.userLine) Session.prevUserLine = Session.userLine; Session.userLine = ''; touch();   // kiosk-voice-cupsize-20261112：留上一句（杯型可能上一句才說）
+        Session.userSpeaking = true; if (Session.userLine) { Session.prevUserLine = Session.userLine; (Session.userHist = Session.userHist || []).push(Session.userLine); } Session.userLine = ''; touch();   // kiosk-voice-cupsize-20261112：留上一句（杯型可能上一句才說）
         Turn.adds = {}; Log.turn++;
         if (CONFIG.bargeIn && (AudioIO.isPlaying() || Session.responseActive)) {
           if (!Session.cutOff) Log.add('system', '顧客插話，點餐員停下來');
@@ -4543,9 +4620,17 @@ body.is-demo .demo-chip{display:inline-block}
     }
     return null;
   }
+  function lineLabel(line) {   // kiosk-voice-milktea-20261117：「去冰的錫蘭奶茶」「第四項的錫蘭奶茶」
+    var name = dishLabel(line.item);
+    var twins = Order.lines.filter(function (l) { return l !== line && !l.parentId && l.item === line.item; });
+    if (!twins.length) return name;
+    var sel = function (l) { return (lineInfo(l).selected || []).map(function (x) { return String(x).replace(/^[+＋]/, ''); }); };
+    var tag = sel(line).filter(function (x) { return !/杯$/.test(x) && twins.every(function (t) { return sel(t).indexOf(x) === -1; }); })[0];
+    return tag ? tag + '的' + name : '第' + lineNo(line) + '項的' + name;
+  }
   function missingAsk(line, m) {
-    var dish = Order.lines.length > 1 ? dishLabel(line.item) : '';
-    if (m.ask) return m.dish ? m.ask : dish + m.ask;
+    var dish = Order.lines.length > 1 ? lineLabel(line) : '';
+    if (m.ask) { if (!m.dish) return dish + m.ask; var dl = dishLabel(line.item), lb = lineLabel(line); return lb !== dl && m.ask.indexOf(dl) !== -1 ? m.ask.replace(dl, lb) : m.ask; }
     var q = String(m.question || ''), opts = (m.options || []).map(String), set = isSetItem(line.item);
     if (set && q === (line.item.optionGroups[drinkGroupIdx(line.item)] || {}).groupName) return (dish || '') + '套餐飲料要什麼？';
     if (set && /溫度|冰/.test(q)) dish = (dish ? dish + '的' : '') + '飲料';
@@ -4562,7 +4647,7 @@ body.is-demo .demo-chip{display:inline-block}
     if (!list.every(function (x) { return /^(add_items|update_item|remove_item|make_combo)$/.test(x.name) && !talkBesidesMissing(x.result); })) return undefined;
     var nx = firstMissing();
     if (!nx) return undefined;
-    return onlyLine(missingAsk(nx.line, nx.m), true);   // kiosk-voice-combo2-20261113：數字念國字
+    return onlyLine(missingAsk(nx.line, nx.m), true, lineNo(nx.line));   // kiosk-voice-combo2-20261113：數字念國字
   }
   // kiosk-voice-combo2-20261113：結果有 combo_offer（沒有別的要說）→ 只問 combo_offer.ask
   //   （11/12 19:51：點餐員自己改問「美國鄉村拼盤的飲料要大杯奶茶，還是換別的？」）
@@ -4576,9 +4661,10 @@ body.is-demo .demo-chip{display:inline-block}
     })(r, true);
     return out;
   }
-  function onlyLine(q, ask) {
+  function onlyLine(q, ask, ln) {
     q = speakNums(q);
-    return { ask: q, instructions: '你是早餐店的點餐員。現在只' + (ask ? '問' : '說') + '這一句，一個字都不要改，也不要多說別的話：「' + q + '」（顧客剛剛那句話還有沒加到的餐點或沒改到的地方，才先呼叫工具處理。）' };
+    return { ask: q, instructions: '你是早餐店的點餐員。現在只' + (ask ? '問' : '說') + '這一句，一個字都不要改，也不要多說別的話：「' + q + '」（顧客剛剛那句話還有沒加到的餐點或沒改到的地方，才先呼叫工具處理。）' +
+      (ln ? '（這一題問的是點餐單第' + ln + '項；顧客回答後，用 update_item 改第' + ln + '項。）' : '') };   // kiosk-voice-milktea-20261117
   }
   function offerNext(list) {
     if (!list || !list.length) return undefined;
@@ -5589,7 +5675,7 @@ body.is-demo .demo-chip{display:inline-block}
     report: function () {   // 寫進對話紀錄：下次看紀錄就知道客人的長條有沒有動
       var st = this.stat;
       if (!st || !Log.cur) return;
-      Log.add('system', '畫面版本 kiosk-voice-donebtn-20261117；聲音頻譜：客人的長條動了 ' + (st.userMs / 1000).toFixed(1) + ' 秒（最高 ' + st.userPeak.toFixed(2) + '、' + (st.feed ? '用送出去的聲音算' : '沒收到麥克風聲音') + '），點餐員 ' + (st.agentMs / 1000).toFixed(1) + ' 秒');
+      Log.add('system', '畫面版本 kiosk-voice-milktea-20261117；聲音頻譜：客人的長條動了 ' + (st.userMs / 1000).toFixed(1) + ' 秒（最高 ' + st.userPeak.toFixed(2) + '、' + (st.feed ? '用送出去的聲音算' : '沒收到麥克風聲音') + '），點餐員 ' + (st.agentMs / 1000).toFixed(1) + ' 秒');
       this.stat = null;
     },
     analyser: function (c) {

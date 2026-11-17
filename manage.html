@@ -191,10 +191,13 @@
         .kv-days button.on { background: #065f46; border-color: #059669; color: #fff; }
         .kv-logs { border: 1px solid #334155; border-radius: 10px; overflow: hidden; }
         .kv-log + .kv-log { border-top: 1px solid #334155; }
-        .kv-log-row { width: 100%; display: grid; grid-template-columns: 70px 112px 86px 60px minmax(0, 1fr) 24px; gap: 8px; align-items: center; padding: 9px 12px; background: transparent; border: 0; color: #e2e8f0; font-size: 13px; text-align: left; cursor: pointer; }
+        .kv-log-row { width: 100%; display: grid; grid-template-columns: 70px 112px 86px 60px 78px minmax(0, 1fr) 24px; gap: 8px; align-items: center; padding: 9px 12px; background: transparent; border: 0; color: #e2e8f0; font-size: 13px; text-align: left; cursor: pointer; }
         .kv-log-row:hover, .kv-log.open .kv-log-row { background: rgba(30, 41, 59, .9); }
         .kv-log-row .kv-first { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #94a3b8; }
-        @media (max-width: 640px) { .kv-log-row { grid-template-columns: 62px 1fr 74px 50px; } .kv-log-row .kv-first, .kv-log-row .kv-mic { display: none; } }
+        .kv-log-row .kv-cost { color: #fcd34d; font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }   /* kiosk-voice-milktea-20261117 */
+        .kv-log-row .kv-cost.est { color: #a8a29e; }
+        .kv-cost-line { color: #fcd34d; }
+        @media (max-width: 640px) { .kv-log-row { grid-template-columns: 62px 1fr 74px 50px 64px; } .kv-log-row .kv-first, .kv-log-row .kv-mic { display: none; } }
         .kv-chip { display: inline-block; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
         .kv-chip.ok { background: rgba(6, 78, 59, .7); color: #6ee7b7; }
         .kv-chip.warn { background: rgba(120, 53, 15, .7); color: #fcd34d; }
@@ -2048,6 +2051,7 @@
                             <div class="kv-tiles">
                                 <div class="kv-tile"><b>{{ kvStatsView.all.n }}</b><span>次數</span></div>
                                 <div class="kv-tile"><b>{{ kvStatsView.all.finished }}</b><span>點完（{{ kvPct(kvStatsView.all.finished, kvStatsView.all.n) }}，平均 {{ kvSecText(kvStatsView.all.avgSec * 1000, 0) }}）</span></div>
+                                <div class="kv-tile" data-kv-stats-cost><b>NT${{ (kvStatsView.all.costUsd * kvBillRate()).toFixed(0) }}</b><span>xAI 花費 US${{ kvStatsView.all.costUsd.toFixed(2) }}<template v-if="kvStatsView.all.n">，每次約 NT${{ (kvStatsView.all.costUsd * kvBillRate() / kvStatsView.all.n).toFixed(1) }}</template><template v-if="kvStatsView.all.costEst">（{{ kvStatsView.all.costEst }} 筆是用秒數估的）</template></span></div>
                                 <div class="kv-tile"><b>{{ kvStatsView.all.submitted }}</b><span>已送單・${{ kvStatsView.all.sales }}<template v-if="kvStatsView.all.trial">（試營運沒送 {{ kvStatsView.all.trial }}）</template></span></div>
                                 <div class="kv-tile" :class="{ warn: kvStatsView.all.empty }"><b>{{ kvStatsView.all.empty }}</b><span>沒點餐・取消</span></div>
                                 <div class="kv-tile"><b>{{ kvSecText(kvStatsView.all.heardAvg) }}</b><span>客人說完 → 聽到第一聲（平均）</span></div>
@@ -2089,13 +2093,14 @@
                                 <span><span class="kv-chip" :class="kvEndClass(r.end_reason)">{{ kvEndLabel(r.end_reason) }}</span></span>
                                 <span><span class="kv-chip" :class="kvSubmitClass(r.submit_status)">{{ kvSubmitLabel(r) }}</span></span>
                                 <span>{{ r.total ? '$' + r.total : '—' }}</span>
+                                <span class="kv-cost" :class="{ est: kvRowCost(r).est }" :title="kvCostTitle(kvRowCost(r))" data-kv-row-cost>{{ kvRowCost(r).usd != null ? 'NT$' + kvRowCost(r).twd.toFixed(1) : '' }}</span>
                                 <span class="kv-first">{{ r.first_text || '（沒有說話紀錄）' }}</span>
                                 <span class="kv-mic" :title="r.audio_bytes ? '有錄音' : ''">{{ r.audio_bytes ? '🎙️' : '' }}</span>
                             </button>
                             <div v-if="kvLogs.open === r.id" class="kv-log-detail">
                                 <p v-if="kvLogs.detailLoading" class="kv-help">讀取中…</p>
                                 <template v-else-if="kvLogs.detail">
-                                    <p class="kv-help">{{ kvLogs.detail.device || '平板' }}・{{ kvLogs.detail.seconds }} 秒・{{ kvEndLabel(kvLogs.detail.end_reason) }}・{{ kvSubmitText(kvLogs.detail.submit) }}<span v-if="kvLogs.detail.settings">・聲音 {{ kvLogs.detail.settings.voice }}、語速 {{ kvLogs.detail.settings.speed }}・{{ kvLevelText(kvLogs.detail.settings.session_level) }}</span></p>
+                                    <p class="kv-help">{{ kvLogs.detail.device || '平板' }}・{{ kvLogs.detail.seconds }} 秒<span v-if="kvLogCost(kvLogs.detail).usd != null" class="kv-cost-line" :title="kvCostTitle(kvLogCost(kvLogs.detail))" data-kv-detail-cost>・xAI {{ kvLogCost(kvLogs.detail).est ? '約 ' : '' }}US${{ kvLogCost(kvLogs.detail).usd.toFixed(3) }}（NT${{ kvLogCost(kvLogs.detail).twd.toFixed(1) }}）</span>・{{ kvEndLabel(kvLogs.detail.end_reason) }}・{{ kvSubmitText(kvLogs.detail.submit) }}<span v-if="kvLogs.detail.settings">・聲音 {{ kvLogs.detail.settings.voice }}、語速 {{ kvLogs.detail.settings.speed }}・{{ kvLevelText(kvLogs.detail.settings.session_level) }}</span></p>
                                     <div v-if="r.audio_bytes" class="flex flex-wrap items-center gap-3">
                                         <button v-if="!kvLogs.audioUrl" type="button" @click="kvLoadAudio(r)" :disabled="kvLogs.audioLoading" data-kv-audio-load class="bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-white text-xs font-bold px-3 py-1.5 rounded-lg">{{ kvLogs.audioLoading ? '載入中…' : '▶️ 載入錄音（' + Math.max(1, Math.round(r.audio_bytes / 1024)) + ' KB）' }}</button>
                                         <audio v-if="kvLogs.audioUrl" :src="kvLogs.audioUrl" controls class="kv-audio" data-kv-audio></audio>
@@ -5982,7 +5987,7 @@ window._resetCountUp = function() {
                 }).finally(function() { if (seq === S.seq) S.loading = false; });
             },
             kvLogFacts: function(log) {   // 一筆紀錄算出統計要用的數字（不留整份對話）
-                var f = { voice: String((log.settings && log.settings.voice) || ''), heard: [], speak: [], slow: 0, asks: 0, notFound: 0, noReply: 0, incomplete: 0, errors: 0, tracked: false, choppy: 0, gaps: 0, stuck: 0 };
+                var f = { cost: this.kvLogCost(log), voice: String((log.settings && log.settings.voice) || ''), heard: [], speak: [], slow: 0, asks: 0, notFound: 0, noReply: 0, incomplete: 0, errors: 0, tracked: false, choppy: 0, gaps: 0, stuck: 0 };
                 (log.events || []).forEach(function(e) {
                     var text = String(e.text || '');
                     if (e.audio_check) f.tracked = true;   // kiosk-voice-smooth-20261107：這筆有記聲音斷掉
@@ -6003,13 +6008,16 @@ window._resetCountUp = function() {
                 return f;
             },
             kvStatsAgg: function(items) {   // items：[{ r: 列表那一列, f: kvLogFacts 或 null }]
-                var a = { n: items.length, finished: 0, submitted: 0, trial: 0, failed: 0, empty: 0, sales: 0, avgSec: null,
+                var self = this;
+                var a = { n: items.length, costUsd: 0, costEst: 0, finished: 0, submitted: 0, trial: 0, failed: 0, empty: 0, sales: 0, avgSec: null,
                     heardAvg: null, speakAvg: null, speakMed: null, turns: 0, slow: 0, asks: 0, notFound: 0, noReply: 0, incomplete: 0, errors: 0, voices: '', tracked: 0, choppy: 0, gaps: 0, stuck: 0 };
                 var secs = [], heard = [], speak = [], voices = [];
                 function avg(xs) { return xs.length ? xs.reduce(function(s, x) { return s + x; }, 0) / xs.length : null; }
                 function med(xs) { if (!xs.length) return null; var v = xs.slice().sort(function(x, y) { return x - y; }), m = v.length >> 1; return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2; }
                 items.forEach(function(it) {
                     var r = it.r || {}, f = it.f, reason = String(r.end_reason || '');
+                    var cst = f && f.cost && f.cost.usd != null ? f.cost : self.kvCostOf(r.seconds, null, true);   // kiosk-voice-milktea-20261117
+                    if (cst.usd != null) { a.costUsd += cst.usd; if (cst.est) a.costEst++; }
                     if (reason === 'finished') { a.finished++; if (typeof r.seconds === 'number') secs.push(r.seconds); }
                     if (r.submit_status === 'ok') { a.submitted++; a.sales += Number(r.total) || 0; }
                     else if (r.submit_status === 'trial' && r.items) a.trial++;
@@ -6025,6 +6033,35 @@ window._resetCountUp = function() {
                 a.avgSec = avg(secs); a.heardAvg = avg(heard); a.speakAvg = avg(speak); a.speakMed = med(speak); a.turns = speak.length;
                 a.voices = voices.join('、');
                 return a;
+            },
+            // ── kiosk-voice-milktea-20261117：xAI 花費 ──
+            //   xAI 語音（grok-voice-3.0）每分鐘 US$0.08（連線多久算多久），每則傳給點餐員的文字訊息 US$0.004；價錢變了改 manage 的 xaiPerMin／xaiPerText
+            kvXaiPrice: function() {
+                var c = this.kvSavedConfig() || {}, m = Number(c.xaiPerMin), t = Number(c.xaiPerText);
+                return { perMin: isFinite(m) && m > 0 && m < 5 ? m : 0.08, perText: isFinite(t) && t >= 0 && t < 1 ? t : 0.004 };
+            },
+            kvCostOf: function(sec, texts, est) {
+                sec = Number(sec);
+                if (!isFinite(sec) || sec <= 0) return { usd: null };
+                var pr = this.kvXaiPrice(), n = Number(texts) || 0, usd = sec / 60 * pr.perMin + n * pr.perText;
+                return { usd: usd, twd: usd * this.kvBillRate(), sec: sec, texts: texts == null ? null : n, est: !!est, perMin: pr.perMin, perText: pr.perText };
+            },
+            kvLogCost: function(log) {   // 新紀錄有平板記的連線秒數、文字訊息數；舊紀錄用「連線好了」到結束的秒數估
+                if (!log) return { usd: null };
+                if (log.xai && log.xai.connected_s != null) return this.kvCostOf(log.xai.connected_s, log.xai.text_inputs, false);
+                var start = 0;
+                (log.events || []).some(function(e) { var m = /連線好了（按下後 ([0-9.]+) 秒/.exec(String(e.text || '')); if (m) start = Number(m[1]) || 0; return !!m; });
+                return this.kvCostOf((Number(log.seconds) || 0) - start, null, true);
+            },
+            kvRowCost: function(r) {
+                var f = this.kvStats.facts[this.kvLogs.date + '/' + r.id];
+                if (f && f.cost && f.cost.usd != null) return f.cost;
+                return this.kvCostOf(r.seconds, null, true);
+            },
+            kvCostTitle: function(c) {
+                if (!c || c.usd == null) return '';
+                return (c.est ? '估算（這筆是舊紀錄，沒有記文字訊息數）：' : '') + '連線 ' + c.sec + ' 秒 × US$' + c.perMin + '/分鐘' + (c.texts ? ' ＋ 文字訊息 ' + c.texts + ' 則 × US$' + c.perText : '') +
+                    ' = US$' + c.usd.toFixed(4) + '，以 1 美元 = ' + this.kvBillRate() + ' 元換算 NT$' + c.twd.toFixed(2);
             },
             kvSecText: function(ms, digits) {
                 if (ms === null || ms === undefined || !isFinite(ms)) return '—';
