@@ -1606,13 +1606,16 @@ body.is-demo .demo-chip{display:inline-block}
   function kindSaidFor(cands) {
     var key = familyKey(cands && cands[0] && cands[0].name), kinds = {};
     if (!key || key.length < 2) return '';
+    var bare = key.replace(/^[0-9]+號/, '');   // kiosk-voice-pending-20261119：「8號雙層豬肉起司蝸牛堡」顧客只說「雙層豬肉起司蝸牛堡餐」
     var parts = toTrad(String(Session.userLine || '')).split(/[，,。．.、；;！!？?\s]+/).map(norm).filter(Boolean);
     parts.forEach(function (p, i) {
-      var at = p.indexOf(key);
-      if (at < 0) return;
-      var after = p.slice(at + key.length), before = p.slice(0, at);
+      var k = p.indexOf(key) >= 0 ? key : (bare.length >= 3 && p.indexOf(bare) >= 0 ? bare : '');
+      if (!k) return;
+      var at = p.indexOf(k);
+      var after = p.slice(at + k.length), before = p.slice(0, at);
       var m = /^(的|要|是)?(套餐|單點)/.exec(after);
       if (m) { kinds[m[2]] = 1; return; }
+      if (/^(的)?餐/.test(after)) { kinds['套餐'] = 1; return; }   // kiosk-voice-pending-20261119：蝸牛堡餐、燒餅餐
       if (/單點(的|[0-9]?[個份])?$/.test(before)) { kinds['單點'] = 1; return; }
       if (!after) { var m2 = /^(我要|要|是)?(套餐|單點)(的)?$/.exec(parts[i + 1] || ''); if (m2) kinds[m2[2]] = 1; }
     });
@@ -1780,6 +1783,8 @@ body.is-demo .demo-chip{display:inline-block}
     var fam = familyOf(item).filter(function (x) { return x.active !== false && familyKey(x.name) === key; });
     var sets = fam.filter(isSetItem), singles = fam.filter(function (x) { return variantOf(x).kind === '單點'; });
     if (Offers.variants[key] && v.variant) sets = sets.filter(function (x) { return sameDish(x, item); });   // 說了「無蛋無肉」：沒有套餐，不用問
+    var heardKind = sets.length && singles.length ? kindSaidFor([item]) : '';   // kiosk-voice-pending-20261119：顧客自己說了（蝸牛堡餐）、點餐員也傳對了 → 不問
+    if (heardKind && heardKind === v.kind) Offers.kinds[key] = true;   // 不問套餐單點（單點的有蛋有肉照樣問）
     if (!Offers.kinds[key] && !hasDrink && sets.length && singles.length) {   // 1) 套餐還是單點
       var list = sets.concat(singles);
       Offers.kinds[key] = true;
@@ -1879,7 +1884,7 @@ body.is-demo .demo-chip{display:inline-block}
     var now = norm(Session.userLine || '');
     if (!now) return true;   // 不知道顧客說了什麼（測試、店員）：不擋
     var t = toTrad(String(Session.userLine || '') + ' ' + String(Session.prevUserLine || '') + ' ' + (Session.userHist || []).join(' '));   // kiosk-voice-milktea-20261117
-    return sz === '大杯' ? /大/.test(t) : /中|小/.test(t);
+    return sz === '大杯' ? /大|(^|[^a-z])(l|large)([^a-z]|$)/i.test(t) : /中|小|(^|[^a-z])(m|s|medium|small)([^a-z]|$)/i.test(t);   // kiosk-voice-pending-20261119：L 的＝大杯
   }
   function guardSizes(list) {
     var dropped = [];
@@ -2334,6 +2339,7 @@ body.is-demo .demo-chip{display:inline-block}
   function eggKeptText(line, dropped) {
     var gi = -1; (line.item.optionGroups || []).forEach(function (g, i) { if (gi < 0 && isEggStyleGroup(g)) gi = i; });
     var cur = gi >= 0 ? ((line.item.optionGroups[gi].choices || [])[line.sel[gi]] || {}).name : '';
+    if (cur && dropped.every(function (x) { return normChoice(x) === normChoice(cur) || normChoice(cur).indexOf(normChoice(x)) !== -1; })) return '';   // kiosk-voice-pending-20261119：本來就是這個蛋（荷包蛋＋全熟蛋）
     return '「' + dropped.join('、') + '」沒有用在第' + lineNo(line) + '項：這道本來就有蛋，顧客這句沒有說要換，照菜單預設（' + cur + '）。如果那是回答別一項的問題，請用 update_item 改那一項';
   }
   function defaultEggIdx(g) {   // 「加蛋」的預設蛋（3號 → +全熟蛋）；預設是不加蛋就用第一個蛋
@@ -2988,7 +2994,7 @@ body.is-demo .demo-chip{display:inline-block}
   }
   function joinNote(a, list) { return [String(a || '').trim()].concat(list || []).filter(Boolean).map(toTrad).join('、'); }
   function getLine(n) { n = Math.round(Number(n)); return n >= 1 && n <= Order.lines.length ? Order.lines[n - 1] : null; }
-  function resetOrder() { Session.prevUserLine = ''; Session.userHist = []; Order.lines = []; Order.changedId = 0; Order.dineMode = ''; Order.askingMode = false; Order.incomplete = ''; Turn.adds = {}; Turn.warned = {}; resetOffers(); Pending.egg = null; Pending.heard = null; Pending.failed = []; resetSubmit(); renderOrder(); }
+  function resetOrder() { Session.prevUserLine = ''; Session.userHist = []; Order.lines = []; Order.changedId = 0; Order.dineMode = ''; Order.askingMode = false; Order.incomplete = ''; Turn.adds = {}; Turn.warned = {}; resetOffers(); Pending.egg = null; Pending.heard = null; Pending.failed = []; Pending.asks = []; resetSubmit(); renderOrder(); }
 
   /* ═════════ 工具（給 Grok 呼叫） ═════════ */
   var TOOLS_SPEC = [
@@ -3026,7 +3032,7 @@ body.is-demo .demo-chip{display:inline-block}
 
   // kiosk-voice-eggfix-20261105：記住點餐員這次要問的是不是「要加蛋嗎？」；顧客下一句用「好／要／不用」開頭，
   //   點餐員卻去加別的餐點或點好了，就把這句當成那一題的答案（和點餐員自己 update_item 一樣）
-  var Pending = { egg: null, heard: null };   // heard：要先問的那一道，顧客原句說的換法（kiosk-voice-kindheard-20261111）
+  var Pending = { egg: null, heard: null, asks: [] };   // asks：kiosk-voice-pending-20261119 還沒加進去、等顧客回答的那幾樣   // heard：要先問的那一道，顧客原句說的換法（kiosk-voice-kindheard-20261111）
   function holdHeard(list, clauses) { Pending.heard = clauses && clauses.length && list && list[0] ? { key: familyKey(list[0].name), clauses: clauses.slice() } : Pending.heard; }
   function heldHeard(item) {
     var p = Pending.heard;
@@ -3093,6 +3099,7 @@ body.is-demo .demo-chip{display:inline-block}
     if (eggAnswered && result && typeof result === 'object' && typeof result.then !== 'function') result.answered_previous = eggAnswered;
     if (name === 'add_items' && result && Array.isArray(result.results))   // kiosk-voice-orange2-20261119
       Pending.failed = result.results.filter(function (r) { return r && r.ok === false && r.said; }).map(function (r) { return String(r.said); });
+    if (name === 'add_items' && result && Array.isArray(result.results)) pendingFromAdd(result.results);   // kiosk-voice-pending-20261119
     if (result && typeof result.then !== 'function' && name !== 'get_order' && name !== 'search_menu') {
       var pl = eggLineFromResult(name, result);
       Pending.egg = pl ? { lineId: pl, said: Session.userLine || '' } : null;
@@ -3258,7 +3265,7 @@ body.is-demo .demo-chip{display:inline-block}
       if (earlyRef && target === line) linkEarlier(target, earlyRef.d, info);   // kiosk-voice-cupsize-20261112
       if (target === line) mergeEarlierDrink(target, Object.keys(lineOfSpec).map(function (k) { return lineOfSpec[k]; }).concat([target]), info);   // kiosk-voice-menuswap-20261110
       info.ok = true;
-      if (eggGuard.dropped.length) info.egg_kept = eggKeptText(target, eggGuard.dropped);
+      if (eggGuard.dropped.length) { var ekA = eggKeptText(target, eggGuard.dropped); if (ekA) info.egg_kept = ekA; }
       swapInfo(info, swapBag);
       if (f.kind_heard) info.kind_heard = '顧客原句說了「' + f.kind_heard + '」，已經照' + f.kind_heard + '加入，不用再問套餐還是單點';   // kiosk-voice-kindheard-20261111
       if (f.typo_from) info.heard_as = '「' + toTrad(f.typo_from) + '」' + (f.cross ? '對照顧客原句' : '照錯字表') + '當成「' + target.item.name + '」';
@@ -3335,7 +3342,7 @@ body.is-demo .demo-chip{display:inline-block}
     }
     var have = lineSize(line), want = '';
     sels.forEach(function (x) { var n = norm(x), b = SIZE_SEL_RE.exec(n), c = b ? (b[1] === '大' || b[1] === '大杯' ? '大杯' : '中杯') : cupSize(n); if (c) want = c === '小杯' ? '中杯' : c; });
-    if (!have || !want || want === have || /[大中小]|杯/.test(heard)) return null;   // 顧客這句有說杯型：照改
+    if (!have || !want || want === have || /[大中小]|杯|(^|[^a-z])[lms]([^a-z]|$)/.test(heard)) return null;   // 顧客這句有說杯型：照改
     var rest = sels.filter(function (x) { var n = norm(x); return !SIZE_SEL_RE.test(n) && !cupSize(n); });
     var failed = (Pending.failed || []).filter(function (f) { return DRINKISH_RE.test(norm(f)); });
     if (failed.length && isDrinkItem(line.item)) {   // 剛剛「請問是○○嗎？」那杯：加新的一杯，不改這一項
@@ -3417,7 +3424,7 @@ body.is-demo .demo-chip{display:inline-block}
     var info = Object.assign(lineInfo(line), settled);
     if (switched.switched_from) info.switched_from = switched.switched_from;
     if (switched.auto_upgraded && !info.auto_upgraded) info.auto_upgraded = switched.auto_upgraded;
-    if (eggGuardU.dropped.length) info.egg_kept = eggKeptText(line, eggGuardU.dropped);
+    if (eggGuardU.dropped.length) { var ekU = eggKeptText(line, eggGuardU.dropped); if (ekU) info.egg_kept = ekU; }
     info.ok = true;
     swapInfo(info, swapBagU);
     if (unmatchedToTell(unmatched).length) info.unmatched = unmatchedToTell(unmatched);
@@ -3429,9 +3436,14 @@ body.is-demo .demo-chip{display:inline-block}
     if (offer) info.combo_offer = offer;
     return info;
   }
+  var REMOVE_SAID_RE = /不要|不用|刪|取消|拿掉|去掉|算了|移除|扣掉|少一|減|不點|換成|改成|改點|改要|錯了|不是/;
   function toolRemoveItem(args) {
     var line = getLine(args.line);
     if (!line) return { ok: false, message: '點餐單上沒有第' + args.line + '項' };
+    if (line.addedFor && line.addedFor === Session.userLine && !REMOVE_SAID_RE.test(norm(Session.userLine || ''))) {   // kiosk-voice-pending-20261119
+      Log.add('system', '點餐員要刪第' + lineNo(line) + '項（' + line.item.name + '），是顧客這句剛點的、顧客沒說不要：不刪');
+      return { ok: false, kept: true, message: '第' + lineNo(line) + '項「' + speakName(line.item.name) + '」是顧客這句話剛點的，顧客沒有說不要，不刪。照常往下（顧客說點好了就呼叫 finish_order）' };
+    }
     meatChildren(line).concat([line]).forEach(function (l) { var i = Order.lines.indexOf(l); if (i !== -1) Order.lines.splice(i, 1); });
     return { ok: true, removed: line.item.name, lines: Order.lines.map(lineInfo), order_total: orderTotal() };
   }
@@ -3526,6 +3538,8 @@ body.is-demo .demo-chip{display:inline-block}
     var pending = Order.lines.filter(function (l) { return missingOf(l).length; }).map(function (l) {
       return { line: lineNo(l), name: l.item.name, missing: missingOf(l) };
     });
+    var pkF = !pending.length ? pendingAsk(true) : null;   // kiosk-voice-pending-20261119
+    if (pkF) return { ok: false, not_finished: true, ask: pkF.ask, message: '「' + toTrad(pkF.said || pkF.names[0]) + '」還沒加進點餐單，先照 ask 問；顧客選了就用 add_items 加 ' + pkF.names.map(function (n) { return '「' + n + '」'; }).join('或') + ' 其中一個，顧客說不要了就直接再呼叫 finish_order' };
     if (pending.length) return { ok: false, pending: pending, message: '還有選項沒確認，先問完再結束' + (Order.dineMode ? '（' + dineModeLabel(Order.dineMode) + '已經記下來，問完直接呼叫 finish_order）' : '') };
     if (CONFIG.askDineMode && !Order.dineMode) {
       Order.askingMode = true; renderOrder();
@@ -3758,6 +3772,7 @@ body.is-demo .demo-chip{display:inline-block}
       '7. 可以說的錢只有這幾種：加料要多收的錢（照 ask、meat_added）、combo_offer 可以省多少、套餐的「飲料折5元」「超過30元補差價」（照【套餐】或 set_includes）、最後總共多少（照 finish_order）。其他價錢一律不說，也不要自己加總。說到數字（金額、杯數、號碼）一律念國字，例如「兩百零九元」「省五元」「兩杯」，不要照阿拉伯數字念。',
       '7-1. add_items 找不到餐點時，不要直接說「我們沒有」：照 message 先從【今日菜單】找發音最像的問「請問是○○嗎？」（例如 高麗滷肉餅→高鈣乳酪餅、木樹芽→苜蓿芽）；問過還是不對，才請顧客看旁邊的菜單看板換別的。結果有 heard_as 是系統照錯字表改好的，不用跟顧客說。',
       '7-2. 顧客說「奶茶」「大冰奶」「熱奶」「中去奶」「大溫紅」這種簡稱：奶＝錫蘭奶茶、紅＝錫蘭紅茶，大／中＝杯型，冰／去／溫／熱＝冰塊；照顧客說的原樣放進 add_items 的 name，系統會換成正式名稱，不要自己改字、不要問「請問是錫蘭奶茶嗎？」，也不要說「我們沒有熱牛奶」。',
+      '7-3. 本店飲料只有中杯、大杯：顧客說「小杯」「小的」「M」就是中杯，「L」就是大杯，直接照這樣放進 selections，不要問、也不要說「只有中杯或大杯」。',
       '8. 聽不清楚就說「不好意思，可以再說一次嗎？」；顧客講台語也盡量聽懂，用華語回答。',
       '8-0. 顧客問「套餐有什麼」「套餐跟單點差在哪」：只說套餐多附的飲料，照【套餐】或 search_menu 結果的 set_includes 說，例如「套餐有附一杯飲料，飲料折五元」「套餐附一杯大杯錫蘭奶茶，可以換別的飲料，超過三十元要補差價」；不要念食材，也不要說餐點價錢。',
       '8-1. 顧客問某道餐點裡面有什麼、有沒有某樣食材（例如洋蔥、香菜、辣不辣）：先用 search_menu 查那一道，只照結果的 contents 回答。問「有沒有○○」：contents 有寫到就說「有喔」，沒寫到就只說「沒有喔」，不要多說別的。問「裡面有什麼」：白話念出主要食材，例如「裡面有炸雞腿、生菜、番茄和酸黃瓜醬」。contents 是「菜單沒有寫食材」，就說「這個要麻煩問一下櫃台店員」。絕對不要用一般常識猜。顧客提到過敏，最後加一句「如果會過敏，請再跟櫃台確認一下」。結果有 notice（注意事項）時：顧客問能不能吃、有沒有要注意的，或提到懷孕、哺乳、吃藥、肝腎、過敏，就用一句話照 notice 提醒；只問裡面有什麼就不用念。顧客說不要某樣食材（例如不要洋蔥），寫在那一項的 note。',
@@ -4668,6 +4683,33 @@ body.is-demo .demo-chip{display:inline-block}
     }
     return null;
   }
+  // kiosk-voice-pending-20261119：add_items 沒加進去、要問顧客的（套餐還是單點、請問是○○嗎）記下來；之後加了同一道就劃掉
+  function pendingFromAdd(results) {
+    Pending.asks = Pending.asks || [];
+    results.forEach(function (r) {
+      if (!r) return;
+      if (r.line) {
+        var got = getLine(r.line);
+        if (got) {
+          var gk = familyKey(got.item.name);
+          Pending.asks = Pending.asks.filter(function (p) { return p.keys.indexOf(gk) === -1; });
+          got.addedFor = Session.userLine || '';   // 這句話剛點的（不讓點餐員自己刪掉）
+        }
+        return;
+      }
+      if (r.ok !== false || !r.ask || !Array.isArray(r.candidates) || !r.candidates.length) return;
+      var keys = r.candidates.map(function (c) { return familyKey(c.name); });
+      if (Pending.asks.some(function (p) { return p.keys[0] === keys[0]; })) return;
+      Pending.asks.push({ keys: keys, ask: String(r.ask), names: r.candidates.map(function (c) { return c.name; }), said: String(r.said || ''), asked: 0 });
+    });
+  }
+  function pendingAsk(mark) {   // 下一個要問的（平板每一樣最多自己問一次，顧客不理就算了）
+    var p = (Pending.asks || []).filter(function (x) { return x.asked < 1; })[0];
+    if (!p) return null;
+    if (mark) p.asked++;
+    var ask = /^請問要套餐還是單點/.test(p.ask) && p.said ? '請問' + plainName(p.names[0]) + '要套餐還是單點？' : p.ask;
+    return { ask: ask, names: p.names, said: p.said };
+  }
   function lineLabel(line) {   // kiosk-voice-milktea-20261117：「去冰的錫蘭奶茶」「第四項的錫蘭奶茶」
     var name = dishLabel(line.item);
     var twins = Order.lines.filter(function (l) { return l !== line && !l.parentId && l.item === line.item; });
@@ -4694,7 +4736,14 @@ body.is-demo .demo-chip{display:inline-block}
     if (!list || !list.length) return undefined;
     if (!list.every(function (x) { return /^(add_items|update_item|remove_item|make_combo)$/.test(x.name) && !talkBesidesMissing(x.result); })) return undefined;
     var nx = firstMissing();
-    if (!nx) return undefined;
+    if (!nx) {   // kiosk-voice-pending-20261119：點餐單都問完了，還有沒加進去的那幾樣 → 接著問
+      var pk = pendingAsk(true);
+      if (!pk) return undefined;
+      Log.add('system', '還有沒加進去的「' + toTrad(pk.said || pk.names[0]) + '」，請點餐員接著問「' + pk.ask + '」');
+      var r = onlyLine(pk.ask, true);
+      r.instructions += '（顧客回答後，用 add_items 加 ' + pk.names.map(function (n) { return '「' + n + '」'; }).join('或') + ' 其中顧客選的那一個。）';
+      return r;
+    }
     return onlyLine(missingAsk(nx.line, nx.m), true, lineNo(nx.line));   // kiosk-voice-combo2-20261113：數字念國字
   }
   // kiosk-voice-combo2-20261113：結果有 combo_offer（沒有別的要說）→ 只問 combo_offer.ask
@@ -4744,6 +4793,7 @@ body.is-demo .demo-chip{display:inline-block}
   function plainNext(list) {
     if (!list || !list.length) return undefined;
     if (firstMissing()) return undefined;   // kiosk-voice-cupsize-20261112：還有沒問完的，不能說「還要點其他的嗎？」
+    if (pendingAsk(false)) return undefined;   // kiosk-voice-pending-20261119：還有沒加進去的，接著問那一樣
     if (!list.every(function (x) { return /^(add_items|update_item|remove_item)$/.test(x.name) && !needsTalk(x.result); })) return undefined;
     return { instructions: '你是早餐店的點餐員。顧客剛剛說的都已經處理好了，沒有要問的。現在只說這一句，一個字都不要改，也不要多說別的話：「' + NEXT_LINE + '」（顧客剛剛那句話還有沒加到的餐點或沒改到的地方，才先呼叫工具處理。）' };
   }
@@ -5292,6 +5342,12 @@ body.is-demo .demo-chip{display:inline-block}
     Session.doneWanted = false;
     if (!Session.active || Session.finishing) return;
     var live = Session.ready && Session.ws, nx = firstMissing();
+    var pkD = live && !nx ? pendingAsk(true) : null;   // kiosk-voice-pending-20261119：還有沒加進去的 → 先問那一樣
+    if (pkD) {
+      doneSay(pkD.ask, true, '顧客按了「我點好了」，「' + toTrad(pkD.said || pkD.names[0]) + '」還沒加進去，請點餐員只問「' + pkD.ask + '」', '（顧客按了「我點好了」按鈕）');
+      Session.doneWanted = 'asked';
+      return;
+    }
     // kiosk-voice-smooth-20261107：餐點都確認了、也知道內用外帶（或設定成不問）→ 平板直接送單
     if (live && Order.lines.length && !nx && (Order.dineMode || !CONFIG.askDineMode)) {
       stopAgentTalk();
