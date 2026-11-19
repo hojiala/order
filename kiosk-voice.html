@@ -1153,7 +1153,8 @@ body.is-demo .demo-chip{display:inline-block}
     var fx = fixTypos(t);
     if (fx) t = fx.text;
     // kiosk-voice-milktea-20261117：「熱奶」「冰紅」這種錯字表沒有的簡稱 → 熱奶茶、冰紅茶
-    t = t.replace(/(去冰|少冰|微冰|冰|溫|熱)(鮮奶|奶|紅|綠)(?![茶油酥精昔])/g, '$1$2茶');
+    t = t.replace(/(去冰|少冰|微冰|冰|溫|熱)(鮮奶|奶|紅|綠)(?![茶油酥精昔])/g, '$1$2茶')
+      .replace(/(去冰|少冰|微冰|冰|溫|熱|去)豆(?![漿包餅花腐干沙乳芽])/g, '$1豆漿').replace(/(去冰|少冰|微冰|冰|溫|熱|去)柳(?![橙丁])/g, '$1柳橙汁');   // kiosk-voice-beanorange-20261119
     var names = [], len = function (it) { return isDrinkItem(it) ? 2 : 3; };   // 飲料兩個字（奶茶、紅茶）也算
     Menu.active.forEach(function (it) { it._names.forEach(function (n) { if (n.length >= len(it)) names.push({ n: n, item: it }); }); });
     (Menu.aliases || []).forEach(function (a) { if (a.from.length >= len(a.to) && a.to.active !== false) names.push({ n: a.from, item: a.to, implied: a.implied }); });
@@ -1172,9 +1173,10 @@ body.is-demo .demo-chip{display:inline-block}
       if (!isDrinkItem(h.item)) return;
       var seg = t.slice(Math.max(k ? hits[k - 1].end : 0, h.pos - 8), h.pos);
       seg = seg.replace(/^.*(然後|還有|另外|再來|再|跟|和|[0-9一二兩三四五六七八九十]杯)/, '');
-      var sz = /(大杯|中杯|小杯|大的|中的|大|中|小)/.exec(seg), tp = /(去冰|少冰|微冰|常溫|冰|溫|熱)/.exec(seg);
+      var sz = /(大杯|中杯|小杯|大的|中的|大|中|小)/.exec(seg), tp = /(去冰|少冰|微冰|常溫|冰|溫|熱|去)/.exec(seg);
       if (sz && !h.implied.some(function (x) { return /杯$/.test(x); })) h.implied.push(SIZE_WORDS[sz[1]]);
-      if (tp && !h.implied.some(function (x) { return /冰|溫/.test(x); })) h.implied.push(TEMP_WORDS[tp[1]]);
+      var tw = tp ? (tp[1] === '去' ? '去冰' : TEMP_WORDS[tp[1]]) : '';   // kiosk-voice-beanorange-20261119：大去柳 → 去冰；柳橙汁沒有溫的就不帶
+      if (tw && hasChoice(h.item, tw) && !h.implied.some(function (x) { return /冰|溫/.test(x); })) h.implied.push(tw);
     });
     return hits;
   }
@@ -1295,7 +1297,7 @@ body.is-demo .demo-chip{display:inline-block}
   }
   // kiosk-voice-milktea-20261117：點餐員傳的飲料名稱是亂字（11/17 16:34：顧客「大杯去冰奶茶」「大熱奶」，點餐員傳「大杯乳茶」「大熱乳」）
   //   對不到菜單、看起來是飲料的那幾項，和原句裡還沒被用到的飲料一樣多 → 照說的順序用原句的（杯型、冰熱也照原句）
-  var DRINKISH_RE = /茶|奶|乳|咖啡|拿鐵|豆漿|可可|杯|冰|熱|溫|紅|綠/;
+  var DRINKISH_RE = /茶|奶|乳|咖啡|拿鐵|豆漿|可可|杯|冰|熱|溫|紅|綠|豆|柳|汁|^[大中小]去/;   // kiosk-voice-beanorange-20261119：大冰逗、大去流
   function drinkLeftover(specs, found) {
     var open = [];
     found.forEach(function (f, i) {
@@ -1406,8 +1408,11 @@ body.is-demo .demo-chip{display:inline-block}
       .sort(function (a, b) { return b.s - a.s; });
   }
   // kiosk-voice-milktea-20261117：電話點餐的飲料簡稱（大熱奶、中去奶、大溫紅、熱奶）＝奶茶／紅茶，杯型、冰熱照說的
-  var DRINK_SHORT_RE = /^(大杯|中杯|小杯|大|中|小)?的?(去冰|少冰|微冰|常溫|冰|溫|熱|去)?的?(鮮奶|奶|紅|綠)(茶)?$/;
-  var DRINK_SHORT_BASE = { '鮮奶': '鮮奶茶', '奶': '奶茶', '紅': '紅茶', '綠': '綠茶' };
+  var DRINK_SHORT_RE = /^(大杯|中杯|小杯|大|中|小)?的?(去冰|少冰|微冰|常溫|冰|溫|熱|去)?的?(鮮奶|奶|紅|綠|豆|柳)(茶)?$/;   // kiosk-voice-beanorange-20261119：豆＝豆漿、柳＝柳橙汁
+  var DRINK_SHORT_BASE = { '鮮奶': '鮮奶茶', '奶': '奶茶', '紅': '紅茶', '綠': '綠茶', '豆': '豆漿', '柳': '柳橙汁' };
+  function hasChoice(it, name) {   // kiosk-voice-beanorange-20261119：菜單這一道有沒有這個選項（柳橙汁沒有「溫」）
+    return (it.optionGroups || []).some(function (g) { return (g.choices || []).some(function (c) { return normChoice(c.name) === normChoice(name); }); });
+  }
   function drinkShort(n) {
     var m = DRINK_SHORT_RE.exec(n || '');
     if (!m || !(m[1] || m[2])) return null;
@@ -1415,7 +1420,8 @@ body.is-demo .demo-chip{display:inline-block}
     if (!hit || !isDrinkItem(hit.it)) return null;
     var implied = (hit.implied || []).slice();
     if (m[1]) implied.push(SIZE_WORDS[m[1]] || '中杯');
-    if (m[2]) implied.push(m[2] === '去' ? '去冰' : TEMP_WORDS[m[2]]);
+    var tp = m[2] ? (m[2] === '去' ? '去冰' : TEMP_WORDS[m[2]]) : '';
+    if (tp && hasChoice(hit.it, tp)) implied.push(tp);   // kiosk-voice-beanorange-20261119：溫柳 → 不帶溫度，照菜單問
     return { it: hit.it, implied: implied };
   }
   function findItem(said) {
@@ -1424,7 +1430,10 @@ body.is-demo .demo-chip{display:inline-block}
     var stages = stripImplied(n);
     for (var i = 0; i < stages.length; i++) {
       var hit = exactItem(stages[i].text);
-      if (hit) return pack(hit.it, stages[i].implied.concat(hit.implied), true);
+      if (hit) {   // kiosk-voice-beanorange-20261119：別名「冰柳橙紅茶」整句對到柳橙紅茶，會吃掉「冰」→ 拆掉冰熱杯型後還是同一道，就用拆過的（冰、大杯照帶）
+        for (var j = stages.length - 1; j > i; j--) { var deep = exactItem(stages[j].text); if (deep && deep.it === hit.it) return pack(deep.it, stages[j].implied.concat(deep.implied), true); }
+        return pack(hit.it, stages[i].implied.concat(hit.implied), true);
+      }
     }
     var ds = drinkShort(n);   // kiosk-voice-milktea-20261117
     if (ds) return pack(ds.it, ds.implied, true);
