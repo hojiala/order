@@ -491,6 +491,19 @@
         <button v-if="orderMode!=='pos'" @click="exitOnline" class="text-xs bg-gray-200 hover:bg-gray-300 text-gray-600 px-3 py-1 rounded-lg transition">取消修改</button>
       </div>
     </div>
+    <!-- ★ pos-voice-xai-20261122：語音聽到、但對不到唯一一道菜（或像雜音）的 → 列候選，店員點一下就加入；xAI 不問話 -->
+    <div v-if="orderMode==='pos' && voicePending.length" data-pos-voice-pending class="px-3 py-2 border-b border-amber-200 bg-amber-50 flex-shrink-0 overflow-y-auto" style="max-height:12rem">
+      <div v-for="(p,pi) in voicePending" :key="p.key" class="text-xs mb-2">
+        <div class="flex items-start justify-between gap-2">
+          <p class="font-bold text-amber-900">&#127908; {{ p.noise ? '可能是雜音' : '聽到' }}「{{ p.heard }}」<span v-if="p.quantity>1"> &#215;{{ p.quantity }}</span><span v-if="p.detail" class="font-normal text-amber-700">（{{ p.detail }}）</span><span class="font-normal text-amber-700">{{ p.candidates.length ? '，點一下加入：' : '，菜單對不到，請手動點餐' }}</span></p>
+          <button @click="voiceDismissPending(pi)" title="不要了" class="flex-shrink-0 w-6 h-6 rounded-full text-amber-500 hover:text-red-500 active:scale-95">&#10005;</button>
+        </div>
+        <div v-if="p.candidates.length" class="flex flex-wrap gap-1.5 mt-1">
+          <button v-for="c in p.candidates" :key="c.name" @click="voicePickPending(pi,c.name)"
+            class="rounded-full border border-amber-300 bg-white px-2.5 py-1 font-bold text-amber-900 active:scale-95 transition">{{ c.name }} <span class="text-amber-600">{{ '$'+c.price }}</span></button>
+        </div>
+      </div>
+    </div>
     <div class="flex-1 overflow-y-auto">
       <div v-if="cart.length===0" class="flex flex-col items-center justify-center h-full text-gray-300 py-8"><div class="text-5xl mb-3">&#128722;</div><p class="text-sm">尚無餐點</p></div>
       <div v-else>
@@ -1132,7 +1145,50 @@
         appId:"1:662477350736:web:7e3dd6128a6f66a52aae55"
     };
     const app=initializeApp(firebaseConfig),db=getDatabase(app),auth=getAuth(app);
-    const posVoiceRuntime={pc:null,dc:null,stream:null,idleTimer:null,seenCalls:new Set(),aliases:[],typos:[],pendingSearch:null,transcriptionPrompt:'台灣早餐店現場點餐，請使用繁體中文。'};
+    // ★ pos-voice-xai-20261122：麥克風點餐改用 xAI Grok Voice（和店內語音點餐平板同一個服務），只聽不說：
+    //   不播聲音、不問話；聽到的餐點直接加到右邊「目前訂單」。永久金鑰只在 Pi（/api/pos/voice/token 發 2 分鐘短效 token）。
+    const POS_VOICE_TAG='pos-voice-xai-20261122';
+    const POS_VOICE_WS_URL='wss://api.x.ai/v1/realtime';
+    const POS_VOICE_WORKLET_URL='./kiosk-mic-worklet.20261029_001.js';
+    const POS_VOICE_IDLE_MS=30000,POS_VOICE_MAX_MS=6*60*1000;
+    const POS_VOICE_ADD_TOOL={type:'function',name:'add_items',description:'把聽到的一或多樣餐點直接加到 POS 目前訂單。同一句的所有餐點放在同一次呼叫。',
+        parameters:{type:'object',properties:{items:{type:'array',items:{type:'object',properties:{
+            name:{type:'string',description:'餐點名稱：用【今日菜單】上的完整正式名稱；不確定就照聽到的原話'},
+            quantity:{type:'integer',minimum:1,maximum:99},
+            selections:{type:'array',items:{type:'string'},description:'選項一個一格，例如：大杯、去冰、加蛋、不加蛋、加起司、大冰奶（套餐飲料）、不要醬'},
+            note:{type:'string',description:'其他備註；沒有就空字串'}
+        },required:['name','quantity']}}},required:['items']}};
+    const posVoiceRuntime={ws:null,ready:false,collecting:false,pre:[],stream:null,ctx:null,source:null,node:null,sink:null,acc:null,accLen:0,rsPrev:0,rsT:0,
+        idleTimer:null,maxTimer:null,connectTimer:null,readyTimer:null,openReject:null,onReady:null,updateAttempt:0,
+        seenCalls:new Set(),aliases:[],typos:[],keyterms:[],model:'grok-voice-3.0',turnText:'',turnHadCall:false,pendingSeq:0};
+    function posVoiceFloatToB64(f32){
+        var buf=new ArrayBuffer(f32.length*2),view=new DataView(buf);
+        for(var i=0;i<f32.length;i++){var v=Math.max(-1,Math.min(1,f32[i]));view.setInt16(i*2,v<0?v*0x8000:v*0x7FFF,true);}
+        var bytes=new Uint8Array(buf),bin='';
+        for(var j=0;j<bytes.length;j+=0x8000)bin+=String.fromCharCode.apply(null,bytes.subarray(j,j+0x8000));
+        return btoa(bin);
+    }
+    function posVoiceSendChunk(b64){
+        var rt=posVoiceRuntime;
+        if(rt.ready&&rt.ws&&rt.ws.readyState===1){rt.ws.send(JSON.stringify({type:'input_audio_buffer.append',audio:b64}));return;}
+        if(rt.collecting&&rt.pre.length<60)rt.pre.push(b64);   // 連線好之前先存（最多 6 秒），連上再送：按下麥克風就可以開始說
+    }
+    function posVoiceFeed(buf){
+        var rt=posVoiceRuntime;
+        if(!rt.ctx||!rt.acc||!buf||!buf.length)return;
+        var from=rt.ctx.sampleRate,data=buf;
+        if(from!==24000){
+            var ratio=from/24000,src=new Float32Array(buf.length+1),out=[],t=rt.rsT;
+            src[0]=rt.rsPrev;src.set(buf,1);
+            while(t<=src.length-2){var i=Math.floor(t),f=t-i;out.push(src[i]*(1-f)+src[i+1]*f);t+=ratio;}
+            rt.rsT=t-(src.length-1);rt.rsPrev=src[src.length-1];
+            data=out;
+        }
+        for(var k=0;k<data.length;k++){
+            rt.acc[rt.accLen++]=data[k];
+            if(rt.accLen===rt.acc.length){posVoiceSendChunk(posVoiceFloatToB64(rt.acc));rt.accLen=0;}
+        }
+    }
     // ★ pos-linepay-inpage-qr-20261024：QR 視窗的計時器（不放進 Vue 狀態）
     const posLinePayQrRuntime={timer:null,closeTimer:null,retry:null};// retry：pos-linepay-qr-retry-20261024「重新取得 QR Code」用
 
@@ -1200,7 +1256,7 @@
                 activeView:"menu",editMode:false,
                 cart:[],custName:"",custPhone:"",isSubmitting:false,checkoutProgress:"",drawerOpening:false,cancelInFlight:{},
                 staffPresets:[],staffPresetsLoading:false,staffPresetsError:"",showStaffPresetPicker:false,selectedStaffPreset:null,staffPresetPending:null,
-                voiceActive:false,voiceConnecting:false,voiceStatus:"",voiceTranscript:"",
+                voiceActive:false,voiceConnecting:false,voiceStatus:"",voiceTranscript:"",voicePending:[],
                 posMetaExpanded:false,showStorePayChoiceModal:false,showLinePayChoiceModal:false,showCounterSettingsModal:false,showCashCalculator:false,showBackendStatus:false,posOrderNote:"",
                 counterResetTime:"00:00",counterMaxNo:999,counterLegacyValue:0,counterSaving:false,cashCalcInput:"",
                 ordersRealtimeUnsub:null,ordersRealtimeRefreshTimer:null,openTodayPending:false,openTodayResumeTimer:null,
@@ -7151,7 +7207,8 @@
                 }
             },
             voiceSend:function(event){
-                if(posVoiceRuntime.dc&&posVoiceRuntime.dc.readyState==='open')posVoiceRuntime.dc.send(JSON.stringify(event));
+                var ws=posVoiceRuntime.ws;
+                if(ws&&ws.readyState===1)ws.send(JSON.stringify(event));
             },
             voicePrepareMap:function(data){
                 var s=this,entries=Array.isArray(data)?data.map(function(row){return [row&&(row.alias||row.key||row.name),row&&(row.official||row.canonical||row.value)];}):Object.keys(data||{}).map(function(key){
@@ -7217,26 +7274,131 @@
                 });
             },
             voiceFindMenuItem:function(name){
-                var s=this,target=this.voiceNormalizeTerm(name),found=null;
-                (this.menu||[]).some(function(item){
-                    if(!item||item.active===false)return false;
-                    var names=[item.name,item.shortName,item.printName].map(function(value){return s.normalizeMenuNameForMatch(value);});
-                    if(names.indexOf(target)!==-1){found=item;return true;}
-                    return false;
+                // ★ pos-voice-xai-20261122：先比原字（正式名稱不經錯字表，避免被錯字表改壞），再比錯字表／別名改過的
+                var s=this,wants=[this.normalizeMenuNameForMatch(name),this.voiceNormalizeTerm(name)],found=null;
+                wants.some(function(want){
+                    if(!want)return false;
+                    (s.menu||[]).some(function(item){
+                        if(!item||item.active===false)return false;
+                        var names=[item.name,item.shortName,item.printName].map(function(value){return s.normalizeMenuNameForMatch(value);});
+                        if(names.indexOf(want)!==-1){found=item;return true;}
+                        return false;
+                    });
+                    return !!found;
                 });
                 return found;
+            },
+            voiceIceName:function(word,item){
+                var w=String(word||'');
+                if(!w)return '';
+                if(w==='去')return '去冰';
+                if(w==='微冰'||w==='半冰')return '少冰';
+                if(w==='熱'){
+                    var hasHot=item&&(item.optionGroups||[]).some(function(g){return (g.choices||[]).some(function(c){return String(c&&c.name||'').trim()==='熱';});});
+                    return hasHot?'熱':'溫';
+                }
+                return w;
+            },
+            // 飲料簡稱拆成 品名＋杯型＋冰塊：大冰奶、中去紅、大冰豆、小溫鮮奶茶、大杯錫蘭奶茶、柳橙汁大杯去冰…（沒有杯型也沒有冰塊就不是簡稱）
+            voiceDrinkParts:function(text){
+                var t=this.normalizeMenuNameForMatch(text).replace(/^(?:我要|要|來|再)?(?:[一二兩三四五六七八九十\d]+(?:個|份|杯))?/,''),size='',ice='',m;
+                var SIZE=/^(大杯|中杯|小杯|大|中|小)/,ICE=/^(去冰|少冰|微冰|半冰|常溫|去|冰|溫|熱)/;
+                for(var round=0;round<2;round++){
+                    if(!size&&(m=t.match(SIZE))){size=m[1].charAt(0)==='大'?'大杯':'中杯';t=t.slice(m[1].length);}
+                    if(!ice&&(m=t.match(ICE))){ice=m[1];t=t.slice(m[1].length);}
+                    t=t.replace(/^的/,'');
+                }
+                for(var back=0;back<2;back++){   // 後面也可能說：柳橙汁大杯去冰、奶茶去冰大杯
+                    if(!ice&&(m=t.match(/(去冰|少冰|微冰|半冰|常溫|冰|溫|熱)$/))){ice=m[1];t=t.slice(0,-m[1].length);}
+                    if(!size&&(m=t.match(/(大杯|中杯|小杯)$/))){size=m[1].charAt(0)==='大'?'大杯':'中杯';t=t.slice(0,-m[1].length);}
+                }
+                t=t.replace(/的$/,'');
+                if(!t||(!size&&!ice))return null;
+                var SHORT={'奶':'錫蘭奶茶','奶茶':'錫蘭奶茶','紅':'錫蘭紅茶','紅茶':'錫蘭紅茶','鮮奶茶':'錫蘭鮮奶茶','鮮奶奶茶':'錫蘭鮮奶茶','豆':'豆漿','柳':'柳橙汁','柳橙':'柳橙汁','鴛鴦':'鴛鴦奶茶','可可':'巧克力可可','巧克力':'巧克力可可','美式':'美式咖啡(無糖無奶)','美式咖啡':'美式咖啡(無糖無奶)'};
+                return {base:SHORT[t]||t,size:size,ice:ice};
+            },
+            voiceIsDrink:function(item){
+                if(!item)return false;
+                if(/飲/.test(String(item.category||'')))return true;
+                return (item.optionGroups||[]).some(function(g){return (g.choices||[]).some(function(c){return /^(中杯|大杯)$/.test(String(c&&c.name||'').trim());});});
+            },
+            voiceDrinkItem:function(base){
+                var item=this.voiceFindMenuItem(base);
+                if(!item){var top=this.voiceSearchMenu(base)[0];if(top&&top.confidence>=.9)item=this.voiceFindMenuItem(top.name);}
+                return this.voiceIsDrink(item)?item:null;
+            },
+            // 店員說的選項換成菜單上的選項名稱：套餐飲料（大冰奶 → 錫蘭奶茶(大杯)＋冰）、杯型冰塊、加蛋／不加蛋、加料_X
+            voiceExpandSelections:function(item,list){
+                var s=this,out=[],groups=item&&item.optionGroups||[];
+                var norm=function(v){return s.normalizeMenuNameForMatch(v);};
+                var comboGi=-1;
+                groups.forEach(function(g,gi){if(comboGi<0&&s.isComboDrinkGroup(g))comboGi=gi;});
+                var sizeOf=function(n){return /大杯/.test(n)?'大杯':(/中杯|小杯/.test(n)?'中杯':'');};
+                var comboChoice=function(base,size){
+                    if(comboGi<0)return '';
+                    var b=norm(base),pick='';
+                    (groups[comboGi].choices||[]).some(function(c){
+                        var n=norm(c&&c.name);
+                        if(n.replace(/大杯|中杯|小杯/g,'')!==b)return false;
+                        if(size&&sizeOf(n)!==size)return false;
+                        pick=c.name;return true;
+                    });
+                    return pick;
+                };
+                var eggGroup=function(){
+                    for(var gi=0;gi<groups.length;gi++){
+                        if((groups[gi].choices||[]).some(function(c){return /不加蛋/.test(String(c&&c.name||''));}))return groups[gi];
+                    }
+                    return null;
+                };
+                (Array.isArray(list)?list:[]).forEach(function(raw){
+                    var v=String(raw||'').trim().replace(/^加料_/,'');
+                    if(!v)return;
+                    var n=norm(v);
+                    if(/^(不加蛋|不要蛋|免蛋|沒有蛋|無蛋)$/.test(n)){var ng=eggGroup();if(ng){out.push('不加蛋');return;}}
+                    if(/^(加蛋|要蛋|有蛋|加一顆蛋|多一顆蛋|多一個蛋|雙蛋)$/.test(n)){
+                        var eg=eggGroup();
+                        if(eg){
+                            var dc=(eg.choices||[])[eg.defaultIdx||0];
+                            var c=(dc&&!/不/.test(dc.name))?dc:(eg.choices||[]).filter(function(x){return x&&!/不/.test(String(x.name||''));})[0];
+                            if(c){out.push(c.name);return;}
+                        }
+                        var eggs=[].concat(item.options||[],item.posExtras||[]).filter(function(o){return o&&/^(\+|＋|加)?(全熟|半熟|散|太陽)?蛋$/.test(String(o.name||'').replace(/\s/g,''));});   // 雙蛋○○蛋餅＝加一顆蛋（付費加料），和語音點餐平板一樣先挑全熟蛋
+                        var ex=eggs.filter(function(o){return /全熟蛋/.test(o.name);})[0]||eggs[0];
+                        if(ex){out.push(ex.name);return;}
+                    }
+                    var bare=n.match(/^(大杯|中杯|小杯|大|中|小)?(去冰|少冰|微冰|半冰|常溫|去|冰|溫|熱)?$/);
+                    if(bare&&(bare[1]||bare[2])){
+                        var sz=bare[1]?(bare[1].charAt(0)==='大'?'大杯':'中杯'):'';
+                        if(sz){
+                            if(comboGi>=0){
+                                var g=groups[comboGi],cur=(g.choices||[])[g.defaultIdx||0],ch=cur?comboChoice(norm(cur.name).replace(/大杯|中杯|小杯/g,''),sz):'';
+                                if(ch)out.push(ch);
+                            }else out.push(sz);
+                        }
+                        if(bare[2])out.push(s.voiceIceName(bare[2],item));
+                        return;
+                    }
+                    var parts=s.voiceDrinkParts(v)||s.voiceDrinkParts(s.voiceNormalizeTerm(v));
+                    if(parts&&comboGi>=0){
+                        var pick=comboChoice(parts.base,parts.size);
+                        if(pick){out.push(pick);if(parts.ice)out.push(s.voiceIceName(parts.ice,item));return;}
+                    }
+                    out.push(v);
+                });
+                return out.filter(function(v,i,a){return a.indexOf(v)===i;});
             },
             voiceAddMenuItem:function(args){
                 args=args||{};
                 var item=this.voiceFindMenuItem(args.name);
                 if(!item)return {success:false,error:'找不到完全相符且供應中的餐點',matches:this.voiceSearchMenu(args.name).map(function(row){return row.name;})};
                 this.openDetail(item);
-                this.tempQty=Math.max(1,Math.min(20,Math.round(Number(args.quantity)||1)));
+                this.tempQty=Math.max(1,Math.min(99,Math.round(Number(args.quantity)||1)));
                 this.tempNote=String(args.note||'').trim();
-                var requested=Array.isArray(args.selections)?args.selections.map(function(v){return String(v||'').trim();}).filter(Boolean):[];
+                var requested=this.voiceExpandSelections(item,Array.isArray(args.selections)?args.selections:[]);
                 var unmatched=[],s=this;
                 requested.forEach(function(value){
-                    var target=s.voiceNormalizeTerm(value),matched=false;
+                    var target=s.voiceNormalizeTerm(value),matched=false,negTarget=/不/.test(target);
                     (item.optionGroups||[]).some(function(group,gi){
                         var choices=group.choices||[],choiceIdx=-1;
                         for(var ci=0;ci<choices.length;ci++){
@@ -7246,6 +7408,7 @@
                         if(choiceIdx<0&&target.length>1){
                             for(var cj=0;cj<choices.length;cj++){
                                 var partialName=s.voiceNormalizeTerm(choices[cj]&&choices[cj].name);
+                                if(!partialName||/不/.test(partialName)!==negTarget)continue;   // 「加蛋」不可以對到「不加蛋」
                                 if(partialName.indexOf(target)!==-1||target.indexOf(partialName)!==-1){choiceIdx=cj;break;}
                             }
                         }
@@ -7258,10 +7421,16 @@
                         matched=true;return true;
                     });
                     if(matched)return;
+                    var bareTarget=target.replace(/^[+＋]/,'').replace(/^加/,'');
                     var matchExtra=function(options,targetList){
-                        for(var oi=0;oi<(options||[]).length;oi++){
-                            var option=options[oi];
-                            if(s.voiceNormalizeTerm(option&&option.name)===target){targetList.push(option);return true;}
+                        var list=options||[],oi,option,name;
+                        for(oi=0;oi<list.length;oi++){
+                            option=list[oi];
+                            if(s.voiceNormalizeTerm(option&&option.name)===target){if(targetList.indexOf(option)<0)targetList.push(option);return true;}
+                        }
+                        for(oi=0;oi<list.length;oi++){   // 「加起司」「起司」＝「+起司」
+                            option=list[oi];name=s.voiceNormalizeTerm(option&&option.name).replace(/^[+＋]/,'').replace(/^加/,'');
+                            if(name&&bareTarget&&name===bareTarget){if(targetList.indexOf(option)<0)targetList.push(option);return true;}
                         }
                         return false;
                     };
@@ -7274,62 +7443,210 @@
                     if(!drinkMatched)unmatched.push(value);
                 });
                 if(unmatched.length)this.tempNote=[this.tempNote,unmatched.join('、')].filter(Boolean).join('；');
+                var before=this.cart.length,qty=this.tempQty;
                 this.confirmAdd();
-                return {success:true,name:item.name,quantity:this.tempQty,unmatchedSelections:unmatched,cartTotal:this.cartTotal};
+                var added=this.cart.length>before?this.cart[this.cart.length-1]:null;
+                return {success:true,name:item.name,quantity:added?Number(added.qty)||qty:qty,price:added?Number(added.itemTotal)||0:0,note:added?String(added.note||''):'',unmatchedSelections:unmatched,cartTotal:this.cartTotal};
             },
-            voiceHandleToolCall:function(event){
-                if(!event.call_id||posVoiceRuntime.seenCalls.has(event.call_id))return;
-                posVoiceRuntime.seenCalls.add(event.call_id);
-                var args={},result;
-                try{args=JSON.parse(event.arguments||'{}');}
-                catch(_){result={success:false,error:'工具參數格式錯誤'};}
+            // 店員正在開餐點視窗：語音加餐點時先把視窗的內容存起來，加完還原（不會把店員選到一半的清掉）
+            voiceSaveDetailState:function(){
+                if(!this.activeItem)return null;
+                var s=this,snap={activeItem:this.activeItem,editingCartIdx:this.editingCartIdx};
+                Object.keys(this.$data||{}).forEach(function(k){if(/^temp/.test(k))snap[k]=s[k];});
+                return snap;
+            },
+            voiceRestoreDetailState:function(snap){
+                if(!snap)return;
+                var s=this;
+                Object.keys(snap).forEach(function(k){s[k]=snap[k];});
+            },
+            voiceCandidates:function(heard){
+                var s=this,targets=[this.normalizeMenuNameForMatch(heard),this.voiceNormalizeTerm(heard)].filter(function(v,i,a){return v&&a.indexOf(v)===i;});
+                var subseq=function(a,b){var i=0;for(var j=0;j<b.length&&i<a.length;j++)if(a.charAt(i)===b.charAt(j))i++;return i===a.length;};
+                var sim=function(a,b){
+                    if(!a||!b)return 0;
+                    var prev=[],i,j;
+                    for(j=0;j<=b.length;j++)prev[j]=j;
+                    for(i=1;i<=a.length;i++){var next=[i];for(j=1;j<=b.length;j++)next[j]=Math.min(next[j-1]+1,prev[j]+1,prev[j-1]+(a.charAt(i-1)===b.charAt(j-1)?0:1));prev=next;}
+                    return 1-prev[b.length]/Math.max(a.length,b.length);
+                };
+                var rows=[];
+                (this.menu||[]).forEach(function(item){
+                    if(!item||item.active===false||!item.name||/^[+＋]?\d+$/.test(String(item.name).trim()))return;
+                    var n=s.normalizeMenuNameForMatch(item.name),score=0;
+                    targets.forEach(function(t){score=Math.max(score,t.length>=2&&subseq(t,n)?1+t.length/n.length:sim(t,n));});
+                    if(score>=.5)rows.push({item:item,score:score});
+                });
+                rows.sort(function(a,b){return b.score-a.score||String(a.item.name).length-String(b.item.name).length;});
+                return rows.slice(0,4).map(function(r){return {name:r.item.name,price:Number(r.item.price||0)};});
+            },
+            // 聽到的名稱 → 菜單上的哪一道（＋從名稱拆出來的選項）；對不到唯一一道就給候選
+            voiceResolveItem:function(heard,depth){
+                var matches=this.voiceSearchMenu(heard),top=matches[0];
+                if(top&&(top.matchType==='exact'||top.matchType==='dictionary'))return {item:this.voiceFindMenuItem(top.name),selections:[]};
+                var t=this.voiceNormalizeTerm(heard);
+                if(!depth&&t.indexOf('加料_')>0){   // 錯字表：雙蛋火腿蛋餅 → 火腿蛋餅, 加料_加蛋
+                    var parts=t.split('加料_'),base=this.voiceResolveItem(parts[0],1);
+                    if(base.item)return {item:base.item,selections:base.selections.concat(parts.slice(1).filter(Boolean))};
+                }
+                var drink=this.voiceDrinkParts(heard)||this.voiceDrinkParts(t);
+                if(drink){
+                    var di=this.voiceDrinkItem(drink.base);
+                    if(di)return {item:di,selections:[drink.size,drink.ice].filter(Boolean)};
+                }
+                var ambiguous=matches.length>1&&matches[0].matchType==='fuzzy'&&matches[1].matchType==='fuzzy'&&matches[0].confidence-matches[1].confidence<.08;
+                if(top&&!ambiguous)return {item:this.voiceFindMenuItem(top.name),selections:[]};
+                return {item:null,selections:[],candidates:ambiguous?matches.slice(0,4).map(function(m){return {name:m.name,price:m.price};}):this.voiceCandidates(heard)};
+            },
+            // 轉文字裡連續 4 個以上剛好是辨識詞清單挨在一起的品名 → 雜音（xAI 照念辨識詞），和店內語音點餐平板一樣的判斷
+            voiceKeytermNoise:function(text){
+                var s=this,kt=posVoiceRuntime.keyterms||[],at={};
+                if(kt.length<10||!text)return null;
+                kt.forEach(function(k,i){var n=s.normalizeMenuNameForMatch(k);if(n&&at[n]===undefined)at[n]=i;});
+                var parts=String(text).split(/[，,。．.、；;！!？?\s]+/).map(function(p){return s.normalizeMenuNameForMatch(p);}).filter(Boolean);
+                for(var i=0;i<parts.length;i++){
+                    var j=i,idx=[];
+                    while(j<parts.length&&at[parts[j]]!==undefined){idx.push(at[parts[j]]);j++;}
+                    if(idx.length>=4&&Math.max.apply(null,idx)-Math.min.apply(null,idx)<=idx.length*3)return parts.slice(i).filter(function(p){return at[p]!==undefined;});
+                    i=Math.max(i,j);
+                }
+                return null;
+            },
+            voiceShortName:function(name){
+                return this.normalizeMenuNameForMatch(String(name||'').replace(/^單點-/,'').replace(/^\d+號/,'').replace(/(套餐|單點)$/,'').replace(/[（(][^）)]*[）)]/g,''));
+            },
+            voicePushPending:function(m){
+                var detail=[].concat(m.selections||[]).concat(m.note?[m.note]:[]).join('、');
+                posVoiceRuntime.pendingSeq++;
+                this.voicePending.push({key:'vp'+posVoiceRuntime.pendingSeq,heard:m.heard,quantity:m.quantity||1,selections:m.selections||[],note:m.note||'',detail:detail,candidates:m.candidates||[],noise:!!m.noise});
+                if(this.voicePending.length>5)this.voicePending.splice(0,this.voicePending.length-5);
+            },
+            voicePickPending:function(idx,name){
+                var p=this.voicePending[idx];
+                if(!p)return;
+                if(this.orderMode!=='pos'){this.toast('⚠ 請先回到現場點餐');return;}
+                var saved=this.voiceSaveDetailState(),r;
+                try{r=this.voiceAddMenuItem({name:name,quantity:p.quantity,note:p.note,selections:p.selections});}
+                catch(error){r={success:false,error:error&&error.message?error.message:String(error)};}
+                finally{this.voiceRestoreDetailState(saved);}
+                if(r&&r.success){this.voicePending.splice(idx,1);this.voiceStatus='✅ 已加入 '+r.name+(r.quantity>1?' ×'+r.quantity:'');}
+                else this.toast('⚠ '+(r&&r.error||'加入失敗'));
+            },
+            voiceDismissPending:function(idx){this.voicePending.splice(idx,1);},
+            // add_items：每一樣直接加到目前訂單；對不到的放到「候選」列讓店員點
+            voiceAddItems:function(list){
+                var s=this,added=[],missed=[];
+                if(this.orderMode!=='pos'){
+                    this.stopVoiceOrdering('語音點餐已停止（正在修改訂單）');
+                    return {success:false,error:'POS 不在現場點餐畫面，沒有加入'};
+                }
+                var noise=this.voiceKeytermNoise(posVoiceRuntime.turnText);
+                var saved=this.voiceSaveDetailState();
                 try{
-                    if(!result&&event.name==='search_pos_menu'){
-                        var matches=this.voiceSearchMenu(args.query);
-                        var ambiguous=matches.length>1&&matches[0].matchType==='fuzzy'&&matches[1].matchType==='fuzzy'&&matches[0].confidence-matches[1].confidence<.08;
-                        posVoiceRuntime.pendingSearch={matches:matches,ambiguous:ambiguous};
-                        result={success:matches.length>0,matches:matches,requiresConfirmation:ambiguous,error:matches.length?'':'找不到高可信度的菜單餐點'};
-                    }
-                    else if(!result&&event.name==='add_pos_item'){
-                        var pending=posVoiceRuntime.pendingSearch;
-                        if(!pending){
-                            var autoMatches=this.voiceSearchMenu(args.name);
-                            pending={matches:autoMatches,ambiguous:autoMatches.length>1&&autoMatches[0].matchType==='fuzzy'&&autoMatches[1].matchType==='fuzzy'&&autoMatches[0].confidence-autoMatches[1].confidence<.08};
+                    (Array.isArray(list)?list:[]).slice(0,30).forEach(function(raw){
+                        raw=raw&&typeof raw==='object'?raw:{name:String(raw||'')};
+                        var heard=String(raw.name||'').trim();
+                        if(!heard)return;
+                        var qty=Math.max(1,Math.min(99,Math.round(Number(raw.quantity)||1)));
+                        var sels=Array.isArray(raw.selections)?raw.selections.map(function(v){return String(v||'').trim();}).filter(Boolean):[];
+                        var note=String(raw.note||'').trim();
+                        var pick=s.voiceResolveItem(heard);
+                        if(pick.item&&noise&&(noise.indexOf(s.normalizeMenuNameForMatch(heard))!==-1||noise.indexOf(s.voiceShortName(pick.item.name))!==-1)){
+                            missed.push({heard:heard,quantity:qty,selections:pick.selections.concat(sels),note:note,candidates:[{name:pick.item.name,price:Number(pick.item.price||0)}],noise:true});
+                            return;
                         }
-                        if(!pending.matches.length)result={success:false,error:'找不到高可信度的菜單餐點'};
-                        else if(pending.ambiguous)result={success:false,error:'候選餐點太接近，請店員確認正式名稱',matches:pending.matches.slice(0,2).map(function(row){return row.name;})};
-                        else{args.name=pending.matches[0].name;result=this.voiceAddMenuItem(args);}
-                        posVoiceRuntime.pendingSearch=null;
+                        if(pick.item){
+                            var r=s.voiceAddMenuItem({name:pick.item.name,quantity:qty,note:note,selections:pick.selections.concat(sels)});
+                            if(r.success){added.push(r);return;}
+                        }
+                        missed.push({heard:heard,quantity:qty,selections:sels,note:note,candidates:pick.candidates||[]});
+                    });
+                }finally{this.voiceRestoreDetailState(saved);}
+                missed.forEach(function(m){s.voicePushPending(m);});
+                var label=function(r){return r.name+(r.quantity>1?' ×'+r.quantity:'');};
+                if(added.length)this.voiceStatus='✅ 已加入 '+added.map(label).join('、')+(missed.length?'；'+missed.length+' 樣請在上方點選':'');
+                else if(missed.length)this.voiceStatus='⚠️ 對不到菜單，請在上方點選或手動點餐';
+                return {
+                    success:true,
+                    added:added.map(function(r){return {name:r.name,quantity:r.quantity,price:r.price};}),
+                    not_added:missed.map(function(m){return m.heard;}),
+                    message:'已直接顯示在 POS 畫面，店員會自己看、自己改。不要回覆、不要說話、不要問問題。'
+                };
+            },
+            voiceHandleToolCall:function(name,callId,rawArgs){
+                var rt=posVoiceRuntime;
+                if(!callId||rt.seenCalls.has(callId))return;
+                rt.seenCalls.add(callId);
+                rt.turnHadCall=true;
+                var args={},result=null;
+                try{args=JSON.parse(rawArgs||'{}')||{};}
+                catch(_){result={success:false,error:'工具參數格式錯誤'};}
+                if(!result){
+                    try{
+                        if(name==='add_items')result=this.voiceAddItems(Array.isArray(args.items)?args.items:[]);
+                        else if(name==='add_pos_item')result=this.voiceAddItems([args]);
+                        else result={success:false,error:'不支援的工具'};
+                    }catch(error){
+                        console.warn('[pos-voice] add_items 失敗',error);
+                        result={success:false,error:error&&error.message?error.message:String(error)};
+                        this.voiceStatus='⚠️ '+result.error;
                     }
-                    else if(!result)result={success:false,error:'不支援的工具'};
-                }catch(error){result={success:false,error:error&&error.message?error.message:String(error)};}
-                if(result.success&&event.name==='add_pos_item')this.voiceStatus='已加入 '+result.quantity+'× '+result.name+'，請繼續說';
-                else if(event.name==='add_pos_item'&&result.matches&&result.matches.length)this.voiceStatus='候選：'+result.matches.join('／')+'，請店員說出正式名稱確認';
-                else if(!result.success)this.voiceStatus='⚠️ '+result.error;
-                this.voiceSend({type:'conversation.item.create',item:{type:'function_call_output',call_id:event.call_id,output:JSON.stringify(result)}});
-                if(event.name==='search_pos_menu'&&result.success)this.voiceSend({type:'response.create',response:{output_modalities:['text'],tool_choice:'required'}});
-                else if(event.name==='add_pos_item'&&result.success)this.voiceSend({type:'response.create',response:{output_modalities:['text'],tool_choice:'auto'}});
+                }
+                // 只回結果給 xAI，不送 response.create：xAI 不會因此再說話
+                this.voiceSend({type:'conversation.item.create',item:{type:'function_call_output',call_id:callId,output:JSON.stringify(result)}});
             },
             voiceArmIdleTimer:function(){
                 clearTimeout(posVoiceRuntime.idleTimer);
                 if(!this.voiceActive)return;
                 var s=this;
-                posVoiceRuntime.idleTimer=setTimeout(function(){s.stopVoiceOrdering('語音點餐已因 30 秒無人說話而自動停止');},30000);
+                posVoiceRuntime.idleTimer=setTimeout(function(){s.stopVoiceOrdering('語音點餐已因 30 秒沒人說話而自動停止');},POS_VOICE_IDLE_MS);
             },
             voiceHandleEvent:function(event){
                 if(!event||!event.type)return;
-                if(event.type==='response.function_call_arguments.done'){this.voiceHandleToolCall(event);return;}
-                if(event.type==='conversation.item.input_audio_transcription.delta'){
-                    this.voiceTranscript=(this.voiceTranscript+String(event.delta||'')).slice(-80);return;
-                }
-                if(event.type==='conversation.item.input_audio_transcription.completed'){
-                    this.voiceTranscript=String(event.transcript||'').trim().slice(-80);
-                    if(this.voiceTranscript)this.voiceSend({type:'response.create',response:{output_modalities:['text'],tool_choice:'required'}});
+                var t=event.type,rt=posVoiceRuntime;
+                if(t==='session.updated'){this.voiceOnReady();return;}
+                if(t==='response.function_call_arguments.done'){this.voiceHandleToolCall(event.name,event.call_id,event.arguments);return;}
+                if(t==='response.output_item.done'){
+                    if(event.item&&event.item.type==='function_call')this.voiceHandleToolCall(event.item.name,event.item.call_id,event.item.arguments);
                     return;
                 }
-                if(event.type==='input_audio_buffer.speech_started'){clearTimeout(posVoiceRuntime.idleTimer);posVoiceRuntime.idleTimer=null;posVoiceRuntime.pendingSearch=null;this.voiceTranscript='';this.voiceStatus='聆聽中…';return;}
-                if(event.type==='input_audio_buffer.speech_stopped'){this.voiceStatus='解析餐點中…';this.voiceArmIdleTimer();return;}
-                if(event.type==='error')this.voiceStatus='⚠️ '+String(event.error&&event.error.message||'語音服務錯誤');
+                if(t==='conversation.item.input_audio_transcription.delta'){
+                    rt.turnText=(rt.turnText+String(event.delta||'')).slice(-400);
+                    this.voiceTranscript=rt.turnText.slice(-80);return;
+                }
+                if(t==='conversation.item.input_audio_transcription.updated'||t==='conversation.item.input_audio_transcription.completed'){
+                    var tx=String(event.transcript||event.text||'').trim();
+                    if(tx){rt.turnText=tx.slice(-400);this.voiceTranscript=tx.slice(-80);}
+                    return;
+                }
+                if(t==='input_audio_buffer.speech_started'){
+                    clearTimeout(rt.idleTimer);rt.idleTimer=null;
+                    rt.turnText='';rt.turnHadCall=false;
+                    this.voiceTranscript='';this.voiceStatus='聆聽中…';return;
+                }
+                if(t==='input_audio_buffer.speech_stopped'){this.voiceStatus='辨識餐點中…';this.voiceArmIdleTimer();return;}
+                if(t==='response.done'){
+                    if(!rt.turnHadCall&&this.voiceStatus==='辨識餐點中…')this.voiceStatus='🎤 沒聽到餐點，請再說一次';
+                    return;
+                }
+                if(t==='error'){this.voiceOnServerError(event.error||event);return;}
+                // response.output_audio.delta 等聲音：POS 不播（只聽不說）
+            },
+            voiceOnServerError:function(err){
+                var rt=posVoiceRuntime,msg=String(err&&(err.message||err.code)||'語音服務錯誤');
+                console.warn('[pos-voice] xAI error',msg,err);
+                if(/active response|already has an active|no active response|cancel/i.test(msg))return;
+                if(!rt.ready&&rt.updateAttempt<1){rt.updateAttempt++;this.voiceSend(this.voiceSessionUpdate(1));return;}   // 設定不被接受：改用最精簡的設定再送一次
+                this.voiceStatus='⚠️ '+msg.slice(0,120);
+            },
+            voiceOnReady:function(){
+                var rt=posVoiceRuntime;
+                if(rt.ready||!rt.ws)return;
+                rt.ready=true;
+                clearTimeout(rt.readyTimer);rt.readyTimer=null;
+                var pre=rt.pre.splice(0);
+                for(var i=0;i<pre.length;i++)this.voiceSend({type:'input_audio_buffer.append',audio:pre[i]});
+                if(rt.onReady){var done=rt.onReady;rt.onReady=null;done();}
             },
             voiceServerBases:function(){
                 var bases=[];
@@ -7341,86 +7658,205 @@
                 return bases.filter(function(base,index,list){return base&&list.indexOf(base)===index;});
             },
             voiceFetchToken:async function(){
-                var bases=this.voiceServerBases(),lastError='找不到 Pi Realtime 服務';
+                var bases=this.voiceServerBases(),lastError='找不到 Pi 語音服務';
                 var currentUser=auth.currentUser;
                 if(!currentUser)throw new Error('請先登入 POS 才能使用語音點餐');
                 var firebaseIdToken=await currentUser.getIdToken();
                 for(var i=0;i<bases.length;i++){
                     var controller=new AbortController(),timer=setTimeout(function(){controller.abort();},8000);
                     try{
-                        var response=await fetch(bases[i]+'/api/pos/realtime/token',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+firebaseIdToken},body:'{}',signal:controller.signal});
+                        var response=await fetch(bases[i]+'/api/pos/voice/token',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+firebaseIdToken},body:'{}',signal:controller.signal});
                         var body=await response.text(),data={};
                         try{data=body?JSON.parse(body):{};}catch(_){}
                         if(response.ok&&data&&data.value)return data;
-                        lastError=String(data&&data.error||('Pi Realtime 服務 HTTP '+response.status+(body?'':'（空白回應）')));
+                        lastError=response.status===404?'Pi 還沒安裝 POS 的 xAI 語音點餐（'+POS_VOICE_TAG+'）':String(data&&data.error||('Pi 語音服務 HTTP '+response.status+(body?'':'（空白回應）')));
                     }catch(error){lastError=error&&error.name==='AbortError'?'Pi 語音服務逾時':String(error&&error.message||error);}
                     finally{clearTimeout(timer);}
                 }
                 throw new Error(lastError);
             },
-            voiceSessionUpdate:function(){
-                return {
-                    type:'session.update',
-                    session:{
-                        type:'realtime',
-                        output_modalities:['text'],
-                        audio:{input:{transcription:{model:'gpt-4o-transcribe',language:'zh',prompt:posVoiceRuntime.transcriptionPrompt},turn_detection:{type:'semantic_vad',eagerness:'medium',create_response:false,interrupt_response:true}}},
-                        instructions:'你是台灣早餐店 POS 語音點餐助手。全程使用繁體中文。點餐階段禁止只回覆文字；每聽到一個餐點，必須先呼叫 search_pos_menu 查詢目前供應中的正式菜單、價格與選項，再以查到的完整正式名稱呼叫 add_pos_item；每個不同餐點分開呼叫一次。若搜尋結果 requiresConfirmation 為 true，不可自行選擇或加入，等待店員說出正式名稱。絕不可自行猜價格或建立菜單沒有的餐點。數量、客製選項與備註依店員原話傳入。絕不可送出訂單、付款或列印。',
-                        tools:[
-                            {type:'function',name:'search_pos_menu',description:'依店員說法搜尋目前供應中的本機 POS 菜單；加入任何餐點前必須先呼叫。',parameters:{type:'object',properties:{query:{type:'string',description:'只傳餐點名稱或口語別名，不含一個、一份等數量詞'}},required:['query'],additionalProperties:false}},
-                            {type:'function',name:'add_pos_item',description:'用搜尋結果中的完整正式名稱加入 POS 目前訂單。價格由 POS 菜單計算，不可傳入價格。',parameters:{type:'object',properties:{name:{type:'string',description:'search_pos_menu 回傳的完整正式名稱'},quantity:{type:'integer',minimum:1,maximum:20},note:{type:'string',description:'不要醬、切邊等備註，沒有則空字串'},selections:{type:'array',items:{type:'string'},description:'尺寸、冰熱、蛋、套餐飲料、加料等店員說出的選項'}},required:['name','quantity','note','selections'],additionalProperties:false}}
-                        ],
-                        tool_choice:'auto'
-                    }
+            voiceMenuPromptText:function(){
+                var cats={},order=[];
+                (this.menu||[]).forEach(function(item){
+                    if(!item||item.active===false||!item.name)return;
+                    var name=String(item.name).trim();
+                    if(/^[+＋]?\d+$/.test(name))return;   // 1、5、10…是店員調整金額用的，不是餐點
+                    var c=String(item.category||'其他');
+                    if(!cats[c]){cats[c]=[];order.push(c);}
+                    if(cats[c].indexOf(name)<0)cats[c].push(name);
+                });
+                return order.map(function(c){return '〔'+c+'〕'+cats[c].join('、');}).join('\n');
+            },
+            voiceKeyterms:function(){
+                var s=this,out=[],seen={};
+                var add=function(t){t=String(t||'').trim();if(!t||t.length>50||seen[t]||/^[+＋]?\d+$/.test(t))return;seen[t]=1;out.push(t);};
+                var active=(this.menu||[]).filter(function(item){return item&&item.active!==false&&item.name;});
+                var names=active.map(function(item){return s.normalizeMenuNameForMatch(item.name);}),hard={};
+                posVoiceRuntime.typos.forEach(function(r){
+                    if(r.to.length<2||/^\d/.test(r.to)||r.to.indexOf('加料_')!==-1)return;
+                    if(names.some(function(n){return n.indexOf(r.to)!==-1;}))hard[r.to]=(hard[r.to]||0)+1;
+                });
+                Object.keys(hard).sort(function(a,b){return hard[b]-hard[a]||b.length-a.length;}).slice(0,30).forEach(add);
+                var cats={},order=[];
+                active.forEach(function(item){
+                    var c=item.category||'其他',t=String(item.name).replace(/^單點-/,'').replace(/^\d+號/,'').replace(/(套餐|單點)$/,'').replace(/[（(][^）)]*[）)]/g,'').replace(/\s+/g,'');
+                    if(!cats[c]){cats[c]=[];order.push(c);}
+                    if(t&&cats[c].indexOf(t)<0)cats[c].push(t);
+                });
+                for(var round=0;out.length<100;round++){
+                    var any=false;
+                    order.forEach(function(c){if(cats[c][round]!==undefined){any=true;add(cats[c][round]);}});
+                    if(!any)break;
+                }
+                posVoiceRuntime.aliases.forEach(function(r){if(out.length<100)add(r.from);});
+                return out.slice(0,100);
+            },
+            voiceInstructions:function(){
+                return [
+                    '你是台灣早餐店 POS 收銀台的「語音點餐辨識員」。店員或客人對著 POS 說餐點，你只負責把聽到的餐點用 add_items 加到 POS 的目前訂單；畫面會直接顯示餐點名稱、價錢、備註，店員自己看、自己改。全程繁體中文。',
+                    '【最重要】你不跟任何人對話：不打招呼、不確認、不問問題、不回答問題、不念價錢、不說「好的」。聽到餐點就馬上呼叫 add_items，呼叫完不要再說任何話；真的要輸出時只輸出「。」。',
+                    '1. 一句話裡的所有餐點放在同一次 add_items，一樣一格；同一樣有數量就填 quantity（一、兩、三…換成數字），不要拆成好幾格。',
+                    '2. name 用【今日菜單】上的完整正式名稱。聽不出是哪一個、或菜單上找不到，就照聽到的原話填，POS 會自己對菜單，對不到會讓店員點選。絕對不要自己編菜單沒有的餐點或價錢。',
+                    '3. 菜單上沒有的組合，用菜單上的餐點加 selections，例如「火腿起司蛋餅」＝火腿蛋餅＋selections「加起司」。',
+                    '4. 飲料簡稱照原話放在 name：奶＝錫蘭奶茶、紅＝錫蘭紅茶、豆＝豆漿、柳＝柳橙汁，大／中／小＝杯型（小就是中杯），冰／去／溫／熱＝冰塊，例如「大冰奶」「中去紅」「大冰豆」「小溫鮮奶茶」。',
+                    '5. 杯型、冰塊、加蛋／不加蛋、全熟／半熟、加料（加起司、加培根）、套餐飲料（例如：大冰奶、中杯鮮奶茶）、不要醬、不要菜、切開這類放進 selections，一個一格；沒說的就不要填，也絕對不要問，POS 會用預設值。其他說明放 note。',
+                    '6. 沒說「套餐」或「單點」、菜單上又同時有套餐和單點的（例如 1～9號餐、拼盤、鐵板麵），用套餐（和電話點餐一樣）。說「○號」就是那一號餐；同一號有好幾種（例如 1號、4號）又沒說是哪一種，就照原話填（例如「1號套餐」），讓店員點選。',
+                    '7. 「再一杯」「再來一個」是另外再加一份新的。',
+                    '8. 不是在點餐的話（閒聊、雜音、店員互相講話、客人問問題、「點好了」「這樣就好」「多少錢」「內用／外帶」），不要呼叫工具。',
+                    '9. 要刪掉、改數量、改選項，店員會在螢幕上自己改，不要呼叫工具。不要送出訂單、付款或列印。',
+                    '【今日菜單】（品名；沒列出的就是今天沒有）',
+                    this.voiceMenuPromptText()
+                ].join('\n');
+            },
+            voiceSessionUpdate:function(level){
+                var session={
+                    instructions:this.voiceInstructions(),
+                    voice:'ara',
+                    turn_detection:{type:'server_vad'},
+                    audio:{input:{format:{type:'audio/pcm',rate:24000}},output:{format:{type:'audio/pcm',rate:24000}}},
+                    tools:[POS_VOICE_ADD_TOOL]
                 };
+                if(!level){   // xAI 進階設定：不被接受時 voiceOnServerError 會拿掉再送一次
+                    session.reasoning={effort:'none'};
+                    session.audio.input.transcription={model:'grok-transcribe',language_hint:'zh',keyterms:posVoiceRuntime.keyterms};
+                }
+                return {type:'session.update',session:session};
+            },
+            voiceStartMic:async function(){
+                var rt=posVoiceRuntime,stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true,channelCount:1}});
+                if(!rt.collecting){stream.getTracks().forEach(function(track){track.stop();});throw new Error('語音點餐已停止');}
+                rt.stream=stream;
+                var ctx=rt.ctx;
+                if(!ctx)throw new Error('無法啟動錄音（AudioContext）');
+                try{rt.source=ctx.createMediaStreamSource(stream);}
+                catch(_){   // 有些瀏覽器麥克風取樣率和 24kHz 不同會失敗 → 用預設取樣率，自己轉成 24kHz
+                    try{ctx.close();}catch(__){}
+                    var AC=window.AudioContext||window.webkitAudioContext;
+                    ctx=rt.ctx=new AC();
+                    try{await ctx.resume();}catch(__){}
+                    rt.source=ctx.createMediaStreamSource(stream);
+                }
+                rt.sink=ctx.createGain();rt.sink.gain.value=0;rt.sink.connect(ctx.destination);
+                rt.acc=new Float32Array(2400);rt.accLen=0;rt.rsT=0;rt.rsPrev=0;
+                var node=null;
+                if(ctx.audioWorklet&&window.AudioWorkletNode){
+                    try{
+                        await ctx.audioWorklet.addModule(POS_VOICE_WORKLET_URL);
+                        node=new AudioWorkletNode(ctx,'kiosk-mic');
+                        node.port.onmessage=function(e){posVoiceFeed(e.data);};
+                    }catch(_){node=null;}
+                }
+                if(!node){
+                    node=ctx.createScriptProcessor(4096,1,1);
+                    node.onaudioprocess=function(e){posVoiceFeed(new Float32Array(e.inputBuffer.getChannelData(0)));};
+                }
+                rt.node=node;
+                rt.source.connect(node);node.connect(rt.sink);
+                if(ctx.state==='suspended'){try{await ctx.resume();}catch(_){}}
+            },
+            voiceOpenSocket:function(token){
+                var s=this,rt=posVoiceRuntime;
+                return new Promise(function(resolve,reject){
+                    var ws,settled=false;
+                    var finish=function(err){
+                        if(settled)return;
+                        settled=true;rt.openReject=null;rt.onReady=null;
+                        clearTimeout(rt.connectTimer);rt.connectTimer=null;
+                        if(err)reject(err);else resolve();
+                    };
+                    rt.openReject=function(err){finish(err);};
+                    rt.onReady=function(){finish();};
+                    try{ws=new WebSocket(POS_VOICE_WS_URL+'?model='+encodeURIComponent(rt.model),['xai-client-secret.'+token.value]);}
+                    catch(error){finish(error);return;}
+                    rt.ws=ws;
+                    rt.connectTimer=setTimeout(function(){finish(new Error('xAI 語音連線逾時'));},12000);
+                    ws.onopen=function(){
+                        s.voiceSend(s.voiceSessionUpdate(0));
+                        rt.readyTimer=setTimeout(function(){s.voiceOnReady();},3000);
+                    };
+                    ws.onmessage=function(message){
+                        if(typeof message.data!=='string')return;
+                        var event;try{event=JSON.parse(message.data);}catch(_){return;}
+                        try{s.voiceHandleEvent(event);}catch(error){console.warn('[pos-voice] event error',error);}
+                    };
+                    ws.onclose=function(e){
+                        if(rt.ws!==ws)return;
+                        rt.ws=null;rt.ready=false;
+                        if(!settled){finish(new Error('xAI 連線被關閉（'+e.code+(e.reason?' '+e.reason:'')+'）'));return;}
+                        if(s.voiceActive)s.stopVoiceOrdering('⚠️ xAI 連線中斷（'+e.code+'），請再按 🎤');
+                    };
+                });
             },
             startVoiceOrdering:async function(){
                 if(this.voiceActive||this.voiceConnecting)return;
+                var s=this,rt=posVoiceRuntime;
                 this.voiceConnecting=true;this.voiceStatus='正在開啟麥克風…';this.voiceTranscript='';
+                rt.ready=false;rt.collecting=true;rt.pre=[];rt.seenCalls=new Set();rt.updateAttempt=0;rt.turnText='';rt.turnHadCall=false;
                 try{
                     if(!window.isSecureContext)throw new Error('iPad 麥克風需要以 HTTPS 開啟 POS');
                     if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia)throw new Error('此瀏覽器不支援麥克風語音點餐');
+                    if(!window.WebSocket)throw new Error('此瀏覽器不支援語音連線（WebSocket）');
                     if(!this.menu||!this.menu.length)throw new Error('菜單尚未載入完成');
-                    var stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}});
-                    posVoiceRuntime.stream=stream;
-                    this.voiceStatus='正在連接 OpenAI Realtime…';
-                    var voiceInit=await Promise.all([this.voiceFetchToken(),this.loadSettingsPrimary({timeoutMs:3500,forceFresh:true,ignoreCooldown:true})]);
-                    var token=voiceInit[0];
-                    posVoiceRuntime.typos=this.voicePrepareMap(token.typos||{});
+                    var AC=window.AudioContext||window.webkitAudioContext;
+                    if(!AC)throw new Error('此瀏覽器不支援錄音（AudioContext）');
+                    try{rt.ctx=new AC({sampleRate:24000});}catch(_){rt.ctx=new AC();}   // 要在按下的當下建立（iPad 規定）
+                    try{rt.ctx.resume();}catch(_){}
+                    var initPromise=Promise.all([
+                        this.voiceFetchToken(),
+                        this.loadSettingsPrimary({timeoutMs:3500,forceFresh:true,ignoreCooldown:true}).catch(function(error){console.warn('[pos-voice] settings',error);return null;})
+                    ]);
+                    initPromise.catch(function(){});
+                    await this.voiceStartMic();   // 麥克風先開（聲音先存著），同時向 Pi 拿 token
+                    this.voiceStatus='正在連接 xAI 語音…';
+                    var token=(await initPromise)[0];
+                    rt.model=String(token.model||'grok-voice-3.0');
+                    rt.typos=this.voicePrepareMap(token.typos||{});
                     var seenAliases={};
-                    posVoiceRuntime.aliases=this.voicePrepareMap(this.settings&&this.settings.menu_alias||[]).concat(this.voicePrepareMap(token.aliases||{})).filter(function(row){if(seenAliases[row.from])return false;seenAliases[row.from]=true;return true;}).sort(function(a,b){return b.from.length-a.from.length;});
-                    var promptTerms=posVoiceRuntime.typos.concat(posVoiceRuntime.aliases).map(function(row){return row.from+'＝'+row.to;});
-                    posVoiceRuntime.transcriptionPrompt='台灣早餐店現場點餐，請使用繁體中文。'+(promptTerms.length?'常見菜名、別名與易錯字：'+Array.from(new Set(promptTerms)).join('；').slice(0,400):'');
-                    posVoiceRuntime.seenCalls=new Set();
-                    var pc=new RTCPeerConnection(),dc=pc.createDataChannel('oai-events'),s=this;
-                    posVoiceRuntime.pc=pc;posVoiceRuntime.dc=dc;
-                    stream.getTracks().forEach(function(track){pc.addTrack(track,stream);});
-                    dc.addEventListener('message',function(message){try{s.voiceHandleEvent(JSON.parse(message.data));}catch(error){console.warn('Realtime event error',error);}});
-                    var openPromise=new Promise(function(resolve,reject){
-                        var timer=setTimeout(function(){reject(new Error('Realtime 資料通道連線逾時'));},12000);
-                        dc.addEventListener('open',function(){clearTimeout(timer);s.voiceSend(s.voiceSessionUpdate());resolve();},{once:true});
-                    });
-                    pc.addEventListener('connectionstatechange',function(){
-                        if(pc.connectionState==='failed')s.stopVoiceOrdering('⚠️ Realtime 連線中斷');
-                    });
-                    var offer=await pc.createOffer();
-                    await pc.setLocalDescription(offer);
-                    var answerResponse=await fetch('https://api.openai.com/v1/realtime/calls',{method:'POST',body:offer.sdp,headers:{Authorization:'Bearer '+token.value,'Content-Type':'application/sdp'}});
-                    if(!answerResponse.ok)throw new Error('Realtime WebRTC 連線失敗 HTTP '+answerResponse.status);
-                    await pc.setRemoteDescription({type:'answer',sdp:await answerResponse.text()});
-                    await openPromise;
-                    this.voiceActive=true;this.voiceStatus='語音點餐中，請直接說餐點';this.voiceArmIdleTimer();
+                    rt.aliases=this.voicePrepareMap(this.settings&&this.settings.menu_alias||[]).concat(this.voicePrepareMap(token.aliases||{})).filter(function(row){if(seenAliases[row.from])return false;seenAliases[row.from]=true;return true;}).sort(function(a,b){return b.from.length-a.from.length;});
+                    rt.keyterms=this.voiceKeyterms();
+                    await this.voiceOpenSocket(token);
+                    this.voiceActive=true;this.voiceStatus='🎤 xAI 語音點餐中，請直接說餐點';
+                    this.voiceArmIdleTimer();
+                    clearTimeout(rt.maxTimer);
+                    rt.maxTimer=setTimeout(function(){s.stopVoiceOrdering('語音點餐已達 6 分鐘自動停止，要再點請按 🎤');},POS_VOICE_MAX_MS);
                 }catch(error){
                     this.stopVoiceOrdering('');
                     this.voiceStatus='⚠️ '+String(error&&error.message||error);
                 }finally{this.voiceConnecting=false;}
             },
             stopVoiceOrdering:function(message){
-                clearTimeout(posVoiceRuntime.idleTimer);posVoiceRuntime.idleTimer=null;
-                try{if(posVoiceRuntime.dc)posVoiceRuntime.dc.close();}catch(_){}
-                try{if(posVoiceRuntime.pc)posVoiceRuntime.pc.close();}catch(_){}
-                try{if(posVoiceRuntime.stream)posVoiceRuntime.stream.getTracks().forEach(function(track){track.stop();});}catch(_){}
-                posVoiceRuntime.pc=null;posVoiceRuntime.dc=null;posVoiceRuntime.stream=null;posVoiceRuntime.seenCalls=new Set();posVoiceRuntime.pendingSearch=null;
+                var rt=posVoiceRuntime;
+                ['idleTimer','maxTimer','connectTimer','readyTimer'].forEach(function(key){clearTimeout(rt[key]);rt[key]=null;});
+                rt.ready=false;rt.collecting=false;rt.pre=[];rt.onReady=null;
+                if(rt.openReject){var reject=rt.openReject;rt.openReject=null;reject(new Error('語音點餐已停止'));}
+                var ws=rt.ws;rt.ws=null;
+                if(ws){try{ws.onclose=null;ws.onmessage=null;ws.onopen=null;ws.close();}catch(_){}}
+                try{if(rt.node){if(rt.node.port)rt.node.port.onmessage=null;rt.node.onaudioprocess=null;rt.node.disconnect();}}catch(_){}
+                try{if(rt.source)rt.source.disconnect();}catch(_){}
+                try{if(rt.sink)rt.sink.disconnect();}catch(_){}
+                try{if(rt.stream)rt.stream.getTracks().forEach(function(track){track.stop();});}catch(_){}
+                try{if(rt.ctx&&rt.ctx.state!=='closed')rt.ctx.close();}catch(_){}
+                rt.node=null;rt.source=null;rt.sink=null;rt.stream=null;rt.ctx=null;rt.acc=null;rt.accLen=0;rt.seenCalls=new Set();rt.turnText='';
                 this.voiceActive=false;this.voiceConnecting=false;this.voiceTranscript='';this.voiceStatus=message===undefined?'語音點餐已停止':message;
             },
             toggleVoiceOrdering:function(){if(this.voiceActive||this.voiceConnecting)this.stopVoiceOrdering();else this.startVoiceOrdering();},
