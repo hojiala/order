@@ -21,6 +21,7 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js" integrity="sha384-3zSEDfvllQohrq0PHL1fOXJuC/jSOO34H46t6UQfobFOmxE5BpjjaIJY5F2/bMnU" crossorigin="anonymous"></script>
     <script src="./order-batch-tools.20260809_002.js?v=20260902_001"></script>
     <script src="./print-jobs-alert.20260928_001.js"></script>
+    <script src="./order-audio.20261126_001.js"></script><!-- order-audio-20261126：聽電話點餐／語音點餐的錄音 -->
     <style>[v-cloak] { display: none; }</style>
 </head>
 <body class="bg-gray-100 font-sans">
@@ -71,11 +72,11 @@
                 </div>
             </header>
 
-            <main class="p-4 max-w-7xl mx-auto">
+            <main class="p-4 max-w-7xl mx-auto" :style="orderAudioNow.key ? 'padding-bottom:128px' : ''">
                 <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                     
                     <div v-for="order in sortedOrders" :key="getOrderRenderKey(order)" 
-                         v-memo="[order, activeMenu === order.id, getDisplayStatus(order), getLinePayState(order), menuItems, todayStr]"
+                         v-memo="[order, activeMenu === order.id, getDisplayStatus(order), getLinePayState(order), menuItems, todayStr, orderAudioState(order)]"
                          :data-order-identity="JSON.stringify({id:order.id,sourceOrderId:order.sourceOrderId,orderId:order.orderId,source:order.source,sourceRecordPath:order.sourceRecordPath,integrationPath:order.integration &amp;&amp; order.integration.sourceRecordPath,pickupDate:order.pickupDate,orderDateKey:order.orderDateKey,sourceDateKey:order._sourceDateKey,recordId:order._pocketBaseRecordId,readBackend:order._readBackend,status:order.status,printTask:order.print_task,numberingDeferred:order.numberingDeferred})"
                          class="bg-white rounded-xl shadow-md flex flex-col relative overflow-hidden"
                          :class="{'opacity-60': getDisplayStatus(order) === 'done'}">
@@ -212,6 +213,10 @@
                             <button v-if="getDisplayStatus(order) === 'new'" @click="updateStatus(order.id, 'making')" class="bg-yellow-400 hover:bg-yellow-500 text-black font-bold py-2 px-6 rounded-full shadow text-sm">接單製作</button>
                             <button v-if="getDisplayStatus(order) === 'making'" @click="updateStatus(order.id, 'done')" class="bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-6 rounded-full shadow text-sm">完成出餐</button>
                             <button v-if="getDisplayStatus(order) === 'done'" @click="updateStatus(order.id, 'new')" class="bg-gray-300 hover:bg-gray-400 text-gray-700 font-bold py-2 px-6 rounded-full text-sm">還原狀態</button>
+                            <!-- order-audio-20261126：電話點餐／語音點餐的錄音（播放器在畫面右下角） -->
+                            <button v-if="orderAudioKey(order)" @click.stop="playOrderAudio(order)" data-order-audio-btn
+                                :class="[orderAudioKind(order) === 'phone' ? 'oa-phone' : 'oa-kiosk', orderAudioState(order) === 'playing' ? 'oa-on' : '']"
+                                class="oa-card-btn oa-pill shadow-sm" v-html="orderAudioHtml(order)"></button>
 
                             <div class="relative ml-auto">
                                 <button @click="toggleMenu(order.id)" class="w-10 h-10 bg-white border-2 border-gray-300 text-gray-600 rounded-full text-xl font-bold flex items-center justify-center hover:bg-gray-100 hover:border-gray-400 transition shadow-sm z-20 relative">
@@ -296,7 +301,12 @@
                 <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 overflow-hidden" style="max-height:85vh;display:flex;flex-direction:column;">
                     <div class="bg-gray-800 px-5 py-3 flex items-center justify-between flex-shrink-0">
                         <span class="text-white font-bold">✏️ 編輯訂單 No.{{ editModal.orderNo ? String(editModal.orderNo).padStart(3,'0') : '---' }}</span>
-                        <button @click="editModal=null" class="text-gray-400 hover:text-white text-xl">✕</button>
+                        <div class="flex items-center gap-2">
+                            <button v-if="orderAudioKey(editModal)" @click.stop="playOrderAudio(editModal)" data-order-audio-btn
+                                :class="[orderAudioKind(editModal) === 'phone' ? 'oa-phone' : 'oa-kiosk', orderAudioState(editModal) === 'playing' ? 'oa-on' : '']"
+                                class="oa-card-btn oa-dark" v-html="orderAudioHtml(editModal)"></button>
+                            <button @click="editModal=null" class="text-gray-400 hover:text-white text-xl">✕</button>
+                        </div>
                     </div>
                     <div class="flex-1 overflow-y-auto p-5 space-y-4" style="min-height:0">
                         <div>
@@ -541,6 +551,7 @@
                     // ★ pos-linepay-inpage-qr-20261024：💚 LINE Pay 在 admin 上顯示 QR（不整頁跳到 LINE Pay）
                     adminQr: { show: false, state: '', orderId: '', transactionId: '', amount: 0, orderNo: '', url: '', error: '', openedAt: 0, elapsed: 0 },
                     printJobs: [], printJobsPanel: false, printJobsTimer: null, printJobsBusy: {}, printJobsError: '',
+                    orderAudioNow: { key: '', state: '' },   // order-audio-20261126：正在聽哪一張（state：loading／playing／paused／ended／error）
                     alertSound: new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg')
                 }
             },
@@ -721,9 +732,37 @@
                         }
                     });
                 });
+                this.setupOrderAudio();
                 this.startPrintJobsWatch();
             },
             methods: {
+                // ── order-audio-20261126：聽電話點餐／語音點餐的錄音（order-audio.20261126_001.js；錄音在 Pi，走 LINE Pay 服務、用 admin 的登入）──
+                setupOrderAudio() {
+                    if (!window.OrderAudio || this._orderAudioOff) return;
+                    window.OrderAudio.configure({
+                        getBase: () => this.printJobsBase(),
+                        getToken: () => (auth.currentUser && !auth.currentUser.isAnonymous) ? auth.currentUser.getIdToken() : '',
+                        right: () => 12,
+                        zIndex: 90   // 在訂單卡片上面、編輯視窗（z-100）下面：不擋到視窗的按鈕；視窗標題列另有一顆可以暫停／繼續
+                    });
+                    this._orderAudioOff = window.OrderAudio.onChange((s) => {
+                        if (s.key !== this.orderAudioNow.key || s.state !== this.orderAudioNow.state) this.orderAudioNow = { key: s.key, state: s.state };
+                    });
+                },
+                orderAudioReq(order) {
+                    if (!order || !window.OrderAudio) return null;
+                    return window.OrderAudio.requestFor(order, { isPhone: (o) => this.isPhoneSourceOrder(o), phoneId: (o) => this.resolvePhoneCommandSourceOrderId(o) });
+                },
+                orderAudioKey(order) { const r = this.orderAudioReq(order); return r ? r.key : ''; },
+                orderAudioKind(order) { const r = this.orderAudioReq(order); return r ? r.kind : ''; },
+                orderAudioState(order) { const k = this.orderAudioKey(order); return k && k === this.orderAudioNow.key ? this.orderAudioNow.state : ''; },
+                orderAudioHtml(order) {   // 圖示＋字（聽錄音／載入中／暫停／繼續聽／再聽／再試）；只有固定字串
+                    return window.OrderAudio ? window.OrderAudio.buttonHtml(this.orderAudioState(order), true) : '';
+                },
+                playOrderAudio(order) {   // 要在 click 裡直接呼叫：iPad 規定手按才能出聲
+                    const req = this.orderAudioReq(order);
+                    if (req) window.OrderAudio.play(req);
+                },
                 // ── 未印出工單＋提示音（print-contention-queue-20260926 / print-alert-sound-20260928）──
                 startPrintJobsWatch() {
                     if (this.printJobsTimer) return;
@@ -3041,6 +3080,7 @@
                     }
                 },
                 async logout() {
+                    if (window.OrderAudio) window.OrderAudio.close();   // order-audio-20261126
                     try { await signOut(auth); } catch (error) { console.error("登出失敗", error); }
                 },
                 backfillOrdersToPocketBaseBestEffort(orders, sourcePage) {

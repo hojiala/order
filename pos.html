@@ -19,6 +19,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js" integrity="sha384-3zSEDfvllQohrq0PHL1fOXJuC/jSOO34H46t6UQfobFOmxE5BpjjaIJY5F2/bMnU" crossorigin="anonymous"></script>
   <script src="./order-batch-tools.20260809_002.js?v=20260902_001"></script>
   <script src="./print-jobs-alert.20260928_001.js"></script>
+  <script src="./order-audio.20261126_001.js"></script><!-- order-audio-20261126：聽電話點餐／語音點餐的錄音 -->
   <style>
     [v-cloak]{display:none}*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
     body{font-family:"Helvetica Neue",Arial,"PingFang TC","Microsoft JhengHei",sans-serif;overscroll-behavior:none}
@@ -289,7 +290,7 @@
             <button v-if="orderSearch" @click="orderSearch=''" class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 text-base">&#215;</button>
           </div>
         </div>
-        <div class="flex-1 overflow-y-auto px-3 pb-3">
+        <div class="flex-1 overflow-y-auto px-3 pb-3" :style="orderAudioNow.key ? 'padding-bottom:120px' : ''">
           <div v-if="ordersLoading" class="text-center text-gray-400 py-10 text-sm">載入中...</div>
           <div v-else-if="filteredOrders.length===0" class="text-center text-gray-400 py-10">
             <div class="text-4xl mb-2">&#128237;</div>
@@ -377,7 +378,11 @@
                   <span v-else class="inline-block text-xs font-bold px-1.5 py-0.5 rounded-full mt-0.5 bg-red-100 text-red-500">
                       ⚠️ 未付款
                   </span>
-                  <div class="mt-1">
+                  <div class="mt-1 flex items-center justify-end" style="gap:6px">
+                    <!-- order-audio-20261126：電話點餐／語音點餐的錄音（播放器在訂單區右下角） -->
+                    <button v-if="orderAudioKey(order)" @click.stop="playOrderAudio(order)" data-order-audio-btn :title="orderAudioTitle(order)"
+                      :class="[orderAudioKind(order)==='phone'?'oa-phone':'oa-kiosk',orderAudioState(order)==='playing'?'oa-on':'']"
+                      class="oa-card-btn oa-round" v-html="orderAudioIconHtml(order)"></button>
                     <button @click.stop="toggleOrderMenu($event,order.id)"
                       class="w-8 h-8 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded-full text-gray-600 font-black text-lg flex items-center justify-center transition">+</button>
                   </div>
@@ -488,7 +493,10 @@
           <span v-if="voiceConnecting">&#9203;</span><span v-else-if="voiceActive">&#9632;</span><span v-else>&#127908;</span>
         </button>
         <button v-if="cart.length>0 && orderMode==='pos'" @click="clearCart" class="text-xs text-gray-400 hover:text-red-500 transition">清空</button>
-        <button v-if="orderMode!=='pos'" @click="exitOnline" class="text-xs bg-gray-200 hover:bg-gray-300 text-gray-600 px-3 py-1 rounded-lg transition">取消修改</button>
+        <button v-if="orderMode!=='pos' && editingOrder && orderAudioKey(editingOrder)" @click.stop="playOrderAudio(editingOrder)" data-order-audio-btn :title="orderAudioTitle(editingOrder)"
+          :class="[orderAudioKind(editingOrder)==='phone'?'oa-phone':'oa-kiosk',orderAudioState(editingOrder)==='playing'?'oa-on':'']"
+          class="oa-card-btn oa-round" v-html="orderAudioIconHtml(editingOrder)"></button>
+        <button v-if="orderMode!=='pos'" @click="exitOnline" class="text-xs bg-gray-200 hover:bg-gray-300 text-gray-600 px-3 py-1 rounded-lg transition whitespace-nowrap">取消修改</button>
       </div>
     </div>
     <!-- ★ pos-voice-xai-20261122：語音聽到、但對不到唯一一道菜（或像雜音）的 → 列候選，店員點一下就加入；xAI 不問話 -->
@@ -1286,6 +1294,7 @@
                 activeItem:null,tempQty:1,tempNote:"",tempDrinkNote:"",tempShowDrinkNote:false,tempSels:[],tempOG:{},tempPosExtras:[],tempComboSize:{},tempDrinkAddons:[],
                 toastMsg:"",toastTimer:null,lastOrderId:null,
                 printJobs:[],printJobsPanel:false,printJobsTimer:null,printJobsBusy:{},printJobsError:"",
+                orderAudioNow:{key:'',state:''},   // order-audio-20261126：正在聽哪一張
                 activeMenu:null,menuPos:null,activeMenuOrder:null,
                 archiveConfirm:false,resetConfirm:false,
                 linePayServerUrl:"",linePayConfirmUrl:"",pocketBaseUrl:"",pocketBaseOrdersCollection:"orders",
@@ -1548,6 +1557,7 @@
             //   鍵盤沒開時完全不攔截）。POS 頁面不會 unmount，不需要移除。
             s._qtyPadKeyHandler=function(e){s.qtyPadKeydown(e);};
             window.addEventListener('keydown',s._qtyPadKeyHandler,true);
+            s.setupOrderAudio();
             s.startPrintJobsWatch();
         },
         beforeUnmount:function(){this.stopScannerBridge();},
@@ -6213,7 +6223,7 @@
                         s.loginError=e&&e.message==='backoffice_uid_required'?'此帳號無權限登入後台':(m[e.code]||("登入失敗："+e.message));
                     }).finally(function(){s.isLoggingIn=false;});
             },
-            doLogout:function(){if(confirm("確定登出POS？"))signOut(auth);},
+            doLogout:function(){if(confirm("確定登出POS？")){if(window.OrderAudio)window.OrderAudio.close();signOut(auth);}},
             dateKeyOffset:function(offset){
                 var d=new Date();
                 d.setHours(0,0,0,0);
@@ -9943,6 +9953,32 @@
                 var target=this.cart[toIdx];if(Array.isArray(this.posBags)&&this.posBags.length&&it&&target&&it.bagNo!==target.bagNo){it.bagNo=target.bagNo;it.bagType=target.bagType;}
                 this.cart.splice(fi,1);this.cart.splice(toIdx,0,it);this.cartDragIdx=null;
                 if(Array.isArray(this.posBags)&&this.posBags.length)this.posBagSortCart();},
+            // ── order-audio-20261126：聽電話點餐／語音點餐的錄音（order-audio.20261126_001.js；錄音在 Pi，走 LINE Pay 服務、用 POS 的登入）──
+            setupOrderAudio:function(){
+                var s=this;
+                if(!window.OrderAudio||s._orderAudioOff)return;
+                window.OrderAudio.configure({
+                    getBase:function(){return s.printJobsBase();},
+                    getToken:function(){return(auth.currentUser&&!auth.currentUser.isAnonymous)?auth.currentUser.getIdToken():'';},
+                    // 放在訂單區右下角：不擋左下角「未印出工單」，也不擋右邊目前訂單／結帳
+                    right:function(){var r=document.querySelector('.pos-right');return Math.round((r?r.getBoundingClientRect().width:300)+12);},
+                    zIndex:48   // 在 toast（z-50）和各種視窗下面
+                });
+                s._orderAudioOff=window.OrderAudio.onChange(function(st){
+                    if(st.key!==s.orderAudioNow.key||st.state!==s.orderAudioNow.state)s.orderAudioNow={key:st.key,state:st.state};
+                });
+            },
+            orderAudioReq:function(order){
+                var s=this;
+                if(!order||!window.OrderAudio)return null;
+                return window.OrderAudio.requestFor(order,{isPhone:function(o){return s.isPhoneSourceOrder(o);},phoneId:function(o){return s.resolvePhoneCommandSourceOrderId(o);}});
+            },
+            orderAudioKey:function(order){var r=this.orderAudioReq(order);return r?r.key:'';},
+            orderAudioKind:function(order){var r=this.orderAudioReq(order);return r?r.kind:'';},
+            orderAudioState:function(order){var k=this.orderAudioKey(order);return k&&k===this.orderAudioNow.key?this.orderAudioNow.state:'';},
+            orderAudioIconHtml:function(order){return window.OrderAudio?window.OrderAudio.buttonHtml(this.orderAudioState(order),false):'';},   // 只有圖示（SVG，固定字串）
+            orderAudioTitle:function(order){var st=this.orderAudioState(order);return st==='playing'?'暫停錄音':st==='loading'?'錄音載入中':(this.orderAudioKind(order)==='phone'?'聽電話錄音':'聽語音點餐錄音');},
+            playOrderAudio:function(order){var req=this.orderAudioReq(order);if(req)window.OrderAudio.play(req);},   // 要在 click 裡直接呼叫
             // ── 未印出工單（print-contention-queue-20260926）──
             // print_daemon 把與廠商 POS 搶印表機而印不出的工作站存進佇列；這裡每 15 秒查一次。
             startPrintJobsWatch:function(){
