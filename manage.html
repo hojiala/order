@@ -17,6 +17,7 @@
     <link rel="stylesheet" href="./tailwind.min.css?v=20260714">
     <script src="https://unpkg.com/vue@3.5.40/dist/vue.global.prod.js" integrity="sha384-yjSqnKX+01fhYzLUMRlCkMrHMTdKxwYcGIk5HZ6ug+4nfJn10+F7YsKRuGR5kQac" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/echarts@5.6.0/dist/echarts.min.js" integrity="sha384-pPi0zxBAoDu6+JXW/C68UZLvBUUtU+7zonhif43rqj7pxsGyqyqzcian2Rj37Rss" crossorigin="anonymous"></script>
+    <script src="./order-audio.20261126_002.js"></script><!-- order-audio-20261126：點餐紀錄的播放器 -->
     <style>
         [v-cloak] { display: none; }
         * { box-sizing: border-box; }
@@ -2126,11 +2127,16 @@
                                 <p v-if="kvLogs.detailLoading" class="kv-help">讀取中…</p>
                                 <template v-else-if="kvLogs.detail">
                                     <p class="kv-help">{{ kvLogs.detail.device || '平板' }}・{{ kvLogs.detail.seconds }} 秒<span v-if="kvLogCost(kvLogs.detail).usd != null" class="kv-cost-line" :title="kvCostTitle(kvLogCost(kvLogs.detail))" data-kv-detail-cost>・xAI {{ kvLogCost(kvLogs.detail).est ? '約 ' : '' }}US${{ kvLogCost(kvLogs.detail).usd.toFixed(3) }}（NT${{ kvLogCost(kvLogs.detail).twd.toFixed(1) }}）</span>・{{ kvEndLabel(kvLogs.detail.end_reason) }}・{{ kvSubmitText(kvLogs.detail.submit) }}<span v-if="kvLogs.detail.settings">・聲音 {{ kvLogs.detail.settings.voice }}、語速 {{ kvLogs.detail.settings.speed }}・{{ kvLevelText(kvLogs.detail.settings.session_level) }}</span></p>
-                                    <div v-if="r.audio_bytes" class="flex flex-wrap items-center gap-3">
-                                        <button v-if="!kvLogs.audioUrl" type="button" @click="kvLoadAudio(r)" :disabled="kvLogs.audioLoading" data-kv-audio-load class="bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-white text-xs font-bold px-3 py-1.5 rounded-lg">{{ kvLogs.audioLoading ? '載入中…' : '▶️ 載入錄音（' + Math.max(1, Math.round(r.audio_bytes / 1024)) + ' KB）' }}</button>
-                                        <audio v-if="kvLogs.audioUrl" :src="kvLogs.audioUrl" controls class="kv-audio" data-kv-audio></audio>
-                                        <a v-if="kvLogs.audioUrl" :href="kvLogs.audioUrl" :download="r.id + kvAudioExt()" class="text-xs font-bold text-emerald-300">下載錄音</a>
-                                        <span v-if="kvLogs.audioError" class="text-xs text-red-300">{{ kvLogs.audioError }}</span>
+                                    <!-- order-audio-20261126：點開就載入錄音、播放器直接出現；不會自己出聲，按 ▶ 才播 -->
+                                    <div v-if="r.audio_bytes" class="flex flex-wrap items-center gap-3" data-kv-audio-row>
+                                        <div v-if="kvHasPlayer()" class="kv-audio" data-kv-player></div>
+                                        <template v-else>
+                                            <span v-if="kvLogs.audioLoading" class="text-xs text-slate-400">載入錄音中…</span>
+                                            <audio v-if="kvLogs.audioUrl" :src="kvLogs.audioUrl" controls class="kv-audio" data-kv-audio></audio>
+                                            <span v-if="kvLogs.audioError" class="text-xs text-red-300">{{ kvLogs.audioError }}</span>
+                                        </template>
+                                        <button v-if="kvLogs.audioError && !kvLogs.audioLoading" type="button" @click="kvLoadAudio(r)" data-kv-audio-load class="bg-slate-700 hover:bg-slate-600 text-white text-xs font-bold px-3 py-1.5 rounded-lg">↻ 再載入一次</button>
+                                        <a v-if="kvLogs.audioUrl" :href="kvLogs.audioUrl" :download="r.id + kvAudioExt()" class="text-xs font-bold text-emerald-300">下載錄音（{{ Math.max(1, Math.round(r.audio_bytes / 1024)) }} KB）</a>
                                     </div>
                                     <div v-if="(kvLogs.detail.events || []).length" class="kv-chat">
                                         <div v-for="(e, i) in kvLogs.detail.events" :key="i" class="kv-ev" :class="'kv-ev-' + e.role">
@@ -2149,7 +2155,7 @@
                         </div>
                     </div>
                     <p v-else-if="kvLogs.loaded && !kvLogs.error && !kvLogs.loading" class="rounded-lg border border-slate-700 bg-slate-900 px-3 py-3 text-center text-sm text-slate-400">這一天沒有語音點餐紀錄。</p>
-                    <p class="kv-help">紀錄存在店裡的 Pi。只有 manage 管理員帳號看得到；錄音要按「載入錄音」才會下載。</p>
+                    <p class="kv-help">紀錄存在店裡的 Pi。只有 manage 管理員帳號看得到；點開那筆就會載入錄音，按 ▶ 才會出聲。</p>
                 </div>
             </div>
         </div>
@@ -6001,12 +6007,13 @@ window._resetCountUp = function() {
                 if (L.open === r.id) { L.open = ''; L.detail = null; return; }
                 L.open = r.id; L.detail = null; L.detailLoading = true;
                 var self = this, day = L.date;
+                if (r.audio_bytes) this.kvLoadAudio(r);   // order-audio-20261126：點開就載入錄音（不會自己出聲）
                 return this.kvPiFetch('/api/kiosk/voice/logs/' + encodeURIComponent(L.date) + '/' + encodeURIComponent(r.id)).then(function(d) {
                     self.kvStats.facts[day + '/' + r.id] = self.kvLogFacts(d.log || {});
                     if (L.open === r.id) L.detail = d.log || {};
                 }).catch(function(err) {
                     if (L.open === r.id) L.detail = { events: [{ t: 0, role: 'error', text: String((err && err.message) || err) }] };
-                }).finally(function() { L.detailLoading = false; });
+                }).finally(function() { L.detailLoading = false; self.kvMountPlayer(r); });
             },
             // ── kiosk-voice-voices-20261107：每日統計 ──
             kvVoicesIn: function(gi) { return this.kvVoices.filter(function(x) { return x.group === gi; }); },
@@ -6144,18 +6151,55 @@ window._resetCountUp = function() {
                 return S.range === 'week' ? f(ds[ds.length - 1]) + '～' + f(ds[0]) + '（有紀錄的 ' + ds.length + ' 天）' : f(ds[0]);
             },
             kvLoadAudio: function(r) {
-                var L = this.kvLogs;
+                var L = this.kvLogs, self = this;
                 L.audioLoading = true; L.audioError = '';
-                return this.kvPiFetch('/api/kiosk/voice/logs/' + encodeURIComponent(L.date) + '/' + encodeURIComponent(r.id) + '/audio', true).then(function(blob) {
+                if (this._kvPlayer && this._kvPlayer.logId === r.id) this._kvPlayer.loading();
+                var key = L.date + '/' + r.id, hit = (this._kvAudioCache || {})[key];   // order-audio-20261126：看過的（最近 8 筆）不用再抓
+                var got = hit ? Promise.resolve(hit) : this.kvPiFetch('/api/kiosk/voice/logs/' + encodeURIComponent(L.date) + '/' + encodeURIComponent(r.id) + '/audio', true);
+                return got.then(function(blob) {
                     if (L.open !== r.id) return;
+                    self.kvRememberAudio(key, blob);
+                    if (L.audioUrl) { try { URL.revokeObjectURL(L.audioUrl); } catch (e) {} }
                     L.audioType = blob.type || '';
-                    L.audioUrl = URL.createObjectURL(blob);
+                    L.audioUrl = URL.createObjectURL(blob);   // 「下載錄音」用原檔
+                    self._kvBlob = blob; self._kvBlobId = r.id;
                 }).catch(function(err) {
-                    L.audioError = String((err && err.message) || err);
-                }).finally(function() { L.audioLoading = false; });
+                    if (L.open === r.id) L.audioError = String((err && err.message) || err);
+                }).finally(function() {
+                    if (L.open !== r.id) return;   // 已經換一筆了：不要動到新那筆的狀態
+                    L.audioLoading = false;
+                    self.kvMountPlayer(r);
+                });
+            },
+            // ── order-audio-20261126：播放器（order-audio.20261126_002.js，和 admin／pos 同一款）──
+            kvHasPlayer: function() { return !!(window.OrderAudio && window.OrderAudio.inline); },
+            kvRememberAudio: function(key, blob) {
+                var c = this._kvAudioCache || (this._kvAudioCache = {}), order = this._kvAudioOrder || (this._kvAudioOrder = []);
+                if (!c[key]) order.push(key);
+                c[key] = blob;
+                while (order.length > 8) delete c[order.shift()];
+            },
+            kvMountPlayer: function(r) {   // 對話和錄音都到了才放播放器；錄音準備好只顯示 ▶，不自己播
+                var self = this, L = this.kvLogs;
+                if (!this.kvHasPlayer() || !r || L.open !== r.id) return;
+                this.$nextTick(function() {
+                    if (L.open !== r.id) return;
+                    var host = document.querySelector('[data-kv-player]');
+                    if (!host) return;
+                    var P = self._kvPlayer;
+                    if (!P || P.logId !== r.id || !host.contains(P.element)) {
+                        if (P) P.destroy();
+                        P = self._kvPlayer = window.OrderAudio.inline(host, { kind: 'kiosk' });
+                        P.logId = r.id;
+                    }
+                    if (L.audioError) P.fail(L.audioError);
+                    else if (self._kvBlob && self._kvBlobId === r.id) P.setBlob(self._kvBlob);
+                });
             },
             kvClearAudio: function() {
                 var L = this.kvLogs;
+                if (this._kvPlayer) { this._kvPlayer.destroy(); this._kvPlayer = null; }   // order-audio-20261126：換一筆／收起來就停
+                this._kvBlob = null; this._kvBlobId = '';
                 if (L.audioUrl) { try { URL.revokeObjectURL(L.audioUrl); } catch (e) {} }
                 L.audioUrl = ''; L.audioError = ''; L.audioLoading = false;
             },
