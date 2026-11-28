@@ -145,6 +145,14 @@
     .store-pay-action-arrow{font-size:28px;font-weight:400}
     .store-pay-cancel{width:100%;min-height:46px;margin-top:12px;border:1px solid #d8c9ae;border-radius:14px;color:#234b43;background:#fffaf0;font-size:16px;font-weight:900;cursor:pointer;box-shadow:inset 0 0 0 2px #fff,0 3px 8px rgba(0,0,0,.16)}
     @media(max-width:430px){.store-pay-header{padding:16px 15px 55px}.store-pay-emblem{width:48px;height:48px;font-size:28px}.store-pay-title{font-size:24px}.store-pay-status{padding:6px 9px;font-size:10px}.store-pay-subtitle{margin-left:62px;font-size:11px}.store-pay-summary{grid-template-columns:58px repeat(3,minmax(0,1fr));margin-top:-40px;padding:18px 7px 22px}.store-pay-calc-icon{width:50px;height:50px;font-size:27px}.store-pay-stat{padding:2px 4px}.store-pay-stat-label{font-size:12px}.store-pay-stat-value{font-size:23px}.store-pay-calc-panel{padding:35px 10px 12px}.cash-quick-grid,.cash-key-grid{gap:8px}.cash-quick-btn{font-size:18px}.store-pay-actions{padding:10px}.store-pay-action-grid{gap:8px}.store-pay-action{min-height:64px;padding:8px;font-size:13px}.store-pay-action-icon{width:30px;height:30px}}
+    /* phone-voicemail-pos-20261128：電話語音留言的文字內容 */
+    .vm-text-box{background:#fffbeb;border:1px solid #fcd34d;border-radius:.5rem;padding:.45rem .65rem}
+    .vm-text-title{color:#b45309;font-weight:800;font-size:.75rem;margin:0 0 .15rem}
+    .vm-text-body{color:#1f2937;font-size:.875rem;line-height:1.55;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;margin:0}
+    .vm-text-empty{color:#92400e;font-size:.75rem;margin:0}
+    .vm-pos-card{margin-top:.5rem}
+    .vm-pos-panel{margin:.5rem .75rem 0;max-height:11rem}
+    .vm-pos-panel .vm-text-body{font-size:.9375rem}
   </style>
 </head>
 <body class="bg-gray-100">
@@ -337,6 +345,12 @@
                     <p class="whitespace-pre-line text-xs leading-relaxed text-gray-700" style="overflow-wrap:anywhere">{{ orderItemsSummary(order) }}</p>
                   </div>
                   <p v-if="order.orderNote" class="mt-1.5 text-xs leading-relaxed text-blue-500" style="overflow-wrap:anywhere">&#128221; {{ order.orderNote }}</p>
+                  <!-- phone-voicemail-pos-20261128：電話語音留言的文字內容（和電話點餐首頁「歷史訂單總覽」同一段文字） -->
+                  <div v-if="isVoicemailOrder(order)" data-voicemail-text class="vm-text-box vm-pos-card">
+                    <p class="vm-text-title">🎙️ 語音留言內容</p>
+                    <p v-if="getVoicemailText(order)" class="vm-text-body">{{ getVoicemailText(order) }}</p>
+                    <p v-else class="vm-text-empty">{{ voicemailTextState(order)==='missing' ? '找不到留言文字（請到電話點餐首頁看，或按 🔊 聽錄音）' : '讀取留言文字中…' }}</p>
+                  </div>
                 </div>
               <div class="flex-shrink-0 text-right">
                   <p class="text-orange-500 font-black text-base">${{ order.total }}</p>
@@ -498,6 +512,12 @@
           class="oa-card-btn oa-round" v-html="orderAudioIconHtml(editingOrder)"></button>
         <button v-if="orderMode!=='pos'" @click="exitOnline" class="text-xs bg-gray-200 hover:bg-gray-300 text-gray-600 px-3 py-1 rounded-lg transition whitespace-nowrap">取消修改</button>
       </div>
+    </div>
+    <!-- phone-voicemail-pos-20261128：點開電話語音留言時，留言文字顯示在目前訂單上面（邊看邊點餐） -->
+    <div v-if="orderMode!=='pos' && editingOrder && isVoicemailOrder(editingOrder)" data-voicemail-text data-voicemail-panel class="vm-text-box vm-pos-panel flex-shrink-0 overflow-y-auto">
+      <p class="vm-text-title">🎙️ 語音留言內容</p>
+      <p v-if="getVoicemailText(editingOrder)" class="vm-text-body">{{ getVoicemailText(editingOrder) }}</p>
+      <p v-else class="vm-text-empty">{{ voicemailTextState(editingOrder)==='missing' ? '找不到留言文字（請到電話點餐首頁看，或按 🔊 聽錄音）' : '讀取留言文字中…' }}</p>
     </div>
     <!-- ★ pos-voice-xai-20261122：語音聽到、但對不到唯一一道菜（或像雜音）的 → 列候選，店員點一下就加入；xAI 不問話 -->
     <div v-if="orderMode==='pos' && voicePending.length" data-pos-voice-pending class="px-3 py-2 border-b border-amber-200 bg-amber-50 flex-shrink-0 overflow-y-auto" style="max-height:12rem">
@@ -1140,7 +1160,7 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
     import { getDatabase, ref, query, orderByKey, limitToLast, onValue, onChildAdded, onChildChanged, onChildRemoved, update, push, set, get, remove, runTransaction } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
     import { getAuth, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-    import { allocateOrderNoFromPocketBase, resetOrderNoInPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, requestLinePayViaBackend, openCashDrawerViaBackend, readPosOrderStateViaBackend, cancelOwnedOrderViaBackend, queuePhoneOrderCommandViaBackend, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, readManageMenuFromPocketBase, listMenuItemsFromPocketBase, writeMenuItemToPocketBase, writeSettingsToPocketBase, requestStaffOrderPresets, rememberPublicMenuItems, rememberPublicSettings, normalizePublicSettings, subscribeOrdersRealtime, isReservedOrderId } from "./pocketbase-order-writer.20260809_005.js?v=20261025_lucky_wheel_1";
+    import { allocateOrderNoFromPocketBase, resetOrderNoInPocketBase, writeOrderToPocketBase, writeOrderWithFirebaseFallback, requestLinePayViaBackend, openCashDrawerViaBackend, readPosOrderStateViaBackend, cancelOwnedOrderViaBackend, queuePhoneOrderCommandViaBackend, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, readManageMenuFromPocketBase, listMenuItemsFromPocketBase, writeMenuItemToPocketBase, writeSettingsToPocketBase, requestStaffOrderPresets, rememberPublicMenuItems, rememberPublicSettings, normalizePublicSettings, subscribeOrdersRealtime, isReservedOrderId } from "./pocketbase-order-writer.20260809_005.js?v=20261128_voicemail_1";
     import { saveLinePayCheckoutHandoff, consumeRestorableLinePayCheckout } from "./linepay-checkout-handoff.20260912_001.js";
     import { isBackofficeUser } from "./staff-auth-activation.20260818_001.js?v=20260818_001";
     const firebaseConfig = {
@@ -1294,6 +1314,7 @@
                 activeItem:null,tempQty:1,tempNote:"",tempDrinkNote:"",tempShowDrinkNote:false,tempSels:[],tempOG:{},tempPosExtras:[],tempComboSize:{},tempDrinkAddons:[],
                 toastMsg:"",toastTimer:null,lastOrderId:null,
                 printJobs:[],printJobsPanel:false,printJobsTimer:null,printJobsBusy:{},printJobsError:"",
+                voicemailTexts:{},   // phone-voicemail-pos-20261128：{ <電話單編號>: { state: loading／ok／missing, text } }
                 orderAudioNow:{key:'',state:''},   // order-audio-20261126：正在聽哪一張
                 activeMenu:null,menuPos:null,activeMenuOrder:null,
                 archiveConfirm:false,resetConfirm:false,
@@ -1459,7 +1480,8 @@
                     var phone=(o.phone||(o.customer&&o.customer.phone)||"").toLowerCase();
                     var oid=String(o.id||'').slice(-4).toLowerCase();
                     var ono=String(o.orderNo||"").padStart(3,"0");
-                    return name.indexOf(q)>=0||phone.indexOf(q)>=0||oid.indexOf(q)>=0||ono.indexOf(q)>=0;
+                    var vmText=String(s.voicemailTextOf(o)||'').toLowerCase();   // phone-voicemail-pos-20261128：可以搜留言內容
+                    return name.indexOf(q)>=0||phone.indexOf(q)>=0||oid.indexOf(q)>=0||ono.indexOf(q)>=0||(!!vmText&&vmText.indexOf(q)>=0);
                 });
                 }catch(e){
                     console.warn('filteredOrders failed:',e&&e.message?e.message:e);
@@ -3721,6 +3743,59 @@
                 var src=String(order.source||'').toLowerCase();
                 var label=String(order.sourceLabel||order._integrationSourceLabel||'').toLowerCase();
                 return src==='line'||src==='web_liff'||!!order.member||label.indexOf('line')>=0;
+            },
+            // phone-voicemail-pos-20261128：電話語音留言（AI 沒辨識成訂單）的文字內容
+            //   新留言：Node-RED 存進 PB（customer.transcriptText），writer 帶到 order.transcriptText
+            //   舊留言（PB 沒有文字）：跟 Firebase phone_ai/orders/<編號> 讀一次（Node-RED 一直有寫 transcriptText）
+            isVoicemailOrder:function(order){
+                if(!order||!this.isPhoneSourceOrder(order))return false;
+                if(order.isMessage===true||order.recordType==='message')return true;
+                var note=String(order.orderNote||order['\u8a02\u55ae\u5099\u8a3b']||'');
+                return note.indexOf('\u8a9e\u97f3\u7559\u8a00')!==-1&&note.indexOf('\u975e\u8a02\u55ae')!==-1;
+            },
+            voicemailKey:function(order){
+                var p='';
+                try{p=String(this.normalizeSourceRecordPath(order,(order&&order.id)||'')||'');}catch(_){}
+                var m=p.match(/^phone_ai\/orders\/([A-Za-z0-9_-]+)$/);
+                return m?m[1]:'';
+            },
+            voicemailTextOf:function(order){
+                if(!this.isVoicemailOrder(order))return '';
+                var own=String(order.transcriptText||order.transcribed_text||'').trim();
+                if(own)return own;
+                var key=this.voicemailKey(order);
+                var cached=key?this.voicemailTexts[key]:null;
+                return (cached&&cached.text)||'';
+            },
+            getVoicemailText:function(order){
+                var textValue=this.voicemailTextOf(order);
+                if(!textValue&&this.isVoicemailOrder(order))this.loadVoicemailText(this.voicemailKey(order));
+                return textValue;
+            },
+            voicemailTextState:function(order){
+                var key=this.voicemailKey(order);
+                if(!key)return 'missing';
+                var cached=this.voicemailTexts[key];
+                return cached?cached.state:'loading';
+            },
+            loadVoicemailText:function(key){
+                var s=this;
+                if(!key)return;
+                if(!s._voicemailRequested)s._voicemailRequested={};
+                if(s._voicemailRequested[key])return;
+                s._voicemailRequested[key]=true;
+                var setState=function(value){var next=Object.assign({},s.voicemailTexts);next[key]=value;s.voicemailTexts=next;};
+                Promise.resolve().then(function(){
+                    setState({state:'loading',text:''});
+                    return get(ref(db,'phone_ai/orders/'+key));
+                }).then(function(snap){
+                    var row=(snap&&snap.exists&&snap.exists())?(snap.val()||{}):{};
+                    var textValue=String(row.transcriptText||row.transcribed_text||'').trim();
+                    setState(textValue?{state:'ok',text:textValue}:{state:'missing',text:''});
+                }).catch(function(err){
+                    console.warn('voicemail text read failed:',key,err&&err.message?err.message:err);
+                    setState({state:'missing',text:''});
+                });
             },
             isPhoneSourceOrder:function(order){
                 if(!order)return false;
