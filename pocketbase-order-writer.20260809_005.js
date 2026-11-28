@@ -569,6 +569,12 @@ export function pocketBaseRecordToOrder(record) {
             cap: Number(customer.luckyWheel.cap) || 0
         };
     }
+    // phone-voicemail-admin-20261128：電話語音留言（AI 沒辨識成訂單）的轉錄文字，Node-RED 存在 customer JSON
+    if (customer.isMessage === true || text(customer.recordType) === "message") {
+        order.isMessage = true;
+        order.recordType = "message";
+    }
+    if (text(customer.transcriptText).trim()) order.transcriptText = text(customer.transcriptText).trim();
     return order;
 }
 

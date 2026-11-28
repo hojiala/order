@@ -23,6 +23,13 @@
     <script src="./print-jobs-alert.20260928_001.js"></script>
     <script src="./order-audio.20261126_001.js"></script><!-- order-audio-20261126：聽電話點餐／語音點餐的錄音 -->
     <style>[v-cloak] { display: none; }</style>
+    <style>
+        /* phone-voicemail-admin-20261128：電話語音留言的文字內容 */
+        .vm-text-box { background: #fffbeb; border: 1px solid #fcd34d; border-radius: 0.5rem; padding: 0.5rem 0.75rem; margin-bottom: 0.75rem; }
+        .vm-text-title { color: #b45309; font-weight: 700; font-size: 0.875rem; margin-bottom: 0.25rem; }
+        .vm-text-body { color: #1f2937; font-size: 1rem; line-height: 1.6; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; }
+        .vm-text-empty { color: #92400e; font-size: 0.875rem; }
+    </style>
 </head>
 <body class="bg-gray-100 font-sans">
 
@@ -76,7 +83,7 @@
                 <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                     
                     <div v-for="order in sortedOrders" :key="getOrderRenderKey(order)" 
-                         v-memo="[order, activeMenu === order.id, getDisplayStatus(order), getLinePayState(order), menuItems, todayStr, orderAudioState(order)]"
+                         v-memo="[order, activeMenu === order.id, getDisplayStatus(order), getLinePayState(order), menuItems, todayStr, orderAudioState(order), voicemailMemo(order)]"
                          :data-order-identity="JSON.stringify({id:order.id,sourceOrderId:order.sourceOrderId,orderId:order.orderId,source:order.source,sourceRecordPath:order.sourceRecordPath,integrationPath:order.integration &amp;&amp; order.integration.sourceRecordPath,pickupDate:order.pickupDate,orderDateKey:order.orderDateKey,sourceDateKey:order._sourceDateKey,recordId:order._pocketBaseRecordId,readBackend:order._readBackend,status:order.status,printTask:order.print_task,numberingDeferred:order.numberingDeferred})"
                          class="bg-white rounded-xl shadow-md flex flex-col relative overflow-hidden"
                          :class="{'opacity-60': getDisplayStatus(order) === 'done'}">
@@ -164,6 +171,12 @@
                         <div class="p-4 flex-1">
                             <!-- 訂單備註 -->
                             <div v-if="getDisplayOrderNote(order)" class="bg-blue-50 border border-blue-200 rounded-lg px-3 py-2 mb-3 text-sm text-blue-700 font-bold">📝 備註：{{ getDisplayOrderNote(order) }}</div>
+                            <!-- phone-voicemail-admin-20261128：電話語音留言的文字內容（和電話點餐首頁「歷史訂單總覽」同一段文字） -->
+                            <div v-if="isVoicemailOrder(order)" class="vm-text-box" data-voicemail-text>
+                                <div class="vm-text-title">🎙️ 語音留言內容</div>
+                                <div v-if="getVoicemailText(order)" class="vm-text-body">{{ getVoicemailText(order) }}</div>
+                                <div v-else class="vm-text-empty">{{ voicemailTextState(order) === 'missing' ? '找不到留言文字（請到電話點餐首頁看，或按「🔊 聽錄音」）' : '讀取留言文字中…' }}</div>
+                            </div>
                             <ul class="space-y-3">
                                 <li v-for="(item, idx) in getDisplayOrderItems(order)" :key="idx" class="border-b border-dashed pb-2 last:border-0 last:pb-0">
                                     <div class="flex justify-between items-start">
@@ -423,7 +436,7 @@
         import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
         import { getDatabase, ref, query, orderByKey, limitToLast, onValue, onChildAdded, onChildChanged, onChildRemoved, update, set, get, remove } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-database.js";
         import { getAuth, setPersistence, browserLocalPersistence, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-auth.js";
-        import { allocateOrderNoFromPocketBase, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, readManageMenuFromPocketBase, listMenuItemsFromPocketBase, writeOrderToPocketBase, requestLinePayViaBackend, queuePhoneOrderCommandViaBackend, isReservedOrderId } from "./pocketbase-order-writer.20260809_005.js?v=20261025_lucky_wheel_1";
+        import { allocateOrderNoFromPocketBase, listOrdersFromPocketBase, backfillOrdersToPocketBase, readSettingsFromPocketBase, readManageMenuFromPocketBase, listMenuItemsFromPocketBase, writeOrderToPocketBase, requestLinePayViaBackend, queuePhoneOrderCommandViaBackend, isReservedOrderId } from "./pocketbase-order-writer.20260809_005.js?v=20261128_voicemail_1";
         import { isBackofficeUser } from "./staff-auth-activation.20260818_001.js?v=20260818_001";
 
         // ★★★ 請貼入您相同的 Firebase 配置 ★★★
@@ -551,6 +564,7 @@
                     // ★ pos-linepay-inpage-qr-20261024：💚 LINE Pay 在 admin 上顯示 QR（不整頁跳到 LINE Pay）
                     adminQr: { show: false, state: '', orderId: '', transactionId: '', amount: 0, orderNo: '', url: '', error: '', openedAt: 0, elapsed: 0 },
                     printJobs: [], printJobsPanel: false, printJobsTimer: null, printJobsBusy: {}, printJobsError: '',
+                    voicemailTexts: {},   // phone-voicemail-admin-20261128：{ <電話單編號>: { state: loading／ok／missing, text } }
                     orderAudioNow: { key: '', state: '' },   // order-audio-20261126：正在聽哪一張（state：loading／playing／paused／ended／error）
                     alertSound: new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg')
                 }
@@ -686,6 +700,7 @@
                             order && order.phone,
                             order && order.pickupTime,
                             order && order.orderNote,
+                            this.voicemailTextOf(order),   // phone-voicemail-admin-20261128：可以搜留言內容
                             itemText
                         ].join(' ').toLowerCase();
                     };
@@ -1907,6 +1922,61 @@
                     };
                     run();
                     if (!this.menuSettingsPollTimer) this.menuSettingsPollTimer = setInterval(run, 60000);
+                },
+                // phone-voicemail-admin-20261128：電話語音留言（AI 沒辨識成訂單）的文字內容
+                //   新留言：Node-RED 存進 PB（customer.transcriptText），writer 帶到 order.transcriptText
+                //   舊留言（PB 沒有文字）：跟 Firebase phone_ai/orders/<編號> 讀一次（Node-RED 一直有寫 transcriptText）
+                isVoicemailOrder(order) {
+                    if (!order || !this.isPhoneSourceOrder(order)) return false;
+                    if (order.isMessage === true || order.recordType === 'message') return true;
+                    const note = String(order.orderNote || order['\u8a02\u55ae\u5099\u8a3b'] || '');
+                    return note.indexOf('\u8a9e\u97f3\u7559\u8a00') !== -1 && note.indexOf('\u975e\u8a02\u55ae') !== -1;
+                },
+                voicemailKey(order) {
+                    const p = String(this.normalizeSourceRecordPath(order, (order && order.id) || '') || '');
+                    const m = p.match(/^phone_ai\/orders\/([A-Za-z0-9_-]+)$/);
+                    return m ? m[1] : '';
+                },
+                voicemailTextOf(order) {
+                    if (!this.isVoicemailOrder(order)) return '';
+                    const own = String(order.transcriptText || order.transcribed_text || '').trim();
+                    if (own) return own;
+                    const key = this.voicemailKey(order);
+                    const cached = key ? this.voicemailTexts[key] : null;
+                    return (cached && cached.text) || '';
+                },
+                getVoicemailText(order) {
+                    const textValue = this.voicemailTextOf(order);
+                    if (!textValue && this.isVoicemailOrder(order)) this.loadVoicemailText(this.voicemailKey(order));
+                    return textValue;
+                },
+                voicemailMemo(order) {   // 卡片有 v-memo：留言文字讀到後要讓卡片重畫
+                    if (!this.isVoicemailOrder(order)) return '';
+                    return this.voicemailTextState(order) + '|' + this.voicemailTextOf(order);
+                },
+                voicemailTextState(order) {
+                    const key = this.voicemailKey(order);
+                    if (!key) return 'missing';
+                    const cached = this.voicemailTexts[key];
+                    return cached ? cached.state : 'loading';
+                },
+                loadVoicemailText(key) {
+                    if (!key) return;
+                    if (!this._voicemailRequested) this._voicemailRequested = {};
+                    if (this._voicemailRequested[key]) return;
+                    this._voicemailRequested[key] = true;
+                    const setState = (value) => { this.voicemailTexts = Object.assign({}, this.voicemailTexts, { [key]: value }); };
+                    Promise.resolve().then(() => {
+                        setState({ state: 'loading', text: '' });
+                        return get(ref(db, 'phone_ai/orders/' + key));
+                    }).then((snap) => {
+                        const row = (snap && snap.exists && snap.exists()) ? (snap.val() || {}) : {};
+                        const textValue = String(row.transcriptText || row.transcribed_text || '').trim();
+                        setState(textValue ? { state: 'ok', text: textValue } : { state: 'missing', text: '' });
+                    }).catch((err) => {
+                        console.warn('voicemail text read failed:', key, err && err.message ? err.message : err);
+                        setState({ state: 'missing', text: '' });
+                    });
                 },
                 getDisplayOrderNote(order) {
                     const note = String((order && (order.orderNote || order['\u8a02\u55ae\u5099\u8a3b'])) || '').trim();
